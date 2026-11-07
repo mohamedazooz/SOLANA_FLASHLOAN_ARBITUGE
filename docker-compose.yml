@@ -1,0 +1,97 @@
+# Production stack: bot + Postgres (durable state) + Redis (pre-warmed signed
+# templates). Postgres and Redis are bound to loopback — they are an internal
+# dependency of the bot, never a public service.
+
+services:
+  arb-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      # Point storage at the compose services (the .env may target localhost).
+      DATABASE_URL: postgres://${POSTGRES_USER:-arb}:${POSTGRES_PASSWORD:-arb}@postgres:5432/${POSTGRES_DB:-arb}
+      REDIS_URL: redis://redis:6379/0
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      # Metrics/admin stay on loopback; reach them through an SSH tunnel.
+      - "127.0.0.1:9100:9100"
+      - "127.0.0.1:9101:9101"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      - ./ops:/app/ops:ro
+      # The keypair is mounted read-only and never baked into the image.
+      - ./secrets/solana_keypair.json:/app/solana_keypair.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # LIVE trading is opt-in: set BOT_MODE=live in .env only after the fork/
+    # devnet verification passes. Default stays shadow (no broadcast).
+    command: ["--config", "/app/config/config.toml", "--mode", "${BOT_MODE:-shadow}"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  alchemy-webhook:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/usr/local/bin/alchemy-webhook"]
+    command: []
+    environment:
+      ALCHEMY_WEBHOOK_LISTEN: 0.0.0.0:8081
+      ALCHEMY_WEBHOOK_SIGNING_KEY: ${ALCHEMY_WEBHOOK_SIGNING_KEY:-}
+    ports:
+      # Terminate public HTTPS at the host reverse proxy; do not expose this port directly.
+      - "127.0.0.1:8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arb}
+      POSTGRES_DB: ${POSTGRES_DB:-arb}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    # Internal only: no host port. `docker compose exec postgres psql -U arb`.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arb} -d ${POSTGRES_DB:-arb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", ""]
+    volumes:
+      - redis-data:/data
+    # Internal only: publishing 6379 on a public host is an open relay for
+    # anyone who can reach it.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  redis-data:

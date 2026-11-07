@@ -1,0 +1,21 @@
+[package]
+name = "arb-tx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-constants = { path = "../arb-constants" }
+solana-pubkey = { workspace = true, features = ["curve25519"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+bs58 = "0.5"
+base64 = "0.22"
+reqwest = { workspace = true }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "std"] }
+
+[lints]
+workspace = true

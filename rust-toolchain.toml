@@ -1,0 +1,4 @@
+[toolchain]
+channel = "stable"   # مدعوم من rustc المثبت محليًا (1.99.0)
+components = ["rustfmt", "clippy"]
+profile = "minimal"

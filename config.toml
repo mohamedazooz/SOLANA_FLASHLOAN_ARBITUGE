@@ -1,0 +1,120 @@
+# Sentinel Solana Arbitrage Bot Configuration
+# Automatically mapped from .env infrastructure credentials
+
+[bot]
+mode = "shadow"         # shadow | simulate; live is gated off in this build
+canary = false
+
+[grpc]
+primary_url = ""
+primary_token_env = "HELIUS_API_KEY"
+failover_url = ""
+failover_token_env = "SHYFT_API_KEY"
+commitment = "processed"
+ping_reply = true
+
+[rpc]
+# No endpoint fallback: provider URLs must be supplied via .env.
+url = ""
+commitment = "processed"
+
+[jito]
+regions = ["frankfurt", "amsterdam", "ny"]
+tip_floor_percentile = "p50"
+tip_share_bps = 5500
+max_tip_lamports = 2000000
+max_tip_share_bps = 7000
+min_keep_lamports = 10000
+
+# --- Adaptive tip pricing ---------------------------------------------------
+keep_share = 0.60                 # fraction of the edge that must survive the tip
+ladder_growth = 1.6               # max escalation of a retry inside one window
+tip_floor_max_age_ms = 5000       # a staler snapshot is treated as no market
+tip_floor_poll_ms = 1000          # the public endpoint allows 1 rps per IP
+leader_gate_enabled = true        # send when the leader is unknown (known non-Jito still skips)
+ledger_path = "data/adaptive_ledger.json"   # landing posteriors survive a restart
+leader_refresh_secs = 60
+
+[jupiter]
+base_url = "https://api.jup.ag/swap/v2"
+api_key_env = "JUPITER_API_KEY"
+timeout_ms = 400
+
+[wallet]
+keypair_path = "solana_keypair.json"
+cold_wallet_pubkey = "2Cby3xFT48ifATWhqDVmpnMCe4tiXvY8MtGFWYDfec7n"
+min_sol_balance_lamports = 0
+
+[strategy]
+base_tokens = [
+    "So11111111111111111111111111111111111111112", # Native Wrapped SOL (WSOL)
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", # USD Coin (USDC)
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", # USDT
+    "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", # POPCAT
+    "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", # WIF
+    "JUPyiwrYJFngUPXSiqZFkKHMXkGs3WEXKaJE1agWK", # JUP (Jupiter)
+    "jtojtomepa8beP8uL5qyNtYQgwwJjA72yS6JwTL9CZq", # JTO (Jito)
+    "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB268", # BONK
+    "9MCPRCn3cpWFdSmV93hJ1kVXVVdjPpEqfnfYkaZ4TLws", # BOME
+    "4k3Dyjzvzp8eMZWUXbBCjEvwSkkU59Y5j3uYBqZ3e5pV", # RAY (Raydium)
+    "orcaEKTdK7LKz57AYAYr5viVzNQZfBDyQ7wglX42j56", # ORCA (Orca)
+    "6p6xgHyF7AeQHydaKVtRNVUjCAWoTeZwXHnkTXQKpump", # TRUMP
+    "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump", # FARTCOIN
+    "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC", # AI16Z
+    "A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump", # FWOG
+    "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY", # MOODENG
+    "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv", # PENGU
+    "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof", # RENDER
+    "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", # PYTH
+    "DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7", # DRIFT
+    "grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs", # GRASS
+    "KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS", # KMNO
+    "MEFNBXixkEbait3xn9bkm8FsMeqEikuY4qLQioNc3gU", # ME
+    "MNDEFzGvMt87uHUueyZk7v2tVSBjg1SxYfWcqMwLTJ4", # MNDE (Marinade)
+    "7dHpW9x4G71F2HERCIYy3U64R7oJ2m5m6R3Yh8pJ7T6c", # stSOL (Lido staked SOL)
+    "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", # mSOL (Marinade SOL)
+    "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1", # bSOL (BlazeStake SOL)
+    "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", # JitoSOL
+    "2FPyTwcZLUg1MDrwsyoP4D6s1tA7hRiG97fLqS4B9gqA", # ETH (Wormhole wrapped)
+    "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E", # BTC (wrapped Bitcoin)
+]
+# High-volatility intermediate mints for 3-hop routes (auto-discovered if not listed)
+min_net_profit_abs = 50000          # 50,000 lamports (strictly above Jito median tip floor ~17k-45k)
+min_net_profit_bps = 5              # 5 bps
+max_price_impact_bps = 40           # 40 bps max impact bound
+max_state_age_slots = 2             # 2 slots max state age for fresh quotes
+use_flash_loan = true
+max_pools = 1000                    # expanded to 1000 for deep ecosystem coverage
+discovery_refresh_secs = 15         # refreshed every 15s for fast multi-venue ingestion
+discovery_min_tvl_usd = 25000.0     # $25,000 minimum TVL floor across all Solana pools
+
+[risk]
+max_trade_size_usd = 10000.0        # $10,000 max borrow size cap for safety guardrails
+max_daily_loss_usd = 5.0
+max_hourly_loss_usd = 2.0
+max_consecutive_failures = 8
+min_landing_rate = 0.02
+max_attempts_per_slot = 3
+cooldown_slots = 75                 # 75 slots (~30s) breaker cooldown window
+max_inflight_bundles = 2
+max_tip_spend_ratio = 0.7
+
+[store]
+url = "sqlite://arb_sentinel.db"
+
+[metrics]
+listen = "127.0.0.1:9100"
+
+[admin]
+listen = "127.0.0.1:9101"
+token_env = "SENTINEL_ADMIN_KEY"
+
+[chronos]
+enabled = true
+decay_lambda_per_sec = 3.0       # Hazard rate per second (λ)
+max_age_ms = 400                 # 1 Solana slot latency ceiling (400ms)
+min_ev_usd = 0.05                # Minimum Expected Value in USD required for execution
+failed_attempt_cost_lamports = 10000  # Conservative estimate of failed attempt overhead
+beta_risk_factor = 0.0005        # Hop execution risk penalty factor
+
+

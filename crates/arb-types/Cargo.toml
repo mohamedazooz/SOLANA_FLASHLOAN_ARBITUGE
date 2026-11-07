@@ -1,0 +1,14 @@
+[package]
+name = "arb-types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-constants = { path = "../arb-constants" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+solana-pubkey = { workspace = true, features = ["serde", "bytemuck"] }
+
+[lints]
+workspace = true
+

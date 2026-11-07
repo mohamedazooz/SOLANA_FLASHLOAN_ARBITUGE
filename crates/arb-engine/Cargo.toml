@@ -1,0 +1,20 @@
+[package]
+name = "arb-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-constants = { path = "../arb-constants" }
+arb-types = { path = "../arb-types" }
+arb-math = { path = "../arb-math" }
+arb-dex = { path = "../arb-dex" }
+arb-ingest = { path = "../arb-ingest" }
+solana-pubkey = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+base64 = "0.22"
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
+

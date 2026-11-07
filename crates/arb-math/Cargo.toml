@@ -1,0 +1,22 @@
+[package]
+name = "arb-math"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+ruint = { workspace = true }
+solana-pubkey = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "cpmm_bench"
+harness = false
+
+[lints]
+workspace = true
+

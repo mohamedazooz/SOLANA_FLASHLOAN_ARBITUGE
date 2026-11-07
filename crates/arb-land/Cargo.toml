@@ -1,0 +1,24 @@
+[package]
+name = "arb-land"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-constants = { path = "../arb-constants" }
+arb-math = { path = "../arb-math" }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+solana-pubkey = { workspace = true }
+parking_lot = { workspace = true }
+base64 = { version = "0.22", features = ["alloc"] }
+tokio-tungstenite = { version = "0.24", features = ["connect", "url", "rustls-tls-webpki-roots"] }
+url = "2.5"
+
+[lints]
+workspace = true
+

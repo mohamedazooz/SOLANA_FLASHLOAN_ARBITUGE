@@ -1,0 +1,21 @@
+[package]
+name = "arb-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+rusqlite = { version = "0.32", features = ["bundled"] }
+redis = "1.8.1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "macros", "migrate"] }
+tokio = { workspace = true }
+base64 = "0.22"
+
+[lints]
+workspace = true
+

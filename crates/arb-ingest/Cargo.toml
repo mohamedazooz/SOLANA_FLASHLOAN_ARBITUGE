@@ -1,0 +1,35 @@
+[package]
+name = "arb-ingest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-dex = { path = "../arb-dex" }
+arb-math = { path = "../arb-math" }
+arb-constants = { path = "../arb-constants" }
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+parking_lot = { workspace = true }
+solana-pubkey = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+base64 = "0.22"
+dotenvy = "0.15"
+ruint = { workspace = true }
+futures = { workspace = true }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
+yellowstone-grpc-client = "16.0.1"
+yellowstone-grpc-proto = "14.0.1"
+
+[[test]]
+name = "bitquery_ws_live"
+path = "tests/bitquery_ws_live.rs"
+
+[lints]
+workspace = true
+

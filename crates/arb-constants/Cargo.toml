@@ -1,0 +1,10 @@
+[package]
+name = "arb-constants"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+solana-pubkey = { workspace = true }
+[lints]
+workspace = true
+

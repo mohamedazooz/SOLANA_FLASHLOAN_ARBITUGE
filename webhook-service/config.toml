@@ -1,0 +1,68 @@
+# Sentinel High-Frequency Solana Webhook Service Configuration
+# Runtime configuration loaded via toml crate
+
+[server]
+host = "0.0.0.0"
+port = 8085
+# Optional bearer token for provider authentication. Empty string disables requirement.
+auth_token = "" # Set WEBHOOK_AUTH_TOKEN in the process environment
+channel_buffer_size = 65536
+worker_threads = 4
+
+[dedup]
+local_cache_ttl_secs = 2
+redis_url = "redis://127.0.0.1:6379"
+redis_ttl_ms = 5000
+prune_interval_secs = 5
+
+[filter]
+drop_failed_transactions = true
+min_lamport_transfer = 1000
+# Filter against known DEX programs to fast-path drop uninteresting transfers
+only_monitored_amms = true
+
+[amms]
+# Standard Solana Program IDs for monitored AMMs
+raydium_v4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+raydium_cpmm = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
+raydium_clmm = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK"
+orca_whirlpool = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
+meteora_dlmm = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+meteora_dynamic = "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"
+jupiter_v6 = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+pump_fun = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+
+# Redundant Pool Mappings for Core Arbitrage Tokens
+[[tokens]]
+mint = "So11111111111111111111111111111111111111112" # WSOL
+symbol = "SOL"
+redundant_pools = [
+    { pool_id = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2", amm = "raydium_v4", quote_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", accounts = ["58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2", "HRk9CMrpq7Jn93xrCTdAaQGoQ6hAHjLVvdYgtKZZNuqj"] },
+    { pool_id = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE", amm = "orca_whirlpool", quote_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", accounts = ["Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"] },
+    { pool_id = "ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq", amm = "meteora_dlmm", quote_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", accounts = ["ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq"] }
+]
+
+[[tokens]]
+mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" # USDC
+symbol = "USDC"
+redundant_pools = [
+    { pool_id = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2", amm = "raydium_v4", quote_mint = "So11111111111111111111111111111111111111112", accounts = ["58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2"] },
+    { pool_id = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE", amm = "orca_whirlpool", quote_mint = "So11111111111111111111111111111111111111112", accounts = ["Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE"] }
+]
+
+[[tokens]]
+mint = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm" # WIF
+symbol = "WIF"
+redundant_pools = [
+    { pool_id = "EP2ib6dYdEeqD8MfE2ezHCxX3kEDSpG9iGw9t234uVw4", amm = "raydium_v4", quote_mint = "So11111111111111111111111111111111111111112", accounts = ["EP2ib6dYdEeqD8MfE2ezHCxX3kEDSpG9iGw9t234uVw4"] },
+    { pool_id = "2ugdn1uDggbZ9pP9m4V2G9qYJ5cM6uC2cR5K3W8u9T", amm = "meteora_dlmm", quote_mint = "So11111111111111111111111111111111111111112", accounts = ["2ugdn1uDggbZ9pP9m4V2G9qYJ5cM6uC2cR5K3W8u9T"] }
+]
+
+[[tokens]]
+mint = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr" # POPCAT
+symbol = "POPCAT"
+redundant_pools = [
+    { pool_id = "FrRk1eZqZ9oQpC1m6aB4K3R7tF8wM2pL9vX5sD8uJ2K4", amm = "raydium_v4", quote_mint = "So11111111111111111111111111111111111111112", accounts = ["FrRk1eZqZ9oQpC1m6aB4K3R7tF8wM2pL9vX5sD8uJ2K4"] },
+    { pool_id = "9mK8jL2vC5xR7bN4pW1eT3uQ8yM6zD4sF2hJ9kL5nP7r", amm = "orca_whirlpool", quote_mint = "So11111111111111111111111111111111111111112", accounts = ["9mK8jL2vC5xR7bN4pW1eT3uQ8yM6zD4sF2hJ9kL5nP7r"] }
+]
+

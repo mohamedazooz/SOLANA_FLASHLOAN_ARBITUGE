@@ -1,0 +1,13 @@
+[package]
+name = "arb-risk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-constants = { path = "../arb-constants" }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+[lints]
+workspace = true
+
