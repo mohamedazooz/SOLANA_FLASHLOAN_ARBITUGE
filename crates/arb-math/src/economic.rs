@@ -116,7 +116,9 @@ impl CostLedger {
         self.entries
             .iter()
             .filter(|e| e.included_in_quote && !e.deducted_already && e.unit == unit)
-            .try_fold(0u128, |sum, e| sum.checked_add(e.amount_raw).ok_or(ArbError::Overflow))
+            .try_fold(0u128, |sum, e| {
+                sum.checked_add(e.amount_raw).ok_or(ArbError::Overflow)
+            })
     }
 }
 
@@ -173,9 +175,11 @@ pub struct EconomicQuote {
     pub minimum_net_profit_signed_raw: i128,
     /// Gross profit (final received - borrowed principal) in base-mint raw units.
     pub gross_profit_raw: TokenAmount,
+    /// Signed gross profit (final received - borrowed principal); negative values represent gross loss.
+    pub gross_profit_signed_raw: i128,
     /// Minimum acceptable profit in base-mint raw units.
     pub min_profit_raw: TokenAmount,
-    /// True when `net_profit_raw >= min_profit_raw`.
+    /// True when conservative net PnL clears `min_profit_raw`.
     pub meets_min_profit: bool,
     pub source_slot: Slot,
     pub quote_timestamp_ms: u64,
@@ -194,14 +198,21 @@ impl EconomicQuote {
 /// overflow rejects the quote rather than silently saturating.
 fn lamports_to_base_raw(lamports: Lamports, rate_num: u128, rate_denom: u128) -> Result<u128> {
     if rate_num == 0 || rate_denom == 0 {
-        return Err(ArbError::InvalidInput("zero conversion rate component".into()));
+        return Err(ArbError::InvalidInput(
+            "zero conversion rate component".into(),
+        ));
     }
     let numerator = U256::from(lamports.as_u64())
-        .checked_mul(U256::from(rate_num)).ok_or(ArbError::Overflow)?;
+        .checked_mul(U256::from(rate_num))
+        .ok_or(ArbError::Overflow)?;
     let denominator = U256::from(rate_denom);
     let (quotient, remainder) = numerator.div_rem(denominator);
-    let rounded = if remainder.is_zero() { quotient } else {
-        quotient.checked_add(U256::from(1)).ok_or(ArbError::Overflow)?
+    let rounded = if remainder.is_zero() {
+        quotient
+    } else {
+        quotient
+            .checked_add(U256::from(1))
+            .ok_or(ArbError::Overflow)?
     };
     u128::try_from(rounded).map_err(|_| ArbError::Overflow)
 }
@@ -217,8 +228,12 @@ fn signed_difference(lhs: U256, rhs: U256) -> Result<i128> {
 }
 
 fn positive_projection(value: i128) -> Result<TokenAmount> {
-    if value <= 0 { return Ok(TokenAmount(0)); }
-    Ok(TokenAmount(u64::try_from(value).map_err(|_| ArbError::Overflow)?))
+    if value <= 0 {
+        return Ok(TokenAmount(0));
+    }
+    Ok(TokenAmount(
+        u64::try_from(value).map_err(|_| ArbError::Overflow)?,
+    ))
 }
 
 /// Convert base-mint raw units into Lamports using the verified rational rate `rate_num / rate_denom`.
@@ -235,7 +250,9 @@ pub fn base_raw_to_lamports(
         return Err(ArbError::InvalidInput("zero conversion rate".into()));
     }
     let value = U256::from(base_raw.as_u64());
-    if rate_denom == 0 { return Err(ArbError::InvalidInput("zero conversion denominator".into())); }
+    if rate_denom == 0 {
+        return Err(ArbError::InvalidInput("zero conversion denominator".into()));
+    }
     let den = U256::from(rate_denom);
     let num = U256::from(rate_num);
     let converted = value
@@ -275,10 +292,14 @@ pub fn build_economic_quote(
     quote_timestamp_ms: u64,
 ) -> Result<EconomicQuote> {
     if base_decimals > 18 {
-        return Err(ArbError::InvalidInput("base mint decimals exceed supported range".into()));
+        return Err(ArbError::InvalidInput(
+            "base mint decimals exceed supported range".into(),
+        ));
     }
     if minimum_final_amount_raw.as_u64() > expected_final_amount_raw.as_u64() {
-        return Err(ArbError::InvalidInput("minimum output exceeds expected output".into()));
+        return Err(ArbError::InvalidInput(
+            "minimum output exceeds expected output".into(),
+        ));
     }
     let network_raw = lamports_to_base_raw(
         network_fee_lamports,
@@ -303,8 +324,6 @@ pub fn build_economic_quote(
     let transfer_fees = U256::from(transfer_fees_raw.as_u64());
     let acct_cost = U256::from(account_creation_cost_raw.as_u64());
     let other_costs = U256::from(other_verified_costs_raw.as_u64());
-    let min_profit = U256::from(min_profit_raw.as_u64());
-
     // Preserve losses as signed values; never turn an unprofitable route into Overflow.
     let gross_signed = signed_difference(expected, borrow)?;
     let min_out = U256::from(minimum_final_amount_raw.as_u64());
@@ -337,7 +356,8 @@ pub fn build_economic_quote(
     };
     let net_profit_raw = positive_projection(expected_net_signed)?;
     let gross_profit_raw = positive_projection(gross_signed)?;
-    let meets_min_profit = minimum_net_signed >= i128::try_from(min_profit_raw.as_u64()).map_err(|_| ArbError::Overflow)?;
+    let meets_min_profit = minimum_net_signed
+        >= i128::from(min_profit_raw.as_u64());
 
     Ok(EconomicQuote {
         base_mint,
@@ -474,7 +494,7 @@ mod tests {
             9,
             TokenAmount(1_000_000_000), // borrow 1 SOL
             TokenAmount(1_005_000_000), // expect 1.005 SOL back
-            TokenAmount(1_000_000_000),
+            TokenAmount(1_000_020_000), // conservative output clears the profit floor
             TokenAmount(0), // flash fee 0
             TokenAmount(0),
             TokenAmount(0),
@@ -494,6 +514,7 @@ mod tests {
         // net = 1_005_000_000 - 1_000_000_000 - 0 = 5_000_000
         assert_eq!(q.net_profit_raw.as_u64(), 5_000_000);
         assert_eq!(q.gross_profit_raw.as_u64(), 5_000_000);
+        assert_eq!(q.minimum_net_profit_signed_raw, 20_000);
     }
 
     #[test]
@@ -553,7 +574,7 @@ mod tests {
             9,
             TokenAmount(10_000_000_000), // borrow 10 SOL
             TokenAmount(10_100_000_000), // 100_000_000 gross
-            TokenAmount(10_000_000_000),
+            TokenAmount(10_000_651_000), // min-out covers costs and min-profit floor
             TokenAmount(500_000), // flash fee 5 bps
             TokenAmount(100_000), // dex fee
             TokenAmount(50_000),  // transfer fee
@@ -571,6 +592,7 @@ mod tests {
         .unwrap();
         // net = 100_000_000 - 500_000 - 100_000 - 50_000 = 99_350_000
         assert_eq!(q.net_profit_raw.as_u64(), 99_350_000);
+        assert_eq!(q.minimum_net_profit_signed_raw, 1_000);
         assert!(q.is_profitable());
     }
 
@@ -586,7 +608,7 @@ mod tests {
             6,
             TokenAmount(100_000_000), // borrow 100 USDC
             TokenAmount(105_000_000), // expect 105 USDC back (gross = 5_000_000)
-            TokenAmount(100_000_000),
+            TokenAmount(100_018_950), // costs plus the 10,000-raw profit floor
             TokenAmount(6_250), // flash fee 0.00625 USDC
             TokenAmount(0),
             TokenAmount(0),
@@ -608,13 +630,12 @@ mod tests {
         // net = 5_000_000 - 8,950 = 4_991_050 micro-USDC
         assert_eq!(q.gross_profit_raw.as_u64(), 5_000_000);
         assert_eq!(q.net_profit_raw.as_u64(), 4_991_050);
+        assert_eq!(q.minimum_net_profit_signed_raw, 10_000);
         assert!(q.meets_min_profit);
     }
 
     #[test]
-    fn no_mixed_units_rejection_overflow() {
-        // A borrow amount near u64::MAX with a fee that overflows must error,
-        // never saturate.
+    fn extreme_loss_is_signed_without_saturation() {
         let result = build_economic_quote(
             wsol_mint(),
             9,
@@ -635,7 +656,12 @@ mod tests {
             Slot(100),
             1_000_000_000,
         );
-        assert!(result.is_err(), "overflow must be rejected, not saturated");
+        let quote = result.expect("u64-sized loss is representable as signed PnL");
+        assert_eq!(
+            quote.expected_net_profit_signed_raw,
+            -i128::from(u64::MAX)
+        );
+        assert!(!quote.is_profitable());
     }
 
     #[test]
@@ -669,7 +695,12 @@ mod tests {
         });
         assert_ne!(id1, id2);
         // Only id1 counts (not deducted); id2 is deducted_already.
-        assert_eq!(ledger.total_included_not_deducted(CostUnit::TokenRaw).unwrap(), 500_000);
+        assert_eq!(
+            ledger
+                .total_included_not_deducted(CostUnit::TokenRaw)
+                .unwrap(),
+            500_000
+        );
         assert_eq!(ledger.entries().len(), 2);
     }
 
@@ -725,11 +756,26 @@ mod tests {
     #[test]
     fn losing_quote_is_signed_and_rejected_not_overflowed() {
         let q = build_economic_quote(
-            wsol_mint(), 9, TokenAmount(1_000_000), TokenAmount(999_000),
-            TokenAmount(998_000), TokenAmount(0), TokenAmount(0), TokenAmount(0),
-            TokenAmount(0), TokenAmount(0), Lamports(0), Lamports(0), Lamports(0),
-            1, 1, TokenAmount(1), Slot(1), 1,
-        ).unwrap();
+            wsol_mint(),
+            9,
+            TokenAmount(1_000_000),
+            TokenAmount(999_000),
+            TokenAmount(998_000),
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            Lamports(0),
+            Lamports(0),
+            Lamports(0),
+            1,
+            1,
+            TokenAmount(1),
+            Slot(1),
+            1,
+        )
+        .unwrap();
         assert_eq!(q.expected_net_profit_signed_raw, -1_000);
         assert_eq!(q.minimum_net_profit_signed_raw, -2_000);
         assert!(!q.is_profitable());
@@ -739,11 +785,26 @@ mod tests {
     #[test]
     fn min_profit_is_already_in_base_mint_units() {
         let q = build_economic_quote(
-            wsol_mint(), 9, TokenAmount(1_000_000), TokenAmount(1_010_000),
-            TokenAmount(1_009_000), TokenAmount(0), TokenAmount(0), TokenAmount(0),
-            TokenAmount(0), TokenAmount(0), Lamports(0), Lamports(0), Lamports(0),
-            180, 1_000_000_000, TokenAmount(9_500), Slot(1), 1,
-        ).unwrap();
+            wsol_mint(),
+            9,
+            TokenAmount(1_000_000),
+            TokenAmount(1_010_000),
+            TokenAmount(1_009_000),
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            Lamports(0),
+            Lamports(0),
+            Lamports(0),
+            180,
+            1_000_000_000,
+            TokenAmount(9_500),
+            Slot(1),
+            1,
+        )
+        .unwrap();
         assert_eq!(q.min_profit_raw.as_u64(), 9_500);
         assert_eq!(q.minimum_net_profit_signed_raw, 9_000);
         assert!(!q.is_profitable());
@@ -754,5 +815,4 @@ mod tests {
         assert!(lamports_to_base_raw(Lamports(1), 1, 0).is_err());
         assert_eq!(lamports_to_base_raw(Lamports(1), 1, 3).unwrap(), 1);
     }
-
 }

@@ -105,7 +105,7 @@ pub struct Supervisor {
     /// Tier-1 in-memory pre-warmed transaction templates for zero-copy in-place signing
     ram_templates:
         parking_lot::Mutex<std::collections::HashMap<String, arb_tx::PreWarmedTxTemplate>>,
-    /// In-memory cache for Kamino flash fee and base mint decimals with 5-minute TTL (PERF-01).
+    // In-memory cache for Kamino flash fee and base mint decimals with 5-minute TTL (PERF-01).
 }
 
 impl Supervisor {

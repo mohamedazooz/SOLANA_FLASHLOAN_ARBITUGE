@@ -55,7 +55,6 @@ impl TokenBucket {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureStatus {
     Processed,
@@ -145,7 +144,10 @@ impl RpcPool {
         // the primary and never return cached/stale market data on failure.
         for idx in 0..total {
             let url = &self.endpoints[idx];
-            let cooled_down = self.backoffs.read().get(&idx)
+            let cooled_down = self
+                .backoffs
+                .read()
+                .get(&idx)
                 .is_some_and(|until| Instant::now() < *until);
             if cooled_down {
                 last_err = format!("provider {idx} is in cooldown");
@@ -153,7 +155,9 @@ impl RpcPool {
             }
             if !self.limiters[idx].try_acquire() {
                 last_err = format!("provider {idx} rate limit exhausted");
-                self.backoffs.write().insert(idx, Instant::now() + Duration::from_secs(1));
+                self.backoffs
+                    .write()
+                    .insert(idx, Instant::now() + Duration::from_secs(1));
                 continue;
             }
 
@@ -161,7 +165,9 @@ impl RpcPool {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.as_u16() == 429 || status.is_server_error() {
-                        self.backoffs.write().insert(idx, Instant::now() + Duration::from_secs(2));
+                        self.backoffs
+                            .write()
+                            .insert(idx, Instant::now() + Duration::from_secs(2));
                         last_err = format!("HTTP {status} from provider {idx}");
                         continue;
                     }
@@ -171,7 +177,10 @@ impl RpcPool {
                     }
                     let val: serde_json::Value = match resp.json().await {
                         Ok(value) => value,
-                        Err(error) => { last_err = format!("invalid JSON from provider {idx}: {error}"); continue; }
+                        Err(error) => {
+                            last_err = format!("invalid JSON from provider {idx}: {error}");
+                            continue;
+                        }
                     };
                     if let Some(error) = val.get("error") {
                         last_err = format!("RPC error from provider {idx}: {error}");
@@ -184,7 +193,9 @@ impl RpcPool {
                     return Ok(val["result"].clone());
                 }
                 Err(error) => {
-                    self.backoffs.write().insert(idx, Instant::now() + Duration::from_secs(2));
+                    self.backoffs
+                        .write()
+                        .insert(idx, Instant::now() + Duration::from_secs(2));
                     last_err = format!("network error from provider {idx}: {error}");
                 }
             }
@@ -275,18 +286,30 @@ impl RpcPool {
 
     /// Query a transaction signature. This is deliberately separate from Jito bundle IDs.
     pub async fn get_signature_status(&self, signature: &str) -> Result<SignatureStatus> {
-        let res = self.call(
-            "getSignatureStatuses",
-            json!([[signature], {"searchTransactionHistory": true}]),
-        ).await?;
-        let Some(value) = res.get("value").and_then(|v| v.as_array()).and_then(|a| a.first()) else {
+        let res = self
+            .call(
+                "getSignatureStatuses",
+                json!([[signature], {"searchTransactionHistory": true}]),
+            )
+            .await?;
+        let Some(value) = res
+            .get("value")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+        else {
             bail!("malformed getSignatureStatuses response");
         };
-        if value.is_null() { return Ok(SignatureStatus::Pending); }
+        if value.is_null() {
+            return Ok(SignatureStatus::Pending);
+        }
         if value.get("err").is_some_and(|err| !err.is_null()) {
             return Ok(SignatureStatus::Failed);
         }
-        match value.get("confirmationStatus").and_then(|v| v.as_str()).unwrap_or("processed") {
+        match value
+            .get("confirmationStatus")
+            .and_then(|v| v.as_str())
+            .unwrap_or("processed")
+        {
             "processed" => Ok(SignatureStatus::Processed),
             "confirmed" => Ok(SignatureStatus::Confirmed),
             "finalized" => Ok(SignatureStatus::Finalized),
@@ -296,14 +319,19 @@ impl RpcPool {
 
     /// Poll a direct transaction signature until finalized/failed or timeout.
     pub async fn poll_signature_until_terminal(
-        &self, signature: &str, attempts: usize, interval: Duration,
+        &self,
+        signature: &str,
+        attempts: usize,
+        interval: Duration,
     ) -> Result<SignatureStatus> {
         let mut last = SignatureStatus::Pending;
         for _ in 0..attempts {
             last = self.get_signature_status(signature).await?;
             match last {
                 SignatureStatus::Finalized | SignatureStatus::Failed => return Ok(last),
-                SignatureStatus::Processed | SignatureStatus::Confirmed | SignatureStatus::Pending => {}
+                SignatureStatus::Processed
+                | SignatureStatus::Confirmed
+                | SignatureStatus::Pending => {}
             }
             tokio::time::sleep(interval).await;
         }

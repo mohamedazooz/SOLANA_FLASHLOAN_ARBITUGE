@@ -292,8 +292,9 @@ impl Store for PostgresStore {
 
     fn record_fill(&self, fill: &FillRecord) -> Result<()> {
         let pool = self.pool.clone();
-        let amt = i64::try_from(fill.amount.as_u64())
-            .map_err(|_| ArbError::InvalidInput("fill amount exceeds PostgreSQL BIGINT range".into()))?;
+        let amt = i64::try_from(fill.amount.as_u64()).map_err(|_| {
+            ArbError::InvalidInput("fill amount exceeds PostgreSQL BIGINT range".into())
+        })?;
         let attempt_id = fill.attempt_id;
         let token = fill.token.clone();
 

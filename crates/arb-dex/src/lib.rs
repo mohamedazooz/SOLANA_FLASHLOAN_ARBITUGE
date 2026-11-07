@@ -105,38 +105,9 @@ pub fn token2022_has_risky_extension(data: &[u8]) -> bool {
         return true;
     }
 
-    let mut offset = TLV_START;
-    while offset < data.len() {
-        // Remaining all-zero bytes are padding; a partial non-zero TLV is invalid.
-        if data[offset..].iter().all(|byte| *byte == 0) {
-            return false;
-        }
-        if data.len() - offset < 4 {
-            return true;
-        }
-
-        let extension_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
-        let extension_len = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as usize;
-        if extension_type == 0 {
-            // Uninitialized marker is only valid if the rest is zero padding.
-            return !data[offset..].iter().all(|byte| *byte == 0);
-        }
-
-        let Some(value_start) = offset.checked_add(4) else {
-            return true;
-        };
-        let Some(next) = value_start.checked_add(extension_len) else {
-            return true;
-        };
-        if next > data.len() || next <= offset {
-            return true;
-        }
-
-        // No Token-2022 extensions are currently enabled for execution. This
-        // deliberately includes known and future extension IDs.
-        return true;
-    }
-    false
+    // No Token-2022 extensions are currently enabled for execution. Treat any
+    // non-zero TLV bytes as unsupported; this also fails closed for malformed TLV.
+    data[TLV_START..].iter().any(|byte| *byte != 0)
 }
 
 impl CpmmDecoder {

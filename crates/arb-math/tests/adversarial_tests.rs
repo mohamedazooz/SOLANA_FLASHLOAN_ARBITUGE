@@ -18,7 +18,7 @@ use arb_math::{
         marginal_profit_derivative, marginal_profit_derivative_cpmm, optimal_four_pool,
         optimal_three_pool, optimal_two_pool,
     },
-    dlmm::{MAX_BIN_ID, MIN_BIN_ID, get_price_from_id},
+    dlmm::{DlmmError, MAX_BIN_ID, MIN_BIN_ID, get_price_from_id},
     tick_index_to_sqrt_price_x64,
 };
 
@@ -428,27 +428,27 @@ fn test_adv_clmm_boundaries_and_ordering() {
 
 #[test]
 fn test_adv_dlmm_boundaries() {
-    // Extreme bin IDs
-    let p_min = get_price_from_id(MIN_BIN_ID, 25);
-    println!("p_min result: {:?}", p_min);
-    assert!(
-        p_min.is_ok(),
-        "MIN_BIN_ID price must not panic, got {:?}",
-        p_min
+    // At this bin step, both protocol ID limits exceed the representable Q64.64
+    // price range. Reject them as typed arithmetic errors rather than fabricate
+    // a clamped price.
+    assert_eq!(
+        get_price_from_id(MIN_BIN_ID, 25),
+        Err(DlmmError::MathOverflow)
     );
-    assert!(p_min.expect("invariant") > 0);
-
-    let p_max = get_price_from_id(MAX_BIN_ID, 25);
-    println!("p_max result: {:?}", p_max);
-    assert!(
-        p_max.is_ok(),
-        "MAX_BIN_ID price must not panic, got {:?}",
-        p_max
+    assert_eq!(
+        get_price_from_id(MAX_BIN_ID, 25),
+        Err(DlmmError::MathOverflow)
     );
 
     // Out of bounds bin ID must return Err
-    assert!(get_price_from_id(MIN_BIN_ID - 1, 25).is_err());
-    assert!(get_price_from_id(MAX_BIN_ID + 1, 25).is_err());
+    assert_eq!(
+        get_price_from_id(MIN_BIN_ID - 1, 25),
+        Err(DlmmError::BinIdOutOfRange(MIN_BIN_ID - 1))
+    );
+    assert_eq!(
+        get_price_from_id(MAX_BIN_ID + 1, 25),
+        Err(DlmmError::BinIdOutOfRange(MAX_BIN_ID + 1))
+    );
 }
 
 #[test]

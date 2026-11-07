@@ -83,7 +83,6 @@ impl PumpSwapPoolHeader {
                 data[245..261].try_into().map_err(|_| ArbError::DeserializationError("invalid virtual quote reserves".into()))?
             )
         } else { 0 };
-        if data.len() >= 270 { let _can_edit_creator_fee = read_bool(269)?; }
         Ok(Self {
             pool_bump: data[8],
             index: u16::from_le_bytes([data[9], data[10]]),
@@ -99,6 +98,7 @@ impl PumpSwapPoolHeader {
             is_cashback_coin: read_bool(244)?,
             virtual_quote_reserves,
             creator_fee_bps: if data.len() >= 269 { read_u64(261)? } else { 0 },
+            can_edit_creator_fee: read_bool(269)?,
             is_holder_reward: read_bool(270)?,
             protocol_fees: if data.len() >= 279 { read_u64(271)? } else { 0 },
             creator_fees: if data.len() >= 287 { read_u64(279)? } else { 0 },
@@ -314,7 +314,7 @@ impl PumpSwapPool {
             let protocol = fee_amount(gross, fee_bps[1])?;
             let creator = fee_amount(gross, fee_bps[2])?;
             let without_lp = gross.checked_sub(lp).ok_or(ArbError::Overflow)?;
-            if self.real_quote_reserve as u128 < without_lp {
+            if (self.real_quote_reserve as u128) < without_lp {
                 return Err(ArbError::InvalidInput("PumpSwap insufficient real quote reserves".into()));
             }
             let out = without_lp
@@ -498,6 +498,7 @@ mod tests {
         assert_eq!(header.index, 3);
         assert_eq!(header.virtual_quote_reserves, 123);
         assert_eq!(header.creator_fee_bps, 30);
+        assert!(header.can_edit_creator_fee);
         assert!(header.is_holder_reward);
         assert_eq!((header.protocol_fees, header.creator_fees), (7, 9));
 
@@ -505,6 +506,7 @@ mod tests {
         let old_header = PumpSwapPoolHeader::decode(&old).unwrap();
         assert_eq!(old_header.virtual_quote_reserves, 0);
         assert_eq!(old_header.creator_fee_bps, 0);
+        assert!(!old_header.can_edit_creator_fee);
         assert!(!old_header.is_holder_reward);
     }
 }

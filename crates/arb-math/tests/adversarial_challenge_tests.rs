@@ -254,7 +254,7 @@ fn challenge_clmm_extreme_price_ticks() {
         Err(ClmmMathError::SqrtPriceOutOfBounds)
     );
 
-    // 4. Safe termination at boundaries
+    // 4. Missing tick-array state is not a valid quote, even at protocol limits.
     let quote_at_min = compute_swap(
         p_min,
         MIN_TICK_INDEX,
@@ -265,7 +265,10 @@ fn challenge_clmm_extreme_price_ticks() {
         true, // attempting to push below min tick
         &[],
     );
-    assert!(quote_at_min.is_ok());
+    assert!(matches!(
+        quote_at_min,
+        Err(ClmmMathError::MissingTickArrayCoverage(_))
+    ));
 
     let quote_at_max = compute_swap(
         p_max,
@@ -277,7 +280,10 @@ fn challenge_clmm_extreme_price_ticks() {
         false, // attempting to push above max tick
         &[],
     );
-    assert!(quote_at_max.is_ok());
+    assert!(matches!(
+        quote_at_max,
+        Err(ClmmMathError::MissingTickArrayCoverage(_))
+    ));
 }
 
 #[test]
@@ -383,10 +389,29 @@ fn challenge_clmm_token_ordering_invariance() {
     let initial_l = 10_000_000_000_000u128;
     let fee_rate = 500u16; // 5 bps
 
+    let tick_arrays = [
+        TickArrayFacade {
+            start_tick_index: -5_632,
+            ticks: vec![],
+        },
+        TickArrayFacade {
+            start_tick_index: 0,
+            ticks: vec![],
+        },
+    ];
     let amount_a_in = 1_000_000u64;
     // Step 1: A -> B
-    let quote_ab =
-        compute_swap(p0, 0, initial_l, 64, fee_rate, amount_a_in, true, &[]).expect("invariant");
+    let quote_ab = compute_swap(
+        p0,
+        0,
+        initial_l,
+        64,
+        fee_rate,
+        amount_a_in,
+        true,
+        &tick_arrays,
+    )
+    .expect("invariant");
     assert!(quote_ab.amount_out_received > 0);
 
     // Step 2: Swap output B -> A at the updated price
@@ -398,7 +423,7 @@ fn challenge_clmm_token_ordering_invariance() {
         fee_rate,
         quote_ab.amount_out_received,
         false,
-        &[],
+        &tick_arrays,
     )
     .expect("invariant");
 

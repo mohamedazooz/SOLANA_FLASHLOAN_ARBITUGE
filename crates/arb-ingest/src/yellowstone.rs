@@ -14,13 +14,17 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 use yellowstone_grpc_client::GeyserGrpcClient;
 use yellowstone_grpc_proto::geyser::{
-    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts,
-    SubscribeRequestFilterSlots, SubscribeRequestFilterEntry, subscribe_update::UpdateOneof,
+    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterAccounts, SubscribeRequestFilterEntry,
+    SubscribeRequestFilterSlots, subscribe_update::UpdateOneof,
 };
 
 pub use crate::YellowstoneClient;
 
-fn build_request(owner_programs: &[solana_pubkey::Pubkey], tracked_accounts: &[String], include_entry_parent_updates: bool) -> SubscribeRequest {
+fn build_request(
+    owner_programs: &[solana_pubkey::Pubkey],
+    tracked_accounts: &[String],
+    include_entry_parent_updates: bool,
+) -> SubscribeRequest {
     let mut request = SubscribeRequest::default();
     let mut accounts = HashMap::new();
     accounts.insert(
@@ -49,7 +53,12 @@ fn build_request(owner_programs: &[solana_pubkey::Pubkey], tracked_accounts: &[S
     // Yellowstone's entry filter emits entry updates as well as EntryUpdateParent.
     // Keep this opt-in: entries are high-volume and the bot does not otherwise consume them.
     if include_entry_parent_updates {
-        request.entry = HashMap::from([("entry_parent_reconciliation".to_string(), SubscribeRequestFilterEntry { include_update_parent: Some(true) })]);
+        request.entry = HashMap::from([(
+            "entry_parent_reconciliation".to_string(),
+            SubscribeRequestFilterEntry {
+                include_update_parent: Some(true),
+            },
+        )]);
     }
     request.slots = HashMap::from([(
         "slot_watermark".to_string(),
@@ -73,7 +82,9 @@ impl crate::YellowstoneClient {
     ) {
         if self.endpoint_url.trim().is_empty() || self.token.trim().is_empty() {
             self.mark_stream_disconnected();
-            warn!("Solami Yellowstone gRPC endpoint/token missing; ingestion stays unavailable (no HTTP fallback)");
+            warn!(
+                "Solami Yellowstone gRPC endpoint/token missing; ingestion stays unavailable (no HTTP fallback)"
+            );
             return;
         }
 
@@ -94,9 +105,16 @@ impl crate::YellowstoneClient {
 
         let mut tracked_rx = self.tracked_accounts_tx.subscribe();
         let include_entry_parent_updates = std::env::var("YELLOWSTONE_ENTRY_PARENT_UPDATES")
-            .is_ok_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+            .is_ok_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            });
         if include_entry_parent_updates {
-            warn!("YELLOWSTONE_ENTRY_PARENT_UPDATES enabled: Yellowstone entry filter also streams high-volume entry updates");
+            warn!(
+                "YELLOWSTONE_ENTRY_PARENT_UPDATES enabled: Yellowstone entry filter also streams high-volume entry updates"
+            );
         }
         let mut attempt = 0u32;
         loop {
@@ -117,12 +135,27 @@ impl crate::YellowstoneClient {
                     .http2_keep_alive_interval(Duration::from_secs(15))
                     .keep_alive_timeout(Duration::from_secs(10))
                     .keep_alive_while_idle(true);
-                let mut client = builder.connect().await.context("Yellowstone gRPC connect failed")?;
-                let (mut sink, mut stream) = client.subscribe().await.context("Yellowstone subscribe failed")?;
-                let request = build_request(&owner_programs, &tracked_rx.borrow().clone(), include_entry_parent_updates);
-                sink.send(request).await.context("Yellowstone initial subscription failed")?;
+                let mut client = builder
+                    .connect()
+                    .await
+                    .context("Yellowstone gRPC connect failed")?;
+                let (mut sink, mut stream) = client
+                    .subscribe()
+                    .await
+                    .context("Yellowstone subscribe failed")?;
+                let request = build_request(
+                    &owner_programs,
+                    &tracked_rx.borrow().clone(),
+                    include_entry_parent_updates,
+                );
+                sink.send(request)
+                    .await
+                    .context("Yellowstone initial subscription failed")?;
                 self.mark_stream_connected();
-                info!(generation, "Connected to Solami Yellowstone gRPC; account and slot streams active");
+                info!(
+                    generation,
+                    "Connected to Solami Yellowstone gRPC; account and slot streams active"
+                );
 
                 loop {
                     tokio::select! {
@@ -185,8 +218,14 @@ impl crate::YellowstoneClient {
             };
 
             match connect.await {
-                Ok(()) if cancel.is_cancelled() => { self.mark_stream_disconnected(); break; },
-                Ok(()) => { self.mark_stream_disconnected(); attempt = 0; },
+                Ok(()) if cancel.is_cancelled() => {
+                    self.mark_stream_disconnected();
+                    break;
+                }
+                Ok(()) => {
+                    self.mark_stream_disconnected();
+                    attempt = 0;
+                }
                 Err(error) => {
                     self.mark_stream_disconnected();
                     warn!(attempt, error = %error, "Yellowstone gRPC stream disconnected; reconnecting");

@@ -9,7 +9,9 @@ pub use route_worker::{
 pub mod adapters;
 pub use adapters::*;
 pub mod guarded;
-pub use guarded::{GuardedRouteQuote, GuardedQuoteError, quote_route_guarded, revalidate_before_dispatch};
+pub use guarded::{
+    GuardedQuoteError, GuardedRouteQuote, quote_route_guarded, revalidate_before_dispatch,
+};
 pub mod bellman_ford;
 pub use bellman_ford::{ArbitrageCycle, BellmanFordEngine, BfEdge};
 
@@ -146,13 +148,7 @@ pub fn quote_pool(
                                 return 0;
                             };
                             let a_to_b = e.pool_base == e.from_mint;
-                            if let Ok(q) = quote_dlmm_view(
-                                &pool,
-                                &bins,
-                                amount,
-                                a_to_b,
-                                None,
-                            ) {
+                            if let Ok(q) = quote_dlmm_view(&pool, &bins, amount, a_to_b, None) {
                                 return q.amount_out as u128;
                             }
                         }

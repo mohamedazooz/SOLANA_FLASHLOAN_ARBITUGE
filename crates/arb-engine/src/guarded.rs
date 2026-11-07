@@ -1,7 +1,9 @@
 //! End-to-end state gate around pure route pricing and dispatch.
 //! This is an opt-in safe entry point; callers must migrate every live path to it.
-use crate::{quote_route, HopRequest, RouteQuote};
-use arb_ingest::{AccountSnapshot, DependencyManifestRegistry, QuoteReadinessError, YellowstoneClient};
+use crate::{HopRequest, RouteQuote, quote_route};
+use arb_ingest::{
+    AccountSnapshot, DependencyManifestRegistry, QuoteReadinessError, YellowstoneClient,
+};
 use arb_types::{PoolId, PoolState, Result};
 use solana_pubkey::Pubkey;
 
@@ -18,8 +20,15 @@ pub struct AccountEvidence {
 
 impl From<&AccountSnapshot> for AccountEvidence {
     fn from(s: &AccountSnapshot) -> Self {
-        Self { pubkey: s.pubkey, owner: s.owner, slot: s.slot, write_version: s.write_version,
-            provider_id: s.provider_id.0, bank_id: s.bank_id, generation: s.generation }
+        Self {
+            pubkey: s.pubkey,
+            owner: s.owner,
+            slot: s.slot,
+            write_version: s.write_version,
+            provider_id: s.provider_id.0,
+            bank_id: s.bank_id,
+            generation: s.generation,
+        }
     }
 }
 
@@ -54,7 +63,14 @@ pub fn quote_route_guarded(
     decode_from_snapshots: impl FnOnce(&[AccountSnapshot], &mut [PoolState]) -> Result<()>,
 ) -> std::result::Result<GuardedRouteQuote, GuardedQuoteError> {
     let quote_slot = client.current_slot();
-    let snapshots = client.quote_dependencies_for_route(manifests, pool_ids, quote_slot, max_age_slots, max_slot_skew)
+    let snapshots = client
+        .quote_dependencies_for_route(
+            manifests,
+            pool_ids,
+            quote_slot,
+            max_age_slots,
+            max_slot_skew,
+        )
         .map_err(GuardedQuoteError::Readiness)?;
     let generation = client.stream_generation();
     // Work on a private copy: a rejected quote must not leave partially advanced
@@ -62,19 +78,39 @@ pub fn quote_route_guarded(
     let mut working_pools = pools.to_vec();
     // Decode the actual quote state from the exact validated bytes. A caller cannot
     // silently pass an unrelated/stale PoolState snapshot into this guarded path.
-    decode_from_snapshots(&snapshots, &mut working_pools).map_err(|e| GuardedQuoteError::Quote(e.to_string()))?;
+    decode_from_snapshots(&snapshots, &mut working_pools)
+        .map_err(|e| GuardedQuoteError::Quote(e.to_string()))?;
     for pool in working_pools.iter() {
-        let manifest = manifests.get(&pool.pool_id).ok_or(GuardedQuoteError::StateChangedBeforeDispatch)?;
-        if manifest.protocol != pool.protocol { return Err(GuardedQuoteError::StateChangedBeforeDispatch); }
-        let pool_account = snapshots.iter().find(|snapshot| snapshot.pubkey == pool.pool_id.0)
+        let manifest = manifests
+            .get(&pool.pool_id)
             .ok_or(GuardedQuoteError::StateChangedBeforeDispatch)?;
-        if pool.slot.0 != pool_account.slot { return Err(GuardedQuoteError::StateChangedBeforeDispatch); }
+        if manifest.protocol != pool.protocol {
+            return Err(GuardedQuoteError::StateChangedBeforeDispatch);
+        }
+        let pool_account = snapshots
+            .iter()
+            .find(|snapshot| snapshot.pubkey == pool.pool_id.0)
+            .ok_or(GuardedQuoteError::StateChangedBeforeDispatch)?;
+        if pool.slot.0 != pool_account.slot {
+            return Err(GuardedQuoteError::StateChangedBeforeDispatch);
+        }
     }
-    let mut evidence = snapshots.iter().map(AccountEvidence::from).collect::<Vec<_>>();
+    let mut evidence = snapshots
+        .iter()
+        .map(AccountEvidence::from)
+        .collect::<Vec<_>>();
     evidence.sort_by_key(|item| item.pubkey.to_bytes());
-    let quote = quote_route(&mut working_pools, hops, amount_in).map_err(|e| GuardedQuoteError::Quote(e.to_string()))?;
+    let quote = quote_route(&mut working_pools, hops, amount_in)
+        .map_err(|e| GuardedQuoteError::Quote(e.to_string()))?;
     // Recheck after quote construction to close the state-change window during pricing.
-    let fresh = client.quote_dependencies_for_route(manifests, pool_ids, quote_slot, max_age_slots, max_slot_skew)
+    let fresh = client
+        .quote_dependencies_for_route(
+            manifests,
+            pool_ids,
+            quote_slot,
+            max_age_slots,
+            max_slot_skew,
+        )
         .map_err(GuardedQuoteError::Readiness)?;
     let mut fresh_evidence = fresh.iter().map(AccountEvidence::from).collect::<Vec<_>>();
     fresh_evidence.sort_by_key(|item| item.pubkey.to_bytes());
@@ -82,7 +118,13 @@ pub fn quote_route_guarded(
         return Err(GuardedQuoteError::StateChangedBeforeDispatch);
     }
     pools.clone_from_slice(&working_pools);
-    Ok(GuardedRouteQuote { quote, quote_slot, generation, evidence, pool_ids: pool_ids.to_vec() })
+    Ok(GuardedRouteQuote {
+        quote,
+        quote_slot,
+        generation,
+        evidence,
+        pool_ids: pool_ids.to_vec(),
+    })
 }
 
 /// Must be called immediately before transaction submission. Any account version,
@@ -94,7 +136,14 @@ pub fn revalidate_before_dispatch(
     max_age_slots: u64,
     max_slot_skew: u64,
 ) -> std::result::Result<(), GuardedQuoteError> {
-    let fresh = client.quote_dependencies_for_route(manifests, &guarded.pool_ids, guarded.quote_slot, max_age_slots, max_slot_skew)
+    let fresh = client
+        .quote_dependencies_for_route(
+            manifests,
+            &guarded.pool_ids,
+            guarded.quote_slot,
+            max_age_slots,
+            max_slot_skew,
+        )
         .map_err(GuardedQuoteError::Readiness)?;
     let mut evidence = fresh.iter().map(AccountEvidence::from).collect::<Vec<_>>();
     evidence.sort_by_key(|item| item.pubkey.to_bytes());

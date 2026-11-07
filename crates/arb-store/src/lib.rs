@@ -277,8 +277,9 @@ impl Store for SqliteStore {
             .conn
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
-        let amount = i64::try_from(fill.amount.as_u64())
-            .map_err(|_| ArbError::InvalidInput("fill amount exceeds SQLite INTEGER range".into()))?;
+        let amount = i64::try_from(fill.amount.as_u64()).map_err(|_| {
+            ArbError::InvalidInput("fill amount exceeds SQLite INTEGER range".into())
+        })?;
         conn.execute(
             "INSERT INTO fills (attempt_id, token, amount) VALUES (?1, ?2, ?3)",
             params![fill.attempt_id, fill.token, amount],

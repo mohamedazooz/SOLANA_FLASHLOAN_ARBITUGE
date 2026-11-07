@@ -9,9 +9,9 @@
 // items are expected and not dead code.
 #![allow(dead_code)]
 
+use arb_ingest::AccountSnapshotStore;
 use arb_math::economic::EconomicConfig;
 use arb_types::{Lamports, MintId, Slot, TokenAmount};
-use arb_ingest::AccountSnapshotStore;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -160,7 +160,10 @@ pub async fn build_verified_inputs(
     _current_slot: Slot,
     _sol_price_usd: Option<f64>,
 ) -> Result<VerifiedQuoteInputs, String> {
-    Err("HTTP JSON-RPC verified-input reads are disabled; Yellowstone snapshots are required".into())
+    Err(
+        "HTTP JSON-RPC verified-input reads are disabled; Yellowstone snapshots are required"
+            .into(),
+    )
 }
 
 /// Build authoritative economic inputs only from the current Yellowstone account
@@ -174,29 +177,36 @@ pub fn build_verified_inputs_from_snapshots(
     current_slot: Slot,
     sol_price_usd: Option<f64>,
 ) -> Result<VerifiedQuoteInputs, String> {
-    let reserve_snapshot = store.get(reserve)
+    let reserve_snapshot = store
+        .get(reserve)
         .ok_or_else(|| format!("missing Yellowstone Kamino reserve snapshot: {reserve}"))?;
     let klend_program = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID)
         .map_err(|e| format!("invalid Kamino program id: {e}"))?;
     if reserve_snapshot.owner != klend_program {
-        return Err(format!("Kamino reserve owner mismatch: {}", reserve_snapshot.owner));
+        return Err(format!(
+            "Kamino reserve owner mismatch: {}",
+            reserve_snapshot.owner
+        ));
     }
     if reserve_snapshot.slot > current_slot.0 {
         return Err("Kamino reserve snapshot is newer than the quoting slot".into());
     }
-    let fee_sf = arb_tx::kamino::decode_reserve_flash_fee_sf(
-        &reserve_snapshot.data,
-        expected_reserve_mint,
-    ).map_err(|e| format!("Kamino reserve decode failed: {e}"))?;
+    let fee_sf =
+        arb_tx::kamino::decode_reserve_flash_fee_sf(&reserve_snapshot.data, expected_reserve_mint)
+            .map_err(|e| format!("Kamino reserve decode failed: {e}"))?;
 
-    let mint_snapshot = store.get(&base_mint.0)
+    let mint_snapshot = store
+        .get(&base_mint.0)
         .ok_or_else(|| format!("missing Yellowstone base mint snapshot: {base_mint}"))?;
     let token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)
         .map_err(|e| format!("invalid SPL Token program id: {e}"))?;
     let token_2022_program = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID)
         .map_err(|e| format!("invalid Token-2022 program id: {e}"))?;
     if mint_snapshot.owner != token_program && mint_snapshot.owner != token_2022_program {
-        return Err(format!("base mint has unsupported owner: {}", mint_snapshot.owner));
+        return Err(format!(
+            "base mint has unsupported owner: {}",
+            mint_snapshot.owner
+        ));
     }
     if mint_snapshot.slot > current_slot.0 {
         return Err("base mint snapshot is newer than the quoting slot".into());
@@ -265,8 +275,8 @@ mod tests {
 
     #[test]
     fn verified_inputs_use_only_yellowstone_reserve_and_mint_snapshots() {
-        use std::sync::Arc;
         use arb_ingest::{AccountSnapshot, AccountSnapshotStore};
+        use std::sync::Arc;
 
         let store = AccountSnapshotStore::default();
         let klend = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID).unwrap();
@@ -274,11 +284,13 @@ mod tests {
         let mint = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
         let reserve = Pubkey::new_unique();
 
-        let mut reserve_data = vec![0u8; arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET + 8];
+        let mut reserve_data =
+            vec![0u8; arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET + 8];
         reserve_data[..8].copy_from_slice(&arb_tx::kamino::KAMINO_RESERVE_DISCRIMINATOR);
         let mint_start = arb_tx::kamino::KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET;
         reserve_data[mint_start..mint_start + 32].copy_from_slice(mint.as_ref());
-        reserve_data[arb_tx::kamino::KAMINO_RESERVE_STATUS_OFFSET] = arb_tx::kamino::KAMINO_RESERVE_STATUS_ACTIVE;
+        reserve_data[arb_tx::kamino::KAMINO_RESERVE_STATUS_OFFSET] =
+            arb_tx::kamino::KAMINO_RESERVE_STATUS_ACTIVE;
         reserve_data[arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET..][..8]
             .copy_from_slice(&12_345u64.to_le_bytes());
         store.apply(AccountSnapshot {
@@ -287,7 +299,9 @@ mod tests {
             slot: 99,
             write_version: 1,
             is_startup: false,
-            provider_id: arb_ingest::ProviderId(1), bank_id: Some(1), generation: 0,
+            provider_id: arb_ingest::ProviderId(1),
+            bank_id: Some(1),
+            generation: 0,
             data: Arc::new(reserve_data),
         });
 
@@ -300,7 +314,9 @@ mod tests {
             slot: 100,
             write_version: 1,
             is_startup: false,
-            provider_id: arb_ingest::ProviderId(1), bank_id: Some(1), generation: 0,
+            provider_id: arb_ingest::ProviderId(1),
+            bank_id: Some(1),
+            generation: 0,
             data: Arc::new(mint_data),
         });
 
@@ -312,7 +328,8 @@ mod tests {
             Lamports(50_000),
             Slot(100),
             None,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(inputs.flash_loan_fee_sf.value, 12_345);
         assert_eq!(inputs.base_decimals.value, 9);
         assert_eq!(inputs.lamports_per_base_raw.value, 1);

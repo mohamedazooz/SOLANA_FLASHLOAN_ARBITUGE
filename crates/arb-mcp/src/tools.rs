@@ -84,26 +84,40 @@ pub async fn execute_tool(name: &str, arguments: &Value) -> Result<Value, String
             }
         }
         "quote_pumpfun" => {
-            let mint_str = arguments.get("mint").and_then(Value::as_str)
+            let mint_str = arguments
+                .get("mint")
+                .and_then(Value::as_str)
                 .ok_or_else(|| "Missing required parameter 'mint'".to_string())?;
-            let mint_pk = Pubkey::from_str(mint_str)
-                .map_err(|e| format!("Invalid mint address: {e}"))?;
-            let creator_str = arguments.get("creator").and_then(Value::as_str)
+            let mint_pk =
+                Pubkey::from_str(mint_str).map_err(|e| format!("Invalid mint address: {e}"))?;
+            let creator_str = arguments
+                .get("creator")
+                .and_then(Value::as_str)
                 .ok_or_else(|| "Missing required parameter 'creator'".to_string())?;
             let creator = Pubkey::from_str(creator_str)
                 .map_err(|e| format!("Invalid creator address: {e}"))?;
-            let amount_in = arguments.get("amount_in_raw").and_then(Value::as_u64)
+            let amount_in = arguments
+                .get("amount_in_raw")
+                .and_then(Value::as_u64)
                 .ok_or_else(|| "Missing/invalid amount_in_raw".to_string())?;
-            let is_buy = arguments.get("is_buy").and_then(Value::as_bool)
+            let is_buy = arguments
+                .get("is_buy")
+                .and_then(Value::as_bool)
                 .ok_or_else(|| "Missing/invalid is_buy".to_string())?;
-            let fee_bps = arguments.get("fee_bps").and_then(Value::as_u64)
+            let fee_bps = arguments
+                .get("fee_bps")
+                .and_then(Value::as_u64)
                 .and_then(|v| u16::try_from(v).ok())
                 .ok_or_else(|| "Missing/invalid fee_bps".to_string())?;
-            let token_decimals = arguments.get("token_decimals").and_then(Value::as_u64)
+            let token_decimals = arguments
+                .get("token_decimals")
+                .and_then(Value::as_u64)
                 .and_then(|v| u8::try_from(v).ok())
                 .ok_or_else(|| "Missing/invalid token_decimals".to_string())?;
             let read_u64 = |key: &str| -> Result<u64, String> {
-                arguments.get(key).and_then(Value::as_u64)
+                arguments
+                    .get(key)
+                    .and_then(Value::as_u64)
                     .ok_or_else(|| format!("Missing/invalid {key}"))
             };
             let pump_prog = Pubkey::from_str(PUMP_FUN_PROGRAM_ID).map_err(|e| e.to_string())?;
@@ -112,26 +126,33 @@ pub async fn execute_tool(name: &str, arguments: &Value) -> Result<Value, String
                 &pump_prog,
             );
             let wsol_pk = Pubkey::from_str(WSOL_MINT).map_err(|e| e.to_string())?;
-            let is_mayhem_mode = arguments.get("is_mayhem_mode").and_then(Value::as_bool)
+            let is_mayhem_mode = arguments
+                .get("is_mayhem_mode")
+                .and_then(Value::as_bool)
                 .ok_or_else(|| "Missing/invalid is_mayhem_mode".to_string())?;
-            let is_cashback_coin = arguments.get("is_cashback_coin").and_then(Value::as_bool)
+            let is_cashback_coin = arguments
+                .get("is_cashback_coin")
+                .and_then(Value::as_bool)
                 .ok_or_else(|| "Missing/invalid is_cashback_coin".to_string())?;
-            let mut curve = PumpFunBondingCurve::new(
-                PoolId(bc_pda), MintId(wsol_pk), MintId(mint_pk),
-            ).with_fee_bps(fee_bps)
-                .map_err(|e| format!("Invalid fee config: {e}"))?
-                .with_token_decimals(token_decimals)
-                .with_mode_flags(is_mayhem_mode, is_cashback_coin);
+            let mut curve =
+                PumpFunBondingCurve::new(PoolId(bc_pda), MintId(wsol_pk), MintId(mint_pk))
+                    .with_fee_bps(fee_bps)
+                    .map_err(|e| format!("Invalid fee config: {e}"))?
+                    .with_token_decimals(token_decimals)
+                    .with_mode_flags(is_mayhem_mode, is_cashback_coin);
             curve.creator = creator;
             curve.virtual_sol_reserves = read_u64("virtual_sol_reserves")?;
             curve.virtual_token_reserves = read_u64("virtual_token_reserves")?;
             curve.real_sol_reserves = read_u64("real_sol_reserves")?;
             curve.real_token_reserves = read_u64("real_token_reserves")?;
             curve.token_total_supply = read_u64("token_total_supply")?;
-            curve.complete = arguments.get("complete").and_then(Value::as_bool)
+            curve.complete = arguments
+                .get("complete")
+                .and_then(Value::as_bool)
                 .ok_or_else(|| "Missing/invalid complete flag".to_string())?;
 
-            let (amount_out, fee_paid) = curve.quote_with_fee(amount_in, is_buy)
+            let (amount_out, fee_paid) = curve
+                .quote_with_fee(amount_in, is_buy)
                 .map_err(|e| format!("Quote failed: {e}"))?;
             Ok(json!({
                 "action": if is_buy { "BUY" } else { "SELL" },

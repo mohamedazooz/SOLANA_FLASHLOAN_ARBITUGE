@@ -9,10 +9,10 @@
 
 use crate::{AccountSnapshot, AccountSnapshotStore};
 use arb_constants::{
-    PUMP_FEES_FEE_CONFIG_DISCRIMINATOR, PUMP_FEES_PROGRAM_ID, PUMP_FUN_PROGRAM_ID,
-    KAMINO_WSOL_RESERVE, PUMP_SWAP_GLOBAL_CONFIG, PUMP_SWAP_GLOBAL_CONFIG_DISCRIMINATOR,
-    PUMP_SWAP_PROGRAM_ID, TOKEN_2022_NATIVE_MINT, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID, USDC_MINT, WSOL_MINT,
+    ASSOCIATED_TOKEN_PROGRAM_ID, KAMINO_WSOL_RESERVE, PUMP_FEES_FEE_CONFIG_DISCRIMINATOR,
+    PUMP_FEES_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_SWAP_GLOBAL_CONFIG,
+    PUMP_SWAP_GLOBAL_CONFIG_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID, TOKEN_2022_NATIVE_MINT,
+    TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT, WSOL_MINT,
 };
 use arb_dex::{PumpSwapFeeConfig, PumpSwapPool, PumpSwapPoolHeader};
 use arb_types::{ArbError, DexProtocol, MintId, PoolId, PoolKind, PoolState, Result, Slot};
@@ -31,13 +31,20 @@ pub struct PumpFeeComponentsBps {
 }
 
 impl PumpFeeComponentsBps {
-    fn is_zero(self) -> bool { self.lp == 0 && self.protocol == 0 && self.creator == 0 }
+    fn is_zero(self) -> bool {
+        self.lp == 0 && self.protocol == 0 && self.creator == 0
+    }
 
     fn validate(self) -> Result<Self> {
-        let total = self.lp.checked_add(self.protocol)
-            .and_then(|v| v.checked_add(self.creator)).ok_or(ArbError::Overflow)?;
+        let total = self
+            .lp
+            .checked_add(self.protocol)
+            .and_then(|v| v.checked_add(self.creator))
+            .ok_or(ArbError::Overflow)?;
         if total > 10_000 {
-            return Err(ArbError::InvalidInput("Pump FeeConfig component sum exceeds 100% (BPS)".into()));
+            return Err(ArbError::InvalidInput(
+                "Pump FeeConfig component sum exceeds 100% (BPS)".into(),
+            ));
         }
         Ok(self)
     }
@@ -45,9 +52,12 @@ impl PumpFeeComponentsBps {
     fn to_ppm(self) -> Result<(u32, u32, u32)> {
         self.validate()?;
         Ok((
-            u32::try_from(self.lp.checked_mul(100).ok_or(ArbError::Overflow)?).map_err(|_| ArbError::Overflow)?,
-            u32::try_from(self.protocol.checked_mul(100).ok_or(ArbError::Overflow)?).map_err(|_| ArbError::Overflow)?,
-            u32::try_from(self.creator.checked_mul(100).ok_or(ArbError::Overflow)?).map_err(|_| ArbError::Overflow)?,
+            u32::try_from(self.lp.checked_mul(100).ok_or(ArbError::Overflow)?)
+                .map_err(|_| ArbError::Overflow)?,
+            u32::try_from(self.protocol.checked_mul(100).ok_or(ArbError::Overflow)?)
+                .map_err(|_| ArbError::Overflow)?,
+            u32::try_from(self.creator.checked_mul(100).ok_or(ArbError::Overflow)?)
+                .map_err(|_| ArbError::Overflow)?,
         ))
     }
 }
@@ -75,7 +85,9 @@ impl PumpFeesFeeConfig {
     /// Unknown non-zero trailing bytes are rejected rather than reinterpreted.
     pub fn decode(data: &[u8]) -> Result<Self> {
         if data.len() < 65 || data.get(..8) != Some(PUMP_FEES_FEE_CONFIG_DISCRIMINATOR.as_slice()) {
-            return Err(ArbError::DeserializationError("invalid Pump Fees FeeConfig header".into()));
+            return Err(ArbError::DeserializationError(
+                "invalid Pump Fees FeeConfig header".into(),
+            ));
         }
         let bump = data[8];
         let flat_fees = read_fee_components(data, 41)?;
@@ -86,7 +98,9 @@ impl PumpFeesFeeConfig {
             read_fee_tiers(data, &mut cursor)?
         } else {
             if data[cursor..].iter().any(|byte| *byte != 0) {
-                return Err(ArbError::DeserializationError("unexpected Pump FeeConfig tail".into()));
+                return Err(ArbError::DeserializationError(
+                    "unexpected Pump FeeConfig tail".into(),
+                ));
             }
             Vec::new()
         };
@@ -99,18 +113,30 @@ impl PumpFeesFeeConfig {
             None
         };
         if data[cursor..].iter().any(|byte| *byte != 0) {
-            return Err(ArbError::DeserializationError("unknown non-zero Pump FeeConfig extension".into()));
+            return Err(ArbError::DeserializationError(
+                "unknown non-zero Pump FeeConfig extension".into(),
+            ));
         }
         flat_fees.validate()?;
         if fee_tiers.is_empty() {
-            return Err(ArbError::InvalidInput("Pump FeeConfig standard tier ladder is empty".into()));
+            return Err(ArbError::InvalidInput(
+                "Pump FeeConfig standard tier ladder is empty".into(),
+            ));
         }
         validate_fee_tiers(&fee_tiers)?;
         if !stable_fee_tiers.is_empty() {
             validate_fee_tiers(&stable_fee_tiers)?;
         }
-        if let Some(fees) = exotic_flat_fees { fees.validate()?; }
-        Ok(Self { bump, flat_fees, fee_tiers, stable_fee_tiers, exotic_flat_fees })
+        if let Some(fees) = exotic_flat_fees {
+            fees.validate()?;
+        }
+        Ok(Self {
+            bump,
+            flat_fees,
+            fee_tiers,
+            stable_fee_tiers,
+            exotic_flat_fees,
+        })
     }
 
     fn select_for_pool(
@@ -125,7 +151,10 @@ impl PumpFeesFeeConfig {
         let wsol = parse_program_id(WSOL_MINT)?;
         let token_2022_native = parse_program_id(TOKEN_2022_NATIVE_MINT)?;
         let usdc = parse_program_id(USDC_MINT)?;
-        if *quote_mint == Pubkey::default() || *quote_mint == wsol || *quote_mint == token_2022_native {
+        if *quote_mint == Pubkey::default()
+            || *quote_mint == wsol
+            || *quote_mint == token_2022_native
+        {
             select_fee_tier(&self.fee_tiers, market_cap_quote_raw)
         } else if *quote_mint == usdc {
             select_fee_tier(&self.stable_fee_tiers, market_cap_quote_raw)
@@ -140,31 +169,52 @@ impl PumpFeesFeeConfig {
 
 fn read_fee_components(data: &[u8], offset: usize) -> Result<PumpFeeComponentsBps> {
     let read = |at: usize| -> Result<u64> {
-        let bytes: [u8; 8] = data.get(at..at + 8)
+        let bytes: [u8; 8] = data
+            .get(at..at + 8)
             .ok_or_else(|| ArbError::DeserializationError("truncated Pump fee component".into()))?
-            .try_into().map_err(|_| ArbError::DeserializationError("invalid Pump fee component".into()))?;
+            .try_into()
+            .map_err(|_| ArbError::DeserializationError("invalid Pump fee component".into()))?;
         Ok(u64::from_le_bytes(bytes))
     };
-    Ok(PumpFeeComponentsBps { lp: read(offset)?, protocol: read(offset + 8)?, creator: read(offset + 16)? })
+    Ok(PumpFeeComponentsBps {
+        lp: read(offset)?,
+        protocol: read(offset + 8)?,
+        creator: read(offset + 16)?,
+    })
 }
 
 fn read_fee_tiers(data: &[u8], cursor: &mut usize) -> Result<Vec<PumpFeeTier>> {
-    let len_bytes: [u8; 4] = data.get(*cursor..*cursor + 4)
-        .ok_or_else(|| ArbError::DeserializationError("truncated Pump FeeConfig tier vector length".into()))?
-        .try_into().map_err(|_| ArbError::DeserializationError("invalid Pump FeeConfig tier vector length".into()))?;
+    let len_bytes: [u8; 4] = data
+        .get(*cursor..*cursor + 4)
+        .ok_or_else(|| {
+            ArbError::DeserializationError("truncated Pump FeeConfig tier vector length".into())
+        })?
+        .try_into()
+        .map_err(|_| {
+            ArbError::DeserializationError("invalid Pump FeeConfig tier vector length".into())
+        })?;
     let len = u32::from_le_bytes(len_bytes) as usize;
     *cursor += 4;
     let bytes_needed = len.checked_mul(40).ok_or(ArbError::Overflow)?;
-    let end = (*cursor).checked_add(bytes_needed).ok_or(ArbError::Overflow)?;
+    let end = (*cursor)
+        .checked_add(bytes_needed)
+        .ok_or(ArbError::Overflow)?;
     if end > data.len() || len > 128 {
-        return Err(ArbError::DeserializationError("Pump FeeConfig tier vector exceeds account bounds".into()));
+        return Err(ArbError::DeserializationError(
+            "Pump FeeConfig tier vector exceeds account bounds".into(),
+        ));
     }
     let mut tiers = Vec::with_capacity(len);
     for _ in 0..len {
-        let threshold = u128::from_le_bytes(data[*cursor..*cursor + 16].try_into()
-            .map_err(|_| ArbError::DeserializationError("invalid Pump fee tier threshold".into()))?);
+        let threshold =
+            u128::from_le_bytes(data[*cursor..*cursor + 16].try_into().map_err(|_| {
+                ArbError::DeserializationError("invalid Pump fee tier threshold".into())
+            })?);
         let fees = read_fee_components(data, *cursor + 16)?.validate()?;
-        tiers.push(PumpFeeTier { market_cap_threshold_raw: threshold, fees });
+        tiers.push(PumpFeeTier {
+            market_cap_threshold_raw: threshold,
+            fees,
+        });
         *cursor += 40;
     }
     Ok(tiers)
@@ -173,17 +223,26 @@ fn read_fee_tiers(data: &[u8], cursor: &mut usize) -> Result<Vec<PumpFeeTier>> {
 fn validate_fee_tiers(tiers: &[PumpFeeTier]) -> Result<()> {
     for pair in tiers.windows(2) {
         if pair[0].market_cap_threshold_raw >= pair[1].market_cap_threshold_raw {
-            return Err(ArbError::InvalidInput("Pump FeeConfig thresholds are not strictly increasing".into()));
+            return Err(ArbError::InvalidInput(
+                "Pump FeeConfig thresholds are not strictly increasing".into(),
+            ));
         }
     }
     Ok(())
 }
 
-fn select_fee_tier(tiers: &[PumpFeeTier], market_cap_quote_raw: u128) -> Result<PumpFeeComponentsBps> {
+fn select_fee_tier(
+    tiers: &[PumpFeeTier],
+    market_cap_quote_raw: u128,
+) -> Result<PumpFeeComponentsBps> {
     if tiers.is_empty() {
-        return Err(ArbError::InvalidInput("Pump FeeConfig tier ladder is empty".into()));
+        return Err(ArbError::InvalidInput(
+            "Pump FeeConfig tier ladder is empty".into(),
+        ));
     }
-    Ok(tiers.iter().rev()
+    Ok(tiers
+        .iter()
+        .rev()
         .find(|tier| market_cap_quote_raw >= tier.market_cap_threshold_raw)
         .unwrap_or(&tiers[0])
         .fees)
@@ -246,13 +305,18 @@ impl PumpSwapJoinedState {
             &pump_program,
         );
         let canonical = self.header.creator == canonical_creator;
-        let effective_quote = self.header.effective_quote_reserve(self.quote_vault_amount)?;
+        let effective_quote = self
+            .header
+            .effective_quote_reserve(self.quote_vault_amount)?;
         if self.base_vault_amount == 0 {
-            return Err(ArbError::InvalidInput("PumpSwap base reserve is zero".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap base reserve is zero".into(),
+            ));
         }
         let market_cap = (self.base_mint_supply as u128)
             .checked_mul(effective_quote as u128)
-            .ok_or(ArbError::Overflow)? / self.base_vault_amount as u128;
+            .ok_or(ArbError::Overflow)?
+            / self.base_vault_amount as u128;
         let mut fees = config.select_for_pool(canonical, &self.header.quote_mint, market_cap)?;
         let global_config = decode_pump_swap_global_config(&self.global_config_account.data)?;
         let wsol = parse_program_id(WSOL_MINT)?;
@@ -261,7 +325,10 @@ impl PumpSwapJoinedState {
         let is_custom_quote = self.header.quote_mint != wsol
             && self.header.quote_mint != token_2022_native
             && self.header.quote_mint != usdc;
-        if is_custom_quote && global_config.creator_fee_configurable && self.header.creator_fee_bps > 0 {
+        if is_custom_quote
+            && global_config.creator_fee_configurable
+            && self.header.creator_fee_bps > 0
+        {
             if global_config.max_configurable_creator_fee_bps == 0
                 || self.header.creator_fee_bps > global_config.max_configurable_creator_fee_bps
             {
@@ -319,12 +386,16 @@ pub fn join_pump_swap_state(
         ));
     }
 
-    let (expected_global_config, _) = Pubkey::find_program_address(&[b"global_config"], &pump_swap_program);
+    let (expected_global_config, _) =
+        Pubkey::find_program_address(&[b"global_config"], &pump_swap_program);
     let configured_global_config = parse_program_id(PUMP_SWAP_GLOBAL_CONFIG)?;
     if expected_global_config != configured_global_config {
-        return Err(ArbError::InvalidInput("configured PumpSwap GlobalConfig does not match canonical PDA".into()));
+        return Err(ArbError::InvalidInput(
+            "configured PumpSwap GlobalConfig does not match canonical PDA".into(),
+        ));
     }
-    let global_config = required_snapshot(store, &configured_global_config, "PumpSwap GlobalConfig")?;
+    let global_config =
+        required_snapshot(store, &configured_global_config, "PumpSwap GlobalConfig")?;
     require_owner(&global_config, &pump_swap_program, "PumpSwap GlobalConfig")?;
     decode_pump_swap_disable_flags(&global_config.data)?;
     if global_config.slot > pool.slot {
@@ -384,10 +455,16 @@ pub fn join_pump_swap_state(
     )?;
     let associated_token_program = parse_program_id(ASSOCIATED_TOKEN_PROGRAM_ID)?;
     let expected_base_vault = associated_token_address(
-        &pool_key, &header.base_mint, &base_token_program, &associated_token_program,
+        &pool_key,
+        &header.base_mint,
+        &base_token_program,
+        &associated_token_program,
     );
     let expected_quote_vault = associated_token_address(
-        &pool_key, &header.quote_mint, &quote_token_program, &associated_token_program,
+        &pool_key,
+        &header.quote_mint,
+        &quote_token_program,
+        &associated_token_program,
     );
     if header.base_vault != expected_base_vault || header.quote_vault != expected_quote_vault {
         return Err(ArbError::InvalidInput(
@@ -402,7 +479,8 @@ pub fn join_pump_swap_state(
             "PumpSwap mint snapshot is newer than Pool snapshot".into(),
         ));
     }
-    let (base_decimals, base_mint_supply) = decode_mint(&base_mint, &base_token_program, "base mint")?;
+    let (base_decimals, base_mint_supply) =
+        decode_mint(&base_mint, &base_token_program, "base mint")?;
     let (quote_decimals, _) = decode_mint(&quote_mint, &quote_token_program, "quote mint")?;
     let base_has_unsupported_t22 = base_token_program == token_2022_program
         && (base_mint.data.len() > MINT_BASE_LEN
@@ -454,7 +532,8 @@ impl crate::YellowstoneClient {
         let fee_config_key = Pubkey::find_program_address(
             &[b"fee_config", pump_swap_program.as_ref()],
             &pump_fees_program,
-        ).0;
+        )
+        .0;
         let Ok(global_config_key) = parse_program_id(PUMP_SWAP_GLOBAL_CONFIG) else {
             return PumpSwapRefreshReport::default();
         };
@@ -471,7 +550,12 @@ impl crate::YellowstoneClient {
             return PumpSwapRefreshReport::default();
         };
         let mut dependencies = Vec::with_capacity(pool_snapshots.len().saturating_mul(5) + 4);
-        dependencies.extend([fee_config_key, global_config_key, kamino_reserve_key, wsol_mint_key]);
+        dependencies.extend([
+            fee_config_key,
+            global_config_key,
+            kamino_reserve_key,
+            wsol_mint_key,
+        ]);
         let mut decoded = Vec::with_capacity(pool_snapshots.len());
         for snapshot in &pool_snapshots {
             let Ok(header) = PumpSwapPoolHeader::decode(&snapshot.data) else {
@@ -528,8 +612,10 @@ impl crate::YellowstoneClient {
             // within the same configured freshness window. A stale fee schedule can
             // otherwise produce a false-positive edge even when vaults are fresh.
             if current_slot > 0
-                && (current_slot.saturating_sub(joined.fee_config_account.slot) > max_state_age_slots
-                    || current_slot.saturating_sub(joined.global_config_account.slot) > max_state_age_slots)
+                && (current_slot.saturating_sub(joined.fee_config_account.slot)
+                    > max_state_age_slots
+                    || current_slot.saturating_sub(joined.global_config_account.slot)
+                        > max_state_age_slots)
             {
                 report.pools_rejected += 1;
                 continue;
@@ -595,7 +681,7 @@ impl crate::YellowstoneClient {
             };
             match self.apply_pool_update(state) {
                 Ok(true) => report.pools_promoted += 1,
-                Ok(false) => {},
+                Ok(false) => {}
                 Err(_) => report.pools_rejected += 1,
             }
         }
@@ -626,7 +712,11 @@ pub fn decode_pump_swap_global_config(data: &[u8]) -> Result<PumpSwapGlobalConfi
         let configurable = match data[940] {
             0 => false,
             1 => true,
-            _ => return Err(ArbError::DeserializationError("invalid creator_fee_configurable flag".into())),
+            _ => {
+                return Err(ArbError::DeserializationError(
+                    "invalid creator_fee_configurable flag".into(),
+                ));
+            }
         };
         let max_fee = u64::from_le_bytes(data[941..949].try_into().map_err(|_| {
             ArbError::DeserializationError("truncated max_configurable_creator_fee_bps".into())
@@ -655,7 +745,8 @@ fn associated_token_address(
     Pubkey::find_program_address(
         &[authority.as_ref(), token_program.as_ref(), mint.as_ref()],
         associated_token_program,
-    ).0
+    )
+    .0
 }
 
 fn required_snapshot(
@@ -737,10 +828,15 @@ fn decode_mint(
         )));
     }
     if snapshot.data[45] != 1 {
-        return Err(ArbError::InvalidInput(format!("{label} is not initialized")));
+        return Err(ArbError::InvalidInput(format!(
+            "{label} is not initialized"
+        )));
     }
-    let supply = u64::from_le_bytes(snapshot.data[36..44].try_into()
-        .map_err(|_| ArbError::DeserializationError(format!("invalid {label} supply")))?);
+    let supply = u64::from_le_bytes(
+        snapshot.data[36..44]
+            .try_into()
+            .map_err(|_| ArbError::DeserializationError(format!("invalid {label} supply")))?,
+    );
     Ok((snapshot.data[44], supply))
 }
 
