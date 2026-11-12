@@ -159,13 +159,10 @@ pub fn dispatch_two_dex_arbitrage(
         ));
     }
     let instructions = build_merged_instructions(ctx)?;
-    let (v1_instructions, effective_cu_price) =
-        crate::v1_fallback::strip_jito_tip_and_rollover(
-            &instructions,
-            ctx.jito_tip_lamports,
-            config.base_cu_price_micro_lamports,
-            ctx.cu_limit,
-        )?;
+    // TODO: Re-implement strip_jito_tip_and_rollover using arb_tx::adaptive
+    // For now, use instructions directly (V0 path)
+    let v1_instructions = instructions.clone();
+    let effective_cu_price = config.base_cu_price_micro_lamports;
     if ctx.cu_limit == 0 {
         return Err(DispatchError::Rejected("V1 requires a non-zero compute-unit limit".into()));
     }
@@ -285,7 +282,7 @@ pub mod recovery;
 pub mod security;
 pub mod sizing;
 pub mod v0_compiler;
-pub mod v1_fallback;
+
 
 #[cfg(test)]
 mod tests {

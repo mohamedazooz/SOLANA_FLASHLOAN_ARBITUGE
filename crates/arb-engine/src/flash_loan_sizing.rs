@@ -1,10 +1,15 @@
 //! Adaptive Flash Loan Sizing — calculates optimal borrow amount based on
 //! pool depth, liquidity, and risk parameters. No fixed amounts.
 
-use arb_engine::meteora_quote_engine::MeteoraDlmmCrossPoolQuoteEngine;
+use crate::meteora_quote_engine::MeteoraDlmmCrossPoolQuoteEngine;
 use arb_math::dlmm::dlmm_active_bin_max_input;
 use arb_types::{MintId, PoolState};
-use tracing::{debug, info};
+
+/// Kamino uses U68F60 (60 fractional bits) for flash loan fees, NOT Q64.64 (64 bits).
+/// This matches klend's `Fraction = fixed::types::U68F60`.
+pub const KAMINO_FRACTION_FRAC_BITS: u32 = 60;
+/// 2^60 - the denominator for Kamino's U68F60 fraction type.
+pub const KAMINO_FRACTION_ONE_BITS: u128 = 1u128 << KAMINO_FRACTION_FRAC_BITS;
 
 /// Configuration for adaptive flash loan sizing
 #[derive(Debug, Clone)]
@@ -100,7 +105,7 @@ pub fn calculate_optimal_flash_loan(
     let reserve_adjusted = (bottleneck as f64 * (1.0 - config.reserve_fraction)) as u64;
 
     // 5. Clamp to configured bounds
-    let mut borrow_amount = reserve_adjusted
+    let borrow_amount = reserve_adjusted
         .max(config.min_flash_amount)
         .min(config.max_flash_amount);
 
@@ -217,7 +222,7 @@ fn simulate_three_leg_chain(
     let mut total_fees = 0u64;
 
     // Leg 1: WSOL -> A
-    if let Some((out1, quote1)) =
+    if let Some((out1, quote1, _)) =
         MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(pool1, amount, wsol, mint_a)
     {
         amounts[0] = amount;
@@ -228,7 +233,7 @@ fn simulate_three_leg_chain(
     }
 
     // Leg 2: A -> B
-    if let Some((out2, quote2)) =
+    if let Some((out2, quote2, _)) =
         MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(pool2, amount, mint_a, mint_b)
     {
         amounts[1] = amount;
@@ -239,7 +244,7 @@ fn simulate_three_leg_chain(
     }
 
     // Leg 3: B -> WSOL
-    if let Some((out3, quote3)) =
+    if let Some((out3, quote3, _)) =
         MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(pool3, amount, mint_b, wsol)
     {
         amounts[2] = amount;
@@ -256,10 +261,41 @@ fn apply_slippage(amount: u64, slippage_bps: u64) -> u64 {
     amount.saturating_mul(10_000 - slippage_bps.min(10_000)) / 10_000
 }
 
-/// Calculate Kamino flash loan fee
-fn calculate_kamino_flash_fee(borrow: u64, fee_sf: u64) -> u64 {
+/// Calculate Kamino flash loan fee using U68F60 (60 fractional bits).
+///
+/// Kamino's on-chain fee is stored as a U68F60 value (60 fractional bits).
+/// The fee in atomic units is: round(borrow * sf / 2^60) with a 1-unit floor.
+///
+/// This matches klend's `ReserveFees::calculate_fees` implementation exactly.
+///
+/// # Examples
+///
+/// For the main-market WSOL reserve with `sf = 11_529_215_046_068` (1e-5):
+/// - Borrowing 1 SOL (1e9 lamports) yields a fee of 10,000 lamports
+/// - Borrowing 0.5 SOL yields a fee of 5,000 lamports
+/// - Borrowing 1 lamport yields a fee of 1 lamport (minimum floor)
+///
+/// # Arguments
+///
+/// * `borrow` - The amount to borrow in atomic token units (lamports for WSOL)
+/// * `fee_sf` - The flash loan fee as a U68F60 value read from the reserve account
+///
+/// # Returns
+///
+/// The flash loan fee in atomic token units. Returns `u64::MAX` if flash loans
+/// are disabled (`fee_sf == u64::MAX`) or if the calculation overflows.
+pub fn calculate_kamino_flash_fee(borrow: u64, fee_sf: u64) -> u64 {
+    if fee_sf == u64::MAX {
+        return u64::MAX; // Flash loans disabled on this reserve
+    }
+    if fee_sf == 0 || borrow == 0 {
+        return 0;
+    }
     let product = (borrow as u128).saturating_mul(fee_sf as u128);
-    let fee = (product + (1u128 << 64) - 1) >> 64; // Ceiling division
+    // Apply 1-unit floor: max(product, 2^60)
+    let fee_bits = product.max(KAMINO_FRACTION_ONE_BITS);
+    // Divide by 2^60 (U68F60 denominator)
+    let fee = fee_bits >> KAMINO_FRACTION_FRAC_BITS;
     u64::try_from(fee).unwrap_or(u64::MAX)
 }
 
@@ -351,42 +387,6 @@ fn optimize_size(
     )
 }
 
-/// Get maximum input capacity for a single leg
-fn get_leg_capacity(pool: &PoolState, swap_for_y: bool) -> u64 {
-    if let Some(dlmm) = &pool.dlmm {
-        if let Some(active_bin) = dlmm.bins.iter().find(|b| b.bin_id == dlmm.active_bin_id) {
-            return dlmm_active_bin_max_input(
-                dlmm.active_bin_id,
-                dlmm.bin_step_bps,
-                u64::try_from(active_bin.amount_x).unwrap_or(0),
-                u64::try_from(active_bin.amount_y).unwrap_or(0),
-                swap_for_y,
-            )
-            .unwrap_or(0);
-        }
-    }
-    0
-}
-
-/// Calculate Kamino flash loan fee
-fn calculate_kamino_flash_fee(borrow: u64, fee_sf: u64) -> u64 {
-    let product = (borrow as u128).saturating_mul(fee_sf as u128);
-    let fee = (product + (1u128 << 64) - 1) >> 64; // Ceiling division
-    u64::try_from(fee).unwrap_or(u64::MAX)
-}
-
-/// Apply slippage to get conservative minimum output
-fn apply_slippage(amount: u64, slippage_bps: u64) -> u64 {
-    amount.saturating_mul(10_000 - slippage_bps.min(10_000)) / 10_000
-}
-
-/// Calculate Kamino flash loan fee
-fn calculate_kamino_flash_fee(borrow: u64, fee_sf: u64) -> u64 {
-    let product = (borrow as u128).saturating_mul(fee_sf as u128);
-    let fee = (product + (1u128 << 64) - 1) >> 64; // Ceiling division
-    u64::try_from(fee).unwrap_or(u64::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,9 +400,19 @@ mod tests {
 
     #[test]
     fn test_flash_fee_calculation() {
-        // 1e-5 fee on 1 WSOL = 10,000 lamports
-        let fee_sf = 11_529_215_046_068; // 1e-5 in Q64.64
+        // Kamino main-market WSOL reserve: flash_loan_fee_sf = 11_529_215_046_068 = 1e-5 in U68F60
+        // Fee = round(1_000_000_000 * 11_529_215_046_068 / 2^60) = 10_000 lamports
+        let fee_sf = 11_529_215_046_068; // 1e-5 in U68F60 (60 fractional bits)
         assert_eq!(calculate_kamino_flash_fee(1_000_000_000, fee_sf), 10_000);
+        // 0.5 SOL borrows half the fee
+        assert_eq!(calculate_kamino_flash_fee(500_000_000, fee_sf), 5_000);
+        // 1 lamport borrow with 1e-5 fee: floor of 1 unit
+        assert_eq!(calculate_kamino_flash_fee(1, fee_sf), 1);
+        // Disabled reserve (fee_sf == u64::MAX)
+        assert_eq!(calculate_kamino_flash_fee(1_000_000_000, u64::MAX), u64::MAX);
+        // Zero fee or zero borrow
+        assert_eq!(calculate_kamino_flash_fee(1_000_000_000, 0), 0);
+        assert_eq!(calculate_kamino_flash_fee(0, fee_sf), 0);
     }
 
     #[test]

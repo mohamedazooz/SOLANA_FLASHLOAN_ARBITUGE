@@ -39,6 +39,11 @@ pub use meteora_quote_engine::{MeteoraDlmmCrossPoolQuoteEngine, TwoHopDlmmQuote}
 pub mod meteora_fresh_state;
 pub mod meteora_size_optimizer;
 pub mod three_leg_meme_pipeline;
+pub mod flash_loan_sizing;
+pub use flash_loan_sizing::{
+    calculate_kamino_flash_fee, calculate_optimal_flash_loan, FlashLoanSizingConfig,
+    FlashLoanSizingResult, KAMINO_FRACTION_FRAC_BITS, KAMINO_FRACTION_ONE_BITS,
+};
 pub use meteora_fresh_state::{FreshnessConfig, FreshnessVerdict, evaluate_freshness};
 pub use meteora_size_optimizer::{
     DlmmArbitrageDirection, DlmmOptimizerConfig, MeteoraDlmmTradeSizeOptimizer,
