@@ -1,0 +1,37 @@
+[package]
+name = "solana-webhook-service"
+version = "0.1.0"
+edition = "2021"
+authors = ["Senior Core Backend Engineer <core@sentinel.ai>"]
+description = "High-frequency, ultra-low-latency non-blocking Solana Webhook service with Redis and DashMap deduplication"
+
+[workspace]
+
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+toml = "0.8"
+dashmap = "6.0"
+redis = { version = "0.25", features = ["tokio-comp", "aio", "connection-manager"] }
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-trait = "0.1"
+anyhow = "1.0"
+thiserror = "1.0"
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+reqwest = { version = "0.11", features = ["json"] }
+dotenvy = "0.15"
+
+[dev-dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+overflow-checks = true
