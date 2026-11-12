@@ -46,9 +46,8 @@ curl -fsS http://127.0.0.1:9101/status
 
 `/status` returns `RUNNING` or `PAUSED`. Metrics include `fills_total`,
 `net_profit_total`, `simulated_net_profit_total`, `state_age_slots`,
-`grpc_lag_slots`, `grpc_reconnects_total`, breaker state, tip share, and Pump
-spread/graduation counters. Shadow and canary edges appear **only** in the
-simulated series.
+breaker state, tip share, and Pump spread/graduation counters. Shadow and
+canary edges appear **only** in the simulated series.
 
 ## 4. Pause and resume (authenticated)
 
@@ -84,16 +83,35 @@ production and put it on persistent storage.
 
 ## 6. Provider outage / degraded data
 
-1. Watch `grpc_lag_slots`, `grpc_reconnects_total`, and `state_age_slots`.
-2. If lag exceeds `max_state_age_slots`, quotes are rejected by design; no action
-   is needed beyond restoring the feed.
-3. If the primary provider is down, configure the failover endpoint in `.env`;
-   the provider supervisor tracks health. Do not disable freshness checks to
-   "keep trading".
-4. If RPC simulation fails repeatedly, Live dispatch stops (fail closed). Shadow
-   continues to evaluate but does not send.
+Ingestion is WS + HTTP-RPC only (gRPC transport was removed from the tree; see
+`docs/PROJECT_STATE.md`).
+
+1. Watch `state_age_slots` and the provider health logs.
+2. If staleness exceeds `max_state_age_slots`, quotes are rejected by design; no
+   action is needed beyond restoring the feed.
+3. If the primary provider is down, configure the failover endpoints in `.env`
+   (`SOLANA_RPC_URL` / `SOLANA_RPC_PRIMARY` / `SOLANA_MAINNET_RPC_FALLBACK`,
+   `RPC_MAX_CONCURRENT_REQUESTS`, `RPC_MIN_INTERVAL_MS`; WS subscriptions via
+   `SOLANA_WS_1..3_URL`, `WS_COMMITMENT`, `WS_ENCODING`); the provider supervisor
+   tracks health. Do not disable freshness checks to "keep trading".
+4. If RPC simulation fails repeatedly, Live dispatch stops (fail closed). The
+   preflight simulation before dispatch is mandatory (`ENABLE_PREFLIGHT_SIMULATION`
+   controls only the earlier optional gate; the dispatch-time simulation cannot
+   be turned off by environment). Shadow continues to evaluate but does not send.
 5. If Jito is degraded, landing rate falls; do not raise the tip cap to
    compensate without an explicit budget decision.
+
+## 6.1 Transaction-format transport gates (V0 / V1)
+
+- Legacy/V0 remains capped at the 1,232-byte MTU; V1 (4,096-byte MTU, no ALT)
+  is mainnet-active but **opt-in per transport**:
+  - `SOLANA_TX_V1_DIRECT_ENABLED` — direct RPC/SWQoS `sendTransaction` path.
+  - `SOLANA_TX_V1_JITO_ENABLED` — Jito bundle ingress.
+- Both default to `false` (fail-closed). Enable only after every configured
+  endpoint/validator path is verified V1-capable.
+- `BYPASS_RISK_GATE` (diagnostics) is honored **only** in non-live modes and
+  logs a `warn!` on every activation; in live mode it is ignored regardless of
+  its value.
 
 ## 7. Restart recovery
 
@@ -163,4 +181,4 @@ rewrites formatting only, but a large diff obscures the audit trail.
 | simulate | Yes | Same as shadow in this build. |
 | canary | Yes | No submission; simulated metrics. |
 | live | **No** | Gated by `ARB_LIVE` and incomplete acceptance. Do not enable. |
-| Windows native | **No** | `yellowstone-grpc-client` uses Unix sockets. Use Linux/Docker. |
+| Windows native | **No** | Use Linux/Docker (see `BUILD-01`). |
