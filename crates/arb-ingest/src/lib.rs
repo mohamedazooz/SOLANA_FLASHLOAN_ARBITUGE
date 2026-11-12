@@ -2,23 +2,29 @@
 
 pub mod gmgn;
 pub use gmgn::{GmgnClient, TrendingToken};
-pub mod dexscreener;
-pub mod yellowstone;
-pub mod provider_supervisor;
-pub mod slot_integrity;
-pub mod rpc_reconcile;
-pub mod quote_readiness;
 pub mod dependency_manifest;
-pub use quote_readiness::{ExecutionReadinessError, QuoteReadinessContext, QuoteReadinessError, build_quote_dependency_set, validate_execution_readiness};
+pub mod dexscreener;
+pub mod provider_supervisor;
+pub mod quote_readiness;
+pub mod rpc_reconcile;
+pub mod slot_integrity;
+pub mod yellowstone;
 pub use dependency_manifest::{
     AccountDependency, AccountRole, DependencyManifestError, DependencyManifestRegistry,
     PoolDependencyManifest, ProtocolDependencyError, ProtocolDependencyInput,
     resolve_protocol_dependencies,
 };
+pub use dexscreener::{DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken};
+pub use provider_supervisor::{
+    CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus,
+    ProviderSupervisor, SupervisorPolicy, validate_dependency_group,
+};
+pub use quote_readiness::{
+    ExecutionReadinessError, QuoteReadinessContext, QuoteReadinessError,
+    build_quote_dependency_set, validate_execution_readiness,
+};
 pub use rpc_reconcile::{RpcSnapshotClient, RpcSnapshotConfig, RpcSnapshotReport};
 pub use slot_integrity::{ReconcileError, SlotIntegrity, SlotUpdateOutcome, SnapshotReconciler};
-pub use provider_supervisor::{CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus, ProviderSupervisor, SupervisorPolicy, validate_dependency_group};
-pub use dexscreener::{DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken};
 pub mod rpc_pool;
 pub use rpc_pool::{RpcPool, SignatureStatus};
 pub mod registry;
@@ -54,10 +60,10 @@ pub use bitquery::{
 use arb_dex::traits::AmmPool;
 use arb_types::{AccountUpdate, ArbError, PoolId, PoolState, Result, Slot};
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -112,21 +118,32 @@ impl AccountSnapshotStore {
         let dead_slots = self.invalidated_slots.read();
         let dead_banks = self.invalidated_banks.read();
         if dead_slots.contains(&update.slot)
-            || update.bank_id.is_some_and(|id| dead_banks.contains(&(update.slot, id))) {
+            || update
+                .bank_id
+                .is_some_and(|id| dead_banks.contains(&(update.slot, id)))
+        {
             return false;
         }
         let mut accounts = self.accounts.write();
         if let Some(current) = accounts.get(&update.pubkey) {
             // A live stream write always supersedes bootstrap, but bootstrap must never
             // overwrite live state, even when its context slot is numerically higher.
-            if !current.is_startup && update.is_startup { return false; }
-            if !current.is_startup && !update.is_startup && current.provider_id != update.provider_id {
+            if !current.is_startup && update.is_startup {
+                return false;
+            }
+            if !current.is_startup
+                && !update.is_startup
+                && current.provider_id != update.provider_id
+            {
                 // Provider-local slot/write-version values are not globally comparable.
                 // A provider switch requires an explicit source-generation reset.
                 return false;
             }
-            if !current.is_startup && !update.is_startup && current.slot == update.slot
-                && current.bank_id != update.bank_id {
+            if !current.is_startup
+                && !update.is_startup
+                && current.slot == update.slot
+                && current.bank_id != update.bank_id
+            {
                 // Never choose between competing banks by write_version. Wait for
                 // SLOT_DEAD invalidation or a coherent fresh dependency set.
                 return false;
@@ -143,11 +160,18 @@ impl AccountSnapshotStore {
     /// same context slot and the entire batch must be newer than existing records.
     /// This prevents partial dependency-group visibility to quote readers.
     pub fn apply_batch(&self, updates: Vec<AccountSnapshot>) -> bool {
-        if updates.is_empty() { return false; }
+        if updates.is_empty() {
+            return false;
+        }
         let dead_slots = self.invalidated_slots.read();
         let dead_banks = self.invalidated_banks.read();
-        if updates.iter().any(|u| dead_slots.contains(&u.slot)
-            || u.bank_id.is_some_and(|id| dead_banks.contains(&(u.slot, id)))) { return false; }
+        if updates.iter().any(|u| {
+            dead_slots.contains(&u.slot)
+                || u.bank_id
+                    .is_some_and(|id| dead_banks.contains(&(u.slot, id)))
+        }) {
+            return false;
+        }
         let first = &updates[0];
         let slot = first.slot;
         let provider_id = first.provider_id;
@@ -155,20 +179,33 @@ impl AccountSnapshotStore {
         let generation = first.generation;
         let is_startup = first.is_startup;
         let mut seen = std::collections::HashSet::with_capacity(updates.len());
-        if updates.iter().any(|u| u.slot != slot || u.provider_id != provider_id
-            || u.bank_id != bank_id || u.generation != generation || u.is_startup != is_startup
-            || !seen.insert(u.pubkey)) {
+        if updates.iter().any(|u| {
+            u.slot != slot
+                || u.provider_id != provider_id
+                || u.bank_id != bank_id
+                || u.generation != generation
+                || u.is_startup != is_startup
+                || !seen.insert(u.pubkey)
+        }) {
             return false;
         }
         let mut accounts = self.accounts.write();
-        if updates.iter().any(|u| accounts.get(&u.pubkey).is_some_and(|old|
-            (!old.is_startup && u.is_startup)
-                || (!old.is_startup && !u.is_startup && old.provider_id != u.provider_id)
-                || (!old.is_startup && !u.is_startup && old.slot == u.slot && old.bank_id != u.bank_id)
-                || (u.slot, u.write_version) <= (old.slot, old.write_version))) {
+        if updates.iter().any(|u| {
+            accounts.get(&u.pubkey).is_some_and(|old| {
+                (!old.is_startup && u.is_startup)
+                    || (!old.is_startup && !u.is_startup && old.provider_id != u.provider_id)
+                    || (!old.is_startup
+                        && !u.is_startup
+                        && old.slot == u.slot
+                        && old.bank_id != u.bank_id)
+                    || (u.slot, u.write_version) <= (old.slot, old.write_version)
+            })
+        }) {
             return false;
         }
-        for update in updates { accounts.insert(update.pubkey, update); }
+        for update in updates {
+            accounts.insert(update.pubkey, update);
+        }
         true
     }
 
@@ -180,10 +217,15 @@ impl AccountSnapshotStore {
     /// interleave snapshots while a quote context is being assembled.
     pub fn get_many(&self, pubkeys: &[Pubkey]) -> Vec<Option<AccountSnapshot>> {
         let accounts = self.accounts.read();
-        pubkeys.iter().map(|key| accounts.get(key).cloned()).collect()
+        pubkeys
+            .iter()
+            .map(|key| accounts.get(key).cloned())
+            .collect()
     }
 
-    pub fn len(&self) -> usize { self.accounts.read().len() }
+    pub fn len(&self) -> usize {
+        self.accounts.read().len()
+    }
 
     /// Remove snapshots written in invalidated slots. This is source-local: callers must
     /// rebuild these accounts before marking a replacement snapshot quote-ready.
@@ -196,7 +238,8 @@ impl AccountSnapshotStore {
         }
         let mut accounts = self.accounts.write();
         let before = accounts.len();
-        accounts.retain(|_, snapshot| !(snapshot.slot == slot && snapshot.bank_id == Some(bank_id)));
+        accounts
+            .retain(|_, snapshot| !(snapshot.slot == slot && snapshot.bank_id == Some(bank_id)));
         before - accounts.len()
     }
 
@@ -224,7 +267,9 @@ impl AccountSnapshotStore {
     /// Return a copy of snapshots owned by one on-chain program.
     /// The caller should filter by owner before protocol-specific decoding.
     pub fn snapshots_by_owner(&self, owner: &Pubkey) -> Vec<AccountSnapshot> {
-        self.accounts.read().values()
+        self.accounts
+            .read()
+            .values()
             .filter(|snapshot| snapshot.owner == *owner)
             .cloned()
             .collect()
@@ -346,9 +391,15 @@ impl YellowstoneClient {
         Arc::clone(&self.account_store)
     }
 
-    pub fn provider_id(&self) -> ProviderId { self.provider_id }
-    pub fn stream_generation(&self) -> u64 { self.stream_generation.load(Ordering::Acquire) }
-    pub fn stream_connected(&self) -> bool { self.stream_connected.load(Ordering::Acquire) }
+    pub fn provider_id(&self) -> ProviderId {
+        self.provider_id
+    }
+    pub fn stream_generation(&self) -> u64 {
+        self.stream_generation.load(Ordering::Acquire)
+    }
+    pub fn stream_connected(&self) -> bool {
+        self.stream_connected.load(Ordering::Acquire)
+    }
 
     /// Begin a fresh source epoch. Old account/pool state is discarded before accepting data.
     pub fn begin_stream_generation(&self) -> u64 {
@@ -359,10 +410,14 @@ impl YellowstoneClient {
         self.latest_slot.store(0, Ordering::Release);
         self.cache.version.fetch_add(1, Ordering::AcqRel);
         self.dedupe.lock().clear();
-        self.stream_generation.fetch_add(1, Ordering::AcqRel).saturating_add(1)
+        self.stream_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1)
     }
 
-    pub fn mark_stream_connected(&self) { self.stream_connected.store(true, Ordering::Release); }
+    pub fn mark_stream_connected(&self) {
+        self.stream_connected.store(true, Ordering::Release);
+    }
 
     /// Fail closed on disconnect: no stale quote state remains eligible.
     pub fn mark_stream_disconnected(&self) {
@@ -379,7 +434,10 @@ impl YellowstoneClient {
     /// replacements, so the gRPC worker always resends owner + address + slot filters together.
     /// Synchronize Yellowstone's explicit address filter from the dependency manifest.
     /// This does not subscribe to every account owned by a DEX program.
-    pub fn sync_manifest_subscriptions(&self, manifests: &DependencyManifestRegistry) -> Result<()> {
+    pub fn sync_manifest_subscriptions(
+        &self,
+        manifests: &DependencyManifestRegistry,
+    ) -> Result<()> {
         self.set_tracked_accounts(&manifests.tracked_accounts())
     }
 
@@ -424,7 +482,9 @@ impl YellowstoneClient {
     /// Apply an account update atomically to the cache.
     pub fn apply_pool_update(&self, pool_state: PoolState) -> Result<bool> {
         let slot_val = pool_state.slot.0;
-        if self.slot_is_dead(slot_val) { return Ok(false); }
+        if self.slot_is_dead(slot_val) {
+            return Ok(false);
+        }
         let key = DedupeKey {
             pool_id: pool_state.pool_id,
             slot: pool_state.slot,
@@ -457,15 +517,33 @@ impl YellowstoneClient {
     }
 
     /// Process Yellowstone slot status and invalidate every known descendant of a dead fork.
-    pub fn record_slot_update(&self, slot: u64, parent: Option<u64>, status: i32) -> SlotUpdateOutcome {
+    pub fn record_slot_update(
+        &self,
+        slot: u64,
+        parent: Option<u64>,
+        status: i32,
+    ) -> SlotUpdateOutcome {
         self.record_slot_update_with_bank(slot, parent, status, None)
     }
 
-    pub fn record_slot_update_with_bank(&self, slot: u64, parent: Option<u64>, status: i32, bank_id: Option<u64>) -> SlotUpdateOutcome {
-        let outcome = self.slot_integrity.lock().observe_with_bank(slot, parent, status, bank_id);
+    pub fn record_slot_update_with_bank(
+        &self,
+        slot: u64,
+        parent: Option<u64>,
+        status: i32,
+        bank_id: Option<u64>,
+    ) -> SlotUpdateOutcome {
+        let outcome = self
+            .slot_integrity
+            .lock()
+            .observe_with_bank(slot, parent, status, bank_id);
         if let SlotUpdateOutcome::Dead { invalidated_slots } = &outcome {
-            let invalidated: std::collections::HashSet<u64> = invalidated_slots.iter().copied().collect();
-            let bank_keys = self.slot_integrity.lock().bank_keys_for_slots(invalidated_slots);
+            let invalidated: std::collections::HashSet<u64> =
+                invalidated_slots.iter().copied().collect();
+            let bank_keys = self
+                .slot_integrity
+                .lock()
+                .bank_keys_for_slots(invalidated_slots);
             self.account_store.invalidate_slots(&invalidated);
             for (dead_slot, dead_bank) in bank_keys {
                 self.account_store.invalidate_bank(dead_slot, dead_bank);
@@ -474,28 +552,43 @@ impl YellowstoneClient {
                 let mut pools = self.cache.pools.write();
                 pools.retain(|_, pool| !invalidated.contains(&pool.slot.0));
             }
-            self.dedupe.lock().items.retain(|key, _| !invalidated.contains(&key.slot.0));
+            self.dedupe
+                .lock()
+                .items
+                .retain(|key, _| !invalidated.contains(&key.slot.0));
             self.cache.version.fetch_add(1, Ordering::AcqRel);
         }
-        if status == slot_integrity::SLOT_CREATED_BANK && bank_id.is_some() && !self.slot_is_dead(slot) {
+        if status == slot_integrity::SLOT_CREATED_BANK
+            && bank_id.is_some()
+            && !self.slot_is_dead(slot)
+        {
             self.account_store.reopen_slot_for_new_bank(slot);
         }
         self.record_slot(slot);
         outcome
     }
 
-    pub fn slot_is_dead(&self, slot: u64) -> bool { self.slot_integrity.lock().is_dead(slot) }
+    pub fn slot_is_dead(&self, slot: u64) -> bool {
+        self.slot_integrity.lock().is_dead(slot)
+    }
 
     pub fn record_account_bank_id(&self, slot: u64, bank_id: Option<u64>) {
-        if let Some(bank_id) = bank_id { self.slot_integrity.lock().record_bank_id(slot, bank_id); }
+        if let Some(bank_id) = bank_id {
+            self.slot_integrity.lock().record_bank_id(slot, bank_id);
+        }
     }
 
     pub fn record_entry_update_parent(&self, slot: u64, cleared_bank_id: u64) -> usize {
-        self.slot_integrity.lock().invalidate_bank(slot, cleared_bank_id);
+        self.slot_integrity
+            .lock()
+            .invalidate_bank(slot, cleared_bank_id);
         let removed = self.account_store.invalidate_bank(slot, cleared_bank_id);
         // PoolState currently has slot/write_version but no bank_id. Clear all pool
         // states at this slot rather than risk keeping one from the cleared candidate.
-        self.cache.pools.write().retain(|_, pool| pool.slot.0 != slot);
+        self.cache
+            .pools
+            .write()
+            .retain(|_, pool| pool.slot.0 != slot);
         self.dedupe.lock().items.retain(|key, _| key.slot.0 != slot);
         self.cache.version.fetch_add(1, Ordering::AcqRel);
         removed
@@ -588,20 +681,33 @@ impl YellowstoneClient {
         let generation = self.stream_generation();
         let connected = self.stream_connected();
         let observed_slot = self.current_slot();
-        if observed_slot == 0 { return Err(QuoteReadinessError::NoSlotWatermark); }
-        if target_slot > observed_slot { return Err(QuoteReadinessError::FutureSlot); }
+        if observed_slot == 0 {
+            return Err(QuoteReadinessError::NoSlotWatermark);
+        }
+        if target_slot > observed_slot {
+            return Err(QuoteReadinessError::FutureSlot);
+        }
         let snapshots = build_quote_dependency_set(
-            &self.account_store, &slots, required, expected_owners,
+            &self.account_store,
+            &slots,
+            required,
+            expected_owners,
             QuoteReadinessContext {
                 stream_connected: connected,
                 provider_id: self.provider_id,
                 generation,
-                target_slot: observed_slot, max_age_slots, max_slot_skew,
+                target_slot: observed_slot,
+                max_age_slots,
+                max_slot_skew,
             },
         )?;
         // Close the race where disconnect/reconnect occurs while snapshots are copied.
-        if !self.stream_connected() { return Err(QuoteReadinessError::StreamDisconnected); }
-        if self.stream_generation() != generation { return Err(QuoteReadinessError::WrongGeneration); }
+        if !self.stream_connected() {
+            return Err(QuoteReadinessError::StreamDisconnected);
+        }
+        if self.stream_generation() != generation {
+            return Err(QuoteReadinessError::WrongGeneration);
+        }
         Ok(snapshots)
     }
 
@@ -615,7 +721,8 @@ impl YellowstoneClient {
         max_age_slots: u64,
         max_slot_skew: u64,
     ) -> std::result::Result<Vec<AccountSnapshot>, QuoteReadinessError> {
-        let (required, owners) = manifests.route_requirements(pool_ids)
+        let (required, owners) = manifests
+            .route_requirements(pool_ids)
             .map_err(|_| QuoteReadinessError::InvalidDependencyManifest)?;
         self.quote_dependencies(&required, &owners, quote_slot, max_age_slots, max_slot_skew)
     }
@@ -702,14 +809,19 @@ mod tests {
             slot,
             write_version,
             is_startup: false,
-            provider_id: ProviderId(1), bank_id: Some(1), generation: 0,
+            provider_id: ProviderId(1),
+            bank_id: Some(1),
+            generation: 0,
             data: Arc::new(vec![byte]),
         };
         assert!(store.apply(mk(100, 10, 1)));
         assert!(!store.apply(mk(99, 99, 2)));
         assert!(!store.apply(mk(100, 9, 3)));
         assert!(store.apply(mk(100, 11, 4)));
-        assert_eq!(store.get(&key).expect("stored account").data.as_slice(), &[4]);
+        assert_eq!(
+            store.get(&key).expect("stored account").data.as_slice(),
+            &[4]
+        );
     }
 
     #[test]
@@ -723,7 +835,10 @@ mod tests {
         assert_eq!(handle_after.pool_count(), 1);
         assert_eq!(handle_after.version(), 2);
         assert!(!client.apply_pool_update(make_test_pool(9, 99)).unwrap());
-        assert_eq!(handle_after.get_pool(&PoolId::new([1; 32])).unwrap().slot, Slot(11));
+        assert_eq!(
+            handle_after.get_pool(&PoolId::new([1; 32])).unwrap().slot,
+            Slot(11)
+        );
     }
 
     #[test]
@@ -764,17 +879,42 @@ mod tests {
         let store = AccountSnapshotStore::default();
         let key = Pubkey::new_from_array([31; 32]);
         let owner = Pubkey::new_from_array([32; 32]);
-        let live = AccountSnapshot { pubkey: key, owner, slot: 100, write_version: 8,
-            is_startup: false, provider_id: ProviderId(1), bank_id: Some(10), generation: 2,
-            data: Arc::new(vec![1]) };
+        let live = AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 100,
+            write_version: 8,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(10),
+            generation: 2,
+            data: Arc::new(vec![1]),
+        };
         assert!(store.apply(live));
-        let competing_bank = AccountSnapshot { bank_id: Some(11), write_version: 9, data: Arc::new(vec![2]), ..store.get(&key).unwrap() };
+        let competing_bank = AccountSnapshot {
+            bank_id: Some(11),
+            write_version: 9,
+            data: Arc::new(vec![2]),
+            ..store.get(&key).unwrap()
+        };
         assert!(!store.apply(competing_bank));
-        let bootstrap = AccountSnapshot { provider_id: ProviderId(0), bank_id: None, is_startup: true,
-            slot: 101, write_version: 0, data: Arc::new(vec![3]), ..store.get(&key).unwrap() };
+        let bootstrap = AccountSnapshot {
+            provider_id: ProviderId(0),
+            bank_id: None,
+            is_startup: true,
+            slot: 101,
+            write_version: 0,
+            data: Arc::new(vec![3]),
+            ..store.get(&key).unwrap()
+        };
         assert!(!store.apply(bootstrap));
-        let other_provider = AccountSnapshot { provider_id: ProviderId(2), slot: 101,
-            write_version: 99, data: Arc::new(vec![4]), ..store.get(&key).unwrap() };
+        let other_provider = AccountSnapshot {
+            provider_id: ProviderId(2),
+            slot: 101,
+            write_version: 99,
+            data: Arc::new(vec![4]),
+            ..store.get(&key).unwrap()
+        };
         assert!(!store.apply(other_provider));
         assert_eq!(store.get(&key).unwrap().data.as_slice(), &[1]);
     }
@@ -800,14 +940,32 @@ mod tests {
         client.mark_stream_connected();
         let key = Pubkey::new_from_array([21; 32]);
         let owner = Pubkey::new_from_array([22; 32]);
-        assert!(client.account_store.apply(AccountSnapshot { pubkey: key, owner, slot: 100,
-            write_version: 9, is_startup: false, provider_id: ProviderId(1), bank_id: Some(1001),
-            generation, data: Arc::new(vec![1, 2]) }));
+        assert!(client.account_store.apply(AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 100,
+            write_version: 9,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(1001),
+            generation,
+            data: Arc::new(vec![1, 2])
+        }));
         let owners = HashMap::from([(key, owner)]);
-        assert!(client.quote_dependencies(&[key], &owners, 100, 0, 0).is_ok());
-        assert!(matches!(client.quote_dependencies(&[key], &owners, 101, 0, 0), Err(QuoteReadinessError::FutureSlot)));
+        assert!(
+            client
+                .quote_dependencies(&[key], &owners, 100, 0, 0)
+                .is_ok()
+        );
+        assert!(matches!(
+            client.quote_dependencies(&[key], &owners, 101, 0, 0),
+            Err(QuoteReadinessError::FutureSlot)
+        ));
         client.mark_stream_disconnected();
-        assert!(matches!(client.quote_dependencies(&[key], &owners, 100, 0, 0), Err(QuoteReadinessError::StreamDisconnected)));
+        assert!(matches!(
+            client.quote_dependencies(&[key], &owners, 100, 0, 0),
+            Err(QuoteReadinessError::StreamDisconnected)
+        ));
     }
 
     #[test]
@@ -815,9 +973,17 @@ mod tests {
         let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
         let key = Pubkey::new_from_array([17; 32]);
         let owner = Pubkey::new_from_array([18; 32]);
-        let snapshot = AccountSnapshot { pubkey: key, owner, slot: 77, write_version: 3,
-            is_startup: false, provider_id: ProviderId(1), bank_id: Some(900), generation: 1,
-            data: Arc::new(vec![1]) };
+        let snapshot = AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 77,
+            write_version: 3,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(900),
+            generation: 1,
+            data: Arc::new(vec![1]),
+        };
         assert!(client.account_store.apply(snapshot));
         assert!(client.apply_pool_update(make_test_pool(77, 1)).unwrap());
         assert_eq!(client.record_entry_update_parent(77, 900), 1);
@@ -825,9 +991,17 @@ mod tests {
         assert!(client.account_store.get(&key).is_none());
         assert!(client.bank_is_dead(77, Some(900)));
         assert!(!client.bank_is_dead(77, Some(901)));
-        let late = AccountSnapshot { pubkey: key, owner, slot: 77, write_version: 4,
-            is_startup: false, provider_id: ProviderId(1), bank_id: Some(900), generation: 1,
-            data: Arc::new(vec![2]) };
+        let late = AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 77,
+            write_version: 4,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(900),
+            generation: 1,
+            data: Arc::new(vec![2]),
+        };
         assert!(!client.account_store.apply(late));
     }
 
@@ -836,20 +1010,57 @@ mod tests {
         let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
         let key = Pubkey::new_from_array([27; 32]);
         let owner = Pubkey::new_from_array([28; 32]);
-        client.record_slot_update_with_bank(88, Some(87), slot_integrity::SLOT_CREATED_BANK, Some(1000));
+        client.record_slot_update_with_bank(
+            88,
+            Some(87),
+            slot_integrity::SLOT_CREATED_BANK,
+            Some(1000),
+        );
         client.record_account_bank_id(88, Some(1000));
-        assert!(client.account_store.apply(AccountSnapshot { pubkey: key, owner, slot: 88,
-            write_version: 1, is_startup: false, provider_id: ProviderId(1), bank_id: Some(1000), generation: 1, data: Arc::new(vec![1]) }));
+        assert!(client.account_store.apply(AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 88,
+            write_version: 1,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(1000),
+            generation: 1,
+            data: Arc::new(vec![1])
+        }));
         client.record_slot_update_with_bank(88, Some(87), slot_integrity::SLOT_DEAD, None);
-        client.record_slot_update_with_bank(88, Some(87), slot_integrity::SLOT_CREATED_BANK, Some(1001));
+        client.record_slot_update_with_bank(
+            88,
+            Some(87),
+            slot_integrity::SLOT_CREATED_BANK,
+            Some(1001),
+        );
         assert!(!client.slot_is_dead(88));
         assert!(client.bank_is_dead(88, Some(1000)));
         assert!(!client.bank_is_dead(88, Some(1001)));
-        let old = AccountSnapshot { pubkey: key, owner, slot: 88, write_version: 2,
-            is_startup: false, provider_id: ProviderId(1), bank_id: Some(1000), generation: 1, data: Arc::new(vec![2]) };
+        let old = AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 88,
+            write_version: 2,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(1000),
+            generation: 1,
+            data: Arc::new(vec![2]),
+        };
         assert!(!client.account_store.apply(old));
-        let replacement = AccountSnapshot { pubkey: key, owner, slot: 88, write_version: 1,
-            is_startup: false, provider_id: ProviderId(1), bank_id: Some(1001), generation: 1, data: Arc::new(vec![3]) };
+        let replacement = AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 88,
+            write_version: 1,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(1001),
+            generation: 1,
+            data: Arc::new(vec![3]),
+        };
         assert!(client.account_store.apply(replacement));
     }
 
@@ -858,20 +1069,32 @@ mod tests {
         let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
         let key = Pubkey::new_from_array([7; 32]);
         let owner = Pubkey::new_from_array([8; 32]);
-        assert!(client.account_store.apply(AccountSnapshot { pubkey: key, owner, slot: 10,
-            write_version: 1, is_startup: false, provider_id: ProviderId(1), bank_id: Some(1), generation: 0, data: Arc::new(vec![1]) }));
+        assert!(client.account_store.apply(AccountSnapshot {
+            pubkey: key,
+            owner,
+            slot: 10,
+            write_version: 1,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(1),
+            generation: 0,
+            data: Arc::new(vec![1])
+        }));
         assert!(client.apply_pool_update(make_test_pool(10, 1)).unwrap());
         client.record_slot_update(10, Some(9), slot_integrity::SLOT_PROCESSED);
         client.record_slot_update(11, Some(10), slot_integrity::SLOT_PROCESSED);
         let result = client.record_slot_update(10, Some(9), slot_integrity::SLOT_DEAD);
-        assert_eq!(result, SlotUpdateOutcome::Dead { invalidated_slots: vec![10, 11] });
+        assert_eq!(
+            result,
+            SlotUpdateOutcome::Dead {
+                invalidated_slots: vec![10, 11]
+            }
+        );
         assert!(client.account_store.get(&key).is_none());
         assert_eq!(client.cache().pool_count(), 0);
         assert!(!client.apply_pool_update(make_test_pool(11, 2)).unwrap());
     }
-
 }
-
 
 #[cfg(test)]
 mod atomic_snapshot_batch_tests {
@@ -879,9 +1102,20 @@ mod atomic_snapshot_batch_tests {
     #[test]
     fn batch_publish_is_all_or_nothing_and_requires_one_slot() {
         let store = AccountSnapshotStore::default();
-        let a = Pubkey::from([1u8; 32]); let b = Pubkey::from([2u8; 32]);
+        let a = Pubkey::from([1u8; 32]);
+        let b = Pubkey::from([2u8; 32]);
         let owner = Pubkey::from([3u8; 32]);
-        let mk = |pubkey, slot| AccountSnapshot { pubkey, owner, slot, write_version: 0, is_startup: true, provider_id: ProviderId(0), bank_id: None, generation: 0, data: Arc::new(vec![1]) };
+        let mk = |pubkey, slot| AccountSnapshot {
+            pubkey,
+            owner,
+            slot,
+            write_version: 0,
+            is_startup: true,
+            provider_id: ProviderId(0),
+            bank_id: None,
+            generation: 0,
+            data: Arc::new(vec![1]),
+        };
         assert!(!store.apply_batch(vec![mk(a, 10), mk(b, 11)]));
         assert!(store.is_empty());
         assert!(store.apply_batch(vec![mk(a, 10), mk(b, 10)]));

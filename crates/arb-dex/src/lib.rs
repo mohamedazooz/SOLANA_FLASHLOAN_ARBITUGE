@@ -12,7 +12,6 @@ pub use pump_swap::{PumpSwapFeeConfig, PumpSwapFeeTier, PumpSwapPool, PumpSwapPo
 pub use raydium_v4::RaydiumV4Pool;
 pub use traits::AmmPool;
 
-
 /// Parsed Token-2022 TransferFeeConfig from a mint account's TLV region.
 /// Values are raw token units; `epoch` and fee fields follow the on-chain POD layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,26 +35,49 @@ pub fn decode_transfer_fee_config(mint_data: &[u8]) -> Option<TransferFeeConfig>
     const TRANSFER_FEE_CONFIG_TYPE: u16 = 1;
     const CONFIG_LEN: usize = 108;
 
-    if mint_data.len() == 82 || mint_data.len() < TLV_START
-        || mint_data.get(165).copied()? != ACCOUNT_TYPE_MINT {
+    if mint_data.len() == 82
+        || mint_data.len() < TLV_START
+        || mint_data.get(165).copied()? != ACCOUNT_TYPE_MINT
+    {
         return None;
     }
     let mut offset = TLV_START;
     while offset.checked_add(4)? <= mint_data.len() {
-        if mint_data[offset..].iter().all(|b| *b == 0) { return None; }
+        if mint_data[offset..].iter().all(|b| *b == 0) {
+            return None;
+        }
         let ty = u16::from_le_bytes([*mint_data.get(offset)?, *mint_data.get(offset + 1)?]);
-        let len = u16::from_le_bytes([*mint_data.get(offset + 2)?, *mint_data.get(offset + 3)?]) as usize;
+        let len =
+            u16::from_le_bytes([*mint_data.get(offset + 2)?, *mint_data.get(offset + 3)?]) as usize;
         let start = offset.checked_add(4)?;
         let end = start.checked_add(len)?;
-        if end > mint_data.len() || end <= offset { return None; }
+        if end > mint_data.len() || end <= offset {
+            return None;
+        }
         if ty == TRANSFER_FEE_CONFIG_TYPE {
-            if len != CONFIG_LEN { return None; }
+            if len != CONFIG_LEN {
+                return None;
+            }
             let value = &mint_data[start..end];
-            let read_u64 = |i: usize| -> Option<u64> { Some(u64::from_le_bytes(value.get(i..i+8)?.try_into().ok()?)) };
-            let read_u16 = |i: usize| -> Option<u16> { Some(u16::from_le_bytes(value.get(i..i+2)?.try_into().ok()?)) };
-            let older = TransferFeeSchedule { epoch: read_u64(72)?, maximum_fee: read_u64(80)?, basis_points: read_u16(88)? };
-            let newer = TransferFeeSchedule { epoch: read_u64(90)?, maximum_fee: read_u64(98)?, basis_points: read_u16(106)? };
-            if older.basis_points > 10_000 || newer.basis_points > 10_000 { return None; }
+            let read_u64 = |i: usize| -> Option<u64> {
+                Some(u64::from_le_bytes(value.get(i..i + 8)?.try_into().ok()?))
+            };
+            let read_u16 = |i: usize| -> Option<u16> {
+                Some(u16::from_le_bytes(value.get(i..i + 2)?.try_into().ok()?))
+            };
+            let older = TransferFeeSchedule {
+                epoch: read_u64(72)?,
+                maximum_fee: read_u64(80)?,
+                basis_points: read_u16(88)?,
+            };
+            let newer = TransferFeeSchedule {
+                epoch: read_u64(90)?,
+                maximum_fee: read_u64(98)?,
+                basis_points: read_u16(106)?,
+            };
+            if older.basis_points > 10_000 || newer.basis_points > 10_000 {
+                return None;
+            }
             return Some(TransferFeeConfig { older, newer });
         }
         offset = end;
@@ -65,8 +87,12 @@ pub fn decode_transfer_fee_config(mint_data: &[u8]) -> Option<TransferFeeConfig>
 
 /// Calculate Token-2022's withheld transfer fee: ceil(amount*bps/10_000), capped.
 pub fn calculate_transfer_fee(amount: u64, schedule: TransferFeeSchedule) -> Option<u64> {
-    if schedule.basis_points > 10_000 { return None; }
-    if amount == 0 || schedule.basis_points == 0 { return Some(0); }
+    if schedule.basis_points > 10_000 {
+        return None;
+    }
+    if amount == 0 || schedule.basis_points == 0 {
+        return Some(0);
+    }
     let numerator = (amount as u128).checked_mul(schedule.basis_points as u128)?;
     let fee = numerator.checked_add(9_999)? / 10_000;
     Some((fee.min(schedule.maximum_fee as u128)) as u64)
@@ -74,7 +100,11 @@ pub fn calculate_transfer_fee(amount: u64, schedule: TransferFeeSchedule) -> Opt
 
 /// Select the active schedule using the Clock sysvar epoch.
 pub fn active_transfer_fee(config: TransferFeeConfig, current_epoch: u64) -> TransferFeeSchedule {
-    if current_epoch >= config.newer.epoch { config.newer } else { config.older }
+    if current_epoch >= config.newer.epoch {
+        config.newer
+    } else {
+        config.older
+    }
 }
 
 /// CPMM decoder helper.
@@ -228,7 +258,11 @@ mod tests {
 
     #[test]
     fn transfer_fee_rounds_up_and_caps() {
-        let schedule = TransferFeeSchedule { epoch: 0, maximum_fee: 7, basis_points: 150 };
+        let schedule = TransferFeeSchedule {
+            epoch: 0,
+            maximum_fee: 7,
+            basis_points: 150,
+        };
         assert_eq!(calculate_transfer_fee(1, schedule), Some(1));
         assert_eq!(calculate_transfer_fee(100, schedule), Some(2));
         assert_eq!(calculate_transfer_fee(10_000, schedule), Some(7));
@@ -237,8 +271,16 @@ mod tests {
     #[test]
     fn active_transfer_fee_uses_epoch_boundary() {
         let config = TransferFeeConfig {
-            older: TransferFeeSchedule { epoch: 0, maximum_fee: 10, basis_points: 100 },
-            newer: TransferFeeSchedule { epoch: 12, maximum_fee: 20, basis_points: 200 },
+            older: TransferFeeSchedule {
+                epoch: 0,
+                maximum_fee: 10,
+                basis_points: 100,
+            },
+            newer: TransferFeeSchedule {
+                epoch: 12,
+                maximum_fee: 20,
+                basis_points: 200,
+            },
         };
         assert_eq!(active_transfer_fee(config, 11).basis_points, 100);
         assert_eq!(active_transfer_fee(config, 12).basis_points, 200);
@@ -262,5 +304,4 @@ mod tests {
         assert_eq!(cfg.newer.maximum_fee, 75);
         assert_eq!(cfg.newer.basis_points, 200);
     }
-
 }

@@ -166,13 +166,13 @@ impl Supervisor {
             Lamports(self.config.jito.max_tip_lamports),
             current_slot,
             self.live_sol_price(),
-        ).map_err(anyhow::Error::msg)?;
+        )
+        .map_err(anyhow::Error::msg)?;
         if !inputs.is_fresh(self.config.strategy.max_state_age_slots) {
             anyhow::bail!("verified Yellowstone economic inputs exceed max_state_age_slots");
         }
         Ok(inputs)
     }
-
 }
 
 /// Maximum age, in slots, across every pool an opportunity depends on.
@@ -181,7 +181,11 @@ impl Supervisor {
 /// gate, so freshness is never derived from wall-clock. Fails closed: a hop
 /// whose pool is missing from the snapshot — or that was never stamped — makes
 /// the whole route maximally stale rather than silently fresh.
-pub(super) fn max_state_age_slots(hops: &[SwapHop], pools: &[PoolState], current_slot: Slot) -> u64 {
+pub(super) fn max_state_age_slots(
+    hops: &[SwapHop],
+    pools: &[PoolState],
+    current_slot: Slot,
+) -> u64 {
     hops.iter()
         .map(|h| {
             pools

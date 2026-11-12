@@ -249,7 +249,6 @@ pub fn decode_reserve_flash_fee_sf(
     Ok(sf)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

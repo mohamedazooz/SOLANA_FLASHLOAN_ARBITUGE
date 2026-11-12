@@ -916,21 +916,15 @@ mod tests {
         assert_eq!(boundary, TICK_ARRAY_SIZE as i32);
         assert!(initialized.is_none());
         let err = find_next_tick_boundary(boundary, 1, false, &[]).unwrap_err();
-        assert_eq!(err, ClmmMathError::MissingTickArrayCoverage(TICK_ARRAY_SIZE as i32));
+        assert_eq!(
+            err,
+            ClmmMathError::MissingTickArrayCoverage(TICK_ARRAY_SIZE as i32)
+        );
     }
 
     #[test]
     fn compute_swap_rejects_zero_progress_instead_of_returning_partial_quote() {
-        let result = compute_swap(
-            Q64,
-            0,
-            1_000_000_000,
-            1,
-            65_535,
-            1,
-            true,
-            &[],
-        );
+        let result = compute_swap(Q64, 0, 1_000_000_000, 1, 65_535, 1, true, &[]);
         assert_eq!(result, Err(ClmmMathError::MissingTickArrayCoverage(0)));
     }
 

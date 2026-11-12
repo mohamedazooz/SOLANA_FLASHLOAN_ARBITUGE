@@ -107,9 +107,9 @@ impl Supervisor {
             // vaults, both mints and canonical Pump Fees FeeConfig at coherent slots.
             // The graph uses a conservative whole-BPS fee for candidate discovery;
             // exact route validation remains protocol-adapter driven.
-            let pump_swap_report = self.ingest.refresh_pump_swap_states(
-                self.config.strategy.max_state_age_slots,
-            );
+            let pump_swap_report = self
+                .ingest
+                .refresh_pump_swap_states(self.config.strategy.max_state_age_slots);
             if pump_swap_report.pools_promoted > 0 || pump_swap_report.pools_rejected > 0 {
                 debug!(
                     "PumpSwap promotion: owner_accounts={} tracked={} joined={} promoted={} rejected={}",
@@ -193,7 +193,12 @@ impl Supervisor {
 
             // Filter out stale pools from graph to prevent phantom arbitrage cycles
             // caused by price divergence against frozen/unupdated pools.
-            let max_graph_age_slots = self.config.strategy.max_state_age_slots.saturating_mul(4).max(8);
+            let max_graph_age_slots = self
+                .config
+                .strategy
+                .max_state_age_slots
+                .saturating_mul(4)
+                .max(8);
             let fresh_pools: Vec<PoolState> = pools
                 .iter()
                 .filter(|p| {
@@ -491,9 +496,12 @@ impl Supervisor {
 
                 // Convert the actual input notional to USD before either risk path.
                 // Unknown base-mint valuation is a hard rejection, never a $10 placeholder.
-                let base_price_usd = if opp.base_mint.0 == Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default() {
+                let base_price_usd = if opp.base_mint.0
+                    == Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default()
+                {
                     Some(live_sol_price)
-                } else if opp.base_mint.0 == Pubkey::from_str(arb_tx::USDC_MINT).unwrap_or_default() {
+                } else if opp.base_mint.0 == Pubkey::from_str(arb_tx::USDC_MINT).unwrap_or_default()
+                {
                     Some(1.0)
                 } else {
                     None
@@ -509,17 +517,32 @@ impl Supervisor {
                             .unwrap_or(0);
                         if self.config.strategy.use_flash_loan {
                             self.risk_gate.evaluate_flash_loan(
-                                real_net_profit, opp.size_in, current_slot, state_age_slots,
-                                size_usd, tip.as_u64(), tip_share_bps, effective_price_impact_bps,
+                                real_net_profit,
+                                opp.size_in,
+                                current_slot,
+                                state_age_slots,
+                                size_usd,
+                                tip.as_u64(),
+                                tip_share_bps,
+                                effective_price_impact_bps,
                             )
                         } else {
                             self.risk_gate.evaluate_full(
-                                real_net_profit, opp.size_in, current_slot, state_age_slots,
-                                size_usd, tip.as_u64(), tip_share_bps, effective_price_impact_bps,
+                                real_net_profit,
+                                opp.size_in,
+                                current_slot,
+                                state_age_slots,
+                                size_usd,
+                                tip.as_u64(),
+                                tip_share_bps,
+                                effective_price_impact_bps,
                             )
                         }
                     }
-                    _ => Err("cannot establish USD notional for base mint; risk gate fails closed".to_string()),
+                    _ => Err(
+                        "cannot establish USD notional for base mint; risk gate fails closed"
+                            .to_string(),
+                    ),
                 };
 
                 if let Err(reason) = risk_check {
@@ -923,7 +946,8 @@ impl Supervisor {
                     real_net_profit,
                     payer,
                     route_sig: &route_sig,
-                }).await;
+                })
+                .await;
             }
 
             if tick >= 10 && std::env::var("ARB_TEST_EXIT").is_ok() {

@@ -121,8 +121,12 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Raydium CPMM missing on-chain fee or reserves")
             }
         }
-        DexProtocol::PumpFun => Err("Pump.fun remains quote-only until current on-chain instruction accounts and fee config are verified"),
-        DexProtocol::PumpSwap => Err("PumpSwap remains quote-only until pool + vault + global fee config are joined at one slot"),
+        DexProtocol::PumpFun => Err(
+            "Pump.fun remains quote-only until current on-chain instruction accounts and fee config are verified",
+        ),
+        DexProtocol::PumpSwap => Err(
+            "PumpSwap remains quote-only until pool + vault + global fee config are joined at one slot",
+        ),
         DexProtocol::RaydiumClmm => {
             if pool.clmm.is_some() {
                 Ok(())
@@ -269,20 +273,31 @@ fn quote_pump_fun_hop(
     a_to_b: bool,
 ) -> Result<(u64, u64, u16)> {
     if pool.base_mint.0.to_string() != arb_constants::WSOL_MINT {
-        return Err(ArbError::InvalidInput("Pump.fun quote adapter currently supports WSOL-quoted curves only".into()));
+        return Err(ArbError::InvalidInput(
+            "Pump.fun quote adapter currently supports WSOL-quoted curves only".into(),
+        ));
     }
     if pool.fee_denominator != 10_000 {
-        return Err(ArbError::InvalidInput("Pump.fun pool fee denominator must be BPS (10,000)".into()));
+        return Err(ArbError::InvalidInput(
+            "Pump.fun pool fee denominator must be BPS (10,000)".into(),
+        ));
     }
     let fee_bps = u16::try_from(pool.fee_numerator)
         .map_err(|_| ArbError::InvalidInput("Pump.fun fee BPS out of range".into()))?;
     let state = pool.pump_fun.as_ref().ok_or_else(|| {
-        ArbError::InvalidInput("Pump.fun bonding-curve state is missing; reserve fallback is disabled".into())
+        ArbError::InvalidInput(
+            "Pump.fun bonding-curve state is missing; reserve fallback is disabled".into(),
+        )
     })?;
-    let curve = PumpFunBondingCurve::from_state(pool.pool_id, pool.base_mint, pool.quote_mint, state)
-        .with_fee_bps(fee_bps)?
-        .with_token_decimals(pool.decimals_b);
-    let impact_reserve = if a_to_b { curve.virtual_sol_reserves } else { curve.virtual_token_reserves };
+    let curve =
+        PumpFunBondingCurve::from_state(pool.pool_id, pool.base_mint, pool.quote_mint, state)
+            .with_fee_bps(fee_bps)?
+            .with_token_decimals(pool.decimals_b);
+    let impact_reserve = if a_to_b {
+        curve.virtual_sol_reserves
+    } else {
+        curve.virtual_token_reserves
+    };
 
     let (amount_out, fee_paid) = curve.quote_with_fee(amount_in, a_to_b)?;
 
@@ -290,12 +305,26 @@ fn quote_pump_fun_hop(
     // Buy fees are withheld from quote input; sell fees are removed from gross quote output.
     if a_to_b {
         let net_quote_in = amount_in.checked_sub(fee_paid).ok_or(ArbError::Overflow)?;
-        let new_v_sol = curve.virtual_sol_reserves.checked_add(net_quote_in).ok_or(ArbError::Overflow)?;
-        let new_v_tok = curve.virtual_token_reserves.checked_sub(amount_out)
-            .ok_or_else(|| ArbError::InvalidInput("Pump.fun buy exceeds virtual token reserve".into()))?;
-        let new_r_tok = curve.real_token_reserves.checked_sub(amount_out)
-            .ok_or_else(|| ArbError::InvalidInput("Pump.fun buy exceeds real token reserve".into()))?;
-        let new_r_sol = curve.real_sol_reserves.checked_add(net_quote_in).ok_or(ArbError::Overflow)?;
+        let new_v_sol = curve
+            .virtual_sol_reserves
+            .checked_add(net_quote_in)
+            .ok_or(ArbError::Overflow)?;
+        let new_v_tok = curve
+            .virtual_token_reserves
+            .checked_sub(amount_out)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Pump.fun buy exceeds virtual token reserve".into())
+            })?;
+        let new_r_tok = curve
+            .real_token_reserves
+            .checked_sub(amount_out)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Pump.fun buy exceeds real token reserve".into())
+            })?;
+        let new_r_sol = curve
+            .real_sol_reserves
+            .checked_add(net_quote_in)
+            .ok_or(ArbError::Overflow)?;
         pool.reserve_in = new_v_sol as u128;
         pool.reserve_out = new_v_tok as u128;
         if let Some(st) = pool.pump_fun.as_mut() {
@@ -306,12 +335,26 @@ fn quote_pump_fun_hop(
         }
     } else {
         let gross_quote_out = amount_out.checked_add(fee_paid).ok_or(ArbError::Overflow)?;
-        let new_v_tok = curve.virtual_token_reserves.checked_add(amount_in).ok_or(ArbError::Overflow)?;
-        let new_v_sol = curve.virtual_sol_reserves.checked_sub(gross_quote_out)
-            .ok_or_else(|| ArbError::InvalidInput("Pump.fun sell exceeds virtual SOL reserve".into()))?;
-        let new_r_tok = curve.real_token_reserves.checked_add(amount_in).ok_or(ArbError::Overflow)?;
-        let new_r_sol = curve.real_sol_reserves.checked_sub(gross_quote_out)
-            .ok_or_else(|| ArbError::InvalidInput("Pump.fun sell exceeds real SOL reserve".into()))?;
+        let new_v_tok = curve
+            .virtual_token_reserves
+            .checked_add(amount_in)
+            .ok_or(ArbError::Overflow)?;
+        let new_v_sol = curve
+            .virtual_sol_reserves
+            .checked_sub(gross_quote_out)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Pump.fun sell exceeds virtual SOL reserve".into())
+            })?;
+        let new_r_tok = curve
+            .real_token_reserves
+            .checked_add(amount_in)
+            .ok_or(ArbError::Overflow)?;
+        let new_r_sol = curve
+            .real_sol_reserves
+            .checked_sub(gross_quote_out)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Pump.fun sell exceeds real SOL reserve".into())
+            })?;
         pool.reserve_in = new_v_sol as u128;
         pool.reserve_out = new_v_tok as u128;
         if let Some(st) = pool.pump_fun.as_mut() {
@@ -382,7 +425,9 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     }
     let fee_rate = c0.fee_rate;
     if fee_rate == 0 {
-        return Err(ArbError::InvalidInput("CLMM native fee rate is missing".into()));
+        return Err(ArbError::InvalidInput(
+            "CLMM native fee rate is missing".into(),
+        ));
     }
 
     let arrays: Vec<TickArrayFacade> = c0
@@ -488,10 +533,12 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
         .map(|b| {
             Ok(DlmmBin {
                 id: b.bin_id,
-                amount_x: u64::try_from(b.amount_x)
-                    .map_err(|_| ArbError::InvalidInput("DLMM X reserve exceeds u64 domain".into()))?,
-                amount_y: u64::try_from(b.amount_y)
-                    .map_err(|_| ArbError::InvalidInput("DLMM Y reserve exceeds u64 domain".into()))?,
+                amount_x: u64::try_from(b.amount_x).map_err(|_| {
+                    ArbError::InvalidInput("DLMM X reserve exceeds u64 domain".into())
+                })?,
+                amount_y: u64::try_from(b.amount_y).map_err(|_| {
+                    ArbError::InvalidInput("DLMM Y reserve exceeds u64 domain".into())
+                })?,
                 price_q64: 0,
             })
         })

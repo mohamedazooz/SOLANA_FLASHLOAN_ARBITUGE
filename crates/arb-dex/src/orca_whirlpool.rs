@@ -192,7 +192,7 @@ impl AmmPool for OrcaWhirlpool {
                         })
                         .collect(),
                 })
-                .collect()
+                .collect(),
         })
     }
 

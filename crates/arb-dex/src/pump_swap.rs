@@ -6,8 +6,10 @@
 //! the current Pump fee configuration before constructing a priceable pool.
 
 use crate::traits::AmmPool;
+pub use arb_constants::{
+    PUMP_SWAP_GLOBAL_CONFIG, PUMP_SWAP_POOL_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID,
+};
 use arb_math::cpmm_out_fee;
-pub use arb_constants::{PUMP_SWAP_GLOBAL_CONFIG, PUMP_SWAP_POOL_DISCRIMINATOR, PUMP_SWAP_PROGRAM_ID};
 use arb_types::{ArbError, DexProtocol, MintId, PoolId, Result};
 use solana_pubkey::Pubkey;
 
@@ -59,31 +61,41 @@ impl PumpSwapPoolHeader {
             }
         }
         let read_key = |start: usize| -> Result<Pubkey> {
-            let bytes: [u8; 32] = data.get(start..start + 32)
+            let bytes: [u8; 32] = data
+                .get(start..start + 32)
                 .ok_or_else(|| ArbError::DeserializationError("truncated PumpSwap pubkey".into()))?
-                .try_into().map_err(|_| ArbError::DeserializationError("invalid PumpSwap pubkey".into()))?;
+                .try_into()
+                .map_err(|_| ArbError::DeserializationError("invalid PumpSwap pubkey".into()))?;
             Ok(Pubkey::new_from_array(bytes))
         };
         let read_u64 = |start: usize| -> Result<u64> {
-            let bytes: [u8; 8] = data.get(start..start + 8)
+            let bytes: [u8; 8] = data
+                .get(start..start + 8)
                 .ok_or_else(|| ArbError::DeserializationError("truncated PumpSwap u64".into()))?
-                .try_into().map_err(|_| ArbError::DeserializationError("invalid PumpSwap u64".into()))?;
+                .try_into()
+                .map_err(|_| ArbError::DeserializationError("invalid PumpSwap u64".into()))?;
             Ok(u64::from_le_bytes(bytes))
         };
         let read_bool = |offset: usize| -> Result<bool> {
             match data.get(offset).copied() {
                 Some(0) => Ok(false),
                 Some(1) => Ok(true),
-                Some(_) => Err(ArbError::DeserializationError(format!("invalid PumpSwap bool at offset {offset}"))),
+                Some(_) => Err(ArbError::DeserializationError(format!(
+                    "invalid PumpSwap bool at offset {offset}"
+                ))),
                 None => Ok(false),
             }
         };
         let virtual_quote_reserves = if data.len() >= 261 {
-            i128::from_le_bytes(
-                data[245..261].try_into().map_err(|_| ArbError::DeserializationError("invalid virtual quote reserves".into()))?
-            )
-        } else { 0 };
-        if data.len() >= 270 { let _can_edit_creator_fee = read_bool(269)?; }
+            i128::from_le_bytes(data[245..261].try_into().map_err(|_| {
+                ArbError::DeserializationError("invalid virtual quote reserves".into())
+            })?)
+        } else {
+            0
+        };
+        if data.len() >= 270 {
+            let _can_edit_creator_fee = read_bool(269)?;
+        }
         Ok(Self {
             pool_bump: data[8],
             index: u16::from_le_bytes([data[9], data[10]]),
@@ -129,11 +141,15 @@ pub struct PumpSwapFeeConfig {
 
 impl PumpSwapFeeConfig {
     pub fn total_ppm(self) -> Result<u32> {
-        let total = self.lp_fee_ppm.checked_add(self.protocol_fee_ppm)
+        let total = self
+            .lp_fee_ppm
+            .checked_add(self.protocol_fee_ppm)
             .and_then(|v| v.checked_add(self.creator_or_holder_fee_ppm))
             .ok_or(ArbError::Overflow)?;
         if total > 1_000_000 {
-            return Err(ArbError::InvalidInput("PumpSwap total fee exceeds 100%".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap total fee exceeds 100%".into(),
+            ));
         }
         Ok(total)
     }
@@ -146,7 +162,11 @@ impl PumpSwapFeeConfig {
         protocol_fee_ppm: u32,
         creator_or_holder_fee_ppm: u32,
     ) -> Result<Self> {
-        let config = Self { lp_fee_ppm, protocol_fee_ppm, creator_or_holder_fee_ppm };
+        let config = Self {
+            lp_fee_ppm,
+            protocol_fee_ppm,
+            creator_or_holder_fee_ppm,
+        };
         config.total_ppm()?;
         Ok(config)
     }
@@ -154,19 +174,22 @@ impl PumpSwapFeeConfig {
     /// Select a fee tier from the live FeeConfig tier array. Thresholds and market cap
     /// must use the same raw quote-asset denomination. The tier array must be strictly
     /// increasing; no sorting or guessed fallback is performed.
-    pub fn from_live_tiers(
-        market_cap_quote_raw: u128,
-        tiers: &[PumpSwapFeeTier],
-    ) -> Result<Self> {
+    pub fn from_live_tiers(market_cap_quote_raw: u128, tiers: &[PumpSwapFeeTier]) -> Result<Self> {
         if tiers.is_empty() {
-            return Err(ArbError::InvalidInput("PumpSwap live FeeConfig has no tiers".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap live FeeConfig has no tiers".into(),
+            ));
         }
         for pair in tiers.windows(2) {
             if pair[0].market_cap_threshold_raw >= pair[1].market_cap_threshold_raw {
-                return Err(ArbError::InvalidInput("PumpSwap FeeConfig tier thresholds are not strictly increasing".into()));
+                return Err(ArbError::InvalidInput(
+                    "PumpSwap FeeConfig tier thresholds are not strictly increasing".into(),
+                ));
             }
         }
-        let selected = tiers.iter().rev()
+        let selected = tiers
+            .iter()
+            .rev()
             .find(|tier| market_cap_quote_raw >= tier.market_cap_threshold_raw)
             .unwrap_or(&tiers[0]);
         Self::from_verified_ppm(
@@ -219,8 +242,14 @@ impl PumpSwapPool {
         quote_decimals: u8,
     ) -> Result<Self> {
         Self::new_with_state(
-            pool_id, header, base_vault_amount, raw_quote_vault_amount, fee,
-            base_decimals, quote_decimals, 0,
+            pool_id,
+            header,
+            base_vault_amount,
+            raw_quote_vault_amount,
+            fee,
+            base_decimals,
+            quote_decimals,
+            0,
         )
     }
 
@@ -237,12 +266,21 @@ impl PumpSwapPool {
         disable_flags: u8,
     ) -> Result<Self> {
         let quote_reserve = header.effective_quote_reserve(raw_quote_vault_amount)?;
-        let fee_buckets = header.protocol_fees.checked_add(header.creator_fees).ok_or(ArbError::Overflow)?;
-        let real_quote_reserve = raw_quote_vault_amount.checked_sub(fee_buckets)
-            .ok_or_else(|| ArbError::InvalidInput("PumpSwap fee buckets exceed quote vault".into()))?;
+        let fee_buckets = header
+            .protocol_fees
+            .checked_add(header.creator_fees)
+            .ok_or(ArbError::Overflow)?;
+        let real_quote_reserve =
+            raw_quote_vault_amount
+                .checked_sub(fee_buckets)
+                .ok_or_else(|| {
+                    ArbError::InvalidInput("PumpSwap fee buckets exceed quote vault".into())
+                })?;
         fee.total_ppm()?;
         if base_vault_amount == 0 || quote_reserve == 0 {
-            return Err(ArbError::InvalidInput("PumpSwap pool has zero effective liquidity".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap pool has zero effective liquidity".into(),
+            ));
         }
         Ok(Self {
             pool_id,
@@ -261,11 +299,18 @@ impl PumpSwapPool {
 
     pub fn update_vault_balances(&mut self, base: u64, raw_quote: u64) -> Result<()> {
         let quote = self.header.effective_quote_reserve(raw_quote)?;
-        let fee_buckets = self.header.protocol_fees.checked_add(self.header.creator_fees).ok_or(ArbError::Overflow)?;
-        let real_quote = raw_quote.checked_sub(fee_buckets)
-            .ok_or_else(|| ArbError::InvalidInput("PumpSwap fee buckets exceed quote vault".into()))?;
+        let fee_buckets = self
+            .header
+            .protocol_fees
+            .checked_add(self.header.creator_fees)
+            .ok_or(ArbError::Overflow)?;
+        let real_quote = raw_quote.checked_sub(fee_buckets).ok_or_else(|| {
+            ArbError::InvalidInput("PumpSwap fee buckets exceed quote vault".into())
+        })?;
         if base == 0 || quote == 0 {
-            return Err(ArbError::InvalidInput("PumpSwap vault update has zero effective liquidity".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap vault update has zero effective liquidity".into(),
+            ));
         }
         self.base_reserve = base;
         self.quote_reserve = quote;
@@ -291,14 +336,21 @@ impl PumpSwapPool {
         let fee_bps = [
             self.fee.lp_fee_ppm,
             self.fee.protocol_fee_ppm,
-            if self.header.coin_creator == Pubkey::default() { 0 } else { self.fee.creator_or_holder_fee_ppm },
+            if self.header.coin_creator == Pubkey::default() {
+                0
+            } else {
+                self.fee.creator_or_holder_fee_ppm
+            },
         ];
         if fee_bps.iter().any(|rate| rate % 100 != 0) {
-            return Err(ArbError::InvalidInput("PumpSwap fee PPM is not an integer BPS multiple".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap fee PPM is not an integer BPS multiple".into(),
+            ));
         }
         let fee_bps = fee_bps.map(|rate| (rate / 100) as u64);
         let fee_amount = |gross: u128, bps: u64| -> Result<u128> {
-            gross.checked_mul(bps as u128)
+            gross
+                .checked_mul(bps as u128)
                 .ok_or(ArbError::Overflow)
                 .map(|v| v.div_ceil(scale))
         };
@@ -309,16 +361,20 @@ impl PumpSwapPool {
                 self.quote_reserve as u128,
                 scale,
                 scale,
-            ).ok_or_else(|| ArbError::InvalidInput("PumpSwap gross sell quote failed".into()))?;
+            )
+            .ok_or_else(|| ArbError::InvalidInput("PumpSwap gross sell quote failed".into()))?;
             let lp = fee_amount(gross, fee_bps[0])?;
             let protocol = fee_amount(gross, fee_bps[1])?;
             let creator = fee_amount(gross, fee_bps[2])?;
             let without_lp = gross.checked_sub(lp).ok_or(ArbError::Overflow)?;
-            if self.real_quote_reserve as u128 < without_lp {
-                return Err(ArbError::InvalidInput("PumpSwap insufficient real quote reserves".into()));
+            if (self.real_quote_reserve as u128) < without_lp {
+                return Err(ArbError::InvalidInput(
+                    "PumpSwap insufficient real quote reserves".into(),
+                ));
             }
             let out = without_lp
-                .checked_sub(protocol).and_then(|v| v.checked_sub(creator))
+                .checked_sub(protocol)
+                .and_then(|v| v.checked_sub(creator))
                 .ok_or_else(|| ArbError::InvalidInput("PumpSwap fees exceed sell output".into()))?;
             u64::try_from(out).map_err(|_| ArbError::Overflow)?
         } else {
@@ -333,13 +389,19 @@ impl PumpSwapPool {
             }
             let [fee_lp, fee_protocol, fee_creator] = fee_bps.map(|rate| fee_amount(net, rate));
             let fees = [fee_lp?, fee_protocol?, fee_creator?];
-            let cost = net.checked_add(fees.iter().sum::<u128>()).ok_or(ArbError::Overflow)?;
+            let cost = net
+                .checked_add(fees.iter().sum::<u128>())
+                .ok_or(ArbError::Overflow)?;
             if cost > input {
-                net = net.checked_sub(cost - input)
+                net = net
+                    .checked_sub(cost - input)
                     .filter(|value| *value > 0)
-                    .ok_or_else(|| ArbError::InvalidInput("PumpSwap exact-in fees consume input".into()))?;
+                    .ok_or_else(|| {
+                        ArbError::InvalidInput("PumpSwap exact-in fees consume input".into())
+                    })?;
             }
-            let swap_input = net.checked_sub(1)
+            let swap_input = net
+                .checked_sub(1)
                 .filter(|value| *value > 0)
                 .ok_or_else(|| ArbError::InvalidInput("PumpSwap buy input is dust".into()))?;
             let out = cpmm_out_fee(
@@ -348,33 +410,58 @@ impl PumpSwapPool {
                 self.base_reserve as u128,
                 scale,
                 scale,
-            ).ok_or_else(|| ArbError::InvalidInput("PumpSwap net buy quote failed".into()))?;
+            )
+            .ok_or_else(|| ArbError::InvalidInput("PumpSwap net buy quote failed".into()))?;
             u64::try_from(out).map_err(|_| ArbError::Overflow)?
         };
-        let reserve_out = if base_to_quote { self.real_quote_reserve } else { self.base_reserve };
+        let reserve_out = if base_to_quote {
+            self.real_quote_reserve
+        } else {
+            self.base_reserve
+        };
         if out == 0 || out >= reserve_out {
-            return Err(ArbError::InvalidInput("PumpSwap insufficient output liquidity".into()));
+            return Err(ArbError::InvalidInput(
+                "PumpSwap insufficient output liquidity".into(),
+            ));
         }
         Ok(out)
     }
 }
 
 impl AmmPool for PumpSwapPool {
-    fn pool_id(&self) -> PoolId { self.pool_id }
-    fn protocol(&self) -> DexProtocol { DexProtocol::PumpSwap }
-    fn base_mint(&self) -> MintId { self.base_mint }
-    fn quote_mint(&self) -> MintId { self.quote_mint }
-    fn reserves(&self) -> (u128, u128) { (self.base_reserve as u128, self.quote_reserve as u128) }
+    fn pool_id(&self) -> PoolId {
+        self.pool_id
+    }
+    fn protocol(&self) -> DexProtocol {
+        DexProtocol::PumpSwap
+    }
+    fn base_mint(&self) -> MintId {
+        self.base_mint
+    }
+    fn quote_mint(&self) -> MintId {
+        self.quote_mint
+    }
+    fn reserves(&self) -> (u128, u128) {
+        (self.base_reserve as u128, self.quote_reserve as u128)
+    }
     fn fee_bps(&self) -> Option<u16> {
         let ppm = self.fee.total_ppm().ok()?;
-        if ppm % 100 != 0 { return None; }
+        if ppm % 100 != 0 {
+            return None;
+        }
         u16::try_from(ppm / 100).ok()
     }
-    fn decimals(&self) -> (u8, u8) { (self.base_decimals, self.quote_decimals) }
-    fn update_from_account(&mut self, _data: &[u8]) -> Result<()> {
-        Err(ArbError::InvalidInput("PumpSwap requires a coherent Pool + two vault account update".into()))
+    fn decimals(&self) -> (u8, u8) {
+        (self.base_decimals, self.quote_decimals)
     }
-    fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> { self.quote_exact_in(amount_in, a_to_b) }
+    fn update_from_account(&mut self, _data: &[u8]) -> Result<()> {
+        Err(ArbError::InvalidInput(
+            "PumpSwap requires a coherent Pool + two vault account update".into(),
+        ))
+    }
+    fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
+        self.quote_exact_in(amount_in, a_to_b)
+    }
 }
 
 #[cfg(test)]
@@ -383,20 +470,33 @@ mod tests {
 
     fn fixture_header() -> PumpSwapPoolHeader {
         PumpSwapPoolHeader {
-            pool_bump: 1, index: 0,
-            creator: Pubkey::new_unique(), base_mint: Pubkey::new_unique(),
-            quote_mint: Pubkey::new_unique(), lp_mint: Pubkey::new_unique(),
-            base_vault: Pubkey::new_unique(), quote_vault: Pubkey::new_unique(),
-            lp_supply: 1_000, coin_creator: Pubkey::new_unique(),
-            is_mayhem_mode: false, is_cashback_coin: false,
-            virtual_quote_reserves: 100, creator_fee_bps: 0, can_edit_creator_fee: false, is_holder_reward: false,
-            protocol_fees: 0, creator_fees: 0,
+            pool_bump: 1,
+            index: 0,
+            creator: Pubkey::new_unique(),
+            base_mint: Pubkey::new_unique(),
+            quote_mint: Pubkey::new_unique(),
+            lp_mint: Pubkey::new_unique(),
+            base_vault: Pubkey::new_unique(),
+            quote_vault: Pubkey::new_unique(),
+            lp_supply: 1_000,
+            coin_creator: Pubkey::new_unique(),
+            is_mayhem_mode: false,
+            is_cashback_coin: false,
+            virtual_quote_reserves: 100,
+            creator_fee_bps: 0,
+            can_edit_creator_fee: false,
+            is_holder_reward: false,
+            protocol_fees: 0,
+            creator_fees: 0,
         }
     }
 
     #[test]
     fn effective_quote_reserve_includes_signed_virtual_adjustment() {
-        assert_eq!(fixture_header().effective_quote_reserve(1_000).unwrap(), 1_100);
+        assert_eq!(
+            fixture_header().effective_quote_reserve(1_000).unwrap(),
+            1_100
+        );
         let mut header = fixture_header();
         header.virtual_quote_reserves = -100;
         assert_eq!(header.effective_quote_reserve(1_000).unwrap(), 900);
@@ -406,9 +506,19 @@ mod tests {
     #[test]
     fn quote_uses_live_fee_components_and_direction() {
         let pool = PumpSwapPool::new_with_decimals(
-            PoolId(Pubkey::new_unique()), fixture_header(), 10_000, 20_000,
-            PumpSwapFeeConfig { lp_fee_ppm: 2_000, protocol_fee_ppm: 500, creator_or_holder_fee_ppm: 10_000 }, 6, 9,
-        ).unwrap();
+            PoolId(Pubkey::new_unique()),
+            fixture_header(),
+            10_000,
+            20_000,
+            PumpSwapFeeConfig {
+                lp_fee_ppm: 2_000,
+                protocol_fee_ppm: 500,
+                creator_or_holder_fee_ppm: 10_000,
+            },
+            6,
+            9,
+        )
+        .unwrap();
         let sell_out = pool.quote_exact_in(100, true).unwrap();
         let buy_out = pool.quote_exact_in(100, false).unwrap();
         assert_eq!(sell_out, 195);
@@ -418,12 +528,25 @@ mod tests {
     #[test]
     fn direction_flags_disable_only_the_configured_side() {
         let pool = PumpSwapPool::new_with_state(
-            PoolId(Pubkey::new_unique()), fixture_header(), 10_000, 20_000,
-            PumpSwapFeeConfig { lp_fee_ppm: 2_000, protocol_fee_ppm: 500, creator_or_holder_fee_ppm: 0 },
-            6, 9, 1 << 3,
-        ).unwrap();
+            PoolId(Pubkey::new_unique()),
+            fixture_header(),
+            10_000,
+            20_000,
+            PumpSwapFeeConfig {
+                lp_fee_ppm: 2_000,
+                protocol_fee_ppm: 500,
+                creator_or_holder_fee_ppm: 0,
+            },
+            6,
+            9,
+            1 << 3,
+        )
+        .unwrap();
         assert!(pool.quote_exact_in(100, false).is_err(), "buy disabled");
-        assert!(pool.quote_exact_in(100, true).is_ok(), "sell remains enabled");
+        assert!(
+            pool.quote_exact_in(100, true).is_ok(),
+            "sell remains enabled"
+        );
     }
 
     #[test]
@@ -432,10 +555,19 @@ mod tests {
         header.is_mayhem_mode = true;
         header.is_holder_reward = true;
         let pool = PumpSwapPool::new_with_decimals(
-            PoolId(Pubkey::new_unique()), header, 10_000, 20_000,
-            PumpSwapFeeConfig { lp_fee_ppm: 2_000, protocol_fee_ppm: 500, creator_or_holder_fee_ppm: 10_000 },
-            6, 9,
-        ).unwrap();
+            PoolId(Pubkey::new_unique()),
+            header,
+            10_000,
+            20_000,
+            PumpSwapFeeConfig {
+                lp_fee_ppm: 2_000,
+                protocol_fee_ppm: 500,
+                creator_or_holder_fee_ppm: 10_000,
+            },
+            6,
+            9,
+        )
+        .unwrap();
         assert!(pool.quote_exact_in(100, false).is_ok());
         assert!(pool.quote_exact_in(100, true).is_ok());
     }
@@ -450,29 +582,78 @@ mod tests {
             header,
             1_000,
             500,
-            PumpSwapFeeConfig { lp_fee_ppm: 20_000, protocol_fee_ppm: 5_000, creator_or_holder_fee_ppm: 0 },
+            PumpSwapFeeConfig {
+                lp_fee_ppm: 20_000,
+                protocol_fee_ppm: 5_000,
+                creator_or_holder_fee_ppm: 0,
+            },
             6,
             9,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(pool.real_quote_reserve, 50);
         assert!(pool.quote_exact_in(100, true).is_err());
     }
 
     #[test]
     fn rejects_invalid_fee_and_zero_liquidity() {
-        assert!(PumpSwapFeeConfig { lp_fee_ppm: 900_000, protocol_fee_ppm: 200_000, creator_or_holder_fee_ppm: 0 }.total_ppm().is_err());
-        assert!(PumpSwapPool::new_with_decimals(PoolId(Pubkey::new_unique()), fixture_header(), 0, 1_000,
-            PumpSwapFeeConfig { lp_fee_ppm: 2_000, protocol_fee_ppm: 500, creator_or_holder_fee_ppm: 0 }, 6, 9).is_err());
+        assert!(
+            PumpSwapFeeConfig {
+                lp_fee_ppm: 900_000,
+                protocol_fee_ppm: 200_000,
+                creator_or_holder_fee_ppm: 0
+            }
+            .total_ppm()
+            .is_err()
+        );
+        assert!(
+            PumpSwapPool::new_with_decimals(
+                PoolId(Pubkey::new_unique()),
+                fixture_header(),
+                0,
+                1_000,
+                PumpSwapFeeConfig {
+                    lp_fee_ppm: 2_000,
+                    protocol_fee_ppm: 500,
+                    creator_or_holder_fee_ppm: 0
+                },
+                6,
+                9
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn canonical_fee_tiers_preserve_bps_when_normalized_to_ppm() {
         let tiers = [
-            PumpSwapFeeTier { market_cap_threshold_raw: 0, lp_fee_ppm: 2_000, protocol_fee_ppm: 9_300, creator_or_holder_fee_ppm: 3_000 },
-            PumpSwapFeeTier { market_cap_threshold_raw: 1_000, lp_fee_ppm: 2_000, protocol_fee_ppm: 500, creator_or_holder_fee_ppm: 9_500 },
+            PumpSwapFeeTier {
+                market_cap_threshold_raw: 0,
+                lp_fee_ppm: 2_000,
+                protocol_fee_ppm: 9_300,
+                creator_or_holder_fee_ppm: 3_000,
+            },
+            PumpSwapFeeTier {
+                market_cap_threshold_raw: 1_000,
+                lp_fee_ppm: 2_000,
+                protocol_fee_ppm: 500,
+                creator_or_holder_fee_ppm: 9_500,
+            },
         ];
-        assert_eq!(PumpSwapFeeConfig::from_live_tiers(999, &tiers).unwrap().total_ppm().unwrap(), 14_300);
-        assert_eq!(PumpSwapFeeConfig::from_live_tiers(1_000, &tiers).unwrap().total_ppm().unwrap(), 12_000);
+        assert_eq!(
+            PumpSwapFeeConfig::from_live_tiers(999, &tiers)
+                .unwrap()
+                .total_ppm()
+                .unwrap(),
+            14_300
+        );
+        assert_eq!(
+            PumpSwapFeeConfig::from_live_tiers(1_000, &tiers)
+                .unwrap()
+                .total_ppm()
+                .unwrap(),
+            12_000
+        );
         assert!(PumpSwapFeeConfig::from_live_tiers(1_000, &[]).is_err());
     }
 
@@ -482,10 +663,16 @@ mod tests {
         data[..8].copy_from_slice(&PUMP_SWAP_POOL_DISCRIMINATOR);
         data[8] = 7;
         data[9..11].copy_from_slice(&3u16.to_le_bytes());
-        for (offset, key) in [(11, Pubkey::new_unique()), (43, Pubkey::new_unique()),
-            (75, Pubkey::new_unique()), (107, Pubkey::new_unique()),
-            (139, Pubkey::new_unique()), (171, Pubkey::new_unique()), (211, Pubkey::new_unique())] {
-            data[offset..offset+32].copy_from_slice(key.as_ref());
+        for (offset, key) in [
+            (11, Pubkey::new_unique()),
+            (43, Pubkey::new_unique()),
+            (75, Pubkey::new_unique()),
+            (107, Pubkey::new_unique()),
+            (139, Pubkey::new_unique()),
+            (171, Pubkey::new_unique()),
+            (211, Pubkey::new_unique()),
+        ] {
+            data[offset..offset + 32].copy_from_slice(key.as_ref());
         }
         data[203..211].copy_from_slice(&55u64.to_le_bytes());
         data[245..261].copy_from_slice(&123i128.to_le_bytes());

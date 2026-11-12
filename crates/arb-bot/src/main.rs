@@ -350,7 +350,8 @@ pub mod config {
         use anyhow::Context;
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file '{path}'"))?;
-        let mut config: Config = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
+        let mut config: Config =
+            toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
 
         // The deployment environment is the source of truth for the notional cap.
         if let Ok(raw) = std::env::var("MAX_TRADE_SIZE_USD") {
@@ -361,16 +362,24 @@ pub mod config {
             config.risk.max_trade_size_usd = value;
         }
         if let Ok(raw) = std::env::var("CHRONOS_DECAY_LAMBDA_PER_SEC") {
-            let value: f64 = raw.parse().context("CHRONOS_DECAY_LAMBDA_PER_SEC must be numeric")?;
-            if !value.is_finite() || value < 0.0 { anyhow::bail!("CHRONOS_DECAY_LAMBDA_PER_SEC must be finite and non-negative"); }
+            let value: f64 = raw
+                .parse()
+                .context("CHRONOS_DECAY_LAMBDA_PER_SEC must be numeric")?;
+            if !value.is_finite() || value < 0.0 {
+                anyhow::bail!("CHRONOS_DECAY_LAMBDA_PER_SEC must be finite and non-negative");
+            }
             config.chronos.decay_lambda_per_sec = value;
         }
         if let Ok(raw) = std::env::var("CHRONOS_MAX_AGE_MS") {
-            config.chronos.max_age_ms = raw.parse().context("CHRONOS_MAX_AGE_MS must be an integer")?;
+            config.chronos.max_age_ms = raw
+                .parse()
+                .context("CHRONOS_MAX_AGE_MS must be an integer")?;
         }
         if let Ok(raw) = std::env::var("CHRONOS_MIN_EV_USD") {
             let value: f64 = raw.parse().context("CHRONOS_MIN_EV_USD must be numeric")?;
-            if !value.is_finite() || value < 0.0 { anyhow::bail!("CHRONOS_MIN_EV_USD must be finite and non-negative"); }
+            if !value.is_finite() || value < 0.0 {
+                anyhow::bail!("CHRONOS_MIN_EV_USD must be finite and non-negative");
+            }
             config.chronos.min_ev_usd = value;
         }
 

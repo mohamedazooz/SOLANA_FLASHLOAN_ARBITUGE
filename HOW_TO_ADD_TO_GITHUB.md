@@ -1,21 +1,24 @@
 # إضافة Rust CI إلى مستودع GitHub
 
-الملف المطلوب نسخه إلى المستودع هو:
-`.github/workflows/rust-ci.yml`
+<!-- coderabbit-ai-generated:v1 -->
 
-## أسهل طريقة من متصفح GitHub
+<!-- coderabbit-ai-generated-section:v1:08577304b0789d0197c94801922ee2e4fe77ea620f49f10f6eb1fd0930b297f5 -->
 
-1. افتح المستودع:
-   https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE
-2. اضغط **Add file** ثم **Create new file**.
-3. في خانة اسم الملف اكتب بالضبط:
-   `.github/workflows/rust-ci.yml`
-   سيُنشئ GitHub المجلدات تلقائيًا.
-4. افتح الملف `rust-ci.yml` الموجود داخل هذا الأرشيف، وانسخ محتواه كاملًا إلى محرر GitHub.
-5. اضغط **Commit changes**.
-6. لو ظهر اختيار مكان الحفظ، اختَر إنشاء فرع جديد وافتح Pull Request إلى `main`.
-   اسم مقترح للفرع: `feature/ci-bootstrap`.
-7. افتح تبويب **Actions** في المستودع، ثم افتح تشغيل **Rust CI** وتابع كل خطوة.
+الـworkflow `.github/workflows/rust-ci.yml` موجود بالفعل في مستودع
+[SOLANA_FLASHLOAN_ARBITUGE](https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE).
+افتح تبويب **Actions** في المستودع، ثم افتح تشغيل **Rust CI** وتابع كل خطوة.
+
+## إضافة الـworkflow عند الحاجة
+
+إذا كنت تستخدم مستودعًا مختلفًا أو نسخة من المستودع لا تحتوي على الـworkflow:
+
+1. افتح المستودع المستهدف في متصفح GitHub واضغط **Add file** ثم **Create new file**.
+2. في خانة اسم الملف اكتب `.github/workflows/rust-ci.yml`؛ سيُنشئ GitHub المجلدات تلقائيًا.
+3. انسخ محتوى ملف `rust-ci.yml` من نسخة تحتوي عليه إلى محرر GitHub.
+4. اضغط **Commit changes**، وأنشئ فرعًا جديدًا وافتح Pull Request إذا لزم الأمر.
+5. افتح تبويب **Actions** في المستودع المستهدف وتابع تشغيل **Rust CI**.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## أوامر CI التي سينفذها
 

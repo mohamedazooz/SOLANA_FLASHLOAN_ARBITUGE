@@ -314,8 +314,8 @@ pub fn evaluate_chronos_ev(input: ChronosEvInput) -> Result<ChronosEvResult, Str
         .saturating_add(input.priority_fee_lamports)
         .saturating_add(input.failed_attempt_cost_lamports);
 
-    let net_profit_failure_lamports = (-(total_failure_costs as i128))
-        .clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    let net_profit_failure_lamports =
+        (-(total_failure_costs as i128)).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
 
     // EV = P * Pi_success + (1 - P) * Pi_failure
     let expected_value_lamports = (survival_probability * net_profit_success_lamports as f64)
@@ -386,10 +386,7 @@ impl RiskGate {
         self.chronos_config
     }
 
-    pub fn evaluate_chronos_gate(
-        &self,
-        input: ChronosEvInput,
-    ) -> Result<ChronosEvResult, String> {
+    pub fn evaluate_chronos_gate(&self, input: ChronosEvInput) -> Result<ChronosEvResult, String> {
         // No profit-dependent age relaxation: stale quotes remain stale regardless
         // of their apparent gross edge.
         let result = evaluate_chronos_ev(input)?;
@@ -458,7 +455,9 @@ impl RiskGate {
     pub fn check_trade_size(&self, size_usd: f64) -> Result<(), String> {
         let limit = self.limits.max_trade_size_usd;
         if !size_usd.is_finite() || size_usd <= 0.0 {
-            return Err(format!("trade size must be positive and finite, got {size_usd}"));
+            return Err(format!(
+                "trade size must be positive and finite, got {size_usd}"
+            ));
         }
         if !limit.is_finite() || limit <= 0.0 {
             return Err(format!("max_trade_size_usd is invalid: {limit}"));

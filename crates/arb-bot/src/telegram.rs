@@ -297,7 +297,8 @@ impl TelegramNotifier {
         {
             let mut cooldowns = self.rejected_cooldown.lock();
             // Prune entries older than 5 minutes to prevent unbounded memory growth
-            cooldowns.retain(|_, time| now.duration_since(*time) < std::time::Duration::from_secs(300));
+            cooldowns
+                .retain(|_, time| now.duration_since(*time) < std::time::Duration::from_secs(300));
             if let Some(last_sent) = cooldowns.get(&key) {
                 if now.duration_since(*last_sent) < std::time::Duration::from_secs(60) {
                     debug!("Rejection alert suppressed by 60s cooldown for {key}");

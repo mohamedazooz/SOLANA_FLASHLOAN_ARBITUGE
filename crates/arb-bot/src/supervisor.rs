@@ -58,7 +58,6 @@ struct CachedTemplate {
     tip: u64,
 }
 
-
 pub struct Supervisor {
     mode: BotMode,
     config: Config,
@@ -105,7 +104,6 @@ pub struct Supervisor {
     /// Tier-1 in-memory pre-warmed transaction templates for zero-copy in-place signing
     ram_templates:
         parking_lot::Mutex<std::collections::HashMap<String, arb_tx::PreWarmedTxTemplate>>,
-    /// In-memory cache for Kamino flash fee and base mint decimals with 5-minute TTL (PERF-01).
 }
 
 impl Supervisor {
@@ -186,7 +184,9 @@ impl Supervisor {
             .filter(|value| !value.trim().is_empty() && !value.starts_with("REPLACE_ME"))
             .unwrap_or_default();
         if ingest_url.is_empty() || ingest_token.is_empty() {
-            warn!("Solami Yellowstone gRPC is not configured; market ingestion will remain unavailable");
+            warn!(
+                "Solami Yellowstone gRPC is not configured; market ingestion will remain unavailable"
+            );
         }
         let ingest = Arc::new(YellowstoneClient::new(ingest_url, ingest_token));
 
@@ -440,10 +440,7 @@ impl Supervisor {
                 .await;
         }
     }
-
-
 }
-
 
 #[cfg(test)]
 mod tests {
