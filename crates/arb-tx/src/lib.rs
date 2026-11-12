@@ -79,6 +79,23 @@ pub use dlmm_flash_arb::{
     assemble_flash_funded_two_pool, build_flash_funded_two_pool_transaction,
     estimate_v0_transaction_size,
 };
+pub mod dlmm_3leg_flash_arb;
+pub use dlmm_3leg_flash_arb::{
+    FlashArb3LegError, FlashArb3LegParams, FlashArb3LegPoolLeg, FlashThreeLegArbitrageTx,
+    assemble_flash_funded_three_pool, build_flash_funded_three_pool_transaction,
+};
+pub mod dlmm_4leg_flash_arb;
+pub use dlmm_4leg_flash_arb::{
+    FlashArb4LegError, FlashArb4LegParams, FlashArb4LegPoolLeg, FlashFourLegArbitrageTx,
+    assemble_flash_funded_four_pool, build_flash_funded_four_pool_v1_transaction,
+    build_flash_funded_four_pool_v0_transaction,
+};
+pub mod cross_dex_flash_arb;
+pub use cross_dex_flash_arb::{
+    CrossDexFlashArbError, CrossDexFlashArbParams, CrossDexFlashArbitrageTx, CrossDexSwapLeg,
+    DexPlatform, assemble_cross_dex_flash_arbitrage, build_cross_dex_flash_arbitrage_v0,
+    build_cross_dex_flash_arbitrage_v1,
+};
 pub mod atomic_integrity;
 pub mod error;
 pub mod jupiter;
