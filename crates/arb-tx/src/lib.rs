@@ -3132,6 +3132,7 @@ impl TxBuilder {
         kamino_params: &KaminoFlashParams,
         flash_loan_fee_sf: u64,
         min_profit_raw: TokenAmount, // Profit floor in base-mint raw units
+        skip_close_intermediate_mints: &[Pubkey],
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
 
@@ -3282,8 +3283,14 @@ impl TxBuilder {
             borrow_idx as u8,
         ));
 
-        // 5. Ephemeral ATA Close & 100% Rent Reclaim directly to payer
-        for (_, ata, program) in &intermediate_atas {
+        // 5. Ephemeral ATA Close & 100% Rent Reclaim directly to payer.
+        // Mints listed in `skip_close_intermediate_mints` had a pre-existing ATA
+        // before this transaction: closing it would fail (or destroy external
+        // balances), so the caller must exclude them from the close list.
+        for (mint, ata, program) in &intermediate_atas {
+            if skip_close_intermediate_mints.contains(mint) {
+                continue;
+            }
             ixs.push(build_close_token_account_for_program(
                 *ata, payer, payer, *program,
             ));
@@ -4034,6 +4041,8 @@ mod tests {
                     execution_accounts: None,
                 },
             ],
+
+            expected_min_final_output: 0,
         };
 
         let ixs_base = TxBuilder::assemble_flash_arbitrage(
@@ -4046,6 +4055,7 @@ mod tests {
             &params,
             0,                   // verified sf: 0 in this fixture
             TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
+            &[],
         )
         .unwrap();
         // Base route: CU limit + CU price + WSOL ATA Create + Kamino Borrow + 2 Swaps + Kamino Repay + Jito Tip = 8 instructions
@@ -4092,6 +4102,8 @@ mod tests {
                     execution_accounts: None,
                 },
             ],
+
+            expected_min_final_output: 0,
         };
 
         let ixs_inter = TxBuilder::assemble_flash_arbitrage(
@@ -4104,6 +4116,7 @@ mod tests {
             &params,
             0,                   // verified sf: 0 in this fixture
             TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
+            &[],
         )
         .unwrap();
         // Base (8) + 1 Ephemeral ATA Create + 1 Ephemeral ATA Close = 10 instructions
@@ -4567,6 +4580,8 @@ mod tests {
                     execution_accounts: None,
                 },
             ],
+
+            expected_min_final_output: 0,
         };
 
         let flash_fee = 1_000_000; // 0.001 SOL
@@ -4645,6 +4660,8 @@ mod tests {
                     execution_accounts: Some(mock_raydium_v4_exec_accounts()),
                 },
             ],
+
+            expected_min_final_output: 0,
         };
 
         let res1 = TxBuilder::assemble_flash_arbitrage(
@@ -4657,6 +4674,7 @@ mod tests {
             &kamino_params,
             6250,
             TokenAmount(1_000_000),
+            &[],
         );
         assert!(
             res1.is_ok(),
@@ -4699,6 +4717,8 @@ mod tests {
                     execution_accounts: None,
                 },
             ],
+
+            expected_min_final_output: 0,
         };
 
         let res2 = TxBuilder::assemble_flash_arbitrage(
@@ -4711,6 +4731,7 @@ mod tests {
             &kamino_params,
             6250,
             TokenAmount(1_000_000),
+            &[],
         );
         assert!(
             res2.is_ok(),

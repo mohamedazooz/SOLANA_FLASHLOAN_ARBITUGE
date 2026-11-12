@@ -1127,6 +1127,11 @@ pub struct ExecutionOpportunity {
     pub base_decimals: u8,
     pub price_impact_bps: Bps,
     pub hops: Vec<SwapHop>,
+    /// Conservative slippage-floor final output carried by pipelines that
+    /// compute one (e.g. the 3-leg DLMM pipeline). `0` means unknown; repayment
+    /// gates then fall back to `expected_out` alone.
+    #[serde(default)]
+    pub expected_min_final_output: u64,
 }
 
 // ============================================================================

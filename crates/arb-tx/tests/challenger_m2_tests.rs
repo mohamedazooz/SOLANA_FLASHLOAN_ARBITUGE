@@ -106,6 +106,7 @@ fn create_n_hop_opportunity(hops_count: usize, size_lamports: u64) -> ExecutionO
         base_decimals: 9,
         price_impact_bps: Bps(5),
         hops,
+        expected_min_final_output: 0,
     }
 }
 

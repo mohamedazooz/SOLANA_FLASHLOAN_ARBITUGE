@@ -432,6 +432,8 @@ impl MarketGraph {
             base_decimals: config.base_decimals,
             price_impact_bps: impact,
             hops,
+
+            expected_min_final_output: 0,
         })
     }
 

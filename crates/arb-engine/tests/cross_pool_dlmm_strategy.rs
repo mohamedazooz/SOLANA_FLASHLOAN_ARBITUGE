@@ -467,6 +467,8 @@ fn intermediate_mints_empty_for_two_hop() {
             hop(PoolId(pk(1)), wsol(), usdc()),
             hop(PoolId(pk(2)), usdc(), wsol()),
         ],
+
+        expected_min_final_output: 0,
     };
     let mints = MarketGraph::cross_pool_intermediate_mints(&opp);
     assert_eq!(

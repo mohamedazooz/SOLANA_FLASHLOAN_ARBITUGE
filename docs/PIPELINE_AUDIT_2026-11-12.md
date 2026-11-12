@@ -66,7 +66,7 @@
   1. الترتيب في `run.rs:867` (`merged.sort_by_key(Reverse(net_profit))`) يخلط إجمالي (3-leg) مع صافي (بقية المسارات) → ترتيب مضلل لصالح 3-leg.
   2. `validate_economic_invariants` (`run.rs:2082-2097`) تفحص البند 4 (أرضية الصافي) والبند 6 (tip < net) ضد قيمة إجمالية → بوابتان أخف من تصميمهما المعلن.
 - **طريقة الإصلاح:** عند بناء `ExecutionOpportunity` في `capture_three_leg_dlmm` استخدم `result.size_search.best_net_profit_lamports` (المتوفر بالفعل في `ThreeLegMemePipelineResult`، `three_leg_meme_pipeline.rs:142`) بدل `gross`، واحمل `gross` في `gross_profit` فقط. اختبار: تأكيد أن `net_profit <= gross_profit` لكل فرصة تخرج من الـ capture.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — `net_profit` في الالتقاط يأتي الآن من `net_profit_lamports` القانوني (§5.1).
 
 ---
 
@@ -77,7 +77,7 @@
 - **طريقة الإصلاح (أحد البديلين):**
   1. **المفضل:** توحيد نموذج الحراسة مع `merger.rs:406`: الـ ATAs تُنشأ داخل المعاملة (idempotent) فالحساب كان فارغاً عند الإنشاء، والإغلاق آمن إلا إذا أودع hop غباراً. عملياً: حصر الإغلاق بالـ ATAs التي أنشأناها نحن (معلومة محلية متوفرة) **و** تجنب الإغلاق عندما يكون أي mint في المسار من نوع transfer-fee (المسار يرفض هذه البرك أصلاً في `quote_single_hop` — `meteora_quote_engine.rs:108-139`، فالخطر شبه منعدم عملياً).
   2. **البديل:** قبول خطر الـ revert (الذرّية تحمي رأس المال) وتوثيقه — التكلفة رسوم ضائعة فقط.
-- **الحالة:** مفتوح (خطر مالي محدود بسبب الذرّية + رفض pools transfer-fee مسبقاً، لكنه تضارب بين مسارين).
+- **الحالة:** مُصلَّح — حارس إغلاق ATA عبر `skip_close_intermediate_mints` + فحص وجود RPC (§5.2).
 
 ---
 
@@ -87,7 +87,7 @@
 - **الدليل:** لا مستدعيات خارج إعادة التصدير في `crates/arb-tx/src/lib.rs:84-85` واختبارات الفرع في `crates/arb-tx/tests/three_pool_flash_arb_tests.rs`. المسار الحي يستخدم `assemble_flash_arbitrage` + `compile_v1_only` (`run.rs:1690-1700`).
 - **المشكلة:** مساران متوازيان لبناء نفس المعاملة (مخالف لمبدأ "باني كانوني واحد"). الباني غير الموصول أكثر صرامة في بعض الجوانب (تحقق invariants 1-6، settlement ATA) لكنه **لا يغلق ATAs الوسيطة** (فجوة معاكسة: لا استرجاع إيجار) — لكل مسار عيب مختلف.
 - **طريقة الإصلاح:** توحيد: إما (أ) جعل `assemble_native_ixs` يستدعي `build_flash_funded_three_pool_transaction` لمسار 3-leg DLMM الصرف (مع نقل حراسة الإغلاق إليه)، أو (ب) دمج منطق الـ invariants في `assemble_flash_arbitrage` ووسم الباني الآخر `#[deprecated]` حتى الحذف. قرار معماري مطلوب من المالك.
-- **الحالة:** مفتوح.
+- **الحالة:** مُوثَّق — الوحدة الآن تعلن صراحة أنها builder مرجعي غير موصول بـ dispatch (§5.3).
 
 ---
 
@@ -97,7 +97,7 @@
 - **الدليل:** لا مستدعيات إنتاجية — فقط اختباراته الداخلية. التعليمات المبنية: CU + ATAs + 3 سواب + close + tip — **لا يوجد borrow/repay** (شكل رأس مال مملوك)، بينما التوجيه يفرض 100% تمويل بالفلاش.
 - **الخطر:** اسم الدالة يوحي أنها الـ dispatcher الرسمي؛ أي ربط مستقبلي خاطئ لها يعني تداولاً برأس مال المحفظة أو سداداً فاشلاً.
 - **طريقة الإصلاح:** حذفها أو نقلها خلف `#[cfg(feature = "owned-capital-sim")]` مع إعادة تسمية توضيحية (`dispatch_two_dex_owned_capital_sim`).
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — crate `arb-execution` بالكامل محذوف (§5.4).
 
 ---
 
@@ -106,7 +106,7 @@
 - **الموضع:** `crates/arb-engine/src/bellman_ford.rs:407` (`evaluate_cycle`) + `:543` (`compute_cycle_profit`) — ضرب احتمالات gamma بفائض **f64** ومقارنة عتبات float.
 - **المشكلة:** التوجيه يمنع الفاصلة العائمة في حسابات التنفيذ. هذا النموذج في مسار **الاكتشاف**، لكن مخرجاته تتحول إلى `ExecutionOpportunity` وتدخل نفس أنبوب التنفيذ؛ بوابة ROI غير المنطقي (`run.rs:1121-1145`، سقف 15% افتراضياً) تخفف الأطراف الوهمية لكنها لا توحد النموذج. النماذج الثلاثة الآن: (1) `arb-math::economic` + `CostLedger` (الرسمي)، (2) `net_profit_lamports` الصحيح (مُوحد في هذا الفرع)، (3) نموذج f64 هذا.
 - **طريقة الإصلاح:** بعد `evaluate_cycle`، أعد تسعير المرشح بالدالة الكانونية `arb_engine::net_profit_lamports` على مخرجات quote صحيحة قبل تحويله إلى `ExecutionOpportunity`، واستخدم f64 فقط للفرز الأولي الخشن.
-- **الحالة:** مفتوح.
+- **الحالة:** مُوثَّق — `evaluate_cycle` يعلن الآن أن f64 فرز أولي فقط والأسعار من النموذج الصحيح (§5.5).
 
 ---
 
@@ -115,7 +115,7 @@
 - **الموضع:** `crates/arb-bot/src/supervisor/run.rs:1324-1334`.
 - **الخطر:** أي قيمة `BYPASS_RISK_GATE=true` في البيئة تتجاوز `risk_gate.evaluate_full/evaluate_flash_loan` (يبقى kill-switch فقط). في VPS أو بيئة تشغيل مشتركة هذا ثغرة تشغيلية (خطأ تشغيلي واحد = تجاوز كامل للمخاطر).
 - **طريقة الإصلاح:** حذف المتغير، أو ربطه بشرط `debug_assertions`/feature، أو على الأقل: يتطلب أيضاً `ARB_LIVE=0` ليكون له أي أثر، وتسجيل تحذير `warn!` عند كل استخدام.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — `BYPASS_RISK_GATE` مقيّد بالأنماط غير الحية + `warn!` عند كل استخدام (§5.6).
 
 ---
 
@@ -133,7 +133,7 @@
 | `crates/arb-ingest/src/yellowstone.rs` | 241 | **تضارب توثيقي:** `docs/PROJECT_STATE.md` تدّعي أنه "deleted" وهو موجود وغير مُصرَّح. قرار: إعلان + توصيل كـ gRPC provider اختياري، أو حذف فعلي وتصحيح التوثيق |
 
 - **الخطر:** كود ميت غير مُجمَّع = صفر تغطية اختبارية وصفر ضمانات clippy، مع وهم وجود قدرات (ALT compiler، fallback، Yellowstone) لا وجود لها فعلياً في البناء.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — الملفات اليتيمة الثلاثة محذوفة فعلياً؛ `pump_state_tests` كان مربوطاً فعلاً عبر `#[path]` (تصحيح للتدقيق) (§5.7).
 
 ---
 
@@ -142,7 +142,7 @@
 - **الموضع:** `run.rs:1775-1782` يقول: "لا simulateTransaction على المسار الساخن (latency)... الإرجاع مفوض للحارسات on-chain". بينما `dispatch.rs` يفرض **محاكاة RPC إجبارية** قبل كل إرسال حي (`sim_enabled = true`، لا يمكن إطفاؤها ببيئة).
 - **التقييم:** السلوك الفعلي (محاكاة إجبارية) هو الصحيح أمنياً؛ التعليق قديم ومضلل لمن يقرأ المسار الساخن. أيضاً `ENABLE_PREFLIGHT_SIMULATION` (`run.rs:2144`) تضيف محاكاة أبكر اختيارية — غير موثقة في `.env.example`.
 - **طريقة الإصلاح:** تحديث تعليق `run.rs:1775` ليعكس الواقع (المحاكاة الإجبارية في dispatch هي البوابة الوحيدة قبل الإرسال)، وإضافة المتغير إلى `.env.example`.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — التعليق القديم صحُّح + `ENABLE_PREFLIGHT_SIMULATION` مُوثَّق في `.env.example` (§5.8).
 
 ---
 
@@ -151,7 +151,7 @@
 - **الموضع:** `run.rs:1425` — `let route_via_jupiter = false;` بشكل حرفي؛ الفرع `else if route_via_jupiter` (`run.rs:1516`) غير قابل للوصول، وداخله `resolve_jupiter_swap_route` (`supervisor/execution.rs:48`) مع fallback يدوي إلى الباني المحلي.
 - **المشكلة:** ~150 سطراً من مسار تنفيذ بديل (Jupiter v6 per-hop quotes) غير قابل للوصول لكنه يُجمَّع ويُصان، وقد يوحي للقارئ بوجود مسار تنفيذ ثانٍ حي. ملاحظة معروفة أيضاً في `run.rs:1779-1782`: quotes Jupiter تستخدم 50 bps انزلاقاً وليس أرضية ربح.
 - **طريقة الإصلاح:** إما feature-gate حقيقي (`jupiter-fallback`) بقرار صريح، أو حذف المسار وتوثيق سبب التعطيل في `PROJECT_STATE.md`.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — مسار Jupiter الميت حُذف بالكامل من supervisor (§5.9).
 
 ---
 
@@ -161,7 +161,7 @@
 - **والعكس:** مفاتيح في `.env.example` لا يقرأها الكود مباشرة عبر `std::env::var` (قد تُقرأ عبر ملفات config): `OPERATOR_PRIVATE_KEY`، `JWT_SECRET`، `SENTINEL_*`، `AQ_LIVE_*`، `PUMP_PORTAL_API_KEY` — مطلوب تدقيق يدوي: إما توثيق آلية قراءتها أو حذفها (وجود `OPERATOR_PRIVATE_KEY` في قالب بيئة دون قارئ واضح = خطر تسريب مفتاح خاص في `.env` حقيقي).
 - **مخالفة مباشرة للبند 16 من التوجيه:** "Every environment variable must be used, documented and validated".
 - **طريقة الإصلاح:** توليد `.env.example` من قائمة المتغيرات الفعلية + إزالة المفاتيح الميتة + فحص CI بسيط يقارن الاثنين.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — `.env.example` يغطي متغيرات التشغيل المستخدمة، والمفاتيح الميتة حُذفت (§5.10).
 
 ---
 
@@ -170,7 +170,7 @@
 - **الموضع:** `.github/workflows/rust-ci.yml:32` — `dtolnay/rust-toolchain@stable` بينما `rust-toolchain.toml` يثبّت `1.99.1`.
 - **الدليل:** انفجر فعلياً 3 مرات خلال هذا العمل: `doc_lazy_continuation`، `manual_clamp`، `type_complexity` — أعلام clippy تختلف بين stable والـ pin.
 - **طريقة الإصلاح:** تثبيت الـ workflow على `toolchain: 1.99.1` أو الاعتماد على قراءة `rust-toolchain.toml` تلقائياً، أو تحديث الـ pin دورياً مع CI.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — CI مثبَّت على `dtolnay/rust-toolchain@master` + `toolchain: 1.99.1` (§5.11).
 
 ---
 
@@ -179,7 +179,7 @@
 - **الموضع:** `run.rs:120-149` — `meme_a_ata` مشتق من mint `[0u8;32]` و`meme_b_ata` من `[1u8;32]`، و`recent_blockhash: [0u8; 32]`، و`meme_*_is_token_2022: false`.
 - **التقييم:** التعليق موجود وصريح ("ATAs are placeholders for discovery")، والسياق **لا يُستخدم** لبناء معاملة على هذا المسار (التعليمات تُبنى لاحقاً من `pool.execution_accounts`). لكن النوع `ThreeLegMemeContextParams` يسمح بهذا الشكل دون تمييز نوعي — أي استخدام مستقبلي خاطئ للسياق سيمر بلا خطأ نوعي.
 - **طريقة الإصلاح:** تقسيم النوع إلى `DiscoveryParams` (بدون حقول ATAs) و`CompilationParams` (بها، مطلوبة)، أو حقول `Option` مع فحص fail-closed عند البناء.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — `ThreeLegMemeContextParams::for_discovery` يغلف الـ placeholders (§5.12).
 
 ---
 
@@ -188,7 +188,7 @@
 - **الموضع:** `validate_economic_invariants` (`run.rs:2104-2118`) تفحص السداد ضد `opp.expected_out` (متفائل)، بينما بوابة `RepaymentNotGuaranteed` (`three_leg_meme_pipeline.rs:476`) تفحص ضد أرضية الانزلاق المحافظة `expected_min_final_output`.
 - **التقييم:** البوابة المحافظة (الأقوى) تعمل مسبقاً في الـ pipeline، فلا ثغرة مالية حالياً؛ لكن بوابة الـ supervisor أضعف من وصفها وتعتمد على أن الـ pipeline سبقها.
 - **طريقة الإصلاح:** إضافة حقل `expected_min_final_output` إلى `ExecutionOpportunity` واستخدامه في البند 5 من `validate_economic_invariants`.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — `expected_min_final_output` في `ExecutionOpportunity` + بوابة سداد محافظة في `validate_economic_invariants` (§5.13).
 
 ---
 
@@ -197,7 +197,7 @@
 - **الموضع:** `run.rs:1455-1462` — كل leg من `s.legs` يُبنى بـ `mint_in/mint_out` من `first_hop`، و`total_out` يجمع مخرجات الأرجل.
 - **التقييم:** صحيح فقط إذا كانت كل الأرجل تتداول **نفس الزوج** على منصات مختلفة (وهو تصميم RouteArchitect). لا يوجد حارس يمنع legs بأزواج مختلفة من الوصول إلى هذا المسار → معاملة بأقواس سواب خاطئة (تفشل ذرياً، لكنها تهدر CU وفرصاً).
 - **طريقة الإصلاح:** قبل الحلقة: تحقق أن كل `leg` ينتمي لنفس زوج mints كـ `first_hop`، وإلا `continue`.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — حارس split-route يتحقق من زوج mints لكل leg عبر الـ registry (§5.14).
 
 ---
 
@@ -205,14 +205,14 @@
 
 - **الموضع:** `crates/arb-bot/src/main.rs:151` — `pub mod config` داخل ملف من 999 سطراً (عتبة التوجيه ~1,000 سطر على الحافة).
 - **طريقة الإصلاح:** استخراج إلى `crates/arb-bot/src/config.rs`.
-- **الحالة:** مفتوح (صيانة فقط).
+- **الحالة:** مُصلَّح — `pub mod config` مستخرج إلى `crates/arb-bot/src/config.rs` (§5.15).
 
 ---
 
 #### 🟢 O-16: تدهور مزودي arb-ingest (HTTP فقط)
 
 - **الدليل:** `docs/PROJECT_STATE.md` توثّق فشل كل endpoints للـ WS؛ الابتلاع حالياً RPC-polling فقط. أثره: latency اكتشاف أعلى وslot freshness أضعف؛ بوابات الطزاجة (`max_state_age_slots`، `validate_dependency_group`) تعوض بالرفض الصارم.
-- **الحالة:** مفتوح (قرار بنية تحتية — إما Yellowstone gRPC حقيقي (انظر O-7) أو قبول HTTP-polling موثقاً).
+- **الحالة:** مفتوح (قرار بنية تحتية — Yellowstone gRPC حقيقي أو قبول HTTP-polling موثقاً). غير قابل للإصلاح الكودي.
 
 ---
 
@@ -220,7 +220,35 @@
 
 - **الموضع:** `run.rs:1823` — `unwrap_or_else(|| MintId::new([0u8; 32]))`. mint صفري كقيمة احتياطية قد ينتج حافة وهمية تُرفض لاحقاً في بوابات الاتصال (cycle check) — تكلفته إزعاج لا خسارة.
 - **طريقة الإصلاح:** إرجاع `Option`/fail-closed بدل mint صفري.
-- **الحالة:** مفتوح.
+- **الحالة:** مُصلَّح — `let-else continue` بدل mint صفري (§5.17).
+
+---
+
+## 2.3 جولة الإصلاح التنفيذية (فرع `feat/pipeline-audit-fixes`)
+
+جميع البنود أدناه نُفِّذت فعلياً وتحقّق منها: `cargo check --workspace --all-targets` نظيف،
+`cargo clippy --workspace --all-targets -- -D warnings` نظيف، `cargo fmt --all` مطبَّق،
+و`cargo test --workspace --all-targets` أخضر بالكامل (انظر §4 لآخر عدّاد مؤكد).
+
+| # | الإصلاح | الملفات |
+|---|---|---|
+| O-1 | `net_profit` في الالتقاط من `net_profit_lamports` القانوني (`.max(0)`) بدل gross | `run.rs` (capture) |
+| O-2 | `assemble_native_ixs` أصبح async + `preexisting_intermediate_atas()` يفحص وجود ATA عبر `RpcPool::get_multiple_accounts`؛ عند فشل RPC تُتخطى كل عمليات الإغلاق (fail-safe)؛ `assemble_flash_arbitrage` يقبل `skip_close_intermediate_mints: &[Pubkey]` ويحرس حلقة الإغلاق | `supervisor/execution.rs`، `arb-tx/src/lib.rs:3125` |
+| O-3 | توثيق حالة الوصل: `dlmm_3leg_flash_arb.rs` يعلن صراحة أنه builder مرجعي غير موصول بـ dispatch | `arb-tx/src/dlmm_3leg_flash_arb.rs` |
+| O-4 | حذف crate `arb-execution` بالكامل (مسار رأس مال مملوك بلا Kamino، صفر مستخدمين خارجيين) | `crates/arb-execution/` (محذوف) |
+| O-5 | توثيق أسبقية النموذج: f64 فرز أولي فقط؛ الأسعار من `build_economic_quote` الصحيح | `arb-engine/src/bellman_ford.rs` |
+| O-6 | `BYPASS_RISK_GATE` مقيّد بـ `!matches!(self.mode, BotMode::Live)` + `warn!` عند التنشيط | `run.rs` (risk gate) |
+| O-7 | حذف الملفات اليتيمة `dynamic_pool_selector.rs`، `pnl.rs`، `yellowstone.rs`. ملاحظة تصحيحية: `pump_state_tests.rs` كان مربوطاً فعلاً عبر `#[cfg(test)] #[path]` في `pump_state.rs` — بند التدقيق الأصلي كان خاطئاً في هذه النقطة | `arb-engine/src/`، `arb-ingest/src/` |
+| O-8 | تعليق المحاكاة القديم صُحّح (يشير الآن للمحاكاة الإجبارية في dispatch) + `ENABLE_PREFLIGHT_SIMULATION` موثق | `run.rs`، `.env.example` |
+| O-9 | حذف مسار Jupiter الميت: `route_via_jupiter`، فرع `else if`، `resolve_jupiter_swap_route`، حقل `jupiter` (يبقى `arb_tx::JupiterClient` للأدوات المساندة) | `run.rs`، `supervisor/execution.rs`، `supervisor.rs` |
+| O-10 | `.env.example`: إضافة قسم "RUNTIME / ENGINE VARIABLES" يغطي كل متغيرات التشغيل المستخدمة؛ حذف المفاتيح الميتة (`OPERATOR_PRIVATE_KEY`، `AQ_LIVE_*`، `JWT_SECRET`، `EXECUTION_ADMIN_KEY`، `PUMP_PORTAL_API_KEY`)؛ `SENTINEL_ADMIN_KEY` محفوظ (يُقرأ عبر `token_env`) | `.env.example` |
+| O-11 | تثبيت toolchain في CI: `dtolnay/rust-toolchain@master` + `toolchain: "1.99.1"` | `.github/workflows/rust-ci.yml` |
+| O-12 | `ThreeLegMemeContextParams::for_discovery(payer)` يغلف ATAs الوهمية؛ الـ capture يستخدم `..for_discovery(payer)` | `three_leg_meme_pipeline.rs`، `run.rs` |
+| O-13 | `ExecutionOpportunity.expected_min_final_output` (`#[serde(default)]`) ينتقل من الـ pipeline إلى الـ capture، وبوابة سداد محافظة في `validate_economic_invariants`: إذا كان الحقل > 0 وجاء أقل من `size_in + flash_fee` → رفض | `arb-types/src/lib.rs`، `three_leg_meme_pipeline.rs`، `run.rs` |
+| O-14 | حارس split-route: كل leg يجب أن يتداول نفس زوج mints لـ `first_hop` (تحقق عبر `registry.pools()`) وإلا `continue` | `run.rs` (split branch) |
+| O-15 | استخراج `pub mod config` (417 سطراً) إلى `crates/arb-bot/src/config.rs` | `main.rs`، `config.rs` (جديد) |
+| O-16 | مفتوح عمداً — قرار بنية تحتية (Yellowstone gRPC حقيقي أم HTTP-polling موثق). غير قابل للإصلاح الكودي | — |
+| O-17 | `let Some(base_mint) = ... else { continue; }` بدل `MintId::new([0u8; 32])` الوهمية | `run.rs` (settlement) |
 
 ---
 

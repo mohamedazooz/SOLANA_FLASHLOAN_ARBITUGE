@@ -117,6 +117,43 @@ impl Default for ThreeLegMemeContextParams {
     }
 }
 
+impl ThreeLegMemeContextParams {
+    /// Discovery-mode constructor: the ATAs are deterministic placeholders
+    /// because the compiler context built by the pipeline is not used on the
+    /// capture path — per-hop `SwapHop.execution_accounts` come from live
+    /// pool states instead. All account-existence/balance probes are zeroed.
+    /// Callers override the live fields (slot, CU, fees, sizing) afterwards.
+    pub fn for_discovery(payer: Pubkey) -> Self {
+        use std::str::FromStr;
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        Self {
+            payer,
+            meme_a_ata: arb_tx::master_alt::derive_ata(
+                &payer,
+                &Pubkey::new_from_array([0u8; 32]),
+                &spl,
+            ),
+            meme_b_ata: arb_tx::master_alt::derive_ata(
+                &payer,
+                &Pubkey::new_from_array([1u8; 32]),
+                &spl,
+            ),
+            meme_a_ata_exists: false,
+            meme_b_ata_exists: false,
+            meme_a_ata_balance: 0,
+            meme_b_ata_balance: 0,
+            meme_a_is_token_2022: false,
+            meme_b_is_token_2022: false,
+            meme_a_withheld_fees: 0,
+            meme_b_withheld_fees: 0,
+            wsol_token_program: spl,
+            meme_a_token_program: spl,
+            meme_b_token_program: spl,
+            ..Self::default()
+        }
+    }
+}
+
 /// Per-leg quote record for the chosen three-leg orientation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreeLegMemeLegQuote {
@@ -164,6 +201,9 @@ pub struct ThreeLegMemePipelineResult {
     pub flash_fee_lamports: u64,
     /// Net profit after flash fee and network cost, in lamports.
     pub net_profit_lamports: i64,
+    /// Conservative slippage-floor final output at the chosen size. Downstream
+    /// gates must use this (not `expected_final_out`) for repayment checks.
+    pub expected_min_final_output: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -479,6 +519,7 @@ pub fn build_three_leg_meme_pipeline(
         });
     }
 
+    let expected_min_final_output = context.expected_min_final_output;
     Ok(ThreeLegMemePipelineResult {
         pool_ids: [p1.pool_id.0, p2.pool_id.0, p3.pool_id.0],
         meme_mints: [best_chain.a, best_chain.b],
@@ -490,6 +531,7 @@ pub fn build_three_leg_meme_pipeline(
         gross_profit_lamports: gross as i64,
         flash_fee_lamports,
         net_profit_lamports: best_profit,
+        expected_min_final_output,
     })
 }
 
