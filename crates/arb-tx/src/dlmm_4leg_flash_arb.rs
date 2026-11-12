@@ -568,9 +568,9 @@ pub fn build_flash_funded_four_pool_v1_transaction(
     }
 
     // V1 compilation
-    let loaded_accounts_data_size_limit = params.loaded_accounts_data_size_limit.ok_or(
-        FlashArb4LegError::MissingLoadedAccountsDataLimit,
-    )?;
+    let loaded_accounts_data_size_limit = params
+        .loaded_accounts_data_size_limit
+        .ok_or(FlashArb4LegError::MissingLoadedAccountsDataLimit)?;
 
     // Use adaptive compiler for V1
     let v1_config = crate::adaptive::V1ConfigParams {
@@ -732,7 +732,7 @@ mod tests {
             payer: Pubkey::new_unique(),
             kamino: KaminoFlashParams::default_wsol(),
             borrow_amount: 1_000_000_000, // 1 WSOL
-            flash_fee: 1_000,              // 0.000001 WSOL
+            flash_fee: 1_000,             // 0.000001 WSOL
             leg_1: FlashArb4LegPoolLeg {
                 lb_pair: Pubkey::new_unique(),
                 reserve_x: Pubkey::new_unique(),

@@ -87,8 +87,8 @@ pub use dlmm_3leg_flash_arb::{
 pub mod dlmm_4leg_flash_arb;
 pub use dlmm_4leg_flash_arb::{
     FlashArb4LegError, FlashArb4LegParams, FlashArb4LegPoolLeg, FlashFourLegArbitrageTx,
-    assemble_flash_funded_four_pool, build_flash_funded_four_pool_v1_transaction,
-    build_flash_funded_four_pool_v0_transaction,
+    assemble_flash_funded_four_pool, build_flash_funded_four_pool_v0_transaction,
+    build_flash_funded_four_pool_v1_transaction,
 };
 pub mod cross_dex_flash_arb;
 pub use cross_dex_flash_arb::{
@@ -408,6 +408,13 @@ impl Default for KaminoFlashParams {
 }
 
 impl KaminoFlashParams {
+    /// WSOL main-market flash-loan parameters (verified mainnet addresses).
+    /// The user destination starts as the zero pubkey and must be set with
+    /// `for_user` / overwritten before assembly.
+    pub fn default_wsol() -> Self {
+        Self::default()
+    }
+
     pub fn for_user(user: Pubkey) -> Self {
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let user_wsol_ata = get_associated_token_address(&user, &wsol);
@@ -3155,23 +3162,31 @@ impl TxBuilder {
             user_wsol_ata,
         ));
 
-        // Identify any intermediate tokens needing ephemeral ATAs
-        let mut intermediate_atas = Vec::new();
+        // Identify any intermediate tokens needing ephemeral ATAs. Each mint's
+        // ATA MUST be derived and created under its own token program: hops
+        // carry `token_programs` for `(mint_in, mint_out)`, and deriving a
+        // Token-2022 ATA with the legacy SPL program produces a wrong PDA.
+        let mut intermediate_atas: Vec<(Pubkey, Pubkey, Pubkey)> = Vec::new();
         for hop in &opportunity.hops {
-            for mint in [hop.mint_in.0, hop.mint_out.0] {
+            for (mint, program) in [
+                (hop.mint_in.0, hop.token_programs[0].program_id()),
+                (hop.mint_out.0, hop.token_programs[1].program_id()),
+            ] {
                 if mint != wsol
                     && mint != usdc
-                    && !intermediate_atas.iter().any(|(m, _)| *m == mint)
+                    && !intermediate_atas.iter().any(|(m, _, _)| *m == mint)
                 {
-                    let ata = get_associated_token_address(&payer, &mint);
-                    intermediate_atas.push((mint, ata));
+                    let ata = get_associated_token_address_with_program_id(&payer, &mint, &program);
+                    intermediate_atas.push((mint, ata, program));
                 }
             }
         }
 
         // Ephemeral ATA Creation (Idempotent: zero failure if already exists)
-        for (mint, ata) in &intermediate_atas {
-            ixs.push(build_create_ata_idempotent(payer, payer, *mint, *ata));
+        for (mint, ata, program) in &intermediate_atas {
+            ixs.push(build_create_ata_idempotent_for_program(
+                payer, payer, *mint, *ata, *program,
+            ));
         }
 
         // 3. Kamino Flash Borrow
@@ -3268,8 +3283,10 @@ impl TxBuilder {
         ));
 
         // 5. Ephemeral ATA Close & 100% Rent Reclaim directly to payer
-        for (_, ata) in &intermediate_atas {
-            ixs.push(build_close_token_account(*ata, payer, payer));
+        for (_, ata, program) in &intermediate_atas {
+            ixs.push(build_close_token_account_for_program(
+                *ata, payer, payer, *program,
+            ));
         }
 
         // 6. Jito Tip at the end

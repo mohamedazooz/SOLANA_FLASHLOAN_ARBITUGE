@@ -617,12 +617,18 @@ impl AdaptiveTxCompiler {
         recent_blockhash: [u8; 32],
         config: V1ConfigParams,
     ) -> Result<Vec<u8>, TxError> {
-        if config.compute_unit_limit.is_none_or(|v| v == 0 || v > 1_400_000) {
+        if config
+            .compute_unit_limit
+            .is_none_or(|v| v == 0 || v > 1_400_000)
+        {
             return Err(TxError::SanitizationError(
                 "V1 simulation requires compute-unit limit in 1..=1,400,000".into(),
             ));
         }
-        if config.loaded_accounts_data_size_limit.is_none_or(|v| v == 0 || v > 67_108_864) {
+        if config
+            .loaded_accounts_data_size_limit
+            .is_none_or(|v| v == 0 || v > 67_108_864)
+        {
             return Err(TxError::SanitizationError(
                 "V1 simulation requires loaded-account data limit in 1..=64 MiB".into(),
             ));
@@ -646,7 +652,9 @@ impl AdaptiveTxCompiler {
                 "Shadow V1 simulation expects exactly one payer signature slot, got {signature_count}"
             )));
         }
-        let wire_size = message.len().saturating_add(signature_count.saturating_mul(64));
+        let wire_size = message
+            .len()
+            .saturating_add(signature_count.saturating_mul(64));
         if wire_size > SOLANA_PACKET_V1_MTU {
             return Err(TxError::TransactionTooLarge {
                 size: wire_size,
@@ -699,7 +707,8 @@ impl AdaptiveTxCompiler {
             Self::compile_v1_message(signer.pubkey(), instructions, recent_blockhash, config)?;
         if message_bytes.get(1).copied() != Some(1) {
             return Err(TxError::SanitizationError(
-                "V1 transaction requires multiple signers but this compiler has exactly one signer".into(),
+                "V1 transaction requires multiple signers but this compiler has exactly one signer"
+                    .into(),
             ));
         }
         let signature = signer.sign(&message_bytes);
@@ -823,12 +832,7 @@ impl AdaptiveTxCompiler {
                             "V1-only compilation requires explicit resource configuration".into(),
                         )
                     })?;
-                    return Self::compile_v1_only(
-                        signer,
-                        instructions,
-                        recent_blockhash,
-                        config,
-                    );
+                    return Self::compile_v1_only(signer, instructions, recent_blockhash, config);
                 }
                 TransactionVersion::V0 => {
                     if capabilities.supports_v1 {
@@ -879,7 +883,18 @@ impl AdaptiveTxCompiler {
                     "V1-capable profile requires explicit V1 resource configuration".into(),
                 )
             })?;
-            return Self::compile_v1_only(signer, instructions, recent_blockhash, config);
+            let mut tx = Self::compile_v1_only(signer, instructions, recent_blockhash, config)?;
+            let legacy_wire_size =
+                TxBuilder::compile_message(signer.pubkey(), instructions, recent_blockhash)
+                    .map(|msg| 1 + 64 + msg.len())
+                    .unwrap_or(usize::MAX);
+            if legacy_wire_size > SOLANA_PACKET_LEGACY_MTU {
+                tx.selection_reason = FormatSelectionReason::LargePayloadV1 {
+                    accounts_count: unique_accounts_count,
+                    wire_size: tx.wire_size(),
+                };
+            }
+            return Ok(tx);
         }
 
         // Fast-path evaluation: Legacy/V0 compatibility is reachable only when

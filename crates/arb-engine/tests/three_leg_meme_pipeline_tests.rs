@@ -180,6 +180,9 @@ fn params(input_size: u64) -> ThreeLegMemeContextParams {
         v1_transport_supported: true,
         slippage_bps: 100,
         min_profit_lamports: 30_000,
+        flash_loan_fee_sf: 0,
+        network_cost_lamports: 0,
+        kamino_available_liquidity: None,
         input_size,
         size_search_sizes: vec![input_size / 10, input_size / 2, input_size],
     }

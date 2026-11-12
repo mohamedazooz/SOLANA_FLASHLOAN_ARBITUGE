@@ -60,6 +60,18 @@ pub struct ThreeLegMemeContextParams {
     pub slippage_bps: u64,
     /// Hard minimal net profit (lamports) for the profitability gate.
     pub min_profit_lamports: u64,
+    /// Kamino flash-loan fee as the raw on-chain U68F60 value
+    /// (`ReserveConfig.fees.flash_loan_fee_sf`). `0` disables the fee term
+    /// (non-flash-funded evaluation only).
+    pub flash_loan_fee_sf: u64,
+    /// Conservative flat network cost per transaction (base fee + priority
+    /// fee + Jito tip) in lamports, deducted from every size candidate.
+    pub network_cost_lamports: u64,
+    /// Actual available Kamino flash liquidity decoded from the reserve
+    /// supply-vault token account. `None` means the snapshot was unavailable;
+    /// the borrow ceiling then falls back to the configured size ladder, and
+    /// the live path must re-validate before dispatch.
+    pub kamino_available_liquidity: Option<u64>,
     /// Initial input amount candidate for discovery.
     pub input_size: u64,
     /// Candidate input sizes for the 3-leg trade size search. The first entry
@@ -96,6 +108,9 @@ impl Default for ThreeLegMemeContextParams {
             v1_transport_supported: false,
             slippage_bps: 100,
             min_profit_lamports: 30_000,
+            flash_loan_fee_sf: 0,
+            network_cost_lamports: 0,
+            kamino_available_liquidity: None,
             input_size: 100_000_000,
             size_search_sizes: Vec::new(),
         }
@@ -120,7 +135,8 @@ pub struct ThreeLegMemeLegQuote {
 /// Result of the 3-leg-native trade size search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreeLegMemeSizeSearchResult {
-    /// (input size, gross profit in lamports) for every candidate evaluated.
+    /// (input size, NET profit in lamports) for every candidate evaluated.
+    /// Net = gross - Kamino flash fee - configured network cost.
     pub tested_sizes: Vec<(u64, i64)>,
     pub best_input: u64,
     pub best_net_profit_lamports: i64,
@@ -144,6 +160,10 @@ pub struct ThreeLegMemePipelineResult {
     pub expected_final_out: u64,
     /// Gross profit (quote final out - input) in lamports.
     pub gross_profit_lamports: i64,
+    /// Kamino flash fee at the chosen size (lamports, flash mint = WSOL).
+    pub flash_fee_lamports: u64,
+    /// Net profit after flash fee and network cost, in lamports.
+    pub net_profit_lamports: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -162,6 +182,19 @@ pub enum ThreeLegMemePipelineError {
     MissingExecutionAccounts { leg: usize },
     #[error("leg {leg}: unsupported execution accounts for MeteoraDlmm")]
     UnsupportedExecutionAccounts { leg: usize },
+    #[error(
+        "every candidate borrow size exceeds the available Kamino flash liquidity ({available})"
+    )]
+    InsufficientFlashLiquidity { available: u64 },
+    #[error("best net profit {best_net} is below the required floor {floor}")]
+    BelowNetProfitFloor { best_net: i64, floor: u64 },
+    #[error(
+        "slippage floor of the final output ({min_final_output}) cannot cover principal + flash fee ({required})"
+    )]
+    RepaymentNotGuaranteed {
+        min_final_output: u64,
+        required: u64,
+    },
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -345,11 +378,28 @@ pub fn build_three_leg_meme_pipeline(
         .map(|(chain, _)| *chain)
         .expect("cycles is non-empty");
 
-    // Trade size optimizer: 3-leg-native coarse evaluation over the candidate set.
-    let sizes: Vec<u64> = if params.size_search_sizes.is_empty() {
-        vec![discovery_size]
-    } else {
-        params.size_search_sizes.clone()
+    // Trade size optimizer: 3-leg-native evaluation over the candidate set.
+    // The objective is NET profit (gross - Kamino flash fee - network cost),
+    // never gross output. Candidates above the actual available flash
+    // liquidity (when known) are dropped, not silently clamped.
+    let sizes: Vec<u64> = {
+        let all: Vec<u64> = if params.size_search_sizes.is_empty() {
+            vec![discovery_size]
+        } else {
+            params.size_search_sizes.clone()
+        };
+        match params.kamino_available_liquidity {
+            Some(available) => {
+                let filtered: Vec<u64> = all.into_iter().filter(|s| *s <= available).collect();
+                if filtered.is_empty() {
+                    return Err(ThreeLegMemePipelineError::InsufficientFlashLiquidity {
+                        available,
+                    });
+                }
+                filtered
+            }
+            None => all,
+        }
     };
 
     let mut tested: Vec<(u64, i64)> = Vec::with_capacity(sizes.len());
@@ -364,13 +414,19 @@ pub fn build_three_leg_meme_pipeline(
             best_chain.b,
             *size,
         );
-        let profit = quote.map(|q| q.gross(*size)).unwrap_or(i64::MIN);
+        let profit = quote.map_or(i64::MIN, |q| net_profit_of(q, *size, params));
         tested.push((*size, profit));
         if profit > best_profit {
             best_profit = profit;
             best_size = *size;
             best_quote = quote;
         }
+    }
+    if best_profit < params.min_profit_lamports as i64 {
+        return Err(ThreeLegMemePipelineError::BelowNetProfitFloor {
+            best_net: best_profit,
+            floor: params.min_profit_lamports,
+        });
     }
     let chosen_quote = best_quote.unwrap_or_else(|| {
         quote_chain(
@@ -387,6 +443,8 @@ pub fn build_three_leg_meme_pipeline(
         best_input: best_size,
         best_net_profit_lamports: best_profit,
     };
+    let flash_fee_lamports =
+        crate::flash_loan_sizing::calculate_kamino_flash_fee(best_size, params.flash_loan_fee_sf);
 
     // Per-leg quote records at the chosen size.
     let p1 = &candidates[best_chain.i];
@@ -410,6 +468,17 @@ pub fn build_three_leg_meme_pipeline(
     // Account resolution: build the executable context.
     let context = build_context(p1, p2, p3, &legs, params, best_chain.a, best_chain.b, wsol)?;
 
+    // Repayment guarantee: even at the slippage floor of the final leg, the
+    // route must still cover principal + flash fee, otherwise the flash loan
+    // cannot be repaid atomically and the whole transaction would revert.
+    let required_repayment = input.saturating_add(flash_fee_lamports);
+    if context.expected_min_final_output < required_repayment {
+        return Err(ThreeLegMemePipelineError::RepaymentNotGuaranteed {
+            min_final_output: context.expected_min_final_output,
+            required: required_repayment,
+        });
+    }
+
     Ok(ThreeLegMemePipelineResult {
         pool_ids: [p1.pool_id.0, p2.pool_id.0, p3.pool_id.0],
         meme_mints: [best_chain.a, best_chain.b],
@@ -419,7 +488,23 @@ pub fn build_three_leg_meme_pipeline(
         discovery,
         expected_final_out: final_out,
         gross_profit_lamports: gross as i64,
+        flash_fee_lamports,
+        net_profit_lamports: best_profit,
     })
+}
+
+/// NET profit of a fully-quoted chain at `input`: gross output minus input,
+/// minus the Kamino flash fee at the on-chain U68F60 rate, minus the
+/// configured flat network cost. All integer, all checked.
+fn net_profit_of(quote: ChainQuote, input: u64, params: &ThreeLegMemeContextParams) -> i64 {
+    // Delegates to the canonical accounting in flash_loan_sizing (single
+    // source of truth for net profit across the optimizer and this pipeline).
+    crate::flash_loan_sizing::net_profit_lamports(
+        quote.out[2],
+        input,
+        params.flash_loan_fee_sf,
+        params.network_cost_lamports,
+    )
 }
 
 fn build_leg_records(
@@ -620,11 +705,12 @@ pub fn simulate_profitability_gate(
     result: &ThreeLegMemePipelineResult,
     min_profit_lamports: u64,
 ) -> Result<i64, ThreeLegMemePipelineError> {
-    let gross = result.gross_profit_lamports;
-    if gross < min_profit_lamports as i64 {
+    let net = result.net_profit_lamports;
+    if net < min_profit_lamports as i64 {
         return Err(ThreeLegMemePipelineError::Internal(format!(
-            "profitability gate: gross profit {gross} < floor {min_profit_lamports}"
+            "profitability gate: net profit {net} (gross {}) < floor {min_profit_lamports}",
+            result.gross_profit_lamports
         )));
     }
-    Ok(gross)
+    Ok(net)
 }

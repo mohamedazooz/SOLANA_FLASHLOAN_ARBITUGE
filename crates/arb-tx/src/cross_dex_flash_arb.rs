@@ -122,7 +122,11 @@ pub enum CrossDexFlashArbError {
     #[error("mint chain mismatch between leg {leg} and leg {next_leg}")]
     MintChainMismatch { leg: usize, next_leg: usize },
     #[error("leg {leg} minimum output {min_out} is below required {required}")]
-    LegOutputBelowRequired { leg: usize, min_out: u64, required: u64 },
+    LegOutputBelowRequired {
+        leg: usize,
+        min_out: u64,
+        required: u64,
+    },
     #[error("transaction too large: {size} bytes, limit {limit}")]
     TransactionTooLarge { size: usize, limit: usize },
     #[error("V1 transaction requires explicit compute unit limit")]
@@ -366,11 +370,11 @@ fn build_cross_dex_swap(
 ) -> Result<CompiledInstruction, CrossDexFlashArbError> {
     // In a real implementation, we would dispatch to the appropriate swap builder
     // based on the DEX platform. For now, we return a placeholder.
-    
+
     // For Meteora DLMM, we would use build_swap2_exact_in
     // For Raydium, we would use the appropriate Raydium swap builder
     // For Orca, we would use the Orca swap builder
-    
+
     // This is a placeholder that should be replaced with actual implementation
     Ok(CompiledInstruction {
         program_id: leg.dex_platform.program_id(),
@@ -510,6 +514,7 @@ pub fn build_cross_dex_flash_arbitrage_v0(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arb_constants::{TOKEN_PROGRAM_ID, WSOL_MINT};
 
     #[test]
     fn test_cross_dex_validation_2_legs() {
@@ -554,7 +559,10 @@ mod tests {
 
         // This should fail because mint chain is broken
         let result = params.validate();
-        assert!(matches!(result, Err(CrossDexFlashArbError::MintChainMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(CrossDexFlashArbError::MintChainMismatch { .. })
+        ));
     }
 
     #[test]
@@ -599,14 +607,17 @@ mod tests {
         };
 
         let result = params.validate();
-        assert!(matches!(result, Err(CrossDexFlashArbError::SameDexPlatform)));
+        assert!(matches!(
+            result,
+            Err(CrossDexFlashArbError::SameDexPlatform)
+        ));
     }
 
     #[test]
     fn test_cross_dex_validation_valid() {
         let mint_a = Pubkey::new_unique();
-        let mint_b = Pubkey::new_unique();
-        
+        let _mint_b = Pubkey::new_unique();
+
         let params = CrossDexFlashArbParams {
             payer: Pubkey::new_unique(),
             kamino: KaminoFlashParams::default_wsol(),

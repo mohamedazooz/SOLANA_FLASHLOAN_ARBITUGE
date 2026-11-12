@@ -301,8 +301,19 @@ pub const KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET: usize = 8 + 4896;
 /// `config.status == 0` means the reserve is Active.
 pub const KAMINO_RESERVE_STATUS_ACTIVE: u8 = 0;
 
-/// Errors reading the on-chain Kamino flash-loan fee. Fail closed: any
-/// malformed or unverifiable account is an error, never a default fee.
+// ============================================================================
+// SPL Token account decoding (reserve supply vault liquidity)
+// ============================================================================
+
+/// Unpacked SPL Token / Token-2022 account layout: `mint` (32 bytes) at 0.
+pub const SPL_TOKEN_ACCOUNT_MINT_OFFSET: usize = 0;
+/// Unpacked SPL Token / Token-2022 account layout: `owner` (32 bytes) at 32.
+pub const SPL_TOKEN_ACCOUNT_OWNER_OFFSET: usize = 32;
+/// Unpacked SPL Token / Token-2022 account layout: `amount` (u64 LE) at 64.
+pub const SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
+
+/// Errors reading on-chain Kamino flash-loan inputs. Fail closed: any
+/// malformed or unverifiable account is an error, never a default value.
 #[derive(Debug, thiserror::Error)]
 pub enum KaminoReadError {
     #[error("reserve account too short: {0} bytes")]
@@ -313,6 +324,8 @@ pub enum KaminoReadError {
     MintMismatch { expected: String, found: String },
     #[error("reserve is not active (status {0})")]
     ReserveNotActive(u8),
+    #[error("token account too short: {0} bytes (need at least 72)")]
+    TokenAccountTooShort(usize),
 }
 
 /// Pure decoder: extract `flash_loan_fee_sf` (U68F60 u64, 60 fractional bits)
@@ -348,6 +361,33 @@ pub fn decode_reserve_flash_fee_sf(
             .map_err(|_| KaminoReadError::AccountTooShort(account.len()))?,
     );
     Ok(sf)
+}
+
+/// Pure decoder: extract the token balance of the klend reserve **supply
+/// vault** (an SPL Token or Token-2022 account). This is the actual on-chain
+/// liquidity a flash borrow can draw from; a configured risk ceiling is never
+/// a substitute. Verifies the account is long enough and holds the expected
+/// mint before trusting the amount — fail closed.
+pub fn decode_supply_vault_liquidity(
+    account: &[u8],
+    expected_mint: &Pubkey,
+) -> Result<u64, KaminoReadError> {
+    let amount_end = SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET + 8;
+    if account.len() < amount_end {
+        return Err(KaminoReadError::TokenAccountTooShort(account.len()));
+    }
+    let found_mint = &account[SPL_TOKEN_ACCOUNT_MINT_OFFSET..SPL_TOKEN_ACCOUNT_MINT_OFFSET + 32];
+    if found_mint != expected_mint.as_ref() {
+        return Err(KaminoReadError::MintMismatch {
+            expected: expected_mint.to_string(),
+            found: Pubkey::new_from_array(<[u8; 32]>::try_from(found_mint).unwrap_or([0u8; 32]))
+                .to_string(),
+        });
+    }
+    Ok(u64::from_le_bytes(
+        <[u8; 8]>::try_from(&account[SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET..amount_end])
+            .map_err(|_| KaminoReadError::TokenAccountTooShort(account.len()))?,
+    ))
 }
 
 #[cfg(test)]
@@ -596,5 +636,58 @@ mod tests {
                 "amount={amount} sf={sf}"
             );
         }
+    }
+
+    fn fixture_token_account(mint: Pubkey, owner: Pubkey, amount: u64) -> Vec<u8> {
+        let mut v = vec![0u8; 165];
+        v[0..32].copy_from_slice(mint.as_ref());
+        v[32..64].copy_from_slice(owner.as_ref());
+        v[64..72].copy_from_slice(&amount.to_le_bytes());
+        v
+    }
+
+    #[test]
+    fn supply_vault_liquidity_decodes_balance() {
+        let mint = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let acct = fixture_token_account(mint, owner, 4_200_000_000);
+        assert_eq!(
+            decode_supply_vault_liquidity(&acct, &mint).unwrap(),
+            4_200_000_000
+        );
+    }
+
+    #[test]
+    fn supply_vault_liquidity_rejects_wrong_mint() {
+        let mint = Pubkey::new_unique();
+        let other = Pubkey::new_unique();
+        let acct = fixture_token_account(other, Pubkey::new_unique(), 1_000);
+        match decode_supply_vault_liquidity(&acct, &mint) {
+            Err(KaminoReadError::MintMismatch { expected, .. }) => {
+                assert_eq!(expected, mint.to_string());
+            }
+            other => panic!("expected MintMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supply_vault_liquidity_rejects_short_account() {
+        let mint = Pubkey::new_unique();
+        let acct = vec![0u8; 71];
+        assert!(matches!(
+            decode_supply_vault_liquidity(&acct, &mint),
+            Err(KaminoReadError::TokenAccountTooShort(71))
+        ));
+    }
+
+    #[test]
+    fn supply_vault_liquidity_accepts_token_2022_base_layout() {
+        let mint = Pubkey::new_unique();
+        let mut acct = fixture_token_account(mint, Pubkey::new_unique(), u64::MAX);
+        acct.extend_from_slice(&[0u8; 32]);
+        assert_eq!(
+            decode_supply_vault_liquidity(&acct, &mint).unwrap(),
+            u64::MAX
+        );
     }
 }
