@@ -12,6 +12,42 @@ impl Supervisor {
         }
     }
 
+    /// Actual Kamino flash liquidity available for borrowing, decoded from the
+    /// live WSOL supply-vault token-account snapshot. Fails closed to `None`
+    /// when the snapshot is missing, stale beyond the state-age limit, owned by
+    /// an unexpected program, or undecodable — never a guessed balance.
+    fn kamino_available_flash_liquidity(&self, current_slot: Slot) -> Option<u64> {
+        let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).ok()?;
+        let snap = self.ingest.account_store().get(&supply_vault)?;
+        // Same freshness bound as the verified quote inputs (execution.rs).
+        const MAX_SNAPSHOT_AGE_SLOTS: u64 = 1500;
+        if snap.slot > current_slot.0
+            || current_slot.0.saturating_sub(snap.slot) > MAX_SNAPSHOT_AGE_SLOTS
+        {
+            return None;
+        }
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok()?;
+        if snap.owner != spl {
+            return None;
+        }
+        let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).ok()?;
+        arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &wsol).ok()
+    }
+
+    /// Conservative flat network cost used by the 3-leg size search: base fee,
+    /// Jito tip ceiling, and priority-fee estimate at the adaptive price for
+    /// the 3-hop flash-funded route shape.
+    fn three_leg_network_cost_lamports(&self, tip_lamports: u64) -> u64 {
+        let hop_protocols = [arb_types::DexProtocol::MeteoraDlmm; 3];
+        let base_cu = arb_tx::estimate_route_cu(true, &hop_protocols, 3);
+        let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
+        let cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
+        let priority_fee = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
+        BASE_FEE_LAMPORTS
+            .saturating_add(tip_lamports)
+            .saturating_add(priority_fee)
+    }
+
     /// Meteora 3-leg (WSOL -> A -> B -> WSOL) capture: run the chained-quote
     /// pipeline over the fresh DLMM pools and convert the best chain into a
     /// standard `ExecutionOpportunity` so the same economics/risk/dispatch
@@ -28,6 +64,9 @@ impl Supervisor {
         fresh_pools: &[PoolState],
         current_slot: Slot,
         max_sizing: u64,
+        flash_loan_fee_sf: u64,
+        kamino_available_liquidity: Option<u64>,
+        verified_tip_lamports: u64,
     ) -> Vec<ExecutionOpportunity> {
         if fresh_pools.len() < 3 || max_sizing == 0 {
             return Vec::new();
@@ -96,6 +135,9 @@ impl Supervisor {
             min_profit_lamports: tuning
                 .min_profit_lamports
                 .max(self.config.strategy.min_net_profit_abs),
+            flash_loan_fee_sf,
+            network_cost_lamports: self.three_leg_network_cost_lamports(verified_tip_lamports),
+            kamino_available_liquidity,
             input_size: tuning.input_size.min(max_sizing).max(1),
             size_search_sizes,
         };
@@ -772,8 +814,14 @@ impl Supervisor {
                 // chained-quote discovery + 3-leg-native size search. Converted
                 // into a standard ExecutionOpportunity so the same economics,
                 // risk and dispatch path applies. Fails closed to an empty vec.
-                let three_leg_opps =
-                    self.capture_three_leg_dlmm(&fresh_pools, current_slot, max_sizing);
+                let three_leg_opps = self.capture_three_leg_dlmm(
+                    &fresh_pools,
+                    current_slot,
+                    max_sizing,
+                    verified.flash_loan_fee_sf.value,
+                    self.kamino_available_flash_liquidity(current_slot),
+                    verified.tip_lamports.value.0,
+                );
                 if !three_leg_opps.is_empty() {
                     info!(
                         "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",
@@ -1516,7 +1564,7 @@ impl Supervisor {
                         .join("_")
                 );
 
-                let mut blockhash_b58 = String::new();
+                let blockhash_b58;
                 let tx_bytes = if let Some(ref signer) = self.keypair {
                     let blockhash = self.fetch_recent_blockhash().await;
                     blockhash_b58 = bs58::encode(blockhash).into_string();
@@ -1547,13 +1595,19 @@ impl Supervisor {
                     // eligible; Jito bundle and all legacy/V0 template paths fail closed.
                     let direct_v1_enabled = is_swqos_route
                         && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
-                            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                            .map(|v| {
+                                matches!(
+                                    v.trim().to_ascii_lowercase().as_str(),
+                                    "1" | "true" | "yes" | "on"
+                                )
+                            })
                             .unwrap_or(false);
                     // Shadow and Simulate always compile V1 for RPC simulation.
                     // A future Live build may compile only when the direct V1
                     // sender is explicitly enabled. Jito is deliberately excluded.
-                    let v1_transport_enabled = matches!(self.mode, BotMode::Shadow | BotMode::Simulate)
-                        || direct_v1_enabled;
+                    let v1_transport_enabled =
+                        matches!(self.mode, BotMode::Shadow | BotMode::Simulate)
+                            || direct_v1_enabled;
                     // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
                     let patched_ram = if v1_transport_enabled {
                         None
@@ -1631,10 +1685,7 @@ impl Supervisor {
                                         heap_size: None,
                                     };
                                     arb_tx::AdaptiveTxCompiler::compile_v1_only(
-                                        signer,
-                                        &ixs,
-                                        blockhash,
-                                        v1_config,
+                                        signer, &ixs, blockhash, v1_config,
                                     )
                                     .map(|compiled| compiled.wire_bytes)
                                 }
@@ -1665,15 +1716,22 @@ impl Supervisor {
                         continue;
                     }
                     blockhash_b58 = bs58::encode(blockhash).into_string();
-                    let payer = self.config.wallet.cold_wallet_pubkey.as_deref()
+                    let payer = self
+                        .config
+                        .wallet
+                        .cold_wallet_pubkey
+                        .as_deref()
                         .and_then(|value| value.parse::<Pubkey>().ok());
                     let Some(payer) = payer else {
-                        warn!("Shadow V1 simulation rejected: wallet.cold_wallet_pubkey is missing or invalid");
+                        warn!(
+                            "Shadow V1 simulation rejected: wallet.cold_wallet_pubkey is missing or invalid"
+                        );
                         continue;
                     };
                     let priority_fee_lamports = ((cu_price as u128)
                         .saturating_mul(cu_limit as u128)
-                        .saturating_add(999_999)) / 1_000_000;
+                        .saturating_add(999_999))
+                        / 1_000_000;
                     if priority_fee_lamports > u64::MAX as u128 {
                         warn!("Shadow V1 simulation rejected: priority fee overflow");
                         continue;

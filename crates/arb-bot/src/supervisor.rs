@@ -250,7 +250,10 @@ impl Supervisor {
             .ok()
             .and_then(|pk| match KeypairSigner::from_base58(&pk) {
                 Ok(signer) => {
-                    info!("In-memory keypair loaded from SOLANA_PRIVATE_KEY: {}", signer.pubkey());
+                    info!(
+                        "In-memory keypair loaded from SOLANA_PRIVATE_KEY: {}",
+                        signer.pubkey()
+                    );
                     Some(signer)
                 }
                 Err(e) => {
@@ -267,7 +270,10 @@ impl Supervisor {
                 if std::path::Path::new(kp_path).exists() {
                     match KeypairSigner::from_file(kp_path) {
                         Ok(signer) => {
-                            info!("In-memory keypair loaded from {kp_path}: {}", signer.pubkey());
+                            info!(
+                                "In-memory keypair loaded from {kp_path}: {}",
+                                signer.pubkey()
+                            );
                             Some(signer)
                         }
                         Err(e) => {

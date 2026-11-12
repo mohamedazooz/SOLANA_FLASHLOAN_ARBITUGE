@@ -501,7 +501,6 @@ fn test_differential_signature_verification_across_all_formats() {
     );
 }
 
-
 #[test]
 fn test_v1_only_compiler_and_unsigned_shadow_envelope() {
     let signer = test_signer();
@@ -514,13 +513,9 @@ fn test_v1_only_compiler_and_unsigned_shadow_envelope() {
         heap_size: None,
     };
 
-    let signed = AdaptiveTxCompiler::compile_v1_only(
-        &signer,
-        std::slice::from_ref(&ix),
-        blockhash,
-        config,
-    )
-    .expect("V1-only compiler must produce V1");
+    let signed =
+        AdaptiveTxCompiler::compile_v1_only(&signer, std::slice::from_ref(&ix), blockhash, config)
+            .expect("V1-only compiler must produce V1");
     assert_eq!(signed.version, TransactionVersion::V1);
     assert_eq!(signed.wire_bytes[0], V1_VERSION_DISCRIMINATOR);
     assert_eq!(signed.max_supported_transaction_version(), Some(1));
@@ -534,8 +529,15 @@ fn test_v1_only_compiler_and_unsigned_shadow_envelope() {
     )
     .expect("Shadow builder must produce unsigned V1 simulation bytes");
     assert_eq!(unsigned[0], V1_VERSION_DISCRIMINATOR);
-    assert_eq!(CompiledAdaptiveTransaction::parse_version_from_wire(&unsigned).unwrap(), TransactionVersion::V1);
-    assert!(unsigned[unsigned.len() - 64..].iter().all(|byte| *byte == 0));
+    assert_eq!(
+        CompiledAdaptiveTransaction::parse_version_from_wire(&unsigned).unwrap(),
+        TransactionVersion::V1
+    );
+    assert!(
+        unsigned[unsigned.len() - 64..]
+            .iter()
+            .all(|byte| *byte == 0)
+    );
     assert!(unsigned.len() <= SOLANA_PACKET_V1_MTU);
 }
 
@@ -562,7 +564,10 @@ fn test_v1_shadow_builder_rejects_secondary_signer() {
             ..Default::default()
         },
     );
-    assert!(result.is_err(), "secondary signer must not be impersonated in Shadow");
+    assert!(
+        result.is_err(),
+        "secondary signer must not be impersonated in Shadow"
+    );
 }
 
 #[test]

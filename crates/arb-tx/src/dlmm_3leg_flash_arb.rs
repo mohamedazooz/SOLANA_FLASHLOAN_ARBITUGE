@@ -62,6 +62,8 @@ pub enum FlashArb3LegError {
     TransactionTooLarge { size: usize, limit: usize },
     #[error("alt compilation failed: {0}")]
     AltCompilation(String),
+    #[error("params.payer {} does not match the signing key {}", payer, signer)]
+    PayerSignerMismatch { payer: String, signer: String },
 }
 
 /// One Meteora DLMM swap leg of the 3-leg flash-funded route.
@@ -457,7 +459,19 @@ pub fn build_flash_funded_three_pool_transaction(
     signer: &KeypairSigner,
     lookup_tables: &[AddressLookupTable],
 ) -> Result<FlashThreeLegArbitrageTx, FlashArb3LegError> {
-    let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool(params)?;
+    let (ixs, borrow_idx, repay_idx) = {
+        // Fail closed: the instructions are assembled for `params.payer` as the
+        // fee payer and only signer. A mismatched `signer` would either add a
+        // second required signature (V1) or sign a message the key cannot
+        // verify (V0) — both unusable.
+        if signer.pubkey() != params.payer {
+            return Err(FlashArb3LegError::PayerSignerMismatch {
+                payer: params.payer.to_string(),
+                signer: signer.pubkey().to_string(),
+            });
+        }
+        assemble_flash_funded_three_pool(params)?
+    };
 
     // ── Atomicity self-check ──
     let verification = verify_atomic_integrity(
@@ -670,7 +684,6 @@ pub fn estimate_v0_transaction_size_3leg(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AddressLookupTable, KeypairSigner};
     use arb_types::TokenProgramKind;
 
     const WSOL: &str = "So11111111111111111111111111111111111111112";

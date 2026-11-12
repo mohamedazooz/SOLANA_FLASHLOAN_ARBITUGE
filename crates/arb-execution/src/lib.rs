@@ -153,6 +153,13 @@ pub fn dispatch_two_dex_arbitrage(
     // Legacy/V0 transactions, resolve ALTs, or use the legacy custom serializer.
     ctx.validate()
         .map_err(|e| DispatchError::InvalidContext(e.to_string()))?;
+    if signer.pubkey() != ctx.payer {
+        return Err(DispatchError::Rejected(format!(
+            "V1 transaction signer {} does not match context payer {}: a V1 message has exactly one signer and it must be the fee payer",
+            signer.pubkey(),
+            ctx.payer
+        )));
+    }
     if !config.v1_transport_supported {
         return Err(DispatchError::Rejected(
             "V1-only profile requires a verified V1-capable direct transport".into(),
@@ -164,11 +171,14 @@ pub fn dispatch_two_dex_arbitrage(
     let v1_instructions = instructions.clone();
     let effective_cu_price = config.base_cu_price_micro_lamports;
     if ctx.cu_limit == 0 {
-        return Err(DispatchError::Rejected("V1 requires a non-zero compute-unit limit".into()));
+        return Err(DispatchError::Rejected(
+            "V1 requires a non-zero compute-unit limit".into(),
+        ));
     }
     let priority_fee_lamports = ((effective_cu_price as u128)
         .saturating_mul(ctx.cu_limit as u128)
-        .saturating_add(999_999)) / 1_000_000;
+        .saturating_add(999_999))
+        / 1_000_000;
     let priority_fee_lamports = u64::try_from(priority_fee_lamports)
         .map_err(|_| DispatchError::Rejected("V1 priority fee exceeds u64 lamports".into()))?;
     let v1_tx = arb_tx::AdaptiveTxCompiler::compile_v1_only(
@@ -283,7 +293,6 @@ pub mod security;
 pub mod sizing;
 pub mod v0_compiler;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,8 +307,7 @@ mod tests {
         Pubkey::new_from_array([1u8; 32])
     }
 
-    fn test_ctx() -> ThreeLegMemeArbitrageContext {
-        let payer = test_payer();
+    fn test_ctx_with_payer(payer: Pubkey) -> ThreeLegMemeArbitrageContext {
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let meme_a = Pubkey::new_from_array([90u8; 32]);
         let meme_b = Pubkey::new_from_array([91u8; 32]);
@@ -451,9 +459,9 @@ mod tests {
 
     #[test]
     fn test_dispatcher_v1_only_path() {
-        let ctx = test_ctx();
+        let signer = KeypairSigner::from_seed(&[7u8; 32]);
+        let ctx = test_ctx_with_payer(signer.pubkey());
         let alt = test_master_alt();
-        let signer = KeypairSigner::new_random();
         let config = DispatcherConfig::default();
 
         let result = dispatch_two_dex_arbitrage(&ctx, &alt, &signer, &config).unwrap();
@@ -464,9 +472,9 @@ mod tests {
 
     #[test]
     fn test_compiled_arb_envelope_wire_bytes() {
-        let ctx = test_ctx();
+        let signer = KeypairSigner::from_seed(&[7u8; 32]);
+        let ctx = test_ctx_with_payer(signer.pubkey());
         let alt = test_master_alt();
-        let signer = KeypairSigner::new_random();
         let config = DispatcherConfig::default();
 
         let envelope = dispatch_two_dex_arbitrage(&ctx, &alt, &signer, &config).unwrap();

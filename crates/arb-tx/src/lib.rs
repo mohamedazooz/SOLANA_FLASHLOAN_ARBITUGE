@@ -87,8 +87,8 @@ pub use dlmm_3leg_flash_arb::{
 pub mod dlmm_4leg_flash_arb;
 pub use dlmm_4leg_flash_arb::{
     FlashArb4LegError, FlashArb4LegParams, FlashArb4LegPoolLeg, FlashFourLegArbitrageTx,
-    assemble_flash_funded_four_pool, build_flash_funded_four_pool_v1_transaction,
-    build_flash_funded_four_pool_v0_transaction,
+    assemble_flash_funded_four_pool, build_flash_funded_four_pool_v0_transaction,
+    build_flash_funded_four_pool_v1_transaction,
 };
 pub mod cross_dex_flash_arb;
 pub use cross_dex_flash_arb::{
@@ -408,6 +408,13 @@ impl Default for KaminoFlashParams {
 }
 
 impl KaminoFlashParams {
+    /// WSOL main-market flash-loan parameters (verified mainnet addresses).
+    /// The user destination starts as the zero pubkey and must be set with
+    /// `for_user` / overwritten before assembly.
+    pub fn default_wsol() -> Self {
+        Self::default()
+    }
+
     pub fn for_user(user: Pubkey) -> Self {
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let user_wsol_ata = get_associated_token_address(&user, &wsol);

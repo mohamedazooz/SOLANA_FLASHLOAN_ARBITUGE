@@ -167,7 +167,7 @@ pub fn calculate_optimal_flash_loan(
 
     // Confidence based on how close to capacity we are
     let capacity_ratio = final_borrow as f64 / bottleneck.max(1) as f64;
-    let confidence = (1.0 - capacity_ratio).max(0.3).min(1.0);
+    let confidence = (1.0 - capacity_ratio).clamp(0.3, 1.0);
 
     FlashLoanSizingResult {
         borrow_amount: final_borrow,
@@ -285,18 +285,10 @@ fn apply_slippage(amount: u64, slippage_bps: u64) -> u64 {
 /// The flash loan fee in atomic token units. Returns `u64::MAX` if flash loans
 /// are disabled (`fee_sf == u64::MAX`) or if the calculation overflows.
 pub fn calculate_kamino_flash_fee(borrow: u64, fee_sf: u64) -> u64 {
-    if fee_sf == u64::MAX {
-        return u64::MAX; // Flash loans disabled on this reserve
-    }
-    if fee_sf == 0 || borrow == 0 {
-        return 0;
-    }
-    let product = (borrow as u128).saturating_mul(fee_sf as u128);
-    // Apply 1-unit floor: max(product, 2^60)
-    let fee_bits = product.max(KAMINO_FRACTION_ONE_BITS);
-    // Divide by 2^60 (U68F60 denominator)
-    let fee = fee_bits >> KAMINO_FRACTION_FRAC_BITS;
-    u64::try_from(fee).unwrap_or(u64::MAX)
+    // Single authoritative implementation (klend `FeeCalculation::Exclusive`,
+    // round-half-away-from-zero). The previous local copy truncated, which
+    // understated the fee; see `arb_tx::kamino::calculate_kamino_flash_fee`.
+    arb_tx::kamino::calculate_kamino_flash_fee(borrow, fee_sf)
 }
 
 /// Optimize borrow size for maximum profit
@@ -409,7 +401,10 @@ mod tests {
         // 1 lamport borrow with 1e-5 fee: floor of 1 unit
         assert_eq!(calculate_kamino_flash_fee(1, fee_sf), 1);
         // Disabled reserve (fee_sf == u64::MAX)
-        assert_eq!(calculate_kamino_flash_fee(1_000_000_000, u64::MAX), u64::MAX);
+        assert_eq!(
+            calculate_kamino_flash_fee(1_000_000_000, u64::MAX),
+            u64::MAX
+        );
         // Zero fee or zero borrow
         assert_eq!(calculate_kamino_flash_fee(1_000_000_000, 0), 0);
         assert_eq!(calculate_kamino_flash_fee(0, fee_sf), 0);

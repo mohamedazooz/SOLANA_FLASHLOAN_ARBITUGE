@@ -930,7 +930,12 @@ fn test_v1_forced_compile_measured_not_jito() {
         SOLANA_PACKET_V1_MTU, V1_VERSION_DISCRIMINATOR, V1ConfigParams,
     };
 
-    let ctx = build_test_ctx(false, false, true);
+    let mut ctx = build_test_ctx(false, false, true);
+
+    // A V1 message has exactly one signer and it must be the fee payer, so the
+    // fixture payer must match the signing key used below.
+    let signer = KeypairSigner::from_seed(&[11u8; 32]);
+    ctx.payer = signer.pubkey();
 
     // Reconstruct the same instruction vector the compiler emits, minus the
     // two legacy ComputeBudget instructions (V1 configures resources natively).
@@ -982,7 +987,6 @@ fn test_v1_forced_compile_measured_not_jito() {
         heap_size: None,
     };
 
-    let signer = KeypairSigner::new_random();
     let v1 = AdaptiveTxCompiler::build_signed_v1_transaction(
         &signer,
         &v1_ixs,

@@ -70,8 +70,16 @@ impl Supervisor {
 
         #[cfg(feature = "shadow-only")]
         let _ = (
-            tip, tip_rung, is_swqos_route, expected_stream_generation, payer, route_sig,
-            t_ingest_to_quote_us, t_risk_us, t_assembly_us, t_signing_us,
+            tip,
+            tip_rung,
+            is_swqos_route,
+            expected_stream_generation,
+            payer,
+            route_sig,
+            t_ingest_to_quote_us,
+            t_risk_us,
+            t_assembly_us,
+            t_signing_us,
         );
 
         // Compile-time shadow-only containment. This guard is intentionally
@@ -79,7 +87,9 @@ impl Supervisor {
         #[cfg(feature = "shadow-only")]
         if self.mode == BotMode::Live {
             error!("shadow-only build rejected Live dispatch before any transport call");
-            let _ = self.store.record_outcome(record.id, "blocked_shadow_only", None);
+            let _ = self
+                .store
+                .record_outcome(record.id, "blocked_shadow_only", None);
             return;
         }
 
@@ -142,7 +152,9 @@ impl Supervisor {
             #[cfg(feature = "shadow-only")]
             BotMode::Live => {
                 error!("shadow-only binary has no Live dispatch implementation");
-                let _ = self.store.record_outcome(record.id, "blocked_shadow_only", None);
+                let _ = self
+                    .store
+                    .record_outcome(record.id, "blocked_shadow_only", None);
             }
             #[cfg(not(feature = "shadow-only"))]
             BotMode::Live => {
@@ -210,12 +222,17 @@ impl Supervisor {
                         }
                     };
                 if tx_version != arb_tx::TransactionVersion::V1 {
-                    warn!("V1-only release rejected non-V1 transaction: {:?}", tx_version);
+                    warn!(
+                        "V1-only release rejected non-V1 transaction: {:?}",
+                        tx_version
+                    );
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.to_string(),
                         gross_sol,
                         stage: "V1-only policy".to_string(),
-                        reason: format!("Only Solana transaction V1 is permitted; received {tx_version:?}"),
+                        reason: format!(
+                            "Only Solana transaction V1 is permitted; received {tx_version:?}"
+                        ),
                         slot: current_slot.0,
                     });
                     return;
@@ -225,7 +242,12 @@ impl Supervisor {
                 // separately verified V1-capable direct sender.
                 let v1_transport_enabled = is_swqos_route
                     && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
-                        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
                         .unwrap_or(false);
                 let max_wire_size = arb_tx::SOLANA_PACKET_V1_MTU;
                 // Shadow/simulate mode only needs RPC simulation. Live direct
