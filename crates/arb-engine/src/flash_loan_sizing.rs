@@ -69,6 +69,8 @@ pub struct FlashLoanSizingResult {
     pub dex_fees: u64,
     /// Total network costs
     pub network_costs: u64,
+    /// Expected final WSOL output of the chain (before the slippage haircut)
+    pub expected_final_output: u64,
     /// Whether sizing was constrained by max amount
     pub capped_at_max: bool,
     /// Whether sizing was constrained by pool capacity
@@ -114,20 +116,26 @@ pub fn calculate_optimal_flash_loan(
         borrow_amount == reserve_adjusted && reserve_adjusted < config.max_flash_amount;
 
     // 6. Simulate the 3-leg chain at this size
-    let (leg_amounts, leg_min_outputs, bins_crossed, dex_fees) =
+    let (leg_amounts, leg_min_outputs, bins_crossed, dex_fees, final_output) =
         simulate_three_leg_chain(pool1, pool2, pool3, borrow_amount, config.max_slippage_bps);
 
-    // 7. Calculate flash loan fee
-    let flash_fee = calculate_kamino_flash_fee(borrow_amount, kamino_flash_fee_sf);
-
-    // 8. Total costs
+    // 7/8. Costs: the flash fee is charged inside `net_profit_lamports` and
+    // DLMM quote outputs are already NET of protocol/LP fees (the fee is taken
+    // from the swap input before bin traversal), so the quoted `dex_fees` are
+    // informational and MUST NOT be subtracted again. DLMM quote outputs are already NET of protocol/LP fees
+    // (the fee is taken from the swap input before bin traversal), so the
+    // quoted `dex_fees` are informational and MUST NOT be subtracted again.
     let network_costs = network_cost_lamports + priority_fee_lamports + jito_tip_lamports;
-    let total_costs = flash_fee + dex_fees + network_costs;
 
-    // 9. Final output after 3 legs
-    let final_output = leg_amounts[2];
-    let gross_profit = final_output as i64 - borrow_amount as i64;
-    let net_profit = gross_profit - total_costs as i64;
+    // 9. Final output after 3 legs (WSOL, flash-loan denomination). Net profit
+    // is computed on the CONSERVATIVE slippage-haircut floor of the final leg,
+    // never on the optimistic expected output.
+    let net_profit = net_profit_lamports(
+        leg_min_outputs[2],
+        borrow_amount,
+        kamino_flash_fee_sf,
+        network_costs,
+    );
     let profit_bps = if borrow_amount > 0 {
         (net_profit * 10_000) / borrow_amount as i64
     } else {
@@ -135,15 +143,7 @@ pub fn calculate_optimal_flash_loan(
     };
 
     // 10. If profit is below target, try to optimize
-    let (
-        final_borrow,
-        final_profit,
-        final_bps,
-        final_amounts,
-        final_outputs,
-        final_bins,
-        final_dex_fees,
-    ) = if net_profit < config.target_profit_bps as i64 * borrow_amount as i64 / 10_000 {
+    let outcome = if net_profit < config.target_profit_bps as i64 * borrow_amount as i64 / 10_000 {
         optimize_size(
             pool1,
             pool2,
@@ -154,16 +154,27 @@ pub fn calculate_optimal_flash_loan(
             network_costs,
         )
     } else {
-        (
-            borrow_amount,
-            net_profit,
-            profit_bps,
-            leg_amounts,
-            leg_min_outputs,
-            bins_crossed,
+        SizeSearchOutcome {
+            borrow: borrow_amount,
+            profit: net_profit,
+            bps: profit_bps,
+            amounts: leg_amounts,
+            min_outputs: leg_min_outputs,
+            bins: bins_crossed,
             dex_fees,
-        )
+            expected_output: final_output,
+        }
     };
+    let SizeSearchOutcome {
+        borrow: final_borrow,
+        profit: final_profit,
+        bps: final_bps,
+        amounts: final_amounts,
+        min_outputs: final_outputs,
+        bins: final_bins,
+        dex_fees: final_dex_fees,
+        expected_output: final_expected_output,
+    } = outcome;
 
     // Confidence based on how close to capacity we are
     let capacity_ratio = final_borrow as f64 / bottleneck.max(1) as f64;
@@ -179,6 +190,7 @@ pub fn calculate_optimal_flash_loan(
         flash_fee: calculate_kamino_flash_fee(final_borrow, kamino_flash_fee_sf),
         dex_fees: final_dex_fees,
         network_costs,
+        expected_final_output: final_expected_output,
         capped_at_max,
         capped_by_capacity,
         confidence,
@@ -209,17 +221,45 @@ fn simulate_three_leg_chain(
     pool3: &PoolState,
     borrow_amount: u64,
     max_slippage_bps: u64,
-) -> ([u64; 3], [u64; 3], [u32; 3], u64) {
-    // Get mints from pool states
-    let wsol = MintId::default(); // Would be passed in real implementation
-    let mint_a = MintId::default();
-    let mint_b = MintId::default();
+) -> ([u64; 3], [u64; 3], [u32; 3], u64, u64) {
+    // Derive the actual route mints from the pool states, anchored on WSOL.
+    // Leg 1 must trade WSOL <-> A, leg 3 must trade B <-> WSOL, and leg 2 must
+    // bridge A <-> B. Any other shape quotes nothing and yields zero output.
+    let wsol = wsol_mint_id();
+    let empty = ([0u64; 3], [0u64; 3], [0u32; 3], 0u64, 0u64);
+    if pool1.base_mint == wsol && pool1.quote_mint != wsol {
+        // A is pool1's quote mint
+    } else if pool1.quote_mint == wsol && pool1.base_mint != wsol {
+        // A is pool1's base mint
+    } else {
+        return empty;
+    }
+    let mint_a = if pool1.base_mint == wsol {
+        pool1.quote_mint
+    } else {
+        pool1.base_mint
+    };
+    let mint_b = if pool3.base_mint == wsol {
+        pool3.quote_mint
+    } else if pool3.quote_mint == wsol {
+        pool3.base_mint
+    } else {
+        return empty;
+    };
+    if mint_b == wsol || mint_b == mint_a {
+        return empty;
+    }
+    let p2_mints = [pool2.base_mint, pool2.quote_mint];
+    if !p2_mints.contains(&mint_a) || !p2_mints.contains(&mint_b) {
+        return empty;
+    }
 
     let mut amount = borrow_amount;
     let mut amounts = [0u64; 3];
     let mut min_outputs = [0u64; 3];
     let mut bins = [0u32; 3];
     let mut total_fees = 0u64;
+    let mut final_output = 0u64;
 
     // Leg 1: WSOL -> A
     if let Some((out1, quote1, _)) =
@@ -251,9 +291,37 @@ fn simulate_three_leg_chain(
         min_outputs[2] = apply_slippage(out3, max_slippage_bps);
         bins[2] = quote3.bins_crossed;
         total_fees += quote3.fee_amount;
+        final_output = out3;
     }
 
-    (amounts, min_outputs, bins, total_fees)
+    (amounts, min_outputs, bins, total_fees, final_output)
+}
+
+fn wsol_mint_id() -> MintId {
+    use std::str::FromStr;
+    MintId(solana_pubkey::Pubkey::from_str(arb_constants::WSOL_MINT).expect("valid wsol mint"))
+}
+
+/// Canonical NET profit accounting for a WSOL-denominated flash-loan route:
+/// gross output minus the borrowed principal, minus the Kamino flash fee at
+/// the on-chain U68F60 rate, minus the flat network cost. Single source of
+/// truth shared by the size optimizer and the 3-leg pipeline. All integer,
+/// all checked; a disabled reserve (`u64::MAX` fee sentinel) fails closed.
+pub fn net_profit_lamports(
+    final_output: u64,
+    borrow: u64,
+    flash_fee_sf: u64,
+    network_cost_lamports: u64,
+) -> i64 {
+    let gross = i64::try_from(final_output)
+        .unwrap_or(i64::MAX)
+        .saturating_sub(i64::try_from(borrow).unwrap_or(i64::MAX));
+    let flash_fee = calculate_kamino_flash_fee(borrow, flash_fee_sf);
+    let flash_fee_i64 = i64::try_from(flash_fee).unwrap_or(i64::MAX);
+    let network_cost_i64 = i64::try_from(network_cost_lamports).unwrap_or(i64::MAX);
+    gross
+        .saturating_sub(flash_fee_i64)
+        .saturating_sub(network_cost_i64)
 }
 
 /// Apply slippage to get conservative minimum output
@@ -292,6 +360,18 @@ pub fn calculate_kamino_flash_fee(borrow: u64, fee_sf: u64) -> u64 {
 }
 
 /// Optimize borrow size for maximum profit
+/// Winning candidate of the bounded size search.
+struct SizeSearchOutcome {
+    borrow: u64,
+    profit: i64,
+    bps: i64,
+    amounts: [u64; 3],
+    min_outputs: [u64; 3],
+    bins: [u32; 3],
+    dex_fees: u64,
+    expected_output: u64,
+}
+
 fn optimize_size(
     pool1: &PoolState,
     pool2: &PoolState,
@@ -300,7 +380,7 @@ fn optimize_size(
     config: &FlashLoanSizingConfig,
     kamino_flash_fee_sf: u64,
     network_costs: u64,
-) -> (u64, i64, i64, [u64; 3], [u64; 3], [u32; 3], u64) {
+) -> SizeSearchOutcome {
     let mut best_borrow = initial_borrow;
     let mut best_profit = i64::MIN;
     let mut best_bps = 0i64;
@@ -308,17 +388,16 @@ fn optimize_size(
     let mut best_outputs = [0u64; 3];
     let mut best_bins = [0u32; 3];
     let mut best_fees = 0u64;
+    let mut best_expected_output = 0u64;
 
     // Coarse search: powers of 1.5 from min to max
     let mut test_amount = config.min_flash_amount;
     while test_amount <= config.max_flash_amount {
-        let (amounts, outputs, bins, fees) =
+        let (amounts, outputs, bins, fees, expected_out) =
             simulate_three_leg_chain(pool1, pool2, pool3, test_amount, config.max_slippage_bps);
 
-        let flash_fee = calculate_kamino_flash_fee(test_amount, kamino_flash_fee_sf);
-        let total_costs = flash_fee + fees + network_costs;
         let final_out = outputs[2];
-        let net = final_out as i64 - test_amount as i64 - total_costs as i64;
+        let net = net_profit_lamports(final_out, test_amount, kamino_flash_fee_sf, network_costs);
 
         if net > best_profit {
             best_profit = net;
@@ -332,6 +411,7 @@ fn optimize_size(
             best_outputs = outputs;
             best_bins = bins;
             best_fees = fees;
+            best_expected_output = expected_out;
         }
 
         test_amount = (test_amount as f64 * 1.5) as u64;
@@ -345,13 +425,11 @@ fn optimize_size(
     let step = ((fine_end - fine_start) / 20).max(1);
 
     for test_amount in (fine_start..=fine_end).step_by(step as usize) {
-        let (amounts, outputs, bins, fees) =
+        let (amounts, outputs, bins, fees, expected_out) =
             simulate_three_leg_chain(pool1, pool2, pool3, test_amount, config.max_slippage_bps);
 
-        let flash_fee = calculate_kamino_flash_fee(test_amount, kamino_flash_fee_sf);
-        let total_costs = flash_fee + fees + network_costs;
         let final_out = outputs[2];
-        let net = final_out as i64 - test_amount as i64 - total_costs as i64;
+        let net = net_profit_lamports(final_out, test_amount, kamino_flash_fee_sf, network_costs);
 
         if net > best_profit {
             best_profit = net;
@@ -365,18 +443,20 @@ fn optimize_size(
             best_outputs = outputs;
             best_bins = bins;
             best_fees = fees;
+            best_expected_output = expected_out;
         }
     }
 
-    (
-        best_borrow,
-        best_profit,
-        best_bps,
-        best_amounts,
-        best_outputs,
-        best_bins,
-        best_fees,
-    )
+    SizeSearchOutcome {
+        borrow: best_borrow,
+        profit: best_profit,
+        bps: best_bps,
+        amounts: best_amounts,
+        min_outputs: best_outputs,
+        bins: best_bins,
+        dex_fees: best_fees,
+        expected_output: best_expected_output,
+    }
 }
 
 #[cfg(test)]

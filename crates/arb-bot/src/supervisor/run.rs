@@ -37,15 +37,32 @@ impl Supervisor {
     /// Conservative flat network cost used by the 3-leg size search: base fee,
     /// Jito tip ceiling, and priority-fee estimate at the adaptive price for
     /// the 3-hop flash-funded route shape.
-    fn three_leg_network_cost_lamports(&self, tip_lamports: u64) -> u64 {
+    /// Rent-exempt minimum for one SPL token account (165 bytes).
+    const ATA_RENT_LAMPORTS: u64 = 2_039_280;
+
+    fn three_leg_network_cost_lamports(&self, tip_lamports: u64, payer: Pubkey) -> u64 {
         let hop_protocols = [arb_types::DexProtocol::MeteoraDlmm; 3];
         let base_cu = arb_tx::estimate_route_cu(true, &hop_protocols, 3);
         let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
         let cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
         let priority_fee = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
+        // The WSOL settlement ATA is created when missing and never closed (it
+        // holds the profit), so its rent is a real execution cost. Intermediate
+        // meme ATAs are created AND closed inside the same transaction and
+        // reclaim their rent, so only the settlement account is charged.
+        let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default();
+        let spl = Pubkey::from_str(arb_tx::TOKEN_PROGRAM_ID).unwrap_or_default();
+        let settlement_ata =
+            arb_tx::get_associated_token_address_with_program_id(&payer, &wsol, &spl);
+        let ata_rent = if self.ingest.account_store().get(&settlement_ata).is_some() {
+            0
+        } else {
+            Self::ATA_RENT_LAMPORTS
+        };
         BASE_FEE_LAMPORTS
             .saturating_add(tip_lamports)
             .saturating_add(priority_fee)
+            .saturating_add(ata_rent)
     }
 
     /// Meteora 3-leg (WSOL -> A -> B -> WSOL) capture: run the chained-quote
@@ -136,7 +153,8 @@ impl Supervisor {
                 .min_profit_lamports
                 .max(self.config.strategy.min_net_profit_abs),
             flash_loan_fee_sf,
-            network_cost_lamports: self.three_leg_network_cost_lamports(verified_tip_lamports),
+            network_cost_lamports: self
+                .three_leg_network_cost_lamports(verified_tip_lamports, payer),
             kamino_available_liquidity,
             input_size: tuning.input_size.min(max_sizing).max(1),
             size_search_sizes,

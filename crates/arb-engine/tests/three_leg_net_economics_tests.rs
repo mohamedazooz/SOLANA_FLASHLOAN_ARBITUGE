@@ -15,7 +15,7 @@ mod common;
 
 use arb_engine::{
     FlashLoanSizingConfig, build_three_leg_meme_pipeline, calculate_kamino_flash_fee,
-    calculate_optimal_flash_loan, simulate_profitability_gate,
+    calculate_optimal_flash_loan, net_profit_lamports, simulate_profitability_gate,
 };
 use common::{meme_pool_fixture, params as base_params};
 
@@ -161,4 +161,47 @@ fn sizing_helper_charges_exact_klend_fee() {
     let expected_fee = calculate_kamino_flash_fee(result.borrow_amount, FLASH_LOAN_FEE_SF);
     assert_eq!(result.flash_fee, expected_fee);
     assert!(result.borrow_amount > 0);
+    // The chain must actually quote through real mints: the final WSOL output
+    // and its slippage floor must be non-zero for the profitable fixture.
+    assert!(
+        result.expected_final_output > 0,
+        "final WSOL output must be quoted"
+    );
+    assert!(
+        result.leg_min_outputs[2] > 0,
+        "conservative floor must be quoted"
+    );
+    // Net accounting identity on the conservative floor: profit = floor_out
+    // - borrow - exact klend fee - network cost (dex fees are already embedded
+    // in the quoted outputs and must NOT be subtracted again).
+    assert_eq!(
+        result.expected_profit,
+        net_profit_lamports(
+            result.leg_min_outputs[2],
+            result.borrow_amount,
+            FLASH_LOAN_FEE_SF,
+            result.network_costs,
+        )
+    );
+    assert!(
+        result.expected_profit > 0,
+        "profitable fixture must size to positive net"
+    );
+}
+
+#[test]
+fn route_fails_closed_when_repayment_not_guaranteed() {
+    let pools = meme_pool_fixture();
+    let mut p = base_params(100_000_000);
+    p.flash_loan_fee_sf = FLASH_LOAN_FEE_SF;
+    p.network_cost_lamports = 0;
+    // 50% per-leg slippage haircut collapses the guaranteed final floor far
+    // below principal + fee: the pipeline must fail closed instead of emitting
+    // a route that cannot atomically repay the flash loan.
+    p.slippage_bps = 5_000;
+    let err = build_three_leg_meme_pipeline(&pools, &p).unwrap_err();
+    assert!(matches!(
+        err,
+        arb_engine::ThreeLegMemePipelineError::RepaymentNotGuaranteed { .. }
+    ));
 }

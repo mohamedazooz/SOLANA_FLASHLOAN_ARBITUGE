@@ -572,9 +572,10 @@ pub fn build_flash_funded_three_pool_transaction(
     let mint_a_program = params.leg_1.token_out_program();
     let mint_b = params.leg_2.token_out();
     let mint_b_program = params.leg_2.token_out_program();
+    let flash_program = params.leg_1.token_in_program();
 
     let settlement_account =
-        get_associated_token_address_with_program_id(&params.payer, &flash_mint, &flash_mint);
+        get_associated_token_address_with_program_id(&params.payer, &flash_mint, &flash_program);
     let intermediate_account_a =
         get_associated_token_address_with_program_id(&params.payer, &mint_a, &mint_a_program);
     let intermediate_account_b =

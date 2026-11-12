@@ -43,6 +43,7 @@ pub mod three_leg_meme_pipeline;
 pub use flash_loan_sizing::{
     FlashLoanSizingConfig, FlashLoanSizingResult, KAMINO_FRACTION_FRAC_BITS,
     KAMINO_FRACTION_ONE_BITS, calculate_kamino_flash_fee, calculate_optimal_flash_loan,
+    net_profit_lamports,
 };
 pub use meteora_fresh_state::{FreshnessConfig, FreshnessVerdict, evaluate_freshness};
 pub use meteora_size_optimizer::{

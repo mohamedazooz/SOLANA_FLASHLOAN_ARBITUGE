@@ -188,6 +188,13 @@ pub enum ThreeLegMemePipelineError {
     InsufficientFlashLiquidity { available: u64 },
     #[error("best net profit {best_net} is below the required floor {floor}")]
     BelowNetProfitFloor { best_net: i64, floor: u64 },
+    #[error(
+        "slippage floor of the final output ({min_final_output}) cannot cover principal + flash fee ({required})"
+    )]
+    RepaymentNotGuaranteed {
+        min_final_output: u64,
+        required: u64,
+    },
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -461,6 +468,17 @@ pub fn build_three_leg_meme_pipeline(
     // Account resolution: build the executable context.
     let context = build_context(p1, p2, p3, &legs, params, best_chain.a, best_chain.b, wsol)?;
 
+    // Repayment guarantee: even at the slippage floor of the final leg, the
+    // route must still cover principal + flash fee, otherwise the flash loan
+    // cannot be repaid atomically and the whole transaction would revert.
+    let required_repayment = input.saturating_add(flash_fee_lamports);
+    if context.expected_min_final_output < required_repayment {
+        return Err(ThreeLegMemePipelineError::RepaymentNotGuaranteed {
+            min_final_output: context.expected_min_final_output,
+            required: required_repayment,
+        });
+    }
+
     Ok(ThreeLegMemePipelineResult {
         pool_ids: [p1.pool_id.0, p2.pool_id.0, p3.pool_id.0],
         meme_mints: [best_chain.a, best_chain.b],
@@ -479,16 +497,14 @@ pub fn build_three_leg_meme_pipeline(
 /// minus the Kamino flash fee at the on-chain U68F60 rate, minus the
 /// configured flat network cost. All integer, all checked.
 fn net_profit_of(quote: ChainQuote, input: u64, params: &ThreeLegMemeContextParams) -> i64 {
-    let gross = quote.gross(input);
-    let flash_fee =
-        crate::flash_loan_sizing::calculate_kamino_flash_fee(input, params.flash_loan_fee_sf);
-    // u64::MAX (disabled reserve) must fail closed, never wrap into a
-    // negative (profit-increasing) i64.
-    let flash_fee_i64 = i64::try_from(flash_fee).unwrap_or(i64::MAX);
-    let network_cost_i64 = i64::try_from(params.network_cost_lamports).unwrap_or(i64::MAX);
-    gross
-        .saturating_sub(flash_fee_i64)
-        .saturating_sub(network_cost_i64)
+    // Delegates to the canonical accounting in flash_loan_sizing (single
+    // source of truth for net profit across the optimizer and this pipeline).
+    crate::flash_loan_sizing::net_profit_lamports(
+        quote.out[2],
+        input,
+        params.flash_loan_fee_sf,
+        params.network_cost_lamports,
+    )
 }
 
 fn build_leg_records(
