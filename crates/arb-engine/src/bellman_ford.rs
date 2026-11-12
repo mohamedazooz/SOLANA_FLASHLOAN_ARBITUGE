@@ -404,6 +404,12 @@ impl BellmanFordEngine {
 
     /// Evaluates profitability, optimal trade size, and fills the ExecutionOpportunity
     /// using closed-form mathematical equations and CostLedger economic modeling.
+    ///
+    /// ACCOUNTING PRECEDENCE: all profit/size decisions here come from
+    /// `build_economic_quote` (the official integer CostLedger model) and u128
+    /// integer sizing. The `f64` product computed by the caller is ONLY an
+    /// initial screening signal to skip obviously unprofitable cycles before
+    /// exact evaluation; it is never used for pricing, sizing, or gating.
     fn evaluate_cycle(
         &self,
         cycle: &[BfEdge],
@@ -532,6 +538,8 @@ impl BellmanFordEngine {
             base_decimals: config.base_decimals,
             price_impact_bps: impact,
             hops,
+
+            expected_min_final_output: 0,
         })
     }
 }

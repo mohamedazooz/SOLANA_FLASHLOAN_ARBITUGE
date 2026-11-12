@@ -5,7 +5,7 @@ impl Supervisor {
     /// Assemble native (Raydium / Orca / real-DLMM-fallback) arbitrage instructions.
     /// Encapsulates the guarded-flash, plain-flash, and non-flash native builders.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn assemble_native_ixs(
+    pub(super) async fn assemble_native_ixs(
         &self,
         payer: Pubkey,
         tip_account: Pubkey,
@@ -22,6 +22,7 @@ impl Supervisor {
                 let graph = self.graph.lock();
                 graph.min_profit_raw()
             };
+            let skip_close = self.preexisting_intermediate_atas(opp, payer).await;
             Ok(TxBuilder::assemble_flash_arbitrage(
                 payer,
                 tip_account,
@@ -32,6 +33,7 @@ impl Supervisor {
                 kamino_params,
                 flash_loan_fee_sf,
                 min_profit_raw,
+                &skip_close,
             )?)
         } else {
             // min_profit_raw from economic config (in base-mint raw units)
@@ -51,56 +53,50 @@ impl Supervisor {
         }
     }
 
-    /// Resolve a multi-hop route to LIVE Jupiter v6 swap-instructions and wrap them
-    /// in an atomic Kamino flash-loan bundle. Used for exotic / Meteora DLMM routes
-    /// where the native builder lacks live bin-array state — Jupiter reads live
-    /// on-chain state and returns byte-exact, fully account-resolved instructions.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn resolve_jupiter_swap_route(
+    /// Probe the RPC for intermediate-mint ATAs that already exist for the payer.
+    /// The flash builder closes every ephemeral intermediate ATA at the end of the
+    /// transaction; closing a PRE-EXISTING ATA would fail on a non-empty balance
+    /// (or destroy balances held outside this trade), so those mints are excluded
+    /// from the close list. On any RPC failure the probe fails safe: ALL
+    /// intermediate closes are skipped (rent stays parked, no revert, no loss).
+    async fn preexisting_intermediate_atas(
         &self,
         opp: &ExecutionOpportunity,
         payer: Pubkey,
-        tip: Lamports,
-        cu_limit: u32,
-        cu_price: u64,
-        kamino_params: &KaminoFlashParams,
-        flash_loan_fee_sf: u64,
-    ) -> anyhow::Result<Vec<arb_tx::CompiledInstruction>> {
-        let mut swap_ixs: Vec<arb_tx::CompiledInstruction> = Vec::new();
-        let mut current_amount = opp.size_in.as_u64();
-
+    ) -> Vec<Pubkey> {
+        let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default();
+        let usdc = Pubkey::from_str(arb_tx::USDC_MINT).unwrap_or_default();
+        let mut probes: Vec<(Pubkey, Pubkey)> = Vec::new();
         for hop in &opp.hops {
-            let in_mint = hop.mint_in.0.to_string();
-            let out_mint = hop.mint_out.0.to_string();
-            let quote = self
-                .jupiter
-                .get_quote(&in_mint, &out_mint, current_amount, 50)
-                .await?;
-
-            let out_amount = quote
-                .get("outAmount")
-                .and_then(|v| {
-                    v.as_u64()
-                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-                })
-                .ok_or_else(|| anyhow::anyhow!("Jupiter quote missing outAmount"))?;
-
-            let ixs = self.jupiter.get_swap_instructions(&payer, quote).await?;
-            swap_ixs.extend(ixs);
-            current_amount = out_amount;
+            for (mint, program) in [
+                (hop.mint_in.0, hop.token_programs[0].program_id()),
+                (hop.mint_out.0, hop.token_programs[1].program_id()),
+            ] {
+                if mint != wsol && mint != usdc && !probes.iter().any(|(m, _)| *m == mint) {
+                    let ata = arb_tx::get_associated_token_address_with_program_id(
+                        &payer, &mint, &program,
+                    );
+                    probes.push((mint, ata));
+                }
+            }
         }
-
-        TxBuilder::assemble_jupiter_flash_arbitrage(
-            payer,
-            arb_land::get_random_tip_account(),
-            tip,
-            cu_limit,
-            cu_price,
-            opp.size_in.as_u64(),
-            kamino_params,
-            swap_ixs,
-            flash_loan_fee_sf,
-        )
+        if probes.is_empty() {
+            return Vec::new();
+        }
+        let keys: Vec<String> = probes.iter().map(|(_, ata)| ata.to_string()).collect();
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        match self.rpc_pool.get_multiple_accounts(&key_refs).await {
+            Ok(accounts) => probes
+                .iter()
+                .zip(accounts.iter())
+                .filter(|(_, acc)| acc.is_some())
+                .map(|((mint, _), _)| *mint)
+                .collect(),
+            Err(e) => {
+                debug!("ATA existence probe failed ({e}); skipping all intermediate ATA closes");
+                probes.into_iter().map(|(mint, _)| mint).collect()
+            }
+        }
     }
 
     pub(super) async fn fetch_recent_blockhash(&self) -> [u8; 32] {

@@ -99,7 +99,6 @@ impl Supervisor {
             .as_ref()
             .map(|k| k.pubkey())
             .unwrap_or_default();
-        let spl = Pubkey::from_str(arb_tx::TOKEN_PROGRAM_ID).unwrap_or_default();
 
         // Candidate size ladder bounded by both the tuning ceiling and the live
         // risk-gate sizing. Falls back to a single discovery size when capped.
@@ -116,31 +115,6 @@ impl Supervisor {
         };
 
         let params = arb_engine::ThreeLegMemeContextParams {
-            payer,
-            // ATAs are placeholders for discovery: the compiler context built
-            // by the pipeline is not used on this capture path — the per-hop
-            // `SwapHop.execution_accounts` come from the pool states below.
-            meme_a_ata: arb_tx::master_alt::derive_ata(
-                &payer,
-                &Pubkey::new_from_array([0u8; 32]),
-                &spl,
-            ),
-            meme_b_ata: arb_tx::master_alt::derive_ata(
-                &payer,
-                &Pubkey::new_from_array([1u8; 32]),
-                &spl,
-            ),
-            meme_a_ata_exists: false,
-            meme_b_ata_exists: false,
-            meme_a_ata_balance: 0,
-            meme_b_ata_balance: 0,
-            meme_a_is_token_2022: false,
-            meme_b_is_token_2022: false,
-            meme_a_withheld_fees: 0,
-            meme_b_withheld_fees: 0,
-            wsol_token_program: spl,
-            meme_a_token_program: spl,
-            meme_b_token_program: spl,
             snapshot_slot: current_slot.0,
             cu_limit: arb_tx::COMPUTE_BUDGET_LIMIT_3HOP,
             priority_fee_micro_lamports: 1_000,
@@ -158,6 +132,7 @@ impl Supervisor {
             kamino_available_liquidity,
             input_size: tuning.input_size.min(max_sizing).max(1),
             size_search_sizes,
+            ..arb_engine::ThreeLegMemeContextParams::for_discovery(payer)
         };
 
         let result = match arb_engine::build_three_leg_meme_pipeline(fresh_pools, &params) {
@@ -198,6 +173,7 @@ impl Supervisor {
 
         let size_in = result.size_search.best_input.max(1);
         let expected_out = result.expected_final_out;
+        let expected_min_final_output = result.expected_min_final_output;
         let hop_inputs = vec![
             result.legs[0].amount_in,
             result.legs[1].amount_in,
@@ -205,6 +181,7 @@ impl Supervisor {
             expected_out,
         ];
         let gross = result.gross_profit_lamports as u64;
+        let net = result.net_profit_lamports.max(0) as u64;
 
         static THREE_LEG_ROUTE_ID: std::sync::atomic::AtomicU32 =
             std::sync::atomic::AtomicU32::new(50_000);
@@ -217,13 +194,15 @@ impl Supervisor {
             size_in: TokenAmount(size_in),
             expected_out: TokenAmount(expected_out),
             hop_inputs,
-            // The authoritative economic gate re-derives net profit later; the
-            // pipeline's gross (in lamports, WSOL-anchored) is the admission signal.
+            // The authoritative economic gate re-derives net profit later with
+            // the actual tip; the pipeline's canonical net (flash fee + network
+            // cost already deducted, WSOL-anchored) ranks the merged set.
             gross_profit: Lamports(gross),
-            net_profit: Lamports(gross),
+            net_profit: Lamports(net),
             base_decimals: 9, // WSOL-anchored route
             price_impact_bps: Bps(0),
             hops,
+            expected_min_final_output,
         }]
     }
 
@@ -1321,14 +1300,21 @@ impl Supervisor {
                 let trade_size_usd = base_price_usd.map(|price| {
                     (opp.size_in.as_u64() as f64 / 10_f64.powi(opp.base_decimals as i32)) * price
                 });
-                let bypass_risk_gate = std::env::var("BYPASS_RISK_GATE")
-                    .map(|v| {
-                        matches!(
-                            v.trim().to_ascii_lowercase().as_str(),
-                            "1" | "true" | "yes" | "on"
-                        )
-                    })
-                    .unwrap_or(false);
+                let bypass_risk_gate = !matches!(self.mode, BotMode::Live)
+                    && std::env::var("BYPASS_RISK_GATE")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
+                        .unwrap_or(false);
+                if bypass_risk_gate {
+                    warn!(
+                        "BYPASS_RISK_GATE active in {} mode: notional and impact risk checks skipped",
+                        self.mode
+                    );
+                }
 
                 let risk_check =
                     if bypass_risk_gate {
@@ -1419,10 +1405,6 @@ impl Supervisor {
                 //    adaptive priority fee computed above (same values that
                 //    priced the gate).
 
-                // Jupiter execution is disabled in this remediation build. A Jupiter
-                // quote/route is not proof that our locally sized route has equivalent
-                // fees, account metas, min-out and flash-loan repayment semantics.
-                let route_via_jupiter = false;
                 let t_risk_us = t_risk_start.elapsed().as_micros() as u64;
                 let t_assembly_start = std::time::Instant::now();
 
@@ -1438,6 +1420,29 @@ impl Supervisor {
                         self.config.strategy.max_price_impact_bps
                     );
                     let first_hop = &opp.hops[0];
+                    // Split legs are parallel pools on the SAME mint pair: the leg
+                    // builder below stamps every leg with first_hop's mints. Reject
+                    // any split whose legs trade a different pair (fail closed).
+                    let pair_ok = {
+                        let registry = self.registry.read();
+                        s.legs.iter().all(|leg| {
+                            registry
+                                .pools()
+                                .iter()
+                                .find(|p| p.pool_id == leg.pool_id)
+                                .map(|p| {
+                                    (p.base_mint == first_hop.mint_in
+                                        && p.quote_mint == first_hop.mint_out)
+                                        || (p.base_mint == first_hop.mint_out
+                                            && p.quote_mint == first_hop.mint_in)
+                                })
+                                .unwrap_or(false)
+                        })
+                    };
+                    if !pair_ok {
+                        debug!("Split route rejected: leg pool mint pair differs from first hop");
+                        continue;
+                    }
                     let slip = arb_tx::DEFAULT_HOP_SLIPPAGE_BPS;
                     let mut all_legs: Vec<arb_tx::CompiledInstruction> = Vec::new();
                     let mut total_out: u64 = 0;
@@ -1513,53 +1518,20 @@ impl Supervisor {
                             continue;
                         }
                     }
-                } else if route_via_jupiter {
+                } else {
                     match self
-                        .resolve_jupiter_swap_route(
-                            opp,
+                        .assemble_native_ixs(
                             payer,
+                            tip_account,
                             tip,
                             cu_limit,
                             cu_price,
+                            opp,
                             &kamino_params,
                             verified.flash_loan_fee_sf.value,
                         )
                         .await
                     {
-                        Ok(jixs) => jixs,
-                        Err(e) => {
-                            debug!(
-                                "Jupiter live resolution failed for exotic route ({e}); falling back to native builder"
-                            );
-                            match self.assemble_native_ixs(
-                                payer,
-                                tip_account,
-                                tip,
-                                cu_limit,
-                                cu_price,
-                                opp,
-                                &kamino_params,
-                                verified.flash_loan_fee_sf.value,
-                            ) {
-                                Ok(jixs) => jixs,
-                                Err(e) => {
-                                    debug!("Native builder failed, skipping opportunity: {e}");
-                                    continue;
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    match self.assemble_native_ixs(
-                        payer,
-                        tip_account,
-                        tip,
-                        cu_limit,
-                        cu_price,
-                        opp,
-                        &kamino_params,
-                        verified.flash_loan_fee_sf.value,
-                    ) {
                         Ok(jixs) => jixs,
                         Err(e) => {
                             debug!("Native builder failed, skipping opportunity: {e}");
@@ -1774,11 +1746,10 @@ impl Supervisor {
 
                 // 5. No simulateTransaction on the hot path (latency).
                 // Rejection is delegated to on-chain guards: Kamino flash-repay
-                // fails if the balance is short, and each hop carries min_amount_out.
-                // Open item: the Jupiter-sourced route quotes each hop at 50 bps of
-                // slippage, which is a slippage bound rather than a profit floor —
-                // a floor there needs a final-hop minimum derived from
-                // `size_in + costs + tip`, which the quote API does not express.
+                // fails if the balance is short, and each hop carries min_amount_out
+                // at DEFAULT_HOP_SLIPPAGE_BPS. Note this is a slippage bound rather
+                // than a profit floor — a floor would need a final-hop minimum
+                // derived from `size_in + costs + tip` propagated per hop.
 
                 info!(
                     "Profitable opportunity sized: size={} real_net_base_raw={} tip={}",
@@ -1816,11 +1787,9 @@ impl Supervisor {
                 // USDC raw units when base_mint is USDC). We convert to
                 // human-readable decimal form using the base mint's own decimals
                 // — never assuming SOL (9 decimals) or lamports.
-                let base_mint = opp
-                    .hops
-                    .first()
-                    .map(|h| h.mint_in)
-                    .unwrap_or_else(|| MintId::new([0u8; 32]));
+                let Some(base_mint) = opp.hops.first().map(|h| h.mint_in) else {
+                    continue;
+                };
                 let base_scale = 10f64.powi(i32::from(opp.base_decimals));
                 let profit_base = real_net_base_raw as f64 / base_scale;
                 let _size_in_base = opp.size_in.as_u64() as f64 / base_scale;
@@ -2116,6 +2085,18 @@ impl Supervisor {
             return Err(format!(
                 "expected_out {} < required repayment {} (size_in={} flash_fee={})",
                 opp.expected_out.as_u64(),
+                total_required,
+                opp.size_in.as_u64(),
+                flash_fee
+            ));
+        }
+        // Conservative floor: when a pipeline carries a slippage-bounded final
+        // output, that floor (not the optimistic expected_out) must still cover
+        // the full repayment.
+        if opp.expected_min_final_output > 0 && opp.expected_min_final_output < total_required {
+            return Err(format!(
+                "expected_min_final_output {} < required repayment {} (size_in={} flash_fee={})",
+                opp.expected_min_final_output,
                 total_required,
                 opp.size_in.as_u64(),
                 flash_fee

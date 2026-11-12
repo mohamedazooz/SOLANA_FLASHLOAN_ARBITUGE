@@ -14,7 +14,7 @@ use arb_math::{RttTracker, SlotClock};
 use arb_risk::{CircuitBreaker, KillSwitch, RiskGate, RiskLimits};
 use arb_sim::{ForkSimulator, Simulator};
 use arb_store::{AttemptRecord, PostgresStore, SqliteStore, Store};
-use arb_tx::{JupiterClient, KaminoFlashParams, KeypairSigner, TxBuilder};
+use arb_tx::{KaminoFlashParams, KeypairSigner, TxBuilder};
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, InflightStatus, Lamports, MintId, PoolState, RouteId,
     Slot, SwapHop, TipDecision, TokenAmount,
@@ -85,9 +85,6 @@ pub struct Supervisor {
     heartbeat: Arc<crate::heartbeat::Heartbeat>,
     /// Shared short-TTL Redis / in-memory cache for sub-ms dedup of pools & quotes.
     redis_cache: Arc<arb_store::RedisStore>,
-    /// Jupiter v6 client for live swap-instruction resolution of exotic / trending
-    /// (e.g. Meteora DLMM) routes — byte-exact, fully account-resolved, live.
-    jupiter: arb_tx::JupiterClient,
     /// Adaptive Jito tip pricing + leader gating + landing evidence.
     jito_service: Arc<JitoService>,
     /// Maps slots onto the local monotonic clock so a bundle leaves at
@@ -381,7 +378,6 @@ impl Supervisor {
                 std::env::var("REDIS_URL").ok(),
                 10,
             )),
-            jupiter: JupiterClient::new(),
             jito_service,
             slot_clock: parking_lot::Mutex::new(SlotClock::new()),
             rtt: parking_lot::Mutex::new((RttTracker::new(300.0), None)),

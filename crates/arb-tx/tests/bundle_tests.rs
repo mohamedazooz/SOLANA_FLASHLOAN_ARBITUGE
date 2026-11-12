@@ -109,6 +109,7 @@ fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> Ex
                 execution_accounts: None,
             },
         ],
+        expected_min_final_output: 0,
     }
 }
 
@@ -168,6 +169,7 @@ fn create_3hop_opportunity(
                 execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
         ],
+        expected_min_final_output: 0,
     }
 }
 
@@ -604,6 +606,8 @@ fn test_invalid_hop_count_rejected() {
             trade_intent: Default::default(),
             execution_accounts: None,
         }],
+
+        expected_min_final_output: 0,
     };
 
     let err = TxBuilder::assemble_atomic_bundle(

@@ -379,25 +379,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arb-execution"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arb-constants",
- "arb-math",
- "arb-tx",
- "arb-types",
- "bincode",
- "parking_lot",
- "proptest",
- "serde",
- "serde_json",
- "solana-pubkey 2.4.0",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
 name = "arb-ingest"
 version = "0.1.0"
 dependencies = [

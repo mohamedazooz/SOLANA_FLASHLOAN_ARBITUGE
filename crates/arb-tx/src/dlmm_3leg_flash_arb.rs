@@ -1,5 +1,12 @@
 //! Phase 17+ — Kamino flash-loan funded THREE-pool Meteora DLMM arbitrage.
 //!
+//! WIRING STATUS: this module is the reference/V1-capable three-pool builder.
+//! The live dispatch path currently assembles 3-leg DLMM routes via
+//! `TxBuilder::assemble_flash_arbitrage` (generic hop builder in `lib.rs`).
+//! This builder is exercised by its own test suite and is NOT invoked from the
+//! supervisor dispatch path; wiring it in requires live bin-array account
+//! discovery per hop (see `docs/PIPELINE_AUDIT_2026-11-12.md`, finding O-3).
+//!
 //! Assembles **one** Solana transaction that performs, in order:
 //!
 //! ```text
