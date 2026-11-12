@@ -1,0 +1,1744 @@
+{
+  "captured_at_utc": "2026-11-10T11:30:08.586Z",
+  "rpc_slot": 467704169,
+  "pool_address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+  "program_id": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "owner": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "data_len": 904,
+  "data_base64": "IQsxYrVlsQ0QJx4AWAKIE8DUAQDgkwQAeFX+/4iqAQDoAwAAAAAAABlTAAD5BAAA2+f//wAAAAAiAPNqAAAAAAAAAAAAAAAA/wQAAN3n//8EAAAAAAAAAAabiFf+q4GE+2h/Y0YYwDXaxDncGus7VZig8AAAAAABxvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWHJSJlnLnmUpTrMngO1OaOUlAPGmZRz7OrcxR6p6JFrJq9frZbeoPqr6Upv3p3ixa4nPIa3aZLTj4H3hSgAdOmv/vugDQAAAAC6IoABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPZ93Bg5F5w1GjB12qcQbOR1fpZKy3cDiSwnLzzQjuM8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOD//////////wcAAAAAAQAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACOTBWoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+  "pair": {
+    "baseFactor": 10000,
+    "filterPeriod": 30,
+    "decayPeriod": 600,
+    "reductionFactor": 5000,
+    "variableFeeControl": 120000,
+    "maxVolatilityAccumulator": 300000,
+    "minBinId": -109192,
+    "maxBinId": 109192,
+    "protocolShare": 1000,
+    "baseFeePowerFactor": 0,
+    "functionType": 0,
+    "collectFeeMode": 0,
+    "volatilityAccumulator": 21273,
+    "volatilityReference": 1273,
+    "indexReference": -6181,
+    "lastUpdateTimestamp": "1794310178",
+    "activeId": -6179,
+    "binStep": 4,
+    "status": 0,
+    "tokenXMint": "So11111111111111111111111111111111111111112",
+    "tokenYMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "reserveX": "EYj9xKw6ZszwpyNibHY7JD5o3QgTVrSdcBp1fMJhrR9o",
+    "reserveY": "CoaxzEh8p5YyGLcj36Eo3cUThVJxeKCs7qvLAGDYwBcz",
+    "oracle": "59YuGWPunbchD2mbi9U7qvjWQKQReGeepn4ZSr9zz9Li",
+    "lastUpdatedAt": "1778750243"
+  },
+  "oracle_pda": "59YuGWPunbchD2mbi9U7qvjWQKQReGeepn4ZSr9zz9Li",
+  "bitmap_extension_pda": "DArpuuqJxNLRGQ8xq5ebZbobyjxSWWsPq8MqSZ2fUZLE",
+  "bin_arrays": [
+    {
+      "index": -90,
+      "pda": "EsMdTh8Ce3fdpQoLGhbuqrXKQnZTUQfVpKAbokm6QjYC",
+      "exists": true,
+      "slot": 467704169,
+      "bins": [
+        {
+          "binId": -6300,
+          "amountX": "0",
+          "amountY": "1891945406",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6299,
+          "amountX": "0",
+          "amountY": "1898767456",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6298,
+          "amountX": "0",
+          "amountY": "1880589097",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6297,
+          "amountX": "0",
+          "amountY": "1862320060",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6296,
+          "amountX": "0",
+          "amountY": "1844054328",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6295,
+          "amountX": "0",
+          "amountY": "1825942907",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6294,
+          "amountX": "0",
+          "amountY": "1523297298",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6293,
+          "amountX": "0",
+          "amountY": "1505068644",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6292,
+          "amountX": "0",
+          "amountY": "1489158787",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6291,
+          "amountX": "0",
+          "amountY": "1766263773",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6290,
+          "amountX": "0",
+          "amountY": "1748835558",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6289,
+          "amountX": "0",
+          "amountY": "1731580134",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6288,
+          "amountX": "0",
+          "amountY": "1714356929",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6287,
+          "amountX": "0",
+          "amountY": "1698454214",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6286,
+          "amountX": "0",
+          "amountY": "1681181192",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6285,
+          "amountX": "0",
+          "amountY": "1692859767",
+          "openOrderAmount": "100000000",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6284,
+          "amountX": "0",
+          "amountY": "1720925842",
+          "openOrderAmount": "300000000",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6283,
+          "amountX": "0",
+          "amountY": "1132961880",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6282,
+          "amountX": "0",
+          "amountY": "1115759419",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6281,
+          "amountX": "0",
+          "amountY": "1098511928",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6280,
+          "amountX": "0",
+          "amountY": "1082668814",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6279,
+          "amountX": "0",
+          "amountY": "1079704094",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6278,
+          "amountX": "0",
+          "amountY": "1076877066",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6277,
+          "amountX": "0",
+          "amountY": "1074113477",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6276,
+          "amountX": "0",
+          "amountY": "1071329905",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6275,
+          "amountX": "0",
+          "amountY": "1068570234",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6274,
+          "amountX": "0",
+          "amountY": "1065726974",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6273,
+          "amountX": "0",
+          "amountY": "1062832068",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6272,
+          "amountX": "0",
+          "amountY": "1059945202",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6271,
+          "amountX": "0",
+          "amountY": "1025115915",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6270,
+          "amountX": "0",
+          "amountY": "1022505608",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6269,
+          "amountX": "0",
+          "amountY": "1019797061",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6268,
+          "amountX": "0",
+          "amountY": "1017192118",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6267,
+          "amountX": "0",
+          "amountY": "1014626537",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6266,
+          "amountX": "0",
+          "amountY": "1011958197",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6265,
+          "amountX": "0",
+          "amountY": "1009370258",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6264,
+          "amountX": "0",
+          "amountY": "1007099141",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6263,
+          "amountX": "0",
+          "amountY": "1004555181",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6262,
+          "amountX": "0",
+          "amountY": "1001957550",
+          "openOrderAmount": "400000000",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6261,
+          "amountX": "0",
+          "amountY": "999900317",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6260,
+          "amountX": "0",
+          "amountY": "1000441274",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6259,
+          "amountX": "0",
+          "amountY": "997449324",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6258,
+          "amountX": "0",
+          "amountY": "994606385",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6257,
+          "amountX": "0",
+          "amountY": "1015726174",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6256,
+          "amountX": "0",
+          "amountY": "1078635912",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6255,
+          "amountX": "0",
+          "amountY": "1372996915",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6254,
+          "amountX": "0",
+          "amountY": "1377051889",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6253,
+          "amountX": "0",
+          "amountY": "1379061944",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6252,
+          "amountX": "0",
+          "amountY": "1378019071",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6251,
+          "amountX": "0",
+          "amountY": "1375501924",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6250,
+          "amountX": "0",
+          "amountY": "1375869301",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6249,
+          "amountX": "0",
+          "amountY": "1386188405",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6248,
+          "amountX": "0",
+          "amountY": "1391910842",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6247,
+          "amountX": "0",
+          "amountY": "1389842795",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6246,
+          "amountX": "0",
+          "amountY": "1393364307",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6245,
+          "amountX": "0",
+          "amountY": "1390832044",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6244,
+          "amountX": "0",
+          "amountY": "1386608510",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6243,
+          "amountX": "0",
+          "amountY": "1782832664",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6242,
+          "amountX": "0",
+          "amountY": "2834337317",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6241,
+          "amountX": "0",
+          "amountY": "2831769867",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6240,
+          "amountX": "0",
+          "amountY": "2829967323",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6239,
+          "amountX": "0",
+          "amountY": "2827164987",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6238,
+          "amountX": "0",
+          "amountY": "2853509222",
+          "openOrderAmount": "12000000",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6237,
+          "amountX": "0",
+          "amountY": "2854706040",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6236,
+          "amountX": "0",
+          "amountY": "2857655368",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6235,
+          "amountX": "0",
+          "amountY": "2858870535",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6234,
+          "amountX": "0",
+          "amountY": "2860092597",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6233,
+          "amountX": "0",
+          "amountY": "2858777699",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6232,
+          "amountX": "0",
+          "amountY": "2860161955",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": true
+        },
+        {
+          "binId": -6231,
+          "amountX": "0",
+          "amountY": "2861647086",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        }
+      ]
+    },
+    {
+      "index": -89,
+      "pda": "8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF",
+      "exists": true,
+      "slot": 467704169,
+      "bins": [
+        {
+          "binId": -6230,
+          "amountX": "0",
+          "amountY": "2862835329",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6229,
+          "amountX": "0",
+          "amountY": "2941285140",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6228,
+          "amountX": "0",
+          "amountY": "2944797888",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6227,
+          "amountX": "0",
+          "amountY": "2946000168",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6226,
+          "amountX": "0",
+          "amountY": "2947132366",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6225,
+          "amountX": "0",
+          "amountY": "2948427869",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6224,
+          "amountX": "0",
+          "amountY": "2950447379",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6223,
+          "amountX": "0",
+          "amountY": "2995952284",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6222,
+          "amountX": "0",
+          "amountY": "3006072510",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6221,
+          "amountX": "0",
+          "amountY": "2643362201",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6220,
+          "amountX": "0",
+          "amountY": "2664265785",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6219,
+          "amountX": "0",
+          "amountY": "2664437951",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6218,
+          "amountX": "0",
+          "amountY": "2664900257",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6217,
+          "amountX": "0",
+          "amountY": "2665068934",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6216,
+          "amountX": "0",
+          "amountY": "2666535648",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6215,
+          "amountX": "0",
+          "amountY": "2788297261",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6214,
+          "amountX": "0",
+          "amountY": "2788472580",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6213,
+          "amountX": "0",
+          "amountY": "2790375646",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6212,
+          "amountX": "0",
+          "amountY": "2796193385",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6211,
+          "amountX": "0",
+          "amountY": "2796900061",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6210,
+          "amountX": "0",
+          "amountY": "2799501797",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6209,
+          "amountX": "0",
+          "amountY": "2800771276",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6208,
+          "amountX": "0",
+          "amountY": "2804728686",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6207,
+          "amountX": "0",
+          "amountY": "2810664368",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6206,
+          "amountX": "0",
+          "amountY": "2812544230",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6205,
+          "amountX": "0",
+          "amountY": "2812763476",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6204,
+          "amountX": "0",
+          "amountY": "2816895480",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6203,
+          "amountX": "0",
+          "amountY": "2815326684",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6202,
+          "amountX": "0",
+          "amountY": "2817631434",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6201,
+          "amountX": "0",
+          "amountY": "2816939823",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6200,
+          "amountX": "0",
+          "amountY": "2817327342",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6199,
+          "amountX": "0",
+          "amountY": "2817221170",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6198,
+          "amountX": "0",
+          "amountY": "2819656591",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6197,
+          "amountX": "0",
+          "amountY": "2832376589",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6196,
+          "amountX": "0",
+          "amountY": "2841076248",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6195,
+          "amountX": "0",
+          "amountY": "2969793765",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6194,
+          "amountX": "0",
+          "amountY": "3000537911",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6193,
+          "amountX": "0",
+          "amountY": "3006650097",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6192,
+          "amountX": "0",
+          "amountY": "3140378389",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6191,
+          "amountX": "0",
+          "amountY": "3138888664",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6190,
+          "amountX": "0",
+          "amountY": "3154222846",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6189,
+          "amountX": "0",
+          "amountY": "3158109629",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6188,
+          "amountX": "0",
+          "amountY": "3254828806",
+          "openOrderAmount": "22130997",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6187,
+          "amountX": "0",
+          "amountY": "3364802698",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6186,
+          "amountX": "0",
+          "amountY": "3385506463",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6185,
+          "amountX": "0",
+          "amountY": "3102686644",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6184,
+          "amountX": "0",
+          "amountY": "3089490105",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6183,
+          "amountX": "0",
+          "amountY": "3100270658",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6182,
+          "amountX": "0",
+          "amountY": "3139270618",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6181,
+          "amountX": "0",
+          "amountY": "3181956517",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6180,
+          "amountX": "0",
+          "amountY": "3196053488",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6179,
+          "amountX": "38534575604",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6178,
+          "amountX": "38731476611",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6177,
+          "amountX": "39357941563",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6176,
+          "amountX": "39353808550",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6175,
+          "amountX": "39786714316",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6174,
+          "amountX": "40718714544",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6173,
+          "amountX": "40651389470",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6172,
+          "amountX": "40292475880",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6171,
+          "amountX": "40369975112",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6170,
+          "amountX": "41268405031",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6169,
+          "amountX": "41318099357",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6168,
+          "amountX": "41428254113",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6167,
+          "amountX": "41446575343",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6166,
+          "amountX": "41434529338",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6165,
+          "amountX": "41829115900",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6164,
+          "amountX": "41867418855",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6163,
+          "amountX": "42969301094",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6162,
+          "amountX": "43300998080",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6161,
+          "amountX": "43344152161",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        }
+      ]
+    },
+    {
+      "index": -88,
+      "pda": "88CrJuawxX8QQETR5U8gMrjP6fftzUYwSYJyeXBXmU2g",
+      "exists": true,
+      "slot": 467704169,
+      "bins": [
+        {
+          "binId": -6160,
+          "amountX": "43439939733",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6159,
+          "amountX": "43517118651",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6158,
+          "amountX": "43615852638",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6157,
+          "amountX": "43714788339",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6156,
+          "amountX": "44016883511",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6155,
+          "amountX": "44287778588",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6154,
+          "amountX": "47801267362",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6153,
+          "amountX": "47604325930",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6152,
+          "amountX": "48116171212",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6151,
+          "amountX": "48332967595",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6150,
+          "amountX": "49387203161",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6149,
+          "amountX": "50507602841",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6148,
+          "amountX": "52614347981",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6147,
+          "amountX": "52793249169",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6146,
+          "amountX": "56344607142",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6145,
+          "amountX": "56561558898",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6144,
+          "amountX": "57914865867",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6143,
+          "amountX": "58002158083",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6142,
+          "amountX": "56216946091",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6141,
+          "amountX": "56258014768",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6140,
+          "amountX": "56401689129",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6139,
+          "amountX": "82239737607",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6138,
+          "amountX": "95063196208",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6137,
+          "amountX": "95407880977",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6136,
+          "amountX": "98868320461",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6135,
+          "amountX": "99021496330",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6134,
+          "amountX": "99089524834",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6133,
+          "amountX": "99195423563",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6132,
+          "amountX": "99326242640",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6131,
+          "amountX": "100186407184",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6130,
+          "amountX": "100286060929",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6129,
+          "amountX": "105332772300",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6128,
+          "amountX": "110833025408",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6127,
+          "amountX": "110428973176",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6126,
+          "amountX": "99556027759",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6125,
+          "amountX": "99799099225",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6124,
+          "amountX": "99904011742",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6123,
+          "amountX": "99446828577",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6122,
+          "amountX": "99505345206",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6121,
+          "amountX": "100845716680",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6120,
+          "amountX": "98879322314",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6119,
+          "amountX": "97962757248",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6118,
+          "amountX": "97776387387",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6117,
+          "amountX": "97688558356",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6116,
+          "amountX": "97186704449",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6115,
+          "amountX": "96194073067",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6114,
+          "amountX": "95831164652",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6113,
+          "amountX": "95050493057",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6112,
+          "amountX": "94885862015",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6111,
+          "amountX": "94529750622",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6110,
+          "amountX": "94364831120",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6109,
+          "amountX": "94198908701",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6108,
+          "amountX": "94561028661",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6107,
+          "amountX": "94398984497",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6106,
+          "amountX": "95091922699",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6105,
+          "amountX": "94596756809",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6104,
+          "amountX": "90504726209",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6103,
+          "amountX": "90384468683",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6102,
+          "amountX": "90189472731",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6101,
+          "amountX": "106651295178",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6100,
+          "amountX": "106467470169",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6099,
+          "amountX": "106209649573",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6098,
+          "amountX": "106058402404",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6097,
+          "amountX": "105840228689",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6096,
+          "amountX": "105649234532",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6095,
+          "amountX": "105498552334",
+          "amountY": "0",
+          "openOrderAmount": "593557983",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": true
+        },
+        {
+          "binId": -6094,
+          "amountX": "105336413221",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6093,
+          "amountX": "104128448037",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6092,
+          "amountX": "104009139785",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        },
+        {
+          "binId": -6091,
+          "amountX": "102208745389",
+          "amountY": "0",
+          "openOrderAmount": "0",
+          "processedOrderRemainingAmount": "0",
+          "limitOrderAskSide": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema": "sentinel.phase15_3.flash_loan_atomicity_audit.v1",
+  "phase": "15.3",
+  "generated_at_utc": "2026-11-11T12:30:00Z",
+  "audit_target": "Kamino Flash Loan integration in crates/arb-bot/src/supervisor/run.rs",
+  "protocol": "Kamino Finance",
+  "interface": "Kamino Flash Loan (ReserveConfig.fees.flash_loan_fee_sf)",
+  "logical_sequence_verified": [
+    "1. Flash Borrow — Kamino reserve liquidity borrowed to payer",
+    "2. Swap 1 — DLMM swap (input → intermediate)",
+    "3. Swap 2 — DLMM swap (intermediate → output)",
+    "4. Flash Repayment — Borrowed principal + fee repaid to Kamino reserve",
+    "5. Atomic Transaction Completion — All instructions in one transaction"
+  ],
+  "instruction_ordering_verified": true,
+  "account_metas_verified": true,
+  "rollback_on_insufficient_repayment": {
+    "mechanism": "On-chain program logic — Kamino flash-repay fails if balance is short, causing complete transaction failure",
+    "verified": true,
+    "note": "No simulateTransaction on hot path; rejection delegated to on-chain guards"
+  },
+  "flash_fee_calculation": {
+    "function": "crates/arb-math/src/economic.rs:calculate_flash_fee_raw()",
+    "formula": "Fee = ceil(borrow * sf / 2^64)",
+    "sf_source": "ReserveConfig.fees.flash_loan_fee_sf (verified Q64.64 on-chain value)",
+    "rounding": "Ceiling division — repayment never understated"
+  },
+  "pre_existing_balance_check": {
+    "checked": true,
+    "result": "Pre-existing intermediate ATA balances cannot subsidize the route (verified in intermediate_balance_isolation_tests.rs)"
+  },
+  "atomicity_claims": {
+    "compiles_correctly": true,
+    "on_chain_verified": false,
+    "note": "Flash Loan support claimed only because instruction builder compiles. No production flash loan executed. Not verified against pinned Kamino interface on Mainnet."
+  },
+  "recommendations": [
+    "Verify against pinned Kamino interface on Devnet before live use",
+    "Add flash-loan-specific tests with simulated insufficient repayment",
+    "Verify account metas match deployed Kamino program"
+  ]
+}

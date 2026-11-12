@@ -1,0 +1,47 @@
+[package]
+license.workspace = true
+name = "arb-ingest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-dex = { path = "../arb-dex" }
+arb-math = { path = "../arb-math" }
+arb-constants = { path = "../arb-constants" }
+tokio = { workspace = true, features = ["net"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+parking_lot = { workspace = true }
+solana-pubkey = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+base64 = "0.22"
+dotenvy = "0.15"
+zstd = "0.14"
+ruint = { workspace = true }
+futures = { workspace = true }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
+# Solami SDK (RPC + landing) — wired here; runtime adoption is behind its own
+# acceptance task. Types are solana-* 4.x.
+solami = { workspace = true, optional = true }
+arb-metrics = { path = "../arb-metrics" }
+
+[[test]]
+name = "bitquery_ws_live"
+path = "tests/bitquery_ws_live.rs"
+
+[dev-dependencies]
+arb-engine = { path = "../arb-engine" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "dual_ingest_bench"
+harness = false
+
+[lints]
+workspace = true

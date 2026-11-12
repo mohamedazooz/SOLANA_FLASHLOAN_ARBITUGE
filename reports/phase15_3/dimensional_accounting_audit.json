@@ -1,0 +1,59 @@
+{
+  "schema": "sentinel.phase15_3.dimensional_accounting_audit.v1",
+  "phase": "15.3",
+  "generated_at_utc": "2026-11-11T12:30:00Z",
+  "audit_scope": "All monetary arithmetic in the arbitrage execution path",
+  "types_introduced": {
+    "file": "crates/arb-types/src/dimensional.rs",
+    "types": [
+      {
+        "name": "TokenAmount",
+        "fields": ["raw: u128", "mint: MintId", "decimals: u8"],
+        "purpose": "Raw token quantity tagged with mint and decimals. Prevents cross-mint arithmetic."
+      },
+      {
+        "name": "ProfitAmount",
+        "fields": ["raw: i128", "mint: MintId", "decimals: u8"],
+        "purpose": "Signed profit/loss in a specific mint. Checked add/sub enforce same-mint."
+      },
+      {
+        "name": "TokenPrice",
+        "fields": ["base_mint: MintId", "quote_mint: MintId", "rate_num: u128", "rate_denom: u128", "slot: u64", "source: PriceSource"],
+        "purpose": "Price quote with slot provenance for staleness checks."
+      },
+      {
+        "name": "DimensionalError",
+        "variants": ["MintMismatch", "DecimalsMismatch", "Overflow", "Underflow", "MissingConversion", "StalePrice", "ZeroRateDenominator"],
+        "purpose": "Explicit error type for all dimensional accounting violations."
+      }
+    ],
+    "functions": [
+      "lamports_to_base_raw_checked() — converts lamports to base raw with staleness check",
+      "base_raw_to_lamports_checked() — converts base raw to lamports with checked arithmetic"
+    ]
+  },
+  "rules_enforced": [
+    "Never add or subtract raw amounts from different mints (DimensionalError::MintMismatch)",
+    "Never compare raw USDC units with raw WSOL lamports (DimensionalError::MintMismatch)",
+    "Never calculate ROI using amounts with different denominations",
+    "Never convert token amounts using implicit decimals — explicit scale only",
+    "Never use unverified default conversion price — rate must be provided",
+    "Reject missing, stale, or inconsistent price conversion data (DimensionalError::StalePrice)",
+    "Use checked arithmetic and explicit rounding policies (ceiling division)",
+    "Reject overflow, underflow, and invalid decimal metadata",
+    "Final profit must be denominated in the original borrowed/input mint",
+    "For cyclic routes: input_mint == final_output_mint, otherwise reject"
+  ],
+  "existing_type_review": {
+    "arb_types::TokenAmount": "pub struct TokenAmount(pub u64) — simple u64 wrapper, NO mint/decimals metadata. Cross-mint mixing possible at type level.",
+    "arb_types::Lamports": "pub struct Lamports(pub u64) — SOL-specific. Used incorrectly for base-mint raw units (the root cause).",
+    "arb_types::ExecutionOpportunity": "Has base_decimals but NO base_mint field — denomination must be inferred from hops[0].mint_in.",
+    "arb_types::SizedOpportunity": "Has both base_mint and base_decimals — correct design pattern."
+  },
+  "recommendations": [
+    "Migrate arb_types::TokenAmount to include mint + decimals (like dimensional::TokenAmount)",
+    "Add base_mint field to ExecutionOpportunity",
+    "Replace all Lamports() casts of non-lamport values with explicit denomination types",
+    "Make dimensional::TokenAmount the canonical amount type across the codebase"
+  ]
+}

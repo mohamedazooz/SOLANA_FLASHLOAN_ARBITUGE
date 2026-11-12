@@ -1,0 +1,24 @@
+[package]
+license.workspace = true
+name = "arb-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "arb_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-constants = { path = "../arb-constants" }
+arb-dex = { path = "../arb-dex" }
+arb-ingest = { path = "../arb-ingest" }
+tokio = { workspace = true, features = ["io-std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+solana-pubkey = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

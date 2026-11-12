@@ -1,0 +1,1445 @@
+{
+  "artifact": "sdk_differential_manifest.json",
+  "bin_arrays": [
+    {
+      "account_slot": 467704169,
+      "bin_id_range": [
+        -6300,
+        -6231
+      ],
+      "bins_captured": 70,
+      "exists": true,
+      "fixture_pda": "EsMdTh8Ce3fdpQoLGhbuqrXKQnZTUQfVpKAbokm6QjYC",
+      "index": -90,
+      "match": true,
+      "rust_derived_pda": "EsMdTh8Ce3fdpQoLGhbuqrXKQnZTUQfVpKAbokm6QjYC"
+    },
+    {
+      "account_slot": 467704169,
+      "bin_id_range": [
+        -6230,
+        -6161
+      ],
+      "bins_captured": 70,
+      "exists": true,
+      "fixture_pda": "8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF",
+      "index": -89,
+      "match": true,
+      "rust_derived_pda": "8CRkBdY5RkDRDBAZFKwRBpfe2JSWoPqM8jfr14KUXMpF"
+    },
+    {
+      "account_slot": 467704169,
+      "bin_id_range": [
+        -6160,
+        -6091
+      ],
+      "bins_captured": 70,
+      "exists": true,
+      "fixture_pda": "88CrJuawxX8QQETR5U8gMrjP6fftzUYwSYJyeXBXmU2g",
+      "index": -88,
+      "match": true,
+      "rust_derived_pda": "88CrJuawxX8QQETR5U8gMrjP6fftzUYwSYJyeXBXmU2g"
+    }
+  ],
+  "bitmap_extension_pda": {
+    "fixture": "DArpuuqJxNLRGQ8xq5ebZbobyjxSWWsPq8MqSZ2fUZLE",
+    "match": true,
+    "rust_derived": "DArpuuqJxNLRGQ8xq5ebZbobyjxSWWsPq8MqSZ2fUZLE"
+  },
+  "coverage_summary": {
+    "all_diffs_zero": true,
+    "expected_quote_cases": 16,
+    "field_comparisons": 121,
+    "max_abs_diff_raw": 0,
+    "pda_checks": 5,
+    "pda_failures": 0,
+    "quote_cases": 16
+  },
+  "generated_at_utc": 1794498841,
+  "oracle_pda": {
+    "fixture": "59YuGWPunbchD2mbi9U7qvjWQKQReGeepn4ZSr9zz9Li",
+    "match": true,
+    "rust_derived": "59YuGWPunbchD2mbi9U7qvjWQKQReGeepn4ZSr9zz9Li"
+  },
+  "phase": "15.2",
+  "price_checks": [
+    {
+      "bin_id": -6300,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1484965808757664873",
+      "sdk_q64": "1484965808757664873"
+    },
+    {
+      "bin_id": -6299,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1485559795081167939",
+      "sdk_q64": "1485559795081167939"
+    },
+    {
+      "bin_id": -6231,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1526513274292199573",
+      "sdk_q64": "1526513274292199573"
+    },
+    {
+      "bin_id": -6230,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1527123879601916453",
+      "sdk_q64": "1527123879601916453"
+    },
+    {
+      "bin_id": -6186,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1554233705092088036",
+      "sdk_q64": "1554233705092088036"
+    },
+    {
+      "bin_id": -6179,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1558590785174471419",
+      "sdk_q64": "1558590785174471419"
+    },
+    {
+      "bin_id": -6161,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1569850874648224482",
+      "sdk_q64": "1569850874648224482"
+    },
+    {
+      "bin_id": -6160,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1570478814998083772",
+      "sdk_q64": "1570478814998083772"
+    },
+    {
+      "bin_id": -6091,
+      "diff": 0,
+      "match": true,
+      "rust_q64": "1614418826312847983",
+      "sdk_q64": "1614418826312847983"
+    }
+  ],
+  "quote_results": [
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode0_x_to_y_exact_in_small",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 18921054844,
+          "sdk": 18921054844,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 1597383634,
+          "sdk": 1597383634,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 7614590,
+          "sdk": 7614590,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 761459,
+          "sdk": 761459,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 6853131,
+          "sdk": 6853131,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6180,
+          "sdk": -6180,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 1,
+          "sdk": 1,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_small",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -90,
+        -89
+      ],
+      "case": "mode0_x_to_y_exact_in_deep",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 2082759305088,
+          "sdk": 2082759305088,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 173634051801,
+          "sdk": 173634051801,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 3090927732,
+          "sdk": 3090927732,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 309092748,
+          "sdk": 309092748,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 2781834984,
+          "sdk": 2781834984,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6239,
+          "sdk": -6239,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 60,
+          "sdk": 60,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode0_x_to_y_exact_out_small",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 18928672500,
+          "sdk": 18928672500,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 1598026744,
+          "sdk": 1598026744,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 7617655,
+          "sdk": 7617655,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 761765,
+          "sdk": 761765,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 6855890,
+          "sdk": 6855890,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6180,
+          "sdk": -6180,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 1,
+          "sdk": 1,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_small",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -90,
+        -89
+      ],
+      "case": "mode0_x_to_y_exact_out_deep",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 3149247171138,
+          "sdk": 3149247171138,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 260344913136,
+          "sdk": 260344913136,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 5360413939,
+          "sdk": 5360413939,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 536041343,
+          "sdk": 536041343,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 4824372596,
+          "sdk": 4824372596,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6300,
+          "sdk": -6300,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 121,
+          "sdk": 121,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode0_y_to_x_exact_in_small",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 1627919654,
+          "sdk": 1627919654,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 19259413475,
+          "sdk": 19259413475,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 665313,
+          "sdk": 665313,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 66531,
+          "sdk": 66531,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 598782,
+          "sdk": 598782,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6179,
+          "sdk": -6179,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 0,
+          "sdk": 0,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_small",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89,
+        -88
+      ],
+      "case": "mode0_y_to_x_exact_in_deep",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 418257693812,
+          "sdk": 418257693812,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 4858587640068,
+          "sdk": 4858587640068,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 778903977,
+          "sdk": 778903977,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 77890367,
+          "sdk": 77890367,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 701013610,
+          "sdk": 701013610,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6109,
+          "sdk": -6109,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 70,
+          "sdk": 70,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode0_y_to_x_exact_out_small",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 1628585239,
+          "sdk": 1628585239,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 19267287802,
+          "sdk": 19267287802,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 665589,
+          "sdk": 665589,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 66562,
+          "sdk": 66562,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 599027,
+          "sdk": 599027,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6179,
+          "sdk": -6179,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 0,
+          "sdk": 0,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_small",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89,
+        -88
+      ],
+      "case": "mode0_y_to_x_exact_out_deep",
+      "collect_fee_mode": 0,
+      "collect_fee_mode_name": "InputOnly",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 578527476501,
+          "sdk": 578527476501,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 6692123100992,
+          "sdk": 6692123100992,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 1119958092,
+          "sdk": 1119958092,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 111995776,
+          "sdk": 111995776,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 1007962316,
+          "sdk": 1007962316,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6091,
+          "sdk": -6091,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 88,
+          "sdk": 88,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode1_x_to_y_exact_in_small",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": false,
+        "sdk": false
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 18921054844,
+          "sdk": 18921054844,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 1597383633,
+          "sdk": 1597383633,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 643110,
+          "sdk": 643110,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 64311,
+          "sdk": 64311,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 578799,
+          "sdk": 578799,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6180,
+          "sdk": -6180,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 1,
+          "sdk": 1,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_small",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -90,
+        -89
+      ],
+      "case": "mode1_x_to_y_exact_in_deep",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": false,
+        "sdk": false
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 2082759305088,
+          "sdk": 2082759305088,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 173631676870,
+          "sdk": 173631676870,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 257339744,
+          "sdk": 257339744,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 25733947,
+          "sdk": 25733947,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 231605797,
+          "sdk": 231605797,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6239,
+          "sdk": -6239,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 60,
+          "sdk": 60,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode1_x_to_y_exact_out_small",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": false,
+        "sdk": false
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 18928672502,
+          "sdk": 18928672502,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 1598026744,
+          "sdk": 1598026744,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 643369,
+          "sdk": 643369,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 64336,
+          "sdk": 64336,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 579033,
+          "sdk": 579033,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6180,
+          "sdk": -6180,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 1,
+          "sdk": 1,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_small",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode1_x_to_y_exact_out_deep",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "x_to_y",
+      "fee_on_input": {
+        "match": true,
+        "rust": false,
+        "sdk": false
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 1556343819418,
+          "sdk": 1556343819418,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 130172456568,
+          "sdk": 130172456568,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 164661297,
+          "sdk": 164661297,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 16466111,
+          "sdk": 16466111,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 148195186,
+          "sdk": 148195186,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6224,
+          "sdk": -6224,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 45,
+          "sdk": 45,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": true
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode1_y_to_x_exact_in_small",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 1627919654,
+          "sdk": 1627919654,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 19259413475,
+          "sdk": 19259413475,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 665313,
+          "sdk": 665313,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 66531,
+          "sdk": 66531,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 598782,
+          "sdk": 598782,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6179,
+          "sdk": -6179,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 0,
+          "sdk": 0,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_small",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89,
+        -88
+      ],
+      "case": "mode1_y_to_x_exact_in_deep",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 418257693812,
+          "sdk": 418257693812,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 4858587640068,
+          "sdk": 4858587640068,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 778903977,
+          "sdk": 778903977,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 77890367,
+          "sdk": 77890367,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 701013610,
+          "sdk": 701013610,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6109,
+          "sdk": -6109,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 70,
+          "sdk": 70,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_in_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89
+      ],
+      "case": "mode1_y_to_x_exact_out_small",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 1628585239,
+          "sdk": 1628585239,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 19267287802,
+          "sdk": 19267287802,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 665589,
+          "sdk": 665589,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 66562,
+          "sdk": 66562,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 599027,
+          "sdk": 599027,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6179,
+          "sdk": -6179,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 0,
+          "sdk": 0,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_small",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    },
+    {
+      "bin_array_indices_touched": [
+        -89,
+        -88
+      ],
+      "case": "mode1_y_to_x_exact_out_deep",
+      "collect_fee_mode": 1,
+      "collect_fee_mode_name": "OnlyY",
+      "direction": "y_to_x",
+      "fee_on_input": {
+        "match": true,
+        "rust": true,
+        "sdk": true
+      },
+      "fields": [
+        {
+          "diff": 0,
+          "field": "amount_in",
+          "rust": 578527476501,
+          "sdk": 578527476501,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "amount_out",
+          "rust": 6692123100992,
+          "sdk": 6692123100992,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "total_fee",
+          "rust": 1119958092,
+          "sdk": 1119958092,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "protocol_fee",
+          "rust": 111995776,
+          "sdk": 111995776,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "lp_fee",
+          "rust": 1007962316,
+          "sdk": 1007962316,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "end_bin_id",
+          "rust": -6091,
+          "sdk": -6091,
+          "tolerance": 0,
+          "within_tolerance": true
+        },
+        {
+          "diff": 0,
+          "field": "bins_crossed",
+          "rust": 88,
+          "sdk": 88,
+          "tolerance": 0,
+          "within_tolerance": true
+        }
+      ],
+      "kind": "exact_out_deep",
+      "start_bin_id": -6179,
+      "swap_for_y": false
+    }
+  ],
+  "rust_engine": {
+    "pda_functions": [
+      "arb_tx::derive_meteora_bin_array_pda",
+      "arb_tx::derive_meteora_bin_array_bitmap_extension_pda",
+      "arb_tx::derive_meteora_oracle_pda"
+    ],
+    "quote_functions": [
+      "arb_math::dlmm::quote_dlmm_multi_bin",
+      "arb_math::dlmm::quote_dlmm_exact_out",
+      "arb_math::dlmm::get_price_from_id",
+      "arb_math::dlmm::dlmm_fee_on_input"
+    ],
+    "source": "crates/arb-math/src/dlmm.rs, crates/arb-tx/src/lib.rs"
+  },
+  "sdk": {
+    "bundle_bytes": 712826,
+    "bundle_path": "node_modules/@meteora-ag/dlmm/dist/index.js",
+    "bundle_sha256": "362b367730cd9af14a37f5173416b25123274541d98d923afbb3acbb251ac929",
+    "fixture_sdk_version": "1.9.14",
+    "idl_account_count": 12,
+    "idl_instruction_count": 76,
+    "idl_sha256": "34c60a50421aa91fe5ac42a505985f65f2270c269e1f3de6e45f1be890c7a6e0",
+    "idl_sha256_method": "sha256(JSON.stringify(parsedIdl)) — stable key order, no whitespace",
+    "idl_source": "inlined '// src/dlmm/idl/idl.json' object in dist/index.js",
+    "idl_type_count": 86,
+    "package": "@meteora-ag/dlmm",
+    "pin_match": true,
+    "program_id": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "version": "1.9.14"
+  },
+  "snapshot": {
+    "active_id": -6179,
+    "bin_step_bps": 4,
+    "bins_decoded": 210,
+    "captured_at_utc": "2026-11-10T11:30:08.586Z",
+    "captured_bin_range": [
+      -6300,
+      -6091
+    ],
+    "collect_fee_mode_declared": 0,
+    "existing_bin_arrays": [
+      -90,
+      -89,
+      -88
+    ],
+    "live_bin_id_range": [
+      -6300,
+      -6091
+    ],
+    "max_bin_arrays_spanned_by_any_case": 2,
+    "pool_address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+    "pool_data_len": 904,
+    "program_id": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+    "quotes_file": "fixtures/meteora_mainnet_sdk_quotes.json",
+    "quotes_rpc_slot": 467704169,
+    "rpc_slot": 467704169,
+    "slot_consistent": true,
+    "source_file": "fixtures/meteora_mainnet_snapshot.json",
+    "volatility_update_timestamp": "1794310178"
+  },
+  "tolerance_raw_units": 0,
+  "unsupported": [
+    {
+      "case": "five_consecutive_bin_array_live_snapshot",
+      "detail": "Captured snapshot contains only 3 existing bin arrays [-90, -89, -88]; the deepest SDK case spans 2 array(s). A 5-array hysteresis/boundary claim is therefore NOT evidenced by this differential.",
+      "required_evidence": "Capture a pool with >=5 consecutive existing bin arrays and regenerate SDK quotes that cross all five, then extend this manifest.",
+      "status": "NOT_COVERED_ON_LIVE_SNAPSHOT"
+    },
+    {
+      "case": "token_2022_transfer_fee_inside_dlmm_quote",
+      "detail": "Token-2022 transfer fee is verified as standalone fee math in crates/arb-engine/tests/meteora_sdk_differential_tests.rs; the captured Mainnet pool uses SPL Token, so no DLMM quote in this manifest applies a Token-2022 fee.",
+      "required_evidence": "Capture a Token-2022 DLMM pool with a non-zero transfer fee and obtain official SDK quotes for it.",
+      "status": "PARTIAL_STANDALONE_ONLY"
+    },
+    {
+      "case": "synthetic_variable_fee_sweep",
+      "detail": "Variable fee is exercised only through the live snapshot's accumulator (volatility_accumulator=21273, volatility_reference=1273, index_reference=-6181). No synthetic sweep across variable_fee_control values is included.",
+      "required_evidence": "Generate a parameter matrix (variable_fee_control x accumulator) with official SDK quotes and add it to the differential.",
+      "status": "NOT_COVERED"
+    },
+    {
+      "case": "bitmap_extension_account_decoding",
+      "detail": "The bitmap-extension PDA derivation is compared against the SDK, but no pool in the snapshot requires an extension account, so extension-account parsing and array-index selection beyond the default bitmap are not exercised.",
+      "required_evidence": "Capture a pool whose active bin falls outside the default bitmap range and decode its extension account.",
+      "status": "PDA_DERIVATION_ONLY"
+    },
+    {
+      "case": "collect_fee_mode_1_live_pool",
+      "detail": "The captured pool is CollectFeeMode 0. Mode 1 cases reuse the same bin data with the fee mode overridden, which validates the fee branch but not a real mode-1 pool's on-chain parameters.",
+      "required_evidence": "Capture a genuine CollectFeeMode 1 pool and regenerate SDK quotes.",
+      "status": "SIMULATED_ONLY"
+    },
+    {
+      "case": "quotes_outside_captured_bin_range",
+      "detail": "All quotes are confined to the captured bin range (-6300, -6091). Behaviour when a quote exhausts the available bin arrays (partial fill / TooManyBins) is not evidenced.",
+      "required_evidence": "Add cases sized to exhaust the captured arrays and record the SDK's error or partial-fill result.",
+      "status": "NOT_COVERED"
+    },
+    {
+      "case": "instruction_encoding_and_flash_loan_cpi",
+      "detail": "This manifest compares QUOTE arithmetic only. Meteora swap instruction encoding, account ordering and the Kamino flash-loan CPI wrapper are covered by separate transaction-construction tests, not by the SDK.",
+      "required_evidence": "n/a for quote differential",
+      "status": "OUT_OF_SCOPE"
+    }
+  ],
+  "verdict": "PASS_WITH_DECLARED_GAPS"
+}

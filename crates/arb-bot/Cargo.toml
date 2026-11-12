@@ -1,0 +1,77 @@
+[package]
+license.workspace = true
+name = "arb-bot"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[features]
+default = []
+# Compile-time containment: this binary cannot enter a transaction broadcast path.
+shadow-only = []
+
+[[bin]]
+name = "arb-bot"
+path = "src/main.rs"
+
+[[bin]]
+name = "alchemy-webhook"
+path = "src/bin/alchemy_webhook.rs"
+
+[[bin]]
+name = "live-scanner"
+path = "src/bin/live_scanner.rs"
+
+[[bin]]
+name = "validate"
+path = "src/bin/validate.rs"
+
+[[bin]]
+name = "discover"
+path = "src/bin/discover.rs"
+
+# Read-only latency diagnostic; it measures slot RPC latency and never builds or sends swaps.
+[[bin]]
+name = "latency-bench"
+path = "src/bin/latency_bench.rs"
+
+[[bin]]
+name = "replay"
+path = "src/bin/replay.rs"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-math = { path = "../arb-math" }
+arb-dex = { path = "../arb-dex" }
+arb-engine = { path = "../arb-engine" }
+arb-ingest = { path = "../arb-ingest" }
+arb-tx = { path = "../arb-tx" }
+arb-land = { path = "../arb-land" }
+arb-risk = { path = "../arb-risk" }
+arb-constants = { path = "../arb-constants" }
+arb-store = { path = "../arb-store" }
+arb-metrics = { path = "../arb-metrics" }
+arb-sim = { path = "../arb-sim" }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+axum = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+parking_lot = { workspace = true }
+solana-pubkey = { workspace = true }
+dotenvy = "0.15"
+base64 = "0.22"
+bs58 = "0.5"
+hex = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+
+[lints]
+workspace = true

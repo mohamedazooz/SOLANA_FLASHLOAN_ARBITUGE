@@ -1,0 +1,28 @@
+[package]
+license.workspace = true
+name = "arb-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-constants = { path = "../arb-constants" }
+arb-types = { path = "../arb-types" }
+arb-math = { path = "../arb-math" }
+arb-dex = { path = "../arb-dex" }
+arb-ingest = { path = "../arb-ingest" }
+arb-tx = { path = "../arb-tx" }
+serde = { workspace = true }
+solana-pubkey = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+base64 = "0.22"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+arb-sim = { path = "../arb-sim" }
+serde = { workspace = true }
+
+[lints]
+workspace = true
+

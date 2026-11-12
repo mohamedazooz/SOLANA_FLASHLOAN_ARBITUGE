@@ -1,0 +1,13 @@
+# Release manifest consumed by deployment verification tooling.
+format = "v1_only"
+allow_legacy = false
+allow_v0 = false
+allow_address_lookup_tables = false
+max_transaction_bytes = 4096
+max_inline_accounts = 64
+max_top_level_instructions = 64
+rpc_max_supported_transaction_version = 1
+require_explicit_compute_unit_limit = true
+require_explicit_loaded_accounts_data_size_limit = true
+meteora_dlmm_bin_arrays = "derive_exact_required_pdas_inline"
+shadow_broadcast = false

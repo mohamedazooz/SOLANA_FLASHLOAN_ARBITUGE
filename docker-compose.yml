@@ -1,0 +1,24 @@
+services:
+  arb-bot-shadow:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: solana-arbitrage:shadow-only
+    command: ["--config", "/app/config/config.toml", "--mode", "shadow"]
+    env_file:
+      - .env.shadow.local
+    environment:
+      DATABASE_URL: sqlite:///app/data/shadow.db
+    ports:
+      - "127.0.0.1:9100:9100"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 30s

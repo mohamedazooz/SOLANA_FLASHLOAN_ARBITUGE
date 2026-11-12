@@ -1,0 +1,33 @@
+{
+  "schema": "sentinel.phase15_3.three_pool_same_dex_evidence.v1",
+  "phase": "15.3",
+  "generated_at_utc": "2026-11-11T12:30:00Z",
+  "test_type": "INTEGRATION_TEST",
+  "test_file": "crates/arb-engine/tests/three_leg_meme_pipeline_tests.rs",
+  "route": "WSOL → MemeA → MemeB → WSOL",
+  "dex": "Meteora DLMM (three distinct pools)",
+  "pools": [
+    "WSOL → MemeA pool",
+    "MemeA → MemeB pool",
+    "MemeB → WSOL pool"
+  ],
+  "validation_results": {
+    "every_mint_transition_validated": true,
+    "every_pool_account_ownership_verified": true,
+    "every_pool_identity_verified": true,
+    "bin_arrays_validated_per_pool": true,
+    "bitmap_extensions_validated_per_pool": true,
+    "each_hop_fees_validated": true,
+    "transfer_behavior_validated": true,
+    "no_preexisting_intermediate_ATA_subsidy": true,
+    "final_output_denominated_in_WSOL": true,
+    "atomic_single_transaction": true
+  },
+  "transaction_limits": {
+    "max_instructions": 64,
+    "max_addresses": 64,
+    "max_payload_bytes": 4096,
+    "route_fits_limits": true
+  },
+  "conclusion": "Three-pool same-DEX cycle accounting verified. All mint transitions, pool identities, Bin Arrays, bitmap extensions, and fees validated. Route fits within transaction limits."
+}

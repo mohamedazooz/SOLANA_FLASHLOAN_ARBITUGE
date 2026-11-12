@@ -1,0 +1,17 @@
+{
+  "generated_at_utc": "2026-11-11T09:06:24.537Z",
+  "sdk_package": "@meteora-ag/dlmm",
+  "sdk_version": "1.9.14",
+  "sdk_bundle_path": "node_modules/@meteora-ag/dlmm/dist/index.js",
+  "sdk_bundle_bytes": 712826,
+  "sdk_bundle_sha256": "362b367730cd9af14a37f5173416b25123274541d98d923afbb3acbb251ac929",
+  "idl_source": "inlined '// src/dlmm/idl/idl.json' object in dist/index.js",
+  "idl_address": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "idl_name": null,
+  "idl_version": null,
+  "idl_instructions": 76,
+  "idl_accounts": 12,
+  "idl_types": 86,
+  "idl_sha256": "34c60a50421aa91fe5ac42a505985f65f2270c269e1f3de6e45f1be890c7a6e0",
+  "idl_sha256_method": "sha256(JSON.stringify(parsedIdl)) — stable key order, no whitespace"
+}

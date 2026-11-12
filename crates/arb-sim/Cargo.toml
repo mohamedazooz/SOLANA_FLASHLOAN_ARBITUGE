@@ -1,0 +1,34 @@
+[package]
+license.workspace = true
+name = "arb-sim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-engine = { path = "../arb-engine" }
+arb-ingest = { path = "../arb-ingest" }
+arb-tx = { path = "../arb-tx" }
+solana-pubkey = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+base64 = { version = "0.22", features = ["alloc"] }
+bincode = "1.3"
+solana-transaction = { version = "4.3", features = ["serde"], optional = true }
+litesvm = { version = "0.18.2", optional = true }
+
+[features]
+default = []
+litesvm = ["dep:litesvm", "dep:solana-transaction"]
+
+[dev-dependencies]
+dotenvy = "0.15"
+sha2 = { workspace = true }
+arb-constants = { path = "../arb-constants" }
+arb-math = { path = "../arb-math" }
+
+[lints]
+workspace = true

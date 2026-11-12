@@ -1,0 +1,71 @@
+{
+  "sdk_version": "1.9.14",
+  "pool_address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+  "program_id": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "oracle_pda": "59YuGWPunbchD2mbi9U7qvjWQKQReGeepn4ZSr9zz9Li",
+  "bitmap_extension_pda": "DArpuuqJxNLRGQ8xq5ebZbobyjxSWWsPq8MqSZ2fUZLE",
+  "bin_array_pdas": {
+    "0": "41J5yxxAQbkoCPFoxcGA9QhsvEEEVnDihmEyQPYPwWzQ",
+    "1": "HKCz5fKmPKxEvsgd68W9EBHpDz8o5FfEjQUyasXUCsnh",
+    "2": "2u5LjMqidV1vFQhdF8SNwPXKhvwfrEqDiESwsvTr1T9r",
+    "-2": "QWdcZWz7HDgus8shdajptxF9PuLXKWUrN6B6jpcnRWP",
+    "-1": "FaEgvDgeDxdKFDrZnDt7W6qzJTSLQrg4orMLCG35GFxz"
+  },
+  "exact_in": {
+    "x_to_y": {
+      "input": "1000000",
+      "amount_out": "999990",
+      "fee": "9",
+      "protocol_fee": "1"
+    },
+    "y_to_x": {
+      "input": "1000000",
+      "amount_out": "999990",
+      "fee": "9",
+      "protocol_fee": "1"
+    }
+  },
+  "exact_out": {
+    "x_to_y": {
+      "desired_out": "950000",
+      "required_amount_in": "950010",
+      "fee": "9",
+      "protocol_fee": "1"
+    },
+    "y_to_x": {
+      "desired_out": "950000",
+      "required_amount_in": "950010",
+      "fee": "9",
+      "protocol_fee": "1"
+    }
+  },
+  "fee_mode": {
+    "mode_0_input_only": {
+      "x_to_y": {
+        "feeOnInput": true,
+        "feeOnTokenX": true
+      },
+      "y_to_x": {
+        "feeOnInput": true,
+        "feeOnTokenX": false
+      }
+    },
+    "mode_1_only_y": {
+      "x_to_y": {
+        "feeOnInput": false,
+        "feeOnTokenX": false
+      },
+      "y_to_x": {
+        "feeOnInput": true,
+        "feeOnTokenX": false
+      }
+    }
+  },
+  "token_2022_transfer_fee": {
+    "bps": 5,
+    "max_fee": 5000,
+    "test_100k": 50,
+    "test_10m": 5000,
+    "test_100m_capped": 5000
+  }
+}
