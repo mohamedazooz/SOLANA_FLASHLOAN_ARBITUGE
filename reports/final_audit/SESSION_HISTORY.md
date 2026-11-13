@@ -128,3 +128,11 @@ Full review in `reports/final_audit/FLASH_LOAN_SINGLE_PLATFORM_REVIEW.md`. Highl
    was authorized and executed. Live trading stays disabled by default
    (`ARB_MODE=simulate` until the user explicitly flips it).
 4. PR #22 awaiting user UI merge.
+
+## 2026-11-13 (session cont.) — fee/zero audit closure + V1 activation research
+
+* Fee double-counting audit: NONE found across all production callers (matrix in `FEE_ACCOUNTING_EVIDENCE.md`).
+* Zero-trace audit: all calculation inputs verified non-zero or fail-closed. One real zero-trap found and FIXED: `three_leg_meme_pipeline.rs` used `unwrap_or(0)` for `active_bin_id` when DLMM state was absent (silently derived bin-array 0). Replaced with fail-closed `MissingDlmmState { leg }` error + regression test.
+* Solana V1 activation facts verified online and appended to `TRANSACTION_V1_AUDIT.md`: epoch 1035 / slot 447,120,000 / gate `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL` / Agave ≥ 4.2.2 requirement / base64-only above 1232 B. Repo compliance table added (all PASS or N/A).
+* Deliverable: `reports/final_audit/FEE_ACCOUNTING_EVIDENCE.md` (fee matrix, per-bin worked example, zero-trace table, live + canary numbers, test totals).
+* Tests: 995 passed / 0 failed; clippy `-D warnings` clean on arb-engine.

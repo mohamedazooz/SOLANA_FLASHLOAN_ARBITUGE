@@ -220,6 +220,8 @@ pub enum ThreeLegMemePipelineError {
     TooManyBinArrays { leg: usize, bins: u32 },
     #[error("leg {leg}: pool is missing MeteoraDlmm execution accounts")]
     MissingExecutionAccounts { leg: usize },
+    #[error("leg {leg}: pool is missing DLMM state (active bin unknown)")]
+    MissingDlmmState { leg: usize },
     #[error("leg {leg}: unsupported execution accounts for MeteoraDlmm")]
     UnsupportedExecutionAccounts { leg: usize },
     #[error(
@@ -640,7 +642,11 @@ fn build_context(
         else {
             return Err(ThreeLegMemePipelineError::UnsupportedExecutionAccounts { leg: idx });
         };
-        let active_id = pool.dlmm.as_ref().map(|d| d.active_bin_id).unwrap_or(0);
+        let active_id = pool
+            .dlmm
+            .as_ref()
+            .ok_or(ThreeLegMemePipelineError::MissingDlmmState { leg: idx })?
+            .active_bin_id;
         let direction = direction_from_swap_for_y(leg_quote.swap_for_y);
         let derived = derive_directional_bin_arrays(
             &pool.pool_id.0,
@@ -756,4 +762,124 @@ pub fn simulate_profitability_gate(
         )));
     }
     Ok(net)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    use arb_types::{PoolKind, Slot};
+
+    fn wsol() -> MintId {
+        MintId(Pubkey::from_str(WSOL_MINT).unwrap())
+    }
+
+    fn pool_without_dlmm_state(pool_byte: u8, base_mint: MintId, quote_mint: MintId) -> PoolState {
+        let exec = PoolExecutionAccounts::MeteoraDlmm {
+            reserve_x: Pubkey::new_from_array([pool_byte.wrapping_add(100); 32]),
+            reserve_y: Pubkey::new_from_array([pool_byte.wrapping_add(150); 32]),
+            oracle: Pubkey::new_from_array([pool_byte.wrapping_add(200); 32]),
+            bin_array_pdas: vec![Pubkey::new_from_array([pool_byte.wrapping_add(50); 32])],
+            bitmap_extension: None,
+            pool_token_x: base_mint.0,
+            pool_token_y: quote_mint.0,
+        };
+        PoolState {
+            pool_id: PoolId(Pubkey::new_from_array([pool_byte; 32])),
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(467_000_000),
+            write_version: 1,
+            base_mint,
+            quote_mint,
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 10_u128.pow(12),
+            reserve_out: 10_u128.pow(12),
+            fee_numerator: 1,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Dlmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            execution_accounts: Some(exec),
+            last_update_slot: 467_000_000,
+            last_update_ms: 1_700_000_000_000,
+        }
+    }
+
+    fn leg_quote(leg: usize, pool: &PoolState) -> ThreeLegMemeLegQuote {
+        ThreeLegMemeLegQuote {
+            leg,
+            pool_id: pool.pool_id,
+            from_mint: pool.base_mint,
+            to_mint: pool.quote_mint,
+            swap_for_y: true,
+            amount_in: 1_000_000,
+            amount_out: 1_100_000,
+            fee: 1_000,
+            bins_traversed: 0,
+        }
+    }
+
+    fn context_params() -> ThreeLegMemeContextParams {
+        let payer = Pubkey::new_from_array([1u8; 32]);
+        ThreeLegMemeContextParams {
+            payer,
+            meme_a_ata: Pubkey::new_from_array([2u8; 32]),
+            meme_b_ata: Pubkey::new_from_array([3u8; 32]),
+            meme_a_ata_exists: false,
+            meme_b_ata_exists: false,
+            meme_a_ata_balance: 0,
+            meme_b_ata_balance: 0,
+            meme_a_is_token_2022: false,
+            meme_b_is_token_2022: false,
+            meme_a_withheld_fees: 0,
+            meme_b_withheld_fees: 0,
+            wsol_token_program: Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap(),
+            meme_a_token_program: Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap(),
+            meme_b_token_program: Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap(),
+            snapshot_slot: 467_000_000,
+            cu_limit: 400_000,
+            priority_fee_micro_lamports: 1_000,
+            jito_tip_account: Pubkey::from_str(arb_constants::JITO_TIP_ACCOUNTS[0]).unwrap(),
+            jito_tip_lamports: 10_000,
+            recent_blockhash: [42u8; 32],
+            v1_transport_supported: false,
+            slippage_bps: 100,
+            min_profit_lamports: 0,
+            flash_loan_fee_sf: 0,
+            network_cost_lamports: 0,
+            kamino_available_liquidity: None,
+            input_size: 1_000_000,
+            size_search_sizes: vec![1_000_000],
+        }
+    }
+
+    /// A pool whose DLMM snapshot is absent must fail closed with
+    /// `MissingDlmmState`, never silently derive bin-array 0 from a
+    /// fabricated `active_bin_id = 0`.
+    #[test]
+    fn build_context_fails_closed_when_dlmm_state_missing() {
+        let wsol = wsol();
+        let a = MintId(Pubkey::new_from_array([90u8; 32]));
+        let b = MintId(Pubkey::new_from_array([91u8; 32]));
+
+        let p1 = pool_without_dlmm_state(1, wsol, a);
+        let p2 = pool_without_dlmm_state(2, a, b);
+        let p3 = pool_without_dlmm_state(3, b, wsol);
+
+        let legs = [leg_quote(0, &p1), leg_quote(1, &p2), leg_quote(2, &p3)];
+
+        let err = build_context(&p1, &p2, &p3, &legs, &context_params(), a, b, wsol)
+            .expect_err("missing DLMM state must be an error, not bin-array 0");
+        assert!(
+            matches!(err, ThreeLegMemePipelineError::MissingDlmmState { leg: 0 }),
+            "unexpected error: {err:?}"
+        );
+    }
 }
