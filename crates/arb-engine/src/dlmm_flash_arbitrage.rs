@@ -811,7 +811,9 @@ impl DlmmFlashArbEvaluator<'_> {
             amount_in: borrow,
             min_amount_out: hop_a_min_out,
             bin_array_pdas: plan_a.pdas.clone(),
-            bitmap_extension: Some(plan_a.bitmap_extension_pda),
+            bitmap_extension: plan_a
+                .requires_bitmap_extension
+                .then_some(plan_a.bitmap_extension_pda),
             host_fee_in: None,
         };
         let leg_b = FlashArbPoolLeg {
@@ -827,7 +829,9 @@ impl DlmmFlashArbEvaluator<'_> {
             amount_in: hop_a_min_out,
             min_amount_out: repay,
             bin_array_pdas: plan_b.pdas.clone(),
-            bitmap_extension: Some(plan_b.bitmap_extension_pda),
+            bitmap_extension: plan_b
+                .requires_bitmap_extension
+                .then_some(plan_b.bitmap_extension_pda),
             host_fee_in: None,
         };
 

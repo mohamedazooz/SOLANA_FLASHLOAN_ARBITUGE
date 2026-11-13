@@ -223,6 +223,34 @@ pub const METEORA_BINS_PER_BIN_ARRAY: i64 = 70;
 /// Anchor 8-byte discriminator for `swap2` = sha256("global:swap2")[..8].
 pub const METEORA_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
+/// Half-width of the LbPair default bin-array bitmap window, in bin-array
+/// indices. Official deployed value from the DLMM program IDL constant
+/// `BIN_ARRAY_BITMAP_SIZE` (MeteoraAg/dlmm-sdk, ts-client/src/dlmm/idl/idl.json).
+/// The LbPair's default bitmap covers bin-array indices
+/// `[-(BIN_ARRAY_BITMAP_SIZE), BIN_ARRAY_BITMAP_SIZE - 1]` = `[-512, 511]`;
+/// anything outside that window is tracked in the `BinArrayBitmapExtension`
+/// account instead (official SDK rule `isOverflowDefaultBinArrayBitmap`,
+/// ts-client/src/dlmm/helpers/binArray.ts).
+pub const METEORA_BIN_ARRAY_BITMAP_SIZE: i64 = 512;
+
+/// Inclusive default-bitmap window for bin-array indices.
+pub const METEORA_DEFAULT_BITMAP_MIN_INDEX: i64 = -METEORA_BIN_ARRAY_BITMAP_SIZE;
+pub const METEORA_DEFAULT_BITMAP_MAX_INDEX: i64 = METEORA_BIN_ARRAY_BITMAP_SIZE - 1;
+
+/// Official protocol rule: a bin-array index is tracked in the
+/// `BinArrayBitmapExtension` (not the LbPair default bitmap) iff it falls
+/// outside the default window `[-512, 511]`. A swap whose traversal touches any
+/// such index requires the extension account in the `swap2` account list.
+///
+/// This is the ONLY correct condition. It is NOT `indices.len() > 1`: a
+/// two-array traversal entirely inside the default window needs no extension,
+/// and a single-array traversal at index 600 does.
+#[inline]
+pub fn meteora_bin_array_index_requires_bitmap_extension(bin_array_index: i64) -> bool {
+    !(METEORA_DEFAULT_BITMAP_MIN_INDEX..=METEORA_DEFAULT_BITMAP_MAX_INDEX)
+        .contains(&bin_array_index)
+}
+
 // ============================================================================
 // Raydium CPMM — SOL-USDC Pool & Vaults (Mainnet)
 // ============================================================================

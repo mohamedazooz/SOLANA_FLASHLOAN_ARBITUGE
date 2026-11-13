@@ -1,0 +1,23 @@
+{
+  "account_count": 1,
+  "blockhash": "F4hez87gD9LnEdceLKNBEwKXrVxsi2G7giHz6XHG4mr4",
+  "confirmation_status": null,
+  "confirmed_slot": null,
+  "generated_at_unix": 0,
+  "instruction_count": 1,
+  "instruction_summary": "spl-memo (non-financial canary)",
+  "landed": false,
+  "last_valid_block_height": 447020764,
+  "rpc_acceptance": false,
+  "send_error": "RPC sendTransaction error: {\"code\":-32002,\"message\":\"Transaction simulation failed: Transaction exceeded max loaded accounts data size cap\"}",
+  "send_latency_ms": 157,
+  "signature": "5C3UZdr55xeMQNz1emJ6pvhG1pWsWS9jQJjdZBmhjxN7rZu6T3Jgm79q1n1N4QHS9pGZnMJddVf1AL8KALsPbxvM",
+  "simulation_preflight": "skipPreflight=false (honest acceptance test)",
+  "status_poll_error": null,
+  "total_runtime_secs": 0,
+  "transaction_version": "V1",
+  "transport": "https://solana-rpc.publicnode.com",
+  "verdict": "V1_TRANSPORT_NOT_VERIFIED",
+  "version_byte": 129,
+  "wire_size_bytes": 235
+}
