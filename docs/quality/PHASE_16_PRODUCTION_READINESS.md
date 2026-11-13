@@ -107,9 +107,30 @@ Self-calibrating rungs land **exactly** on 1232 / 1500 / 2000 / 3000 / 3500 / 40
 - Sim outcome classification: `STALE_QUOTE_REJECTION` on the second pass — quote-freshness gate correctly refused to act on aged state.
 - Full-route successful on-chain simulation of this route is **BLOCKED (operator)**: requires a funded fee payer; the deterministic test payer is unfunded and `InvalidAccountForFee` is the correct RPC response. No component was modified to bypass this.
 
-### 3.4 Bin-array expansion behavior
+### 3.4 ALT / account-compression investigation (measured, same route three ways)
 
-Bin-array account requirements were exercised up to 12 bins/leg (62 accounts, 2,465 bytes) without hitting the 64-account ceiling. Route sizing must remain within the bin-distribution of live pools; the engine's dynamic sizing caps candidate sizes at available per-bin liquidity (see `arb-engine` sizing).
+The directive required investigating safe account compression. Result (`reports/phase16/ALT_COMPRESSION_MATRIX.json`, test `crates/arb-tx/tests/alt_compression_tests.rs`, all sizes measured from actual serialized wire bytes on the **same real three-pool DLMM route**):
+
+| Bins/leg | Accounts | V1 inline | V0 bare | V0 + ALT |
+|---|---|---|---|---|
+| 1 | 38 | 1,574 B | FAIL (>1,232) | **854 B** ✅ |
+| 2 | 41 | 1,673 B | FAIL | **953 B** ✅ |
+| 3 | 44 | 1,772 B | FAIL | **1,052 B** ✅ |
+| 4 | 47 | 1,871 B | FAIL | **1,151 B** ✅ (max rung) |
+| 5 | 50 | 1,970 B | FAIL | **FAIL CLOSED** (1,251 B > 1,232) |
+| 10 | 65 | 2,465 B | FAIL | FAIL |
+
+Engineering conclusions (all proven by test, not estimated):
+
+1. **ALT compresses real payload**: 47 accounts → 1,151 B inside the legacy packet (720 B smaller than V1 inline for the same route). Bare V0 cannot even carry the 1-bin route.
+2. **ALT does NOT raise the 1,232-byte packet limit** — at bins ≥5 the v0+ALT wire exceeds 1,232 and the compiler **fails closed** with `TransactionTooLarge`. The instruction metas/data dominate; compression saturates.
+3. **V1 extends capacity where ALT saturates**: V1 carries the same route to 65 accounts / 2,465 B (SIMD-0385 ceiling at 64 inline accounts, rejection proven).
+4. **No silent downgrade**: with a V1-capable profile the compiler emits V1 even when lookup tables are supplied; V0+ALT is reachable only by explicitly declaring `v1_transport_supported: false`.
+5. **Production choice**: V1 inline remains the default transport (no ALT creation/rent/deployment dependency, larger capacity); V0+ALT is the verified fallback for V1-incapable endpoints.
+
+### 3.5 Bin-array expansion behavior
+
+Bin-array account requirements were exercised up to 12 bins/leg without hitting the 64-account ceiling (V1 ladder: 38→62 accounts, 1,574→2,465 B; the 64-inline-account rejection and 67-account runtime rejection are recorded). Route sizing must remain within the bin-distribution of live pools; the engine's dynamic sizing caps candidate sizes at available per-bin liquidity (see `arb-engine` sizing).
 
 ---
 

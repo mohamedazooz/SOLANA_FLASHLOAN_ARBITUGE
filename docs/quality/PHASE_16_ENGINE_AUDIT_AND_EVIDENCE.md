@@ -47,7 +47,7 @@ Verified components (all integer / Q64.x fixed-point, no floats):
 
 **Honest limitations:**
 - `spread_bps: 0` on the sampled pairs means the live 2-pool evidence demonstrates correct *rejection*, not profitable *execution*. A profitable route has never been simulated end-to-end on-chain (blocker: funded payer).
-- Bin-array account expansion is proven to 12 bins/leg (62 accounts); routes needing more bins per leg would approach the 64-account SIMD-0385 ceiling — the runtime rejects at 67 (proven), and the compiler fails closed, but there is no ALT-compressed variant of the 3-pool DLMM route yet (V1 inline accounts made ALT unnecessary at current sizes).
+- **ALT compression — now measured, not just discussed** (`reports/phase16/ALT_COMPRESSION_MATRIX.json`): the same 3-pool route compiles as V0+ALT at 854–1,151 B for 38–47 accounts (vs 1,574–1,871 B V1), but saturates at bins ≥5/leg (1,251 B > 1,232 — fails closed). V1 remains the superior transport for this route shape (65 accounts vs ALT's 47 within their respective limits). No silent downgrade in either direction.
 
 ---
 

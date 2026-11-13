@@ -1,0 +1,262 @@
+[
+  {
+    "instrument": "real_three_pool_dlmm_route",
+    "invariant": "v0+ALT wire size is hard-capped at 1232 bytes for every bin expansion; overflow fails closed",
+    "rungs": [
+      {
+        "bins_per_leg": 6,
+        "failure_reason": "transaction too large: 1349 bytes, limit 1232",
+        "fits_1232": false,
+        "v0_alt_bytes": null,
+        "v1_bytes": 2069
+      }
+    ],
+    "schema": "sentinel.phase16.alt_packet_limit_invariant.v1"
+  },
+  {
+    "compression_value_rung": {
+      "account_count": 47,
+      "bins_per_leg": 4,
+      "bytes_saved_vs_v1": 720,
+      "v0_alt_bytes": 1151,
+      "v1_inline_bytes": 1871
+    },
+    "instrument": "real_three_pool_dlmm_route",
+    "invariants_proven": [
+      "ALT compresses Nx32-byte inline accounts to 1-byte indices (v0)",
+      "ALT does NOT raise the packet limit: v0 wire hard-capped at 1232",
+      "V0 without ALT fails closed with TransactionTooLarge",
+      "V1 remains the production default; V0+ALT is opt-in only"
+    ],
+    "rungs": [
+      {
+        "account_count": 38,
+        "bins_per_leg": 1,
+        "v0_alt": {
+          "alt_addresses": 37,
+          "fits_1232": true,
+          "serialized_size_bytes": 854,
+          "version": "V0"
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1595 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 1574,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 41,
+        "bins_per_leg": 2,
+        "v0_alt": {
+          "alt_addresses": 40,
+          "fits_1232": true,
+          "serialized_size_bytes": 953,
+          "version": "V0"
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1694 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 1673,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 44,
+        "bins_per_leg": 3,
+        "v0_alt": {
+          "alt_addresses": 43,
+          "fits_1232": true,
+          "serialized_size_bytes": 1052,
+          "version": "V0"
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1793 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 1772,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 47,
+        "bins_per_leg": 4,
+        "v0_alt": {
+          "alt_addresses": 46,
+          "fits_1232": true,
+          "serialized_size_bytes": 1151,
+          "version": "V0"
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1892 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 1871,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 50,
+        "bins_per_leg": 5,
+        "v0_alt": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1250 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1991 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 1970,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 53,
+        "bins_per_leg": 6,
+        "v0_alt": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1349 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 2090 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 2069,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 56,
+        "bins_per_leg": 7,
+        "v0_alt": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1448 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 2189 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 2168,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 59,
+        "bins_per_leg": 8,
+        "v0_alt": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1547 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 2288 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 2267,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 62,
+        "bins_per_leg": 9,
+        "v0_alt": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1646 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 2387 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 2366,
+          "version": "V1"
+        }
+      },
+      {
+        "account_count": 65,
+        "bins_per_leg": 10,
+        "v0_alt": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 1745 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v0_bare": {
+          "compiled": false,
+          "failure_reason": "transaction too large: 2486 bytes, limit 1232",
+          "serialized_size_bytes": null,
+          "version": null
+        },
+        "v1_inline": {
+          "exceeds_1232": true,
+          "fits_4096": true,
+          "serialized_size_bytes": 2465,
+          "version": "V1"
+        }
+      },
+      {
+        "bins_per_leg": 11,
+        "v1": {
+          "compiled": false,
+          "failure_reason": "alt compilation failed: Transaction sanitization failure: SIMD-0385 address limit exceeded: 67 > 64"
+        }
+      }
+    ],
+    "schema": "sentinel.phase16.alt_compression_matrix.v1"
+  }
+]
