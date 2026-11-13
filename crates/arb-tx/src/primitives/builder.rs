@@ -73,7 +73,7 @@ impl TxBuilder {
         ixs.push(kamino::build_kamino_flash_borrow(&accounts, d_star));
 
         // [3..] Swap Legs
-        let slippage_bps: u64 = DEFAULT_HOP_SLIPPAGE_BPS;
+        let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let fee = calculate_kamino_flash_fee(d_star, flash_loan_fee_sf);
         let tip_raw = tip_amount.as_u64();
         let legs = Self::derive_swap_legs(
@@ -217,7 +217,7 @@ impl TxBuilder {
         }
 
         // 2. Arbitrage Swap Hops (Injected after Compute Budget and ATA creation)
-        let slippage_bps: u64 = DEFAULT_HOP_SLIPPAGE_BPS;
+        let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let tip_raw = tip_amount.as_u64();
         let legs = Self::derive_swap_legs(
             opportunity,
@@ -445,7 +445,7 @@ impl TxBuilder {
         ));
 
         // 4. Sequential Genuine Swap Hops (Injected before Repay)
-        let slippage_bps: u64 = DEFAULT_HOP_SLIPPAGE_BPS;
+        let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let fee = calculate_kamino_flash_fee(borrow_amount, flash_loan_fee_sf);
         let tip_raw = tip_amount.as_u64();
         let legs = Self::derive_swap_legs(

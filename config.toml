@@ -70,6 +70,7 @@ base_tokens = [
 min_net_profit_abs = 1000000        # 1,000,000 lamports (0.001 SOL = ~$0.20 USD strict floor above all fees & tip)
 min_net_profit_bps = 1              # 1 bps
 max_price_impact_bps = 500          # 500 bps max impact bound (relaxed for flash-loan multi-hop arbs)
+hop_slippage_bps = 10               # per-hop min-out floor (bps); hard-capped at 1000 by the builders
 max_state_age_slots = 300            # 300 slots state age window (~2 min) - Option 3 (HTTP-RPC only). Gated by ARB_MAX_IMPLAUSIBLE_ROI_BPS implausibility check.
 graph_max_age_slots = 60             # discovery-graph horizon (capped <= max_state_age_slots)
 use_flash_loan = true

@@ -440,6 +440,7 @@ dependencies = [
  "orca_whirlpools_core",
  "proptest",
  "ruint",
+ "serde_json",
  "solana-pubkey 2.4.0",
  "thiserror 2.0.21",
 ]
@@ -486,6 +487,7 @@ dependencies = [
  "solana-transaction",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

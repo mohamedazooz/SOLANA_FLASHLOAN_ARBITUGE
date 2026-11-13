@@ -38,6 +38,9 @@ fn get_funded_signer() -> Option<KeypairSigner> {
 
 #[tokio::test]
 async fn test_fresh_state_meteora_cross_pool_cycle() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
     dotenvy::dotenv().ok();
     let rpc = std::sync::Arc::new(RpcPool::from_env());
     if rpc.endpoints_count() == 0 {

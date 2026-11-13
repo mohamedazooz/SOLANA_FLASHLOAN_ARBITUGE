@@ -880,6 +880,8 @@ impl MeteoraDlmmFreshStatePipeline {
             oracle,
             bin_array_pdas,
             bitmap_extension: None,
+            pool_token_x: mint_x,
+            pool_token_y: mint_y,
         };
 
         Ok(PoolState {

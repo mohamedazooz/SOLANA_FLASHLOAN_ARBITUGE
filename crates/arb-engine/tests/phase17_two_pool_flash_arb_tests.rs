@@ -109,6 +109,8 @@ fn make_pool(
             oracle: Pubkey::new_unique(),
             bin_array_pdas: vec![arb_tx::derive_meteora_bin_array_pda(&pool_id, 0)],
             bitmap_extension: None,
+            pool_token_x: token_x.0,
+            pool_token_y: token_y.0,
         }),
         last_update_slot: 1,
         last_update_ms: 0,

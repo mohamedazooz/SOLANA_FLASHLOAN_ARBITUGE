@@ -528,6 +528,7 @@ impl BellmanFordEngine {
         };
 
         Some(ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(route_counter),
             slot: current_slot,
             size_in: TokenAmount(best_size),

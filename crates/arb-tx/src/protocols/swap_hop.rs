@@ -179,63 +179,80 @@ pub fn build_swap_hop_instruction(
                     min_amount_out,
                 )
             } else {
-                let canonical_pool = Pubkey::from_str(RAYDIUM_SOL_USDC_POOL).unwrap();
-                if hop.pool_id.0 == canonical_pool || hop.pool_id.0 == Pubkey::default() {
-                    let accs = RaydiumV4Accounts::mainnet_sol_usdc();
-                    build_raydium_v4_swap_instruction_v2(
-                        token_program,
-                        hop.pool_id.0,
-                        accs.amm_authority,
-                        accs.pool_coin_vault,
-                        accs.pool_pc_vault,
-                        user_source,
-                        user_destination,
-                        user_authority,
-                        amount_in,
-                        min_amount_out,
-                    )
-                } else {
-                    Err(TxError::MissingExecutionAccounts {
-                        pool_id: hop.pool_id.0,
-                        reason:
-                            "Raydium V4 pool requires verified execution accounts from registry"
-                                .into(),
-                    })
-                }
+                // Fail-closed: previously a default/unknown pool_id silently
+                // swapped against the hardcoded RAYDIUM_SOL_USDC_POOL with
+                // fabricated accounts — executing against a pool the quote
+                // never priced.
+                Err(TxError::MissingExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Raydium V4 pool requires verified execution accounts from registry"
+                        .into(),
+                })
             }
         }
         DexProtocol::OrcaWhirlpool => {
-            let a_to_b = hop.mint_in.0 == Pubkey::from_str(WSOL_MINT).unwrap_or(hop.mint_in.0);
-            let pool_pk = if hop.pool_id.0 != Pubkey::default() {
-                hop.pool_id.0
-            } else {
-                Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap()
-            };
+            // Fail-closed: no hardcoded pool fallback. A default `pool_id` or
+            // missing execution accounts previously swapped against the
+            // hardcoded ORCA_SOL_USDC_POOL with fabricated accounts — a
+            // transaction that could execute against a pool the quote never
+            // priced.
+            if hop.pool_id.0 == Pubkey::default() {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Orca hop has default pool_id; refusing hardcoded-pool fallback".into(),
+                });
+            }
 
-            let (accounts, is_adaptive_fee) = if let Some(PoolExecutionAccounts::OrcaWhirlpool {
+            let Some(PoolExecutionAccounts::OrcaWhirlpool {
                 vault_a,
                 vault_b,
                 oracle,
                 tick_array_pdas,
+                pool_mint_a,
             }) = exec_accounts
-            {
-                let ta0 = tick_array_pdas.first().copied().unwrap_or_default();
-                let ta1 = tick_array_pdas.get(1).copied().unwrap_or(ta0);
-                let ta2 = tick_array_pdas.get(2).copied().unwrap_or(ta1);
-                (
-                    OrcaWhirlpoolAccounts::with_tick_arrays(
-                        pool_pk, *vault_a, *vault_b, *oracle, ta0, ta1, ta2,
-                    ),
-                    false,
-                )
-            } else if pool_pk == Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap() {
-                (OrcaWhirlpoolAccounts::mainnet_sol_usdc(), false)
-            } else {
+            else {
                 return Err(TxError::MissingExecutionAccounts {
                     pool_id: hop.pool_id.0,
                     reason: "Orca Whirlpool requires execution_accounts from registry".into(),
                 });
             };
+
+            // Direction from the pool's on-chain `token_mint_a` (@101..133),
+            // NOT from a WSOL comparison: non-WSOL pools would always derive
+            // `a_to_b = false`, silently inverting the swap direction.
+            if *pool_mint_a == Pubkey::default() {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Orca execution accounts missing pool_mint_a (on-chain @101..133)"
+                        .into(),
+                });
+            }
+            let a_to_b = hop.mint_in.0 == *pool_mint_a;
+
+            if tick_array_pdas.is_empty() {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason:
+                        "Orca tick_array_pdas empty; zero-pubkey tick arrays would revert on-chain"
+                            .into(),
+                });
+            }
+            // Remaining tick arrays beyond index 0 are duplicate-filled:
+            // Whirlpool ignores unused remaining tick-array accounts, and the
+            // registry supplies the full traversal sequence for crossing swaps.
+            let ta0 = tick_array_pdas[0];
+            let ta1 = tick_array_pdas.get(1).copied().unwrap_or(ta0);
+            let ta2 = tick_array_pdas.get(2).copied().unwrap_or(ta1);
+            let accounts = OrcaWhirlpoolAccounts::with_tick_arrays(
+                hop.pool_id.0,
+                *vault_a,
+                *vault_b,
+                *oracle,
+                ta0,
+                ta1,
+                ta2,
+            );
+            let is_adaptive_fee = false;
 
             let (token_owner_a, token_owner_b) = if a_to_b {
                 (
@@ -260,22 +277,46 @@ pub fn build_swap_hop_instruction(
             )
         }
         DexProtocol::MeteoraDlmm => {
-            let mainnet_pool = Pubkey::from_str(METEORA_SOL_USDC_POOL).unwrap();
-
             if let Some(PoolExecutionAccounts::MeteoraDlmm {
                 reserve_x,
                 reserve_y,
                 oracle,
                 bin_array_pdas,
                 bitmap_extension,
+                pool_token_x,
+                pool_token_y,
             }) = exec_accounts
             {
+                // The DLMM program validates token_x_mint/token_y_mint against
+                // the LbPair (official SDK passes pool.tokenX/tokenY in the
+                // fixed x/y slots, never inToken/outToken). Passing mint_in as
+                // token_x_mint fails on-chain for every Y->X hop.
+                if *pool_token_x == Pubkey::default() || *pool_token_y == Pubkey::default() {
+                    return Err(TxError::InvalidExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: "DLMM execution accounts missing pool_token_x/pool_token_y (on-chain @88..152)"
+                            .into(),
+                    });
+                }
+                let swap_for_y = hop.mint_in.0 == *pool_token_x;
+                let mint_out_matches = if swap_for_y {
+                    hop.mint_out.0 == *pool_token_y
+                } else {
+                    hop.mint_out.0 == *pool_token_x
+                };
+                if !mint_out_matches {
+                    return Err(TxError::InvalidExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: "DLMM hop mints do not match the pool's on-chain token_x/token_y"
+                            .into(),
+                    });
+                }
                 let accounts = MeteoraDlmmAccounts {
                     lb_pair: hop.pool_id.0,
                     reserve_x: *reserve_x,
                     reserve_y: *reserve_y,
-                    token_x_mint: hop.mint_in.0,
-                    token_y_mint: hop.mint_out.0,
+                    token_x_mint: *pool_token_x,
+                    token_y_mint: *pool_token_y,
                     oracle: *oracle,
                     event_authority: derive_meteora_event_authority(),
                     program_id: Pubkey::from_str(METEORA_DLMM_PROGRAM_ID).unwrap(),
@@ -292,23 +333,6 @@ pub fn build_swap_hop_instruction(
                     bin_array_pdas,
                     *bitmap_extension,
                 ))
-            } else if hop.pool_id.0 == mainnet_pool || hop.pool_id.0 == Pubkey::default() {
-                let accounts = MeteoraDlmmAccounts::mainnet_sol_usdc();
-                let mint_in = hop.mint_in.0;
-                let mint_out = hop.mint_out.0;
-                let swap_for_y = mint_in.to_bytes() < mint_out.to_bytes();
-                let active_bin_id = hop.active_bin_id.unwrap_or(0);
-                Ok(build_meteora_dlmm_swap_instruction(
-                    &accounts,
-                    user_authority,
-                    get_associated_token_address(&user_authority, &hop.mint_in.0),
-                    get_associated_token_address(&user_authority, &hop.mint_out.0),
-                    amount_in,
-                    min_amount_out,
-                    active_bin_id,
-                    METEORA_SOL_USDC_BIN_STEP,
-                    swap_for_y,
-                ))
             } else {
                 Err(TxError::MissingExecutionAccounts {
                     pool_id: hop.pool_id.0,
@@ -317,7 +341,6 @@ pub fn build_swap_hop_instruction(
             }
         }
         DexProtocol::RaydiumCpmm => {
-            let mainnet_pool = Pubkey::from_str(RAYDIUM_CPMM_SOL_USDC_POOL).unwrap();
             let user_token_in = get_associated_token_address(&user_authority, &hop.mint_in.0);
             let user_token_out = get_associated_token_address(&user_authority, &hop.mint_out.0);
 
@@ -329,6 +352,11 @@ pub fn build_swap_hop_instruction(
                 observation_state: _,
             }) = exec_accounts
             {
+                // VERIFIED (Raydium official docs + raydium-cp-swap source):
+                // CPMM pool creation REQUIRES token_0_mint < token_1_mint by
+                // byte order ("InvalidInput — Mints unsorted or identical"),
+                // so lexicographic direction is provably correct here — unlike
+                // CLMM/Orca, which do NOT enforce ordering on live pools.
                 let a_to_b = hop.mint_in.0.to_bytes() < hop.mint_out.0.to_bytes();
                 let (input_vault, output_vault) = if a_to_b {
                     (*vault_0, *vault_1)
@@ -349,8 +377,6 @@ pub fn build_swap_hop_instruction(
                 accs.input_token_program = token_program_in;
                 accs.output_token_program = token_program_out;
                 accs
-            } else if hop.pool_id.0 == mainnet_pool || hop.pool_id.0 == Pubkey::default() {
-                RaydiumCpmmAccounts::mainnet_sol_usdc(user_authority, user_token_in, user_token_out)
             } else {
                 return Err(TxError::MissingExecutionAccounts {
                     pool_id: hop.pool_id.0,
@@ -363,23 +389,52 @@ pub fn build_swap_hop_instruction(
             let pool = hop.pool_id.0;
             let user_token_in = get_associated_token_address(&user_authority, &hop.mint_in.0);
             let user_token_out = get_associated_token_address(&user_authority, &hop.mint_out.0);
-            let zero_for_one = hop.mint_in.0.to_bytes() < hop.mint_out.0.to_bytes();
 
-            let accounts = if let Some(PoolExecutionAccounts::RaydiumClmm {
+            let Some(PoolExecutionAccounts::RaydiumClmm {
                 amm_config,
                 vault_0,
                 vault_1,
                 observation_state,
                 tick_array_pdas,
                 bitmap_extension: _,
+                pool_mint_0,
             }) = exec_accounts
-            {
+            else {
+                return Err(TxError::MissingExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Raydium CLMM requires execution_accounts from registry".into(),
+                });
+            };
+
+            // Direction from the pool's on-chain `token_mint_0` (@73..105).
+            // The program determines zero_for_one by matching the input vault's
+            // mint against token_mint_0 (raydium-clmm swap.rs); it does NOT
+            // enforce mint_0 < mint_1 on live pools (probe-verified), so the
+            // previous lexicographic rule inverted direction on such pools.
+            if *pool_mint_0 == Pubkey::default() {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason:
+                        "Raydium CLMM execution accounts missing pool_mint_0 (on-chain @73..105)"
+                            .into(),
+                });
+            }
+            let zero_for_one = hop.mint_in.0 == *pool_mint_0;
+
+            if tick_array_pdas.is_empty() {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Raydium CLMM tick_array_pdas empty; zero-pubkey tick arrays would revert on-chain"
+                        .into(),
+                });
+            }
+            let accounts = {
                 let (input_vault, output_vault) = if zero_for_one {
                     (*vault_0, *vault_1)
                 } else {
                     (*vault_1, *vault_0)
                 };
-                let ta0 = tick_array_pdas.first().copied().unwrap_or_default();
+                let ta0 = tick_array_pdas[0];
                 let ta1 = tick_array_pdas.get(1).copied().unwrap_or(ta0);
                 let ta2 = tick_array_pdas.get(2).copied().unwrap_or(ta1);
                 RaydiumClmmAccounts::with_tick_arrays(
@@ -395,11 +450,6 @@ pub fn build_swap_hop_instruction(
                     ta1,
                     ta2,
                 )
-            } else {
-                return Err(TxError::MissingExecutionAccounts {
-                    pool_id: hop.pool_id.0,
-                    reason: "Raydium CLMM requires execution_accounts from registry".into(),
-                });
             };
 
             const Q64: u128 = 1u128 << 64;

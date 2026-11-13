@@ -29,6 +29,7 @@ dotenvy = "0.15"
 sha2 = { workspace = true }
 arb-constants = { path = "../arb-constants" }
 arb-math = { path = "../arb-math" }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

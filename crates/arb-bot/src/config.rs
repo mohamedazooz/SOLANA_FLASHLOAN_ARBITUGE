@@ -140,6 +140,13 @@ pub struct StrategyConfig {
     pub min_net_profit_abs: u64,
     pub min_net_profit_bps: u64,
     pub max_price_impact_bps: u64,
+    /// Per-hop min-out floor slippage (bps) applied to every swap leg when
+    /// deriving `min_amount_out`. Overridden onto every opportunity before
+    /// dispatch (single source of truth) and clamped to
+    /// `HOP_SLIPPAGE_MAX_BPS` (1000) by the builders. `None` uses
+    /// `DEFAULT_HOP_SLIPPAGE_BPS` (10).
+    #[serde(default = "default_hop_slippage_bps")]
+    pub hop_slippage_bps: u64,
     pub max_state_age_slots: u64,
     /// Maximum slot age for a pool to enter the *discovery* graph. `None`
     /// means "same policy as quote freshness" (`max_state_age_slots`).
@@ -276,6 +283,9 @@ fn three_leg_default_input() -> u64 {
 }
 fn three_leg_default_max_input() -> u64 {
     2_000_000_000
+}
+fn default_hop_slippage_bps() -> u64 {
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
 }
 fn three_leg_default_slippage() -> u64 {
     100

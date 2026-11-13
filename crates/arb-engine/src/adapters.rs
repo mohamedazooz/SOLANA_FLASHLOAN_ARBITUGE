@@ -1025,6 +1025,7 @@ mod tests {
     /// 1% base fee (base_factor=100, power=0), input 10^9 X-raw:
     /// - InputOnly  -> fee charged on input  ~ 10^7 (X raw)
     /// - OnlyY      -> fee charged on output ~ 4x10^7 (Y raw, = gross_out * 1%)
+    ///
     /// `amount_out` is algebraically identical in both modes (fee deduction
     /// commutes with the per-bin price multiplication); only the fee
     /// denomination differs. This is why the hardcode never corrupted profit

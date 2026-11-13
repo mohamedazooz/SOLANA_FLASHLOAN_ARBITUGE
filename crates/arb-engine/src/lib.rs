@@ -440,6 +440,7 @@ impl MarketGraph {
         .ok()?;
 
         Some(ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id,
             slot: current_slot,
             size_in: TokenAmount(size_in),

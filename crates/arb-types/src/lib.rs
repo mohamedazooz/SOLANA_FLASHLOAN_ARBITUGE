@@ -4,6 +4,8 @@ pub mod currency;
 pub mod dimensional;
 pub use currency::*;
 
+pub use arb_constants::{DEFAULT_HOP_SLIPPAGE_BPS, HOP_SLIPPAGE_MAX_BPS};
+
 use serde::{Deserialize, Serialize};
 use solana_pubkey::Pubkey;
 use std::fmt;
@@ -413,12 +415,27 @@ pub enum PoolExecutionAccounts {
         observation_state: Pubkey,
         tick_array_pdas: Vec<Pubkey>,
         bitmap_extension: Option<Pubkey>,
+        /// On-chain `token_mint_0` (@73..105). Defines swap direction:
+        /// `zero_for_one = (mint_in == pool_mint_0)`. Raydium does NOT enforce
+        /// `mint_0 < mint_1` on live pools (probe-verified), so lexicographic
+        /// ordering is not a valid direction rule. `#[serde(default)]` keeps
+        /// previously persisted routes deserializable; default pubkey is
+        /// rejected fail-closed at construction time.
+        #[serde(default)]
+        pool_mint_0: Pubkey,
     },
     OrcaWhirlpool {
         vault_a: Pubkey,
         vault_b: Pubkey,
         oracle: Pubkey,
         tick_array_pdas: Vec<Pubkey>,
+        /// On-chain `token_mint_a` (@101..133). Defines swap direction:
+        /// `a_to_b = (mint_in == pool_mint_a)`. Orca does NOT enforce
+        /// `mint_a < mint_b` on live pools (probe-verified). `#[serde(default)]`
+        /// keeps previously persisted routes deserializable; default pubkey is
+        /// rejected fail-closed at construction time.
+        #[serde(default)]
+        pool_mint_a: Pubkey,
     },
     MeteoraDlmm {
         reserve_x: Pubkey,
@@ -426,6 +443,18 @@ pub enum PoolExecutionAccounts {
         oracle: Pubkey,
         bin_array_pdas: Vec<Pubkey>,
         bitmap_extension: Option<Pubkey>,
+        /// On-chain LbPair `token_x_mint` (@88..120) and `token_y_mint`
+        /// (@120..152). The DLMM program validates these accounts against the
+        /// pair (official SDK always passes `pool.tokenX/tokenY` in the fixed
+        /// x/y slots, never `inToken/outToken`), so passing the hop's
+        /// `mint_in` as `token_x_mint` fails for any Y->X direction.
+        /// `#[serde(default)]` keeps previously persisted routes
+        /// deserializable; default pubkeys are rejected fail-closed at build
+        /// time.
+        #[serde(default)]
+        pool_token_x: Pubkey,
+        #[serde(default)]
+        pool_token_y: Pubkey,
     },
     MeteoraDammV2 {
         config: Pubkey,
@@ -1147,6 +1176,25 @@ pub struct ExecutionOpportunity {
     /// gates then fall back to `expected_out` alone.
     #[serde(default)]
     pub expected_min_final_output: u64,
+    /// Per-hop min-out floor slippage (bps) used by tx builders when deriving
+    /// each swap leg's `min_amount_out`. Defaults to
+    /// `DEFAULT_HOP_SLIPPAGE_BPS`; the supervisor overrides it from strategy
+    /// config before dispatch so config is the single source of truth.
+    #[serde(default = "default_hop_slippage_bps")]
+    pub hop_slippage_bps: u64,
+}
+
+fn default_hop_slippage_bps() -> u64 {
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+}
+
+impl ExecutionOpportunity {
+    /// Effective per-hop slippage floor, clamped to `HOP_SLIPPAGE_MAX_BPS`.
+    /// Builders MUST use this instead of the raw field so an operator
+    /// misconfiguration can never disable the min-out protection entirely.
+    pub fn effective_hop_slippage_bps(&self) -> u64 {
+        self.hop_slippage_bps.min(arb_constants::HOP_SLIPPAGE_MAX_BPS)
+    }
 }
 
 // ============================================================================
