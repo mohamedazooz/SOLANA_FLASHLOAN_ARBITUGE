@@ -79,4 +79,7 @@ pub enum TxError {
 
     #[error("Transaction sanitization failure: {0}")]
     SanitizationError(String),
+
+    #[error("Atomicity violation: {0}")]
+    AtomicityViolation(String),
 }

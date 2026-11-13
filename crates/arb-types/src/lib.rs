@@ -421,6 +421,18 @@ pub enum PoolExecutionAccounts {
         tick_array_pdas: Vec<Pubkey>,
     },
     MeteoraDlmm {
+        /// On-chain token X of the `LbPair`. Required to derive `swap_for_y` and
+        /// to map `reserve_x`/`reserve_y` onto the trade direction; never assume
+        /// WSOL is X (the on-chain ordering is authoritative).
+        ///
+        /// `serde(default)` keeps previously cached payloads decodable; the
+        /// consumer treats `Pubkey::default()` as "direction unverifiable" and
+        /// fails closed instead of guessing.
+        #[serde(default)]
+        token_x_mint: Pubkey,
+        /// On-chain token Y of the `LbPair` (see `token_x_mint`).
+        #[serde(default)]
+        token_y_mint: Pubkey,
         reserve_x: Pubkey,
         reserve_y: Pubkey,
         oracle: Pubkey,

@@ -12,13 +12,14 @@
 use crate::{
     AddressLookupTable, CompiledInstruction, KaminoFlashParams, KeypairSigner, TxBuilder,
     build_compute_unit_limit, build_compute_unit_price, build_create_ata_idempotent_for_program,
-    build_kamino_flash_borrow, build_kamino_flash_repay_with_index,
+    build_kamino_flash_borrow, build_kamino_flash_repay_with_index, build_swap_hop_instruction,
     get_associated_token_address_with_program_id,
 };
 use arb_constants::{
     METEORA_DLMM_PROGRAM_ID, ORCA_WHIRLPOOL_PROGRAM_ID, RAYDIUM_CLMM_PROGRAM_ID,
-    RAYDIUM_CPMM_PROGRAM_ID,
+    RAYDIUM_CPMM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID,
 };
+use arb_types::{DexProtocol, MintId, PoolExecutionAccounts, PoolId, SwapHop, TokenProgramKind};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -52,6 +53,27 @@ impl DexPlatform {
         // For now, we assume all pools are supported
         true
     }
+
+    /// Map onto the canonical protocol enum used by the swap-hop builder.
+    #[inline]
+    pub fn protocol(&self) -> DexProtocol {
+        match self {
+            DexPlatform::MeteoraDlmm => DexProtocol::MeteoraDlmm,
+            DexPlatform::RaydiumClmm => DexProtocol::RaydiumClmm,
+            DexPlatform::RaydiumCpmm => DexProtocol::RaydiumCpmm,
+            DexPlatform::OrcaWhirlpool => DexProtocol::OrcaWhirlpool,
+        }
+    }
+}
+
+/// Map a token program `Pubkey` onto the typed program kind.
+#[inline]
+fn token_program_kind(program: &Pubkey) -> TokenProgramKind {
+    if *program == Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap_or_default() {
+        TokenProgramKind::Token2022
+    } else {
+        TokenProgramKind::SplToken
+    }
 }
 
 /// A swap leg in a cross-DEX arbitrage route
@@ -73,10 +95,38 @@ pub struct CrossDexSwapLeg {
     pub amount_in: u64,
     /// Minimum output amount (after slippage)
     pub min_amount_out: u64,
-    /// Whether to swap for Y (true) or X (false) - relevant for Meteora DLMM
-    pub swap_for_y: bool,
-    /// Additional accounts required for this swap (bin arrays, vaults, etc.)
-    pub additional_accounts: Vec<Pubkey>,
+    /// Active bin id for Meteora DLMM legs.
+    pub active_bin_id: Option<i32>,
+    /// Verified on-chain execution accounts for this pool, resolved by the
+    /// ingestion layer. Without them the canonical builder fails closed for
+    /// every pool that is not the hardcoded SOL/USDC reference pool — that is
+    /// deliberate: a leg built from guessed accounts is a losing transaction.
+    ///
+    /// Swap direction is *not* a leg field: it is derived from the pool's
+    /// on-chain `token_x_mint` / `token_y_mint` inside the builder.
+    pub execution_accounts: Option<PoolExecutionAccounts>,
+}
+
+impl CrossDexSwapLeg {
+    /// Project this leg onto the canonical [`SwapHop`] consumed by
+    /// [`build_swap_hop_instruction`]. Single source of truth: the cross-DEX
+    /// assembler does not re-implement any protocol's account matrix.
+    pub fn to_swap_hop(&self) -> SwapHop {
+        SwapHop {
+            pool_id: PoolId(self.pool_address),
+            protocol: self.dex_platform.protocol(),
+            mint_in: MintId(self.token_in),
+            mint_out: MintId(self.token_out),
+            fee_bps: 0,
+            active_bin_id: self.active_bin_id,
+            token_programs: [
+                token_program_kind(&self.token_in_program),
+                token_program_kind(&self.token_out_program),
+            ],
+            trade_intent: Default::default(),
+            execution_accounts: self.execution_accounts.clone(),
+        }
+    }
 }
 
 /// Parameters for cross-DEX flash loan arbitrage
@@ -135,6 +185,8 @@ pub enum CrossDexFlashArbError {
     MissingLoadedAccountsDataLimit,
     #[error("unsupported DEX platform: {0}")]
     UnsupportedDexPlatform(String),
+    #[error("leg {leg} could not be built: {reason}")]
+    SwapBuildFailed { leg: usize, reason: String },
     #[error("atomicity check failed: {0}")]
     AtomicityFailed(String),
 }
@@ -325,19 +377,12 @@ pub fn assemble_cross_dex_flash_arbitrage(
         params.borrow_amount,
     ));
 
-    // Build swap instructions for each leg
-    for leg in &params.legs {
-        // For now, we use a generic swap builder
-        // In a full implementation, each DEX would have its own builder
-        let swap_ix = build_cross_dex_swap(
-            leg,
-            payer,
-            if intermediate_accounts.is_empty() {
-                settlement_account
-            } else {
-                intermediate_accounts[0]
-            },
-        )?;
+    // Build swap instructions for each leg through the canonical per-protocol
+    // dispatcher. The previous implementation emitted an empty instruction per
+    // leg (`accounts: vec![], data: vec![]`) and routed every leg's input to
+    // `intermediate_accounts[0]`, so the transaction could never trade.
+    for (leg_index, leg) in params.legs.iter().enumerate() {
+        let swap_ix = build_cross_dex_swap(leg, leg_index, payer)?;
         ixs.push(swap_ix);
     }
 
@@ -364,26 +409,32 @@ pub fn assemble_cross_dex_flash_arbitrage(
     Ok((ixs, borrow_idx, repay_idx))
 }
 
-/// Build a swap instruction for a cross-DEX leg
-/// Note: This is a simplified version. In production, each DEX would have its own builder.
+/// Build the swap instruction for one cross-DEX leg.
+///
+/// Delegates to [`build_swap_hop_instruction`], the same dispatcher the native
+/// (non-flash) route builder uses. There is no placeholder path: if the leg
+/// cannot be turned into a real instruction — unknown pool, missing verified
+/// execution accounts, a mint pair the pool does not hold — this fails closed
+/// with the offending leg index instead of emitting an empty instruction.
 fn build_cross_dex_swap(
     leg: &CrossDexSwapLeg,
-    _payer: Pubkey,
-    _input_account: Pubkey,
+    leg_index: usize,
+    payer: Pubkey,
 ) -> Result<CompiledInstruction, CrossDexFlashArbError> {
-    // In a real implementation, we would dispatch to the appropriate swap builder
-    // based on the DEX platform. For now, we return a placeholder.
-
-    // For Meteora DLMM, we would use build_swap2_exact_in
-    // For Raydium, we would use the appropriate Raydium swap builder
-    // For Orca, we would use the Orca swap builder
-
-    // This is a placeholder that should be replaced with actual implementation
-    Ok(CompiledInstruction {
-        program_id: leg.dex_platform.program_id(),
-        accounts: vec![],
-        data: vec![],
-    })
+    let hop = leg.to_swap_hop();
+    let ix = build_swap_hop_instruction(&hop, payer, leg.amount_in, leg.min_amount_out).map_err(
+        |e| CrossDexFlashArbError::SwapBuildFailed {
+            leg: leg_index,
+            reason: e.to_string(),
+        },
+    )?;
+    if ix.accounts.is_empty() || ix.data.is_empty() {
+        return Err(CrossDexFlashArbError::SwapBuildFailed {
+            leg: leg_index,
+            reason: "canonical swap builder produced an empty instruction".into(),
+        });
+    }
+    Ok(ix)
 }
 
 /// Build cross-DEX flash arbitrage transaction (V1)
@@ -403,7 +454,10 @@ pub fn build_cross_dex_flash_arbitrage_v1(
     let loaded_accounts_data_size_limit = 256_000u64; // 256 KB default
 
     let v1_config = crate::adaptive::V1ConfigParams {
-        priority_fee_lamports: Some(params.priority_fee_micro_lamports / 1_000_000),
+        priority_fee_lamports: Some(crate::primitives::fees::total_priority_fee_lamports(
+            params.priority_fee_micro_lamports,
+            params.cu_limit,
+        )),
         compute_unit_limit: Some(params.cu_limit),
         loaded_accounts_data_size_limit: Some(loaded_accounts_data_size_limit as u32),
         heap_size: None,
@@ -536,8 +590,8 @@ mod tests {
                     token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
                     amount_in: 1_000_000_000,
                     min_amount_out: 900_000_000,
-                    swap_for_y: true,
-                    additional_accounts: vec![],
+                    active_bin_id: None,
+                    execution_accounts: None,
                 },
                 CrossDexSwapLeg {
                     dex_platform: DexPlatform::RaydiumClmm,
@@ -548,8 +602,8 @@ mod tests {
                     token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
                     amount_in: 900_000_000,
                     min_amount_out: 1_001_000_000,
-                    swap_for_y: true,
-                    additional_accounts: vec![],
+                    active_bin_id: None,
+                    execution_accounts: None,
                 },
             ],
             cu_limit: 300_000,
@@ -585,8 +639,8 @@ mod tests {
                     token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
                     amount_in: 1_000_000_000,
                     min_amount_out: 900_000_000,
-                    swap_for_y: true,
-                    additional_accounts: vec![],
+                    active_bin_id: None,
+                    execution_accounts: None,
                 },
                 CrossDexSwapLeg {
                     dex_platform: DexPlatform::MeteoraDlmm, // Same platform - should fail
@@ -597,8 +651,8 @@ mod tests {
                     token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
                     amount_in: 900_000_000,
                     min_amount_out: 1_001_000_000,
-                    swap_for_y: true,
-                    additional_accounts: vec![],
+                    active_bin_id: None,
+                    execution_accounts: None,
                 },
             ],
             cu_limit: 300_000,
@@ -636,8 +690,8 @@ mod tests {
                     token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
                     amount_in: 1_000_000_000,
                     min_amount_out: 900_000_000,
-                    swap_for_y: true,
-                    additional_accounts: vec![],
+                    active_bin_id: None,
+                    execution_accounts: None,
                 },
                 CrossDexSwapLeg {
                     dex_platform: DexPlatform::RaydiumClmm,
@@ -648,8 +702,8 @@ mod tests {
                     token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
                     amount_in: 900_000_000,
                     min_amount_out: 1_001_000_000,
-                    swap_for_y: true,
-                    additional_accounts: vec![],
+                    active_bin_id: None,
+                    execution_accounts: None,
                 },
             ],
             cu_limit: 300_000,
@@ -662,5 +716,126 @@ mod tests {
 
         let result = params.validate();
         assert!(result.is_ok());
+    }
+
+    fn cpmm_accounts() -> PoolExecutionAccounts {
+        PoolExecutionAccounts::RaydiumCpmm {
+            amm_config: Pubkey::new_unique(),
+            authority: Pubkey::new_unique(),
+            vault_0: Pubkey::new_unique(),
+            vault_1: Pubkey::new_unique(),
+            observation_state: Pubkey::new_unique(),
+        }
+    }
+
+    fn clmm_accounts() -> PoolExecutionAccounts {
+        PoolExecutionAccounts::RaydiumClmm {
+            amm_config: Pubkey::new_unique(),
+            vault_0: Pubkey::new_unique(),
+            vault_1: Pubkey::new_unique(),
+            observation_state: Pubkey::new_unique(),
+            tick_array_pdas: vec![
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+            ],
+            bitmap_extension: None,
+        }
+    }
+
+    /// The assembler must emit real, decodable swap instructions — never the
+    /// `accounts: vec![], data: vec![]` placeholder it used to emit, and never
+    /// route every leg's input to the first intermediate account.
+    #[test]
+    fn assembles_real_swap_instructions_per_leg() {
+        let mint_a = Pubkey::new_unique();
+        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let spl = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+
+        let params = CrossDexFlashArbParams {
+            payer: Pubkey::new_unique(),
+            kamino: KaminoFlashParams::default_wsol(),
+            borrow_amount: 1_000_000_000,
+            flash_fee: 1_000,
+            legs: vec![
+                CrossDexSwapLeg {
+                    dex_platform: DexPlatform::RaydiumCpmm,
+                    pool_address: Pubkey::new_unique(),
+                    token_in: wsol,
+                    token_out: mint_a,
+                    token_in_program: spl,
+                    token_out_program: spl,
+                    amount_in: 1_000_000_000,
+                    min_amount_out: 900_000_000,
+                    active_bin_id: None,
+                    execution_accounts: Some(cpmm_accounts()),
+                },
+                CrossDexSwapLeg {
+                    dex_platform: DexPlatform::RaydiumClmm,
+                    pool_address: Pubkey::new_unique(),
+                    token_in: mint_a,
+                    token_out: wsol,
+                    token_in_program: spl,
+                    token_out_program: spl,
+                    amount_in: 900_000_000,
+                    min_amount_out: 1_001_000_000,
+                    active_bin_id: None,
+                    execution_accounts: Some(clmm_accounts()),
+                },
+            ],
+            cu_limit: 400_000,
+            priority_fee_micro_lamports: 50_000,
+            jito_tip_account: Pubkey::new_unique(),
+            jito_tip_lamports: 0,
+            recent_blockhash: [7; 32],
+            v1_transport_supported: false,
+        };
+
+        let (ixs, borrow_idx, repay_idx) = assemble_cross_dex_flash_arbitrage(&params).unwrap();
+        assert!(borrow_idx < repay_idx);
+        assert_eq!(repay_idx, borrow_idx + 1 + params.legs.len());
+
+        // Skip the two ComputeBudget instructions and one ATA creation per token
+        // (settlement + one intermediate), then the borrow.
+        let swap_start = 2 + 1 + (params.legs.len() - 1) + 1;
+        let swaps = &ixs[swap_start..swap_start + params.legs.len()];
+        for (leg, ix) in params.legs.iter().zip(swaps.iter()) {
+            assert!(
+                !ix.accounts.is_empty() && !ix.data.is_empty(),
+                "leg {:?} produced an empty instruction",
+                leg.dex_platform
+            );
+            assert_eq!(ix.program_id, leg.dex_platform.program_id());
+        }
+        // Distinct legs must not both target the same pool/program pair by
+        // accident: the CPMM leg's input account is the payer's WSOL ATA, the
+        // CLMM leg's is the payer's `mint_a` ATA.
+        assert_ne!(swaps[0].accounts, swaps[1].accounts);
+    }
+
+    /// Missing verified execution accounts on a non-reference pool is a hard
+    /// error, not a silent fall back to the hardcoded SOL/USDC pool.
+    #[test]
+    fn fails_closed_without_execution_accounts() {
+        let mint_a = Pubkey::new_unique();
+        let spl = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+        let leg = CrossDexSwapLeg {
+            dex_platform: DexPlatform::MeteoraDlmm,
+            pool_address: Pubkey::new_unique(),
+            token_in: Pubkey::from_str(WSOL_MINT).unwrap(),
+            token_out: mint_a,
+            token_in_program: spl,
+            token_out_program: spl,
+            amount_in: 1_000_000_000,
+            min_amount_out: 900_000_000,
+            active_bin_id: Some(0),
+            execution_accounts: None,
+        };
+
+        let err = build_cross_dex_swap(&leg, 0, Pubkey::new_unique()).unwrap_err();
+        assert!(
+            matches!(err, CrossDexFlashArbError::SwapBuildFailed { leg: 0, .. }),
+            "expected SwapBuildFailed, got {err:?}"
+        );
     }
 }

@@ -630,6 +630,8 @@ fn build_context(
             .clone()
             .ok_or(ThreeLegMemePipelineError::MissingExecutionAccounts { leg: idx })?;
         let PoolExecutionAccounts::MeteoraDlmm {
+            token_x_mint: _,
+            token_y_mint: _,
             reserve_x,
             reserve_y,
             oracle,

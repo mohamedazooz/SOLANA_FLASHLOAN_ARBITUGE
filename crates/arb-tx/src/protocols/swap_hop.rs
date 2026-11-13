@@ -263,6 +263,8 @@ pub fn build_swap_hop_instruction(
             let mainnet_pool = Pubkey::from_str(METEORA_SOL_USDC_POOL).unwrap();
 
             if let Some(PoolExecutionAccounts::MeteoraDlmm {
+                token_x_mint,
+                token_y_mint,
                 reserve_x,
                 reserve_y,
                 oracle,
@@ -270,12 +272,34 @@ pub fn build_swap_hop_instruction(
                 bitmap_extension,
             }) = exec_accounts
             {
+                // Direction is authoritative from the pool's on-chain X/Y mints.
+                // Never guess from lexicographic mint ordering or assume WSOL is X.
+                if token_x_mint == &Pubkey::default() || token_y_mint == &Pubkey::default() {
+                    return Err(TxError::MissingExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: "Meteora DLMM execution accounts carry no on-chain mints; \
+                                 swap direction unverifiable"
+                            .into(),
+                    });
+                }
+                let direction_ok = (hop.mint_in.0 == *token_x_mint
+                    && hop.mint_out.0 == *token_y_mint)
+                    || (hop.mint_in.0 == *token_y_mint && hop.mint_out.0 == *token_x_mint);
+                if !direction_ok {
+                    return Err(TxError::MissingExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: format!(
+                            "hop {} -> {} is not a pair held by this DLMM pool (x={}, y={})",
+                            hop.mint_in.0, hop.mint_out.0, token_x_mint, token_y_mint
+                        ),
+                    });
+                }
                 let accounts = MeteoraDlmmAccounts {
                     lb_pair: hop.pool_id.0,
                     reserve_x: *reserve_x,
                     reserve_y: *reserve_y,
-                    token_x_mint: hop.mint_in.0,
-                    token_y_mint: hop.mint_out.0,
+                    token_x_mint: *token_x_mint,
+                    token_y_mint: *token_y_mint,
                     oracle: *oracle,
                     event_authority: derive_meteora_event_authority(),
                     program_id: Pubkey::from_str(METEORA_DLMM_PROGRAM_ID).unwrap(),
@@ -296,7 +320,23 @@ pub fn build_swap_hop_instruction(
                 let accounts = MeteoraDlmmAccounts::mainnet_sol_usdc();
                 let mint_in = hop.mint_in.0;
                 let mint_out = hop.mint_out.0;
-                let swap_for_y = mint_in.to_bytes() < mint_out.to_bytes();
+                // The hardcoded SOL/USDC pool knows its own X/Y orientation; a
+                // lexicographic mint comparison is not a direction signal.
+                let swap_for_y = if mint_in == accounts.token_x_mint
+                    && mint_out == accounts.token_y_mint
+                {
+                    true
+                } else if mint_in == accounts.token_y_mint && mint_out == accounts.token_x_mint {
+                    false
+                } else {
+                    return Err(TxError::MissingExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: format!(
+                            "hop {mint_in} -> {mint_out} is not a pair held by the mainnet \
+                             SOL/USDC DLMM pool"
+                        ),
+                    });
+                };
                 let active_bin_id = hop.active_bin_id.unwrap_or(0);
                 Ok(build_meteora_dlmm_swap_instruction(
                     &accounts,

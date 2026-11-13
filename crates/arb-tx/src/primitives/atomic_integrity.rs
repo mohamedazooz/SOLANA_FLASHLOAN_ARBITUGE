@@ -99,6 +99,38 @@ pub fn verify_atomic_integrity(
     repay_amount: u64,
     flash_fee: u64,
 ) -> Result<AtomicityVerification, TxError> {
+    verify_atomic_integrity_with_limit(
+        mode,
+        instructions,
+        flash_borrow_ix_index,
+        flash_repay_ix_index,
+        borrow_amount,
+        repay_amount,
+        flash_fee,
+        LEGACY_MTU,
+    )
+}
+
+/// Legacy (v0) transaction ceiling in bytes.
+pub const LEGACY_MTU: usize = 1232;
+
+/// V1 transaction ceiling in bytes (SIMD-0385).
+pub const V1_MTU: usize = 4096;
+
+/// [`verify_atomic_integrity`] with an explicit wire-size ceiling, because the
+/// size budget depends on the transport that will carry the instruction list:
+/// 1 232 bytes for legacy/v0, 4 096 bytes for V1. Checking a V1-bound list
+/// against the legacy ceiling would reject legitimate routes.
+pub fn verify_atomic_integrity_with_limit(
+    mode: ExecutionMode,
+    instructions: &[CompiledInstruction],
+    flash_borrow_ix_index: Option<usize>,
+    flash_repay_ix_index: Option<usize>,
+    borrow_amount: u64,
+    repay_amount: u64,
+    flash_fee: u64,
+    max_tx_size: usize,
+) -> Result<AtomicityVerification, TxError> {
     // Jito bundles do not provide atomicity — reject multi-leg arbitrage.
     if !mode.is_atomic() {
         return Ok(AtomicityVerification {
@@ -170,8 +202,8 @@ pub fn verify_atomic_integrity(
         rejection_reason = Some(rej);
     }
 
-    // Check 6: Transaction size limits (1232 bytes for legacy/v0, 4096 for v1).
-    if let Some(rej) = verify_transaction_size(instructions) {
+    // Check 6: Transaction size limits.
+    if let Some(rej) = verify_transaction_size(instructions, max_tx_size) {
         rejection_reason = Some(rej);
     }
 
@@ -184,6 +216,44 @@ pub fn verify_atomic_integrity(
         instruction_count: instructions.len(),
         account_count: count_unique_accounts(instructions),
     })
+}
+
+/// Enforce the atomicity contract on a fully assembled arbitrage instruction
+/// list, failing closed.
+///
+/// This is the gate every assembly path must pass through: a non-atomic or
+/// under-repaying list becomes an [`TxError::AtomicityViolation`] instead of a
+/// warning that a later stage can ignore. `max_tx_size` selects the wire
+/// ceiling for the transport that will carry the list ([`LEGACY_MTU`] or
+/// [`V1_MTU`]).
+pub fn enforce_atomicity(
+    instructions: &[CompiledInstruction],
+    flash_borrow_ix_index: Option<usize>,
+    flash_repay_ix_index: Option<usize>,
+    borrow_amount: u64,
+    repay_amount: u64,
+    flash_fee: u64,
+    max_tx_size: usize,
+) -> Result<AtomicityVerification, TxError> {
+    let verification = verify_atomic_integrity_with_limit(
+        ExecutionMode::SingleTransaction,
+        instructions,
+        flash_borrow_ix_index,
+        flash_repay_ix_index,
+        borrow_amount,
+        repay_amount,
+        flash_fee,
+        max_tx_size,
+    )?;
+    if !verification.is_atomic {
+        return Err(TxError::AtomicityViolation(
+            verification
+                .rejection_reason
+                .clone()
+                .unwrap_or_else(|| "unknown reason".to_string()),
+        ));
+    }
+    Ok(verification)
 }
 
 /// Verify instruction ordering: borrow before swaps before repay.
@@ -279,7 +349,7 @@ fn verify_token_program_compatibility(instructions: &[CompiledInstruction]) -> O
 }
 
 /// Verify transaction size limits.
-fn verify_transaction_size(instructions: &[CompiledInstruction]) -> Option<String> {
+fn verify_transaction_size(instructions: &[CompiledInstruction], limit: usize) -> Option<String> {
     // Estimate worst-case transaction size (legacy format, no ALT).
     // Each instruction: 1 (program idx) + 1 (acct count) + N (acct indices) +
     //   1 (data len) + M (data bytes) + compact-u16 overhead.
@@ -300,11 +370,10 @@ fn verify_transaction_size(instructions: &[CompiledInstruction]) -> Option<Strin
         estimated_size += ix.data.len(); // data
     }
 
-    // Legacy MTU limit: 1232 bytes.
-    const LEGACY_MTU: usize = 1232;
-    if estimated_size > LEGACY_MTU {
+    // Ceiling is transport-dependent (legacy 1 232 vs V1 4 096 bytes).
+    if estimated_size > limit {
         return Some(format!(
-            "Estimated transaction size {estimated_size} exceeds legacy MTU {LEGACY_MTU} — \
+            "Estimated transaction size {estimated_size} exceeds {limit}-byte ceiling — \
              requires ALT or V1 format"
         ));
     }

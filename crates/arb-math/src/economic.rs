@@ -266,6 +266,55 @@ pub fn base_raw_to_lamports(
     Ok(Lamports(val_u64))
 }
 
+/// Minimum output the **final** swap leg must produce for the transaction to be
+/// solvent on chain: `borrow + flash_fee + tip + min_profit`, all in base-mint
+/// raw units.
+///
+/// This is the single authoritative definition of the on-chain repayment floor.
+/// Every path that writes a `min_amount_out` guard for the last hop must use it
+/// — the swap must be able to repay the flash loan *and* retain the profit
+/// floor, otherwise the guard is satisfied by a losing transaction.
+///
+/// Checked arithmetic: overflow rejects rather than saturating (which would
+/// silently lower the guard).
+pub fn final_leg_floor_raw(
+    borrow_raw: TokenAmount,
+    flash_fee_raw: TokenAmount,
+    tip_lamports: Lamports,
+    lamports_to_base_mint_rate: u128,
+    lamports_to_base_rate_denom: u128,
+    min_profit_raw: TokenAmount,
+) -> Result<TokenAmount> {
+    let tip_raw = lamports_to_base_raw(
+        tip_lamports,
+        lamports_to_base_mint_rate,
+        lamports_to_base_rate_denom,
+    )?;
+    let tip_raw = u64::try_from(tip_raw).map_err(|_| ArbError::Overflow)?;
+    final_leg_floor_raw_units(borrow_raw, flash_fee_raw, tip_raw, min_profit_raw)
+}
+
+/// [`final_leg_floor_raw`] for callers that already hold the tip converted to
+/// base-mint raw units (e.g. the instruction-derivation path, where the tip is
+/// sized in base units so it can be compared with hop outputs).
+pub fn final_leg_floor_raw_units(
+    borrow_raw: TokenAmount,
+    flash_fee_raw: TokenAmount,
+    tip_raw: u64,
+    min_profit_raw: TokenAmount,
+) -> Result<TokenAmount> {
+    let total = U256::from(borrow_raw.as_u64())
+        .checked_add(U256::from(flash_fee_raw.as_u64()))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(tip_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(min_profit_raw.as_u64()))
+        .ok_or(ArbError::Overflow)?;
+    Ok(TokenAmount(
+        u64::try_from(total).map_err(|_| ArbError::Overflow)?,
+    ))
+}
+
 /// Build an authoritative EconomicQuote from component values.
 ///
 /// All token amounts are in the base mint's raw atomic units. SOL-denominated

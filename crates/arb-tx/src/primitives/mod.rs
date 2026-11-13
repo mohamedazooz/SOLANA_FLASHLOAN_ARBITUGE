@@ -6,6 +6,7 @@ pub mod atomic_integrity;
 pub mod builder;
 pub mod cu;
 pub mod error;
+pub mod fees;
 pub mod instruction;
 pub mod signer;
 
@@ -14,5 +15,6 @@ pub use atomic_integrity::*;
 pub use builder::*;
 pub use cu::*;
 pub use error::*;
+pub use fees::*;
 pub use instruction::*;
 pub use signer::*;

@@ -104,6 +104,8 @@ fn make_pool(
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
+            token_x_mint: token_x.0,
+            token_y_mint: token_y.0,
             reserve_x: Pubkey::new_unique(),
             reserve_y: Pubkey::new_unique(),
             oracle: Pubkey::new_unique(),

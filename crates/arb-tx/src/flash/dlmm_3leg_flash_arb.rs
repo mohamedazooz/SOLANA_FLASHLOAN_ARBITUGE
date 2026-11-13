@@ -208,7 +208,8 @@ pub struct FlashArb3LegParams {
     pub kamino: KaminoFlashParams,
     /// Flash principal in flash-mint raw units (WSOL = 9 decimals).
     pub borrow_amount: u64,
-    /// Kamino flash fee in flash-mint raw units (`ceil(borrow * fee_sf / 2^64)`).
+    /// Kamino flash fee in flash-mint raw units: follows the canonical klend
+    /// `U68F60` rule `round(max(borrow * fee_sf, 2^60) / 2^60)`.
     pub flash_fee: u64,
     /// First DLMM swap leg (Pool 1: WSOL -> Meme A).
     pub leg_1: FlashArb3LegPoolLeg,
@@ -512,18 +513,13 @@ pub fn build_flash_funded_three_pool_transaction(
     let wire_bytes = if params.v1_transport_supported {
         // V1: native resource config in message, no ALT needed.
         // SIMD-0385: priority fee in the header is the TOTAL fee in
-        // lamports, not micro-lamports per CU. Convert with ceil.
-        let priority_fee_lamports = ((params.priority_fee_micro_lamports as u128)
-            .saturating_mul(params.cu_limit as u128)
-            .saturating_add(999_999))
-            / 1_000_000;
-        if priority_fee_lamports > u64::MAX as u128 {
-            return Err(FlashArb3LegError::AltCompilation(
-                "V1 priority fee exceeds u64 lamports".to_string(),
-            ));
-        }
+        // lamports, not micro-lamports per CU. One conversion, one place.
+        let priority_fee_lamports = crate::primitives::fees::total_priority_fee_lamports(
+            params.priority_fee_micro_lamports,
+            params.cu_limit,
+        );
         let config = crate::adaptive::V1ConfigParams {
-            priority_fee_lamports: Some(priority_fee_lamports as u64),
+            priority_fee_lamports: Some(priority_fee_lamports),
             compute_unit_limit: Some(params.cu_limit),
             // 1 MiB: DLMM bin arrays are ~15-25 KB each; a 3-leg route with
             // 2-4 arrays per leg can load ~200-400 KB of account data.

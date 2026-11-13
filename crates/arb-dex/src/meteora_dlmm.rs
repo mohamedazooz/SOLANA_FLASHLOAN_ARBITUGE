@@ -279,6 +279,8 @@ impl AmmPool for MeteoraDlmmPool {
             self.bin_array_pdas.clone()
         };
         Some(PoolExecutionAccounts::MeteoraDlmm {
+            token_x_mint: self.token_x_mint.0,
+            token_y_mint: self.token_y_mint.0,
             reserve_x: self.reserve_x,
             reserve_y: self.reserve_y,
             oracle: self.oracle,

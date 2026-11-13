@@ -76,6 +76,8 @@ fn dlmm_pool(
 ) -> PoolState {
     let exec = if with_accounts {
         Some(PoolExecutionAccounts::MeteoraDlmm {
+            token_x_mint: wsol().0,
+            token_y_mint: usdc().0,
             reserve_x: pk(tag * 10 + 1),
             reserve_y: pk(tag * 10 + 2),
             oracle: pk(tag * 10 + 3),

@@ -165,11 +165,13 @@ impl Supervisor {
         // evaluate fresh RPC reads against `self.kamino_fallback_store` if needed
         // while preserving `store`'s stream provenance invariants.
         let store = self.ingest.account_store();
+        // Freshness policy comes from config — one number for the whole pipeline.
+        let max_age_slots = self.config.strategy.max_state_age_slots;
         let primary_fresh = matches!(
             (store.get(&reserve), store.get(&base_mint.0)),
             (Some(r), Some(m))
-                if current_slot.0.saturating_sub(r.slot) <= 1000
-                    && current_slot.0.saturating_sub(m.slot) <= 1000
+                if current_slot.0.saturating_sub(r.slot) <= max_age_slots
+                    && current_slot.0.saturating_sub(m.slot) <= max_age_slots
         );
         let fallback_fresh = !primary_fresh
             && matches!(
@@ -178,8 +180,8 @@ impl Supervisor {
                     self.kamino_fallback_store.get(&base_mint.0),
                 ),
                 (Some(r), Some(m))
-                    if current_slot.0.saturating_sub(r.slot) <= 1000
-                        && current_slot.0.saturating_sub(m.slot) <= 1000
+                    if current_slot.0.saturating_sub(r.slot) <= max_age_slots
+                        && current_slot.0.saturating_sub(m.slot) <= max_age_slots
             );
 
         let mut use_fallback_store = fallback_fresh;
@@ -253,7 +255,7 @@ impl Supervisor {
                     decoded_both += 1;
                 }
 
-                if decoded_both == 2 && current_slot.0.saturating_sub(snap_slot) <= 1500 {
+                if decoded_both == 2 && current_slot.0.saturating_sub(snap_slot) <= max_age_slots {
                     use_fallback_store = true;
                     eval_slot = Slot(current_slot.0.max(snap_slot));
                 }
@@ -276,7 +278,7 @@ impl Supervisor {
             self.live_sol_price(),
         )
         .map_err(anyhow::Error::msg)?;
-        if !inputs.is_fresh(1500) {
+        if !inputs.is_fresh(max_age_slots) {
             anyhow::bail!("verified Yellowstone economic inputs exceed max_state_age_slots");
         }
         Ok(inputs)

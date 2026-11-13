@@ -160,8 +160,13 @@ mod tests {
         }
     }
 
-    fn mock_meteora_dlmm_exec_accounts() -> PoolExecutionAccounts {
+    fn mock_meteora_dlmm_exec_accounts(
+        token_x_mint: Pubkey,
+        token_y_mint: Pubkey,
+    ) -> PoolExecutionAccounts {
         PoolExecutionAccounts::MeteoraDlmm {
+            token_x_mint,
+            token_y_mint,
             reserve_x: Pubkey::new_unique(),
             reserve_y: Pubkey::new_unique(),
             oracle: Pubkey::new_unique(),
@@ -665,7 +670,7 @@ mod tests {
                 DexProtocol::MeteoraDlmm,
                 wsol,
                 usdc,
-                Some(mock_meteora_dlmm_exec_accounts()),
+                Some(mock_meteora_dlmm_exec_accounts(wsol, usdc)),
             ),
             (
                 DexProtocol::RaydiumCpmm,

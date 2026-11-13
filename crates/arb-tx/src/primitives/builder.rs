@@ -280,6 +280,19 @@ impl TxBuilder {
             ));
         }
 
+        // 5. Atomicity gate — native routes borrow nothing, so there is no
+        //    borrow/repay pair to verify, but the list must still be a single
+        //    atomic transaction within the wire ceiling.
+        crate::primitives::atomic_integrity::enforce_atomicity(
+            &ixs,
+            None,
+            None,
+            0,
+            0,
+            0,
+            crate::primitives::atomic_integrity::V1_MTU,
+        )?;
+
         Ok(ixs)
     }
 
@@ -313,12 +326,16 @@ impl TxBuilder {
         }
 
         let borrow = inputs[0];
-        // Enforce full on-chain solvent floor: borrow + flash_fee + jito_tip + net_retained_profit
-        let floor = borrow
-            .checked_add(flash_fee_raw)
-            .and_then(|v| v.checked_add(tip_raw))
-            .and_then(|v| v.checked_add(min_profit_raw))
-            .ok_or_else(|| TxError::InvalidInput("profit floor arithmetic overflow".into()))?;
+        // Enforce the full on-chain solvent floor through the single authoritative
+        // formula: borrow + flash_fee + jito_tip + net_retained_profit.
+        let floor = arb_math::final_leg_floor_raw_units(
+            arb_types::TokenAmount(borrow),
+            arb_types::TokenAmount(flash_fee_raw),
+            tip_raw,
+            arb_types::TokenAmount(min_profit_raw),
+        )
+        .map_err(|e| TxError::InvalidInput(format!("profit floor arithmetic overflow: {e}")))?
+        .as_u64();
 
         let mut legs = Vec::with_capacity(opportunity.hops.len());
         for (i, _hop) in opportunity.hops.iter().enumerate() {
@@ -509,6 +526,7 @@ impl TxBuilder {
         }
 
         // 5. Kamino Flash Repay (amount == principal; fee collected on top)
+        let repay_idx = ixs.len();
         ixs.push(build_kamino_flash_repay_with_index(
             &resolved_params,
             payer,
@@ -538,6 +556,20 @@ impl TxBuilder {
             ));
         }
 
+        // 7. Atomicity gate — borrow, every swap and repay must live in ONE
+        //    transaction, in order, with repayment covering principal + fee.
+        //    A violation is an error: an atomic-looking list that is not atomic
+        //    is the exact failure mode this module exists to prevent.
+        crate::primitives::atomic_integrity::enforce_atomicity(
+            &ixs,
+            Some(borrow_idx),
+            Some(repay_idx),
+            borrow_amount,
+            repay_funding,
+            fee,
+            crate::primitives::atomic_integrity::V1_MTU,
+        )?;
+
         Ok(ixs)
     }
 
@@ -553,7 +585,7 @@ impl TxBuilder {
         total_loan: u64,
         legs: &[CompiledInstruction],
         kamino_params: &KaminoFlashParams,
-        _flash_loan_fee_sf: u64,
+        flash_loan_fee_sf: u64,
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
         let effective_cu = calculate_dynamic_cu_limit(cu_limit);
@@ -571,6 +603,7 @@ impl TxBuilder {
 
         // 3. Kamino Flash Repay — `amount` is the principal; the origination fee
         // is debited separately, on top, from the same source ATA by the handler.
+        let repay_idx = ixs.len();
         ixs.push(build_kamino_flash_repay_with_index(
             kamino_params,
             payer,
@@ -586,6 +619,18 @@ impl TxBuilder {
                 tip_amount,
             ));
         }
+
+        // 5. Atomicity gate — same contract as `assemble_flash_arbitrage`.
+        let flash_fee = calculate_kamino_flash_fee(total_loan, flash_loan_fee_sf);
+        crate::primitives::atomic_integrity::enforce_atomicity(
+            &ixs,
+            Some(borrow_idx),
+            Some(repay_idx),
+            total_loan,
+            total_loan.saturating_add(flash_fee),
+            flash_fee,
+            crate::primitives::atomic_integrity::V1_MTU,
+        )?;
 
         Ok(ixs)
     }

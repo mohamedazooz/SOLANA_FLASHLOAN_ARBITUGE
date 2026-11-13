@@ -170,35 +170,24 @@ impl GmgnClient {
             }
         }
 
-        // Resilient Fallback: DexScreener Token Profiles & Boosts for Solana
+        // Resilient fallback: DexScreener token boosts for Solana.
+        //
+        // Fail closed: a stale in-memory snapshot is NEVER served as if it were
+        // current. A trending list is a candidate-discovery input with a live
+        // price attached; replaying a 60-second-old-plus snapshot as fresh is
+        // exactly the staleness class the pipeline forbids elsewhere.
         match self.fetch_dexscreener_trending(limit).await {
             Ok(tokens) if !tokens.is_empty() => {
                 *self.snapshot.write() = Some((Instant::now(), tokens.clone()));
                 Ok(tokens)
             }
             Ok(_) => {
-                // If DexScreener returned empty, fallback to stale snapshot if available
-                if let Some((_, tokens)) = self.snapshot.read().as_ref() {
-                    warn!(
-                        "DexScreener empty, reusing previous snapshot of {} tokens",
-                        tokens.len()
-                    );
-                    Ok(tokens.clone())
-                } else {
-                    Ok(Vec::new())
-                }
+                warn!("DexScreener trending returned no Solana tokens; reporting empty");
+                Ok(Vec::new())
             }
             Err(e) => {
-                if let Some((_, tokens)) = self.snapshot.read().as_ref() {
-                    warn!(
-                        "Trending refresh failed ({}), reusing previous snapshot of {} tokens",
-                        e,
-                        tokens.len()
-                    );
-                    Ok(tokens.clone())
-                } else {
-                    Err(e)
-                }
+                warn!("Trending refresh failed on every provider: {e}");
+                Err(e)
             }
         }
     }
@@ -213,9 +202,14 @@ impl GmgnClient {
             .get(url)
             .send()
             .await
-            .context("DexScreener API dispatch failed")?;
+            .context("DexScreener API dispatch failed")?
+            .error_for_status()
+            .context("DexScreener boosts returned a non-success HTTP status")?;
 
-        let array: Vec<serde_json::Value> = resp.json().await.unwrap_or_default();
+        let array: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .context("DexScreener boosts response was not valid JSON")?;
         let mut target_addresses = Vec::new();
 
         for item in array {

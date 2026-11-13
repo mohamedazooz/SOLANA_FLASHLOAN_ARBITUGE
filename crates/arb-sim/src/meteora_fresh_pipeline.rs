@@ -866,15 +866,18 @@ impl MeteoraDlmmFreshStatePipeline {
             Ok(Pubkey::new_from_array(b))
         };
 
-        // LbPair layout:
-        // token_x_mint @88, token_y_mint @120, reserve_x @152, reserve_y @184, oracle @216
+        // LbPair layout (verified in docs/adr/ADR-0014_METEORA_DLMM_0_12_COMPATIBILITY.md):
+        // token_x_mint @88, token_y_mint @120, reserve_x @152, reserve_y @184,
+        // protocol_fee @216, reward_infos @264..552, oracle @552, bitmap @584.
         let mint_x = read_pk(88)?;
         let mint_y = read_pk(120)?;
         let reserve_x = read_pk(152)?;
         let reserve_y = read_pk(184)?;
-        let oracle = read_pk(216)?;
+        let oracle = read_pk(552)?;
 
         let exec = PoolExecutionAccounts::MeteoraDlmm {
+            token_x_mint: mint_x,
+            token_y_mint: mint_y,
             reserve_x,
             reserve_y,
             oracle,

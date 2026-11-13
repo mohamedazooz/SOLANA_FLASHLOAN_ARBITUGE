@@ -777,6 +777,37 @@ impl Supervisor {
                 let v1_transport_enabled =
                     matches!(self.mode(), BotMode::Shadow | BotMode::Simulate) || direct_v1_enabled;
                 // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
+                //
+                // The final swap's `min_amount_out` is the on-chain solvency
+                // guard, so it must cover `borrow + flash_fee + tip +
+                // min_profit` — not the net profit alone. Writing the net
+                // profit here would let a losing transaction satisfy the guard
+                // and push the repayment check onto the flash-loan program.
+                // One authoritative formula: `arb_math::final_leg_floor_raw`.
+                let final_leg_floor_raw = match arb_math::final_leg_floor_raw(
+                    opp.size_in,
+                    arb_types::TokenAmount(flash_fee_raw),
+                    tip,
+                    verified.lamports_per_base_raw.value,
+                    verified.lamports_per_base_denom.value,
+                    arb_types::TokenAmount(min_net_base_raw),
+                ) {
+                    Ok(floor) => floor.as_u64(),
+                    Err(e) => {
+                        debug!("Cannot compute final-leg solvency floor: {e}; failing closed");
+                        continue;
+                    }
+                };
+                // Fail closed rather than clamping: a floor above the quoted
+                // output means the route can never be solvent on chain.
+                if final_leg_floor_raw > opp.expected_out.as_u64() {
+                    debug!(
+                        "Rejected: solvency floor {} exceeds quoted output {}",
+                        final_leg_floor_raw,
+                        opp.expected_out.as_u64()
+                    );
+                    continue;
+                }
                 let patched_ram = if v1_transport_enabled {
                     None
                 } else {
@@ -788,7 +819,7 @@ impl Supervisor {
                             blockhash,
                             signer,
                             Some(opp.size_in.as_u64()), // swap amount_in = borrow amount
-                            Some(real_net_base_raw),    // swap min_out = borrow + profit floor
+                            Some(final_leg_floor_raw), // swap min_out = borrow + fee + tip + profit
                         )
                         .to_vec()
                     })
@@ -820,7 +851,7 @@ impl Supervisor {
                                             blockhash,
                                             signer,
                                             Some(opp.size_in.as_u64()),
-                                            Some(real_net_base_raw),
+                                            Some(final_leg_floor_raw),
                                         )
                                         .to_vec();
                                     self.ram_templates.lock().insert(route_sig.clone(), tpl);
@@ -1111,6 +1142,44 @@ impl Supervisor {
                     fork_result.inner_instruction_count,
                     fork_result.fee_payer_lamport_delta
                 );
+
+                // Canonical simulation/profitability gate for the two checks the
+                // supervisor does not already own: quote staleness against the
+                // simulated bank slot, and a pathological fee-payer drain.
+                //
+                // The strict-profit hurdle is 0 here on purpose: the
+                // lamport-denominated floor above (`min_net_profit_abs`) is the
+                // single authoritative profitability rule. `gross_profit` is
+                // already net of DEX/transfer fees, so only the SOL-denominated
+                // additive costs are listed — no double counting.
+                let cost_breakdown = arb_sim::ExecutionCostBreakdown::standard(
+                    priority_fee_lamports,
+                    tip.as_u64(),
+                    0,
+                    0,
+                    flash_fee_raw,
+                );
+                let gate =
+                    arb_sim::ProfitabilityGate::new(0, self.config.strategy.max_state_age_slots);
+                let outcome = gate.evaluate_simulation(
+                    fork_result,
+                    Some(current_slot.0),
+                    gross,
+                    cost_breakdown,
+                );
+                if let Some(reason) = outcome.rejection_reason() {
+                    warn!("Simulation gate rejected the route: {:?}", reason);
+                    if gross > 0 {
+                        self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
+                            route: route_label.clone(),
+                            gross_sol,
+                            stage: "Pre-flight Simulation".to_string(),
+                            reason: format!("فحص المحاكاة رفض التنفيذ: {reason:?}"),
+                            slot: current_slot.0,
+                        });
+                    }
+                    continue;
+                }
             }
 
             // ── Phase 15.3: Economic Invariant Gate ──

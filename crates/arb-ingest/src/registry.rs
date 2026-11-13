@@ -1038,23 +1038,47 @@ impl MultiDexRegistry {
                         tick_array_pdas: tick_arrays,
                     })
                 }
-                (DexProtocol::MeteoraDlmm, Some(d)) if d.len() >= 216 => {
+                (DexProtocol::MeteoraDlmm, Some(d)) if d.len() >= 584 => {
+                    let token_x_mint = Pubkey::new_from_array(d[88..120].try_into().unwrap());
+                    let token_y_mint = Pubkey::new_from_array(d[120..152].try_into().unwrap());
                     let reserve_x = Pubkey::new_from_array(d[152..184].try_into().unwrap());
                     let reserve_y = Pubkey::new_from_array(d[184..216].try_into().unwrap());
-                    let active_id = i32::from_le_bytes(d[76..80].try_into().unwrap());
-                    let bin_step = u16::from_le_bytes(d[80..82].try_into().unwrap()).max(1);
-                    let bin_arrays = dlmm_bin_array_pdas(&p.pool_id.0, active_id, bin_step);
-                    let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
-                        .unwrap_or_default();
-                    let (bitmap_extension, _) =
-                        Pubkey::find_program_address(&[b"bitmap", p.pool_id.0.as_ref()], &prog);
-                    Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
-                        reserve_x,
-                        reserve_y,
-                        oracle: p.pool_id.0,
-                        bin_array_pdas: bin_arrays,
-                        bitmap_extension: Some(bitmap_extension),
-                    })
+                    // The `LbPair` stores its own oracle at offset 552. Use the
+                    // stored value and prove it against the canonical PDA — never
+                    // substitute the pool address (ARB-011).
+                    let stored_oracle = Pubkey::new_from_array(d[552..584].try_into().unwrap());
+                    let expected_oracle = arb_dex::dlmm_validation::derive_oracle_pda(&p.pool_id.0);
+                    if stored_oracle != expected_oracle
+                        || token_x_mint == Pubkey::default()
+                        || token_y_mint == Pubkey::default()
+                        || token_x_mint == token_y_mint
+                        || reserve_x == Pubkey::default()
+                        || reserve_y == Pubkey::default()
+                    {
+                        debug!(
+                            "MultiDexRegistry: Meteora pool {} — oracle/mints/reserves \
+                             unverifiable; skipping (fail closed)",
+                            p.pool_id
+                        );
+                        None
+                    } else {
+                        let active_id = i32::from_le_bytes(d[76..80].try_into().unwrap());
+                        let bin_step = u16::from_le_bytes(d[80..82].try_into().unwrap()).max(1);
+                        let bin_arrays = dlmm_bin_array_pdas(&p.pool_id.0, active_id, bin_step);
+                        let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
+                            .unwrap_or_default();
+                        let (bitmap_extension, _) =
+                            Pubkey::find_program_address(&[b"bitmap", p.pool_id.0.as_ref()], &prog);
+                        Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
+                            token_x_mint,
+                            token_y_mint,
+                            reserve_x,
+                            reserve_y,
+                            oracle: expected_oracle,
+                            bin_array_pdas: bin_arrays,
+                            bitmap_extension: Some(bitmap_extension),
+                        })
+                    }
                 }
                 (DexProtocol::RaydiumV4, Some(d)) if d.len() >= 528 => {
                     let pool_coin_token_account =

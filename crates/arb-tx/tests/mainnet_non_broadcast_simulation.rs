@@ -76,6 +76,40 @@ fn get_funded_signer() -> KeypairSigner {
     KeypairSigner::from_seed(&[99u8; 32])
 }
 
+/// JSON-RPC client shared by the harness.
+fn rpc_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap()
+}
+
+/// `getBalance` for the fee payer.
+///
+/// `simulateTransaction` with `sigVerify: false` still debits the fee payer, so
+/// an unfunded key fails with `InvalidAccountForFee` before a single
+/// instruction runs (`unitsConsumed: 0`, no logs). That is an environment
+/// limitation, not a defect in the instruction we are proving: the harness
+/// skips instead of failing, which keeps `cargo test` honest.
+async fn fee_payer_lamports(client: &reqwest::Client, rpc_url: &str, payer: &Pubkey) -> u64 {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "getBalance",
+        "params": [payer.to_string(), {"commitment": "processed"}]
+    });
+    let Ok(resp) = client.post(rpc_url).json(&body).send().await else {
+        return 0;
+    };
+    let Ok(value) = resp.json::<Value>().await else {
+        return 0;
+    };
+    value
+        .pointer("/result/value")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+}
+
 #[tokio::test]
 async fn test_mainnet_non_broadcast_simulation_raydium_v4_v2() {
     let rpc_url = match get_rpc_url() {
@@ -88,6 +122,15 @@ async fn test_mainnet_non_broadcast_simulation_raydium_v4_v2() {
 
     let signer = get_funded_signer();
     let payer = signer.pubkey();
+    let client = rpc_client();
+    let lamports = fee_payer_lamports(&client, &rpc_url, &payer).await;
+    if lamports == 0 {
+        eprintln!(
+            "Skipping live simulation: fee payer {payer} has no lamports on mainnet \
+             (simulateTransaction debits the fee payer even with sigVerify=false)"
+        );
+        return;
+    }
     let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
     let pool_id = Pubkey::from_str(RAYDIUM_SOL_USDC_POOL).unwrap();
     let v4_accs = RaydiumV4Accounts::mainnet_sol_usdc();
@@ -126,11 +169,6 @@ async fn test_mainnet_non_broadcast_simulation_raydium_v4_v2() {
     // Derive Account Lock Footprint directly from compiled transaction
     // Writable accounts vs Readonly accounts
     let b64_tx = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap();
 
     let req_body = json!({
         "jsonrpc": "2.0",
@@ -230,6 +268,15 @@ async fn test_mainnet_non_broadcast_simulation_orca_whirlpool() {
 
     let signer = get_funded_signer();
     let payer = signer.pubkey();
+    let client = rpc_client();
+    let lamports = fee_payer_lamports(&client, &rpc_url, &payer).await;
+    if lamports == 0 {
+        eprintln!(
+            "Skipping live simulation: fee payer {payer} has no lamports on mainnet \
+             (simulateTransaction debits the fee payer even with sigVerify=false)"
+        );
+        return;
+    }
     let _pool_id = Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap();
     let orca_accs = OrcaWhirlpoolAccounts::mainnet_sol_usdc();
     let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
@@ -263,11 +310,6 @@ async fn test_mainnet_non_broadcast_simulation_orca_whirlpool() {
     .expect("build signed transaction");
 
     let b64_tx = base64::engine::general_purpose::STANDARD.encode(&tx_bytes);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .unwrap();
 
     let req_body = json!({
         "jsonrpc": "2.0",

@@ -1044,9 +1044,10 @@ fn try_compile_v1(
     }
 
     // Total priority fee in lamports = ceil(cu_limit * micro_lamports / 1e6).
-    let cu = ctx.cu_limit as u64;
-    let micro = ctx.priority_fee_micro_lamports;
-    let total_priority_fee_lamports = cu.saturating_mul(micro).saturating_add(999_999) / 1_000_000;
+    let total_priority_fee_lamports = crate::primitives::fees::total_priority_fee_lamports(
+        ctx.priority_fee_micro_lamports,
+        ctx.cu_limit,
+    );
 
     // Loaded accounts data size limit: 256 KiB covers this route's footprint
     // (3 x BinArray ~= 36 KiB plus pools/ATAs/programs). Configurable upstream.

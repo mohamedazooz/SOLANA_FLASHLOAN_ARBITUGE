@@ -220,7 +220,8 @@ pub struct FlashArbParams {
     pub kamino: KaminoFlashParams,
     /// Flash principal in flash-mint raw units.
     pub borrow_amount: u64,
-    /// Kamino flash fee in flash-mint raw units (`ceil(borrow * fee_sf / 2^64)`).
+    /// Kamino flash fee in flash-mint raw units: follows the canonical klend
+    /// `U68F60` rule `round(max(borrow * fee_sf, 2^60) / 2^60)`.
     pub flash_fee: u64,
     /// First DLMM swap leg (Pool A).
     pub leg_a: FlashArbPoolLeg,

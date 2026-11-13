@@ -79,6 +79,8 @@ pub fn make_dlmm_pool(
     };
 
     let exec = PoolExecutionAccounts::MeteoraDlmm {
+        token_x_mint: base_mint.0,
+        token_y_mint: quote_mint.0,
         reserve_x,
         reserve_y,
         oracle,

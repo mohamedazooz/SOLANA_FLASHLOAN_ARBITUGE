@@ -208,7 +208,8 @@ pub struct FlashArb4LegParams {
     pub kamino: KaminoFlashParams,
     /// Flash principal in flash-mint raw units (WSOL = 9 decimals).
     pub borrow_amount: u64,
-    /// Kamino flash fee in flash-mint raw units (`ceil(borrow * fee_sf / 2^64)`).
+    /// Kamino flash fee in flash-mint raw units: follows the canonical klend
+    /// `U68F60` rule `round(max(borrow * fee_sf, 2^60) / 2^60)`.
     pub flash_fee: u64,
     /// First DLMM swap leg (Pool 1: WSOL -> Meme A).
     pub leg_1: FlashArb4LegPoolLeg,
@@ -575,9 +576,15 @@ pub fn build_flash_funded_four_pool_v1_transaction(
         .loaded_accounts_data_size_limit
         .ok_or(FlashArb4LegError::MissingLoadedAccountsDataLimit)?;
 
-    // Use adaptive compiler for V1
+    // Use adaptive compiler for V1. SIMD-0385: the header carries the TOTAL
+    // priority fee in lamports, not the micro-lamports-per-CU price. One
+    // conversion, one place (`primitives::fees`).
+    let priority_fee_lamports = crate::primitives::fees::total_priority_fee_lamports(
+        params.priority_fee_micro_lamports,
+        params.cu_limit,
+    );
     let v1_config = crate::adaptive::V1ConfigParams {
-        priority_fee_lamports: Some(params.priority_fee_micro_lamports / 1_000_000),
+        priority_fee_lamports: Some(priority_fee_lamports),
         compute_unit_limit: Some(params.cu_limit),
         loaded_accounts_data_size_limit: Some(loaded_accounts_data_size_limit as u32),
         heap_size: None,
