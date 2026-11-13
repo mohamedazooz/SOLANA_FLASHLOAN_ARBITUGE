@@ -72,6 +72,8 @@ impl Supervisor {
             t_signing_us,
         } = context;
 
+        let active_bins: Vec<Option<i32>> = opp.hops.iter().map(|h| h.active_bin_id).collect();
+
         #[cfg(feature = "shadow-only")]
         let _ = (
             tip,
@@ -129,6 +131,8 @@ impl Supervisor {
                         &leader_str,
                         cu_limit,
                         cu_price,
+                        opp.price_impact_bps.0,
+                        &active_bins,
                     )
                     .await;
             }
@@ -149,6 +153,8 @@ impl Supervisor {
                             &leader_str,
                             cu_limit,
                             cu_price,
+                            opp.price_impact_bps.0,
+                            &active_bins,
                         )
                         .await;
                 }
@@ -600,6 +606,8 @@ impl Supervisor {
                                 &leader_str,
                                 cu_limit,
                                 cu_price,
+                                opp.price_impact_bps.0,
+                                &active_bins,
                             )
                             .await;
                         self.telegram

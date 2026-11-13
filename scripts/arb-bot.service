@@ -1,0 +1,25 @@
+[Unit]
+Description=Solana HFT Arbitrage Bot (shadow mode)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__/SOLANA_FLASHLOAN_ARBITUGE
+EnvironmentFile=__HOME__/SOLANA_FLASHLOAN_ARBITUGE/.env
+ExecStart=__HOME__/SOLANA_FLASHLOAN_ARBITUGE/target/release/arb-bot
+# Telegram alert on any abnormal stop (crash, OOM, failed restart)
+ExecStopPost=__HOME__/SOLANA_FLASHLOAN_ARBITUGE/scripts/arb_bot_failure_alert.sh
+Restart=on-failure
+RestartSec=5
+# Shadow soak resource guardrails
+MemoryMax=4G
+TasksMax=512
+# Logs to journald + logs/arb_events.log; export daily with:
+#   journalctl -u arb-bot --since today > shadow_soak_$(date +%F).log
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

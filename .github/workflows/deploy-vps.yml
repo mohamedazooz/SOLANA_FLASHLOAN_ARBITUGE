@@ -1,0 +1,88 @@
+name: Deploy to VPS
+
+# Deploys main to the operator's VPS: pull, release build, restart, health check.
+# Requires repository secrets (Settings > Secrets and variables > Actions):
+#   VPS_HOST          - server IP or hostname
+#   VPS_USER          - SSH user on the VPS
+#   VPS_SSH_KEY       - private SSH deploy key (RECOMMENDED; public key in VPS ~/.ssh/authorized_keys)
+#   VPS_SSH_PASSWORD  - fallback if no key is configured (uses sshpass; less safe)
+#   VPS_PORT          - optional, defaults to 22
+# RPC/Telegram/provider keys are NEVER needed here: they live only in the VPS .env.
+# Restart requires passwordless sudo limited to systemctl, e.g. /etc/sudoers.d/arb-bot-deploy:
+#   <user> ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart arb-bot, /bin/systemctl restart arb-bot
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & restart arb-bot on VPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Deploy over SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_PASSWORD: ${{ secrets.VPS_SSH_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "${VPS_HOST}" ] && [ -n "${VPS_USER}" ] || { echo "::error::Set VPS_HOST and VPS_USER secrets first (Settings > Secrets > Actions)"; exit 1; }
+          PORT="${VPS_PORT:-22}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "${VPS_SSH_KEY}" ]; then
+              printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/deploy_key
+              chmod 600 ~/.ssh/deploy_key
+              SSH=(ssh -i ~/.ssh/deploy_key -p "${PORT}" -o StrictHostKeyChecking=accept-new -o BatchMode=yes)
+          elif [ -n "${VPS_SSH_PASSWORD}" ]; then
+              sudo apt-get install -y -qq sshpass >/dev/null
+              SSH=(sshpass -p "${VPS_SSH_PASSWORD}" ssh -p "${PORT}" -o StrictHostKeyChecking=accept-new)
+          else
+              echo "::error::Set VPS_SSH_KEY (recommended) or VPS_SSH_PASSWORD secret"; exit 1
+          fi
+          "${SSH[@]}" "${VPS_USER}@${VPS_HOST}" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd "${HOME}/SOLANA_FLASHLOAN_ARBITUGE"
+          echo "==> Deploying commit $(git ls-remote origin main | cut -c1-7)"
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+          . "${HOME}/.cargo/env" 2>/dev/null || true
+          echo "==> Release build"
+          cargo build --release -p arb-bot --bin arb-bot
+          echo "==> Restart service"
+          if systemctl is-active --quiet arb-bot 2>/dev/null || systemctl list-unit-files arb-bot.service >/dev/null 2>&1; then
+              sudo systemctl restart arb-bot
+              sleep 5
+              systemctl is-active arb-bot
+              journalctl -u arb-bot -n 5 --no-pager || true
+          else
+              pkill -f 'target/release/arb-bot' 2>/dev/null || true
+              sleep 2
+              set -a; . ./.env; set +a
+              nohup ./target/release/arb-bot >> shadow_soak.log 2>&1 &
+              sleep 5
+              pgrep -f 'target/release/arb-bot' >/dev/null && echo "nohup process running"
+          fi
+          echo "==> Deploy complete"
+          REMOTE
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Deploy job finished. Check the step above for build/restart output." >> "$GITHUB_STEP_SUMMARY"
+          echo "If the service failed to restart, the bot's Telegram failure alerts (ExecStopPost + watchdog) will notify the operator." >> "$GITHUB_STEP_SUMMARY"
