@@ -123,9 +123,11 @@ impl Supervisor {
             recent_blockhash: [0u8; 32],
             v1_transport_supported: false,
             slippage_bps: tuning.slippage_bps,
-            min_profit_lamports: tuning
-                .min_profit_lamports
-                .max(self.config.strategy.min_net_profit_abs),
+            min_profit_lamports: crate::config::min_net_profit_floor_lamports(
+                tuning
+                    .min_profit_lamports
+                    .max(self.config.strategy.min_net_profit_abs),
+            ),
             flash_loan_fee_sf,
             network_cost_lamports: self
                 .three_leg_network_cost_lamports(verified_tip_lamports, payer),
