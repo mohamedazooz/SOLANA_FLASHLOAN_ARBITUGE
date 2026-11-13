@@ -318,7 +318,14 @@ impl Supervisor {
                 // the pipeline's own quote already priced the route.
                 fee_bps: pool.fee_bps().unwrap_or(0),
                 active_bin_id: pool.dlmm.as_ref().map(|d| d.active_bin_id),
-                token_programs: pool.token_programs,
+                // SwapHop contract (arb-types): token_programs is
+                // (mint_in, mint_out) — flip the pool's (base, quote) pair
+                // when this leg trades quote -> base.
+                token_programs: if leg.from_mint == pool.base_mint {
+                    pool.token_programs
+                } else {
+                    [pool.token_programs[1], pool.token_programs[0]]
+                },
                 trade_intent: Default::default(),
                 execution_accounts: pool.execution_accounts.clone(),
             });

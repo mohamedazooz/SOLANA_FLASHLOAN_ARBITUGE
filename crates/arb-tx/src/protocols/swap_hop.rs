@@ -311,6 +311,29 @@ pub fn build_swap_hop_instruction(
                             .into(),
                     });
                 }
+                // PR24 §5: `hop.token_programs` is (mint_in, mint_out) per the
+                // SwapHop contract, but the swap2 instruction requires the
+                // POOL's (token_x_program, token_y_program) in fixed slots.
+                // Mapping [in,out] straight into [x,y] inverts the programs for
+                // every Y->X hop — fatal for any Token-2022 side.
+                let program_of = |kind: arb_types::TokenProgramKind| -> Pubkey {
+                    match kind {
+                        arb_types::TokenProgramKind::SplToken => {
+                            Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
+                        }
+                        arb_types::TokenProgramKind::Token2022 => {
+                            Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID)
+                                .unwrap_or_default()
+                        }
+                    }
+                };
+                let in_program = program_of(hop.token_programs[0]);
+                let out_program = program_of(hop.token_programs[1]);
+                let (token_x_program, token_y_program) = if swap_for_y {
+                    (in_program, out_program)
+                } else {
+                    (out_program, in_program)
+                };
                 let accounts = MeteoraDlmmAccounts {
                     lb_pair: hop.pool_id.0,
                     reserve_x: *reserve_x,
@@ -326,8 +349,8 @@ pub fn build_swap_hop_instruction(
                     user_authority,
                     get_associated_token_address(&user_authority, &hop.mint_in.0),
                     get_associated_token_address(&user_authority, &hop.mint_out.0),
-                    token_program_in,
-                    token_program_out,
+                    token_x_program,
+                    token_y_program,
                     amount_in,
                     min_amount_out,
                     bin_array_pdas,

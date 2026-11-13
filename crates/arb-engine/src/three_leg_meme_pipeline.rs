@@ -247,6 +247,10 @@ pub enum ThreeLegMemePipelineError {
         "pre-existing {token} ATA balance {balance} would subsidize execution (fail-closed provenance policy)"
     )]
     PreExistingInventorySubsidy { token: &'static str, balance: u64 },
+    #[error(
+        "leg {leg}: traversal leaves the default bitmap but no existence-proven bitmap extension is available"
+    )]
+    BitmapExtensionRequired { leg: usize },
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -690,7 +694,7 @@ fn build_context(
             reserve_y,
             oracle,
             bin_array_pdas: _,
-            bitmap_extension,
+            bitmap_extension: bitmap_ext_pda,
             ..
         } = exec
         else {
@@ -712,6 +716,19 @@ fn build_context(
             leg: idx,
             bins: leg_quote.bins_traversed,
         })?;
+        // Fail-closed bitmap-extension policy (PR24 §4): the extension account
+        // is passed only when the traversal leaves the default bitmap AND the
+        // registry has proven the account exists (fetched on-chain). A required
+        // but unavailable extension rejects the leg; an unneeded extension is
+        // encoded as the official program-ID sentinel.
+        let bitmap_extension = if derived.bitmap_extension_required {
+            Some(
+                bitmap_ext_pda
+                    .ok_or(ThreeLegMemePipelineError::BitmapExtensionRequired { leg: idx })?,
+            )
+        } else {
+            bitmap_ext_pda
+        };
 
         let token_x_mint = pool.base_mint;
         let token_y_mint = pool.quote_mint;
@@ -980,6 +997,85 @@ mod tests {
             err,
             ThreeLegMemePipelineError::MissingDlmmState { leg: 0 }
         ));
+    }
+
+    /// PR24 §4: traversal leaving the default bitmap (-512..=511) requires an
+    /// existence-proven bitmap extension; without one the leg fails closed.
+    #[test]
+    fn build_context_fails_closed_when_bitmap_extension_required_but_absent() {
+        let wsol = wsol();
+        let a = MintId(Pubkey::new_from_array([96u8; 32]));
+        let b = MintId(Pubkey::new_from_array([97u8; 32]));
+
+        // Active bin 35_840 -> array index 512, one outside the default bitmap.
+        let out_of_range_active = 35_840i32;
+        let mut p1 = pool_without_dlmm_state(1, wsol, a);
+        p1.dlmm = Some(arb_types::DlmmState {
+            active_bin_id: out_of_range_active,
+            status: 0,
+            bin_step_bps: 10,
+            bins: Vec::new(),
+            params: None,
+            volatility_accumulator: 0,
+            volatility_reference: 0,
+            index_reference: out_of_range_active,
+            last_update_timestamp: 1_700_000_000,
+        });
+        let p2 = pool_without_dlmm_state(2, a, b);
+        let p3 = pool_without_dlmm_state(3, b, wsol);
+        let legs = [leg_quote(0, &p1), leg_quote(1, &p2), leg_quote(2, &p3)];
+
+        let err = build_context(&p1, &p2, &p3, &legs, &context_params(), a, b, wsol)
+            .expect_err("required-but-absent bitmap extension must fail closed");
+        assert!(
+            matches!(
+                err,
+                ThreeLegMemePipelineError::BitmapExtensionRequired { leg: 0 }
+            ),
+            "unexpected error: {err:?}"
+        );
+
+        // With an existence-proven extension account the bitmap gate passes
+        // and the leg proceeds to account assembly. All legs need DLMM state
+        // so the context assembles fully.
+        let ext = arb_tx::derive_meteora_bin_array_bitmap_extension_pda(&p1.pool_id.0);
+        let mut p1_proven = p1.clone();
+        let mut p2_proven = p2.clone();
+        let mut p3_proven = p3.clone();
+        for (pool, active) in [
+            (&mut p1_proven, out_of_range_active),
+            (&mut p2_proven, 0i32),
+            (&mut p3_proven, 0i32),
+        ] {
+            pool.dlmm = Some(arb_types::DlmmState {
+                active_bin_id: active,
+                status: 0,
+                bin_step_bps: 10,
+                bins: Vec::new(),
+                params: None,
+                volatility_accumulator: 0,
+                volatility_reference: 0,
+                index_reference: active,
+                last_update_timestamp: 1_700_000_000,
+            });
+        }
+        if let Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
+            bitmap_extension, ..
+        }) = p1_proven.execution_accounts.as_mut()
+        {
+            *bitmap_extension = Some(ext);
+        }
+        let ok = build_context(
+            &p1_proven,
+            &p2_proven,
+            &p3_proven,
+            &legs,
+            &context_params(),
+            a,
+            b,
+            wsol,
+        );
+        assert!(ok.is_ok(), "proven extension must pass: {ok:?}");
     }
 
     /// PR24 §2.3: conservative sequential chaining — leg N+1's input is

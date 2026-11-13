@@ -737,6 +737,13 @@ impl MultiDexRegistry {
                                     derived_pubkeys.push(key);
                                 }
                             }
+                            // Fetch the bitmap-extension PDA in the same batch so
+                            // the execution account can carry an EXISTENCE-PROVEN
+                            // Some(extension) instead of an unverified derivation.
+                            let ext = bitmap_extension_pda(&p.pool_id.0);
+                            if !derived_pubkeys.contains(&ext) {
+                                derived_pubkeys.push(ext);
+                            }
                         }
                     }
                     DexProtocol::OrcaWhirlpool => {
@@ -1173,16 +1180,24 @@ impl MultiDexRegistry {
                     let bin_arrays = dlmm_bin_array_pdas(&p.pool_id.0, active_id, bin_step);
                     let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
                         .unwrap_or_default();
-                    let (bitmap_extension, _) =
-                        Pubkey::find_program_address(&[b"bitmap", p.pool_id.0.as_ref()], &prog);
+                    let bitmap_ext_pda = bitmap_extension_pda(&p.pool_id.0);
                     let (oracle, _) =
                         Pubkey::find_program_address(&[b"oracle", p.pool_id.0.as_ref()], &prog);
+                    // EXISTENCE-PROVEN: Some only when the extension account was
+                    // actually fetched from the chain in this batch. A derived
+                    // PDA alone is NOT proof of initialization — passing a
+                    // nonexistent writable account fails the swap on-chain.
+                    let bitmap_extension = if derived_data_map.contains_key(&bitmap_ext_pda) {
+                        Some(bitmap_ext_pda)
+                    } else {
+                        None
+                    };
                     Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
                         reserve_x,
                         reserve_y,
                         oracle,
                         bin_array_pdas: bin_arrays,
-                        bitmap_extension: Some(bitmap_extension),
+                        bitmap_extension,
                         pool_token_x: Pubkey::new_from_array(d[88..120].try_into().unwrap()),
                         pool_token_y: Pubkey::new_from_array(d[120..152].try_into().unwrap()),
                     })
@@ -2032,6 +2047,14 @@ pub fn derive_meteora_bin_array_pda(pool: &Pubkey, index: i64) -> Pubkey {
         &program_id,
     )
     .0
+}
+
+/// Derive the `BinArrayBitmapExtension` PDA for a pool:
+/// seeds = `[b"bitmap", lb_pair]` (official dlmm-sdk seeds).
+pub fn bitmap_extension_pda(pool: &Pubkey) -> Pubkey {
+    let program_id = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
+        .expect("valid Meteora program id constant");
+    Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &program_id).0
 }
 
 /// Bin-array index that contains `bin_id` (floor division, correct for negatives).
