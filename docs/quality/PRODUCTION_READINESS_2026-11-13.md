@@ -13,10 +13,10 @@ Date: 2026-11-13. Companion documents:
 Rationale: all Directive-2 engineering workstreams (unified control plane,
 authenticated web application, Telegram unification, config floor override,
 dead-code removal, Docker/CI/docs) are implemented, reviewed, and green in CI
-locally. The verdict is **not** SHADOW VALIDATED because a ≥24 h shadow soak has
-not been run, and **not** PRODUCTION READY because remediation items R2/R3/R9/
-R10/R12 remain open (§7). It is certainly not LIVE READY: no live mainnet
-broadcast has ever been performed (`ARB_LIVE=0`, `DRY_RUN=true` throughout).
+locally, and remediation items R2/R3/R9/R10/R12 are now closed (§7). The
+verdict is **not** SHADOW VALIDATED because a ≥24 h shadow soak has not been
+run. It is certainly not LIVE READY: no live mainnet broadcast has ever been
+performed (`ARB_LIVE=0`, `DRY_RUN=true` throughout).
 
 ## 2. Architecture: before → after
 
@@ -96,17 +96,17 @@ model). E2E-verified: login → authenticated REST → WS upgrade with `?token=`
 
 | # | Item | Class | Impact |
 |---|---|---|---|
-| R2 | `arb-mcp` crate dead, still in workspace | cleanup | none at runtime |
-| R3 | Single canonical Kamino fee source (arb-engine re-uses arb-tx constant) | D | none — values verified equal |
-| R9 | `supervisor/run.rs` 2,134 L split | maintainability | none |
-| R10 | `arb-tx/src/lib.rs` 4,799 L split | maintainability | none |
-| R12 | Execution state persistence for ambiguous-timeout recovery | C | restart during in-flight dispatch could double-send; currently mitigated by duplicate-send protection in-process only |
+| ~~R2~~ | ✅ CLOSED — `arb-mcp` crate removed | cleanup | — |
+| ~~R3~~ | ✅ CLOSED — canonical Kamino fee in `arb-math` (arb-tx delegates; property test enforces agreement) | D | — |
+| ~~R9~~ | ✅ CLOSED — supervisor split into run/strategy/opportunity/recovery | maintainability | — |
+| ~~R10~~ | ✅ CLOSED — arb-tx lib split into flash/protocols/primitives/transport | maintainability | — |
+| ~~R12~~ | ✅ CLOSED — `dispatch_intents` persisted; startup reconciliation polls statuses, marks expired only on slot proof, never resubmits | C | — |
 | — | ≥24 h shadow soak with Helius WSS | validation | required before SHADOW VALIDATED |
 | — | Cross-DEX 3-pool live-loop enumeration (builders exist + tested; loop is same-protocol DLMM) | feature | limits opportunity surface |
 
 ## 8. LIVE / NO-LIVE recommendation
 
 **NO-LIVE.** Keep `ARB_LIVE=0`, `DRY_RUN=true`. Before any live transition:
-complete R12, run the ≥24 h shadow soak, review the audit log end-to-end, and
+run the ≥24 h shadow soak, review the audit log end-to-end, and
 make the transition only as an explicit operator decision with the
 `CONFIRM-LIVE` gate (already enforced in code).

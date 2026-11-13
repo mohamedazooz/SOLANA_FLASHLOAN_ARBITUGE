@@ -29,7 +29,7 @@ against this exact tree may be marked PASS.
   - Supervisor constructs instructions through `build_swap_hop_instruction` in `crates/arb-bot/src/supervisor/run.rs`; this remains the direct unguarded builder path.
   - 300 ms sleeps remain in `supervisor/run.rs` and `bin/live_scanner.rs`; they were not removed because event-driven replacement requires ordering/backpressure semantics and runtime validation.
   - `dashboard/index.html` and root `REPORT.md` are absent from this archive, despite references in older documentation/task context.
-  - Pump.fun and PumpSwap are explicitly fail-closed for transaction building in `docs/PROTOCOL_COMPATIBILITY.md`; they are not enabled routes.
+  - Pump.fun and PumpSwap are explicitly fail-closed for transaction building in `../architecture/PROTOCOL_COMPATIBILITY.md`; they are not enabled routes.
 - Result: **NO BUILD/TEST PASS CLAIMED.** Live execution must remain disabled.
 
 ## Run: 2026-11-09 — Jito block-engine URL override wiring (Windows host)

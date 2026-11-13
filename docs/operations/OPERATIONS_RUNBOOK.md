@@ -84,7 +84,7 @@ production and put it on persistent storage.
 ## 6. Provider outage / degraded data
 
 Ingestion is WS + HTTP-RPC only (gRPC transport was removed from the tree; see
-`docs/PROJECT_STATE.md`).
+`../PROJECT_STATE.md`).
 
 1. Watch `state_age_slots` and the provider health logs.
 2. If staleness exceeds `max_state_age_slots`, quotes are rejected by design; no

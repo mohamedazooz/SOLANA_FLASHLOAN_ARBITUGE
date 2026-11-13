@@ -191,7 +191,7 @@
 - Jito Bundles + sendBundle/sendTransaction/70-30/minimum tip/jitodontfront/getInflightBundleStatuses: docs.jito.wtf (bundles, lowlatencytxnsend)
 - Helius Sender — إلزامية tip + priority fee، حدود 50 rps، حسابات tip مختلفة: helius.dev/docs/sending-transactions/sender
 - Mainnet الحي (2026-11-12 عبر api.mainnet-beta.solana.com): epoch=1084، slot=468,547,732 → enable_tx_v1 مفعلة.
-- داخلي: docs/V1_LIVE_EXECUTION_PATH_2026-11-12.md، docs/METEORA_TWO_POOL_V1_2026-11-12.md، docs/PROJECT_STATE.md، audit_reports/18_FINAL_AUDIT_VERDICT.md، audit_reports/17_REMEDIATION_PLAN.md، RESEARCH_AND_UNIFIED_ROUTE_INTEGRATION_2026-11-11.md.
+- داخلي: ../reference/V1_LIVE_EXECUTION_PATH_2026-11-12.md، ../reference/METEORA_TWO_POOL_V1_2026-11-12.md، ../PROJECT_STATE.md، audit_reports/18_FINAL_AUDIT_VERDICT.md، audit_reports/17_REMEDIATION_PLAN.md، RESEARCH_AND_UNIFIED_ROUTE_INTEGRATION_2026-11-11.md.
 
 ## 6. ما لا يُفعل أبداً (من التدقيق)
 - لا تُزل Kill-switch أو ARB_LIVE "com لتسهيل التشغيل" — نشرة 2026-11-09 القديمة غير معتمدة.

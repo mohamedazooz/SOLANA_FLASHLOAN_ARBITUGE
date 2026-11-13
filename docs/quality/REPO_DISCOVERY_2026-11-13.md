@@ -194,14 +194,21 @@ clippy `-D warnings` clean, fmt clean. Coverage concentrations:
 | R11 | Docker + CI + docs refresh | `Dockerfile`, `.github/workflows/*`, `docs/` | infra |
 | R12 | Execution state persistence for safe restart/ambiguous-timeout recovery | `arb-store`, `supervisor/dispatch.rs` | C |
 
-Status on this branch (`feat/unified-pipeline-webapp`):
+Status on this branch (`feat/remediation-r2-r12`):
 
 - **Done**: R1 (`ac97205`), R4+R5 (`b62ffae`), R6+R7+R8 (`170f9cc`, `7a149b7`), R11
-  (Docker `web-builder` stage + CI `web` job + this report).
-- **Not yet done (honest)**: R2 (`arb-mcp` still in workspace), R3 (Kamino fee
-  single-source), R9 (`supervisor/run.rs` still 2,134 lines), R10
-  (`arb-tx/src/lib.rs` still 4,799 lines), R12 (execution state persistence for
-  ambiguous-timeout recovery still absent).
+  (Docker `web-builder` stage + CI `web` job + this report), R2 (`arb-mcp` crate
+  removed), R3 (canonical Kamino fee in `arb-math/src/economic.rs`; `arb-tx`
+  delegates and re-exports `KaminoFeeError`; agreement property test added),
+  R9 (`supervisor/run.rs` 2,184→733 L; per-tick cycle in `strategy.rs`, gate
+  ladder in `opportunity.rs`, startup reconciliation in `recovery.rs`), R10
+  (`arb-tx/src/lib.rs` 4,799→~1,100 L incl. tests; 31 modules grouped into
+  `flash/`, `protocols/`, `primitives/`, `transport/` with curated re-exports
+  preserving every `arb_tx::` path), R12 (`dispatch_intents` table in both
+  store migrations + `supervisor/recovery.rs` startup reconciliation that polls
+  signature statuses and never blind-resubmits).
+- **All R-items closed.** Remaining validation gaps (shadow soak, live loop)
+  are tracked in `PRODUCTION_READINESS_2026-11-13.md` §7.
 
 ## 12. Honest status register (carried forward)
 
