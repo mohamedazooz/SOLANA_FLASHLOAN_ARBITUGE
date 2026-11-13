@@ -151,7 +151,17 @@ impl Supervisor {
         let opportunities = {
             let mut graph = self.graph.lock();
             graph.build_from_pools(&fresh_pools);
-            let mut opps = graph.find_base_cycles(current_slot, max_sizing);
+            let (mut opps, base_stats) =
+                graph.find_base_cycles_with_stats(current_slot, max_sizing);
+            if base_stats.opportunities == 0 {
+                debug!(
+                    "base-cycle scan: anchors={} 2hop_gross={} 3hop_gross={} gate_rejected={}",
+                    base_stats.base_anchors,
+                    base_stats.two_hop_gross_profitable,
+                    base_stats.three_hop_gross_profitable,
+                    base_stats.gate_rejected
+                );
+            }
 
             // ── MeteoraDlmmCrossPoolArbitrageStrategy (P0 first strategy) ──
             // First-class two-pool DLMM path: distinct same-pair pools,

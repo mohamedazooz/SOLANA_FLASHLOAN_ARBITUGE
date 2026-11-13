@@ -16,7 +16,6 @@ use crate::{DependencyManifestRegistry, RpcPool};
 use anyhow::{Context, Result, bail};
 use arb_types::{DexProtocol, MintId, PoolId, PoolState, Slot};
 use base64::prelude::*;
-use futures::stream::{self, StreamExt};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -461,9 +460,12 @@ pub struct RegisteredPool {
 #[derive(Clone)]
 pub struct MultiDexRegistry {
     pools: Vec<RegisteredPool>,
-    #[allow(dead_code)]
     rpc: RpcPool,
     pub dependency_manifest: DependencyManifestRegistry,
+    /// Immutable mint-decimal cache for canonical DLMM token_x/token_y mints.
+    /// Mint decimals never change on-chain, so entries live forever. `Arc`
+    /// keeps clones of the registry (per-worker) sharing one cache.
+    dlmm_decimals_cache: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<MintId, u8>>>,
 }
 
 impl MultiDexRegistry {
@@ -592,7 +594,36 @@ impl MultiDexRegistry {
             pools,
             rpc,
             dependency_manifest: Default::default(),
+            dlmm_decimals_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
         }
+    }
+
+    /// Resolve canonical DLMM token_x/token_y decimals through an
+    /// immutable cache; misses cost one batched `resolve_mints_decimals` call
+    /// per new mint, ever. Unresolvable mints yield 0, which the economic
+    /// engine rejects fail-closed.
+    async fn dlmm_mint_decimals(&self, x: Pubkey, y: Pubkey) -> (u8, u8) {
+        let mx = MintId(x);
+        let my = MintId(y);
+        let missing: Vec<MintId> = {
+            let cache = self.dlmm_decimals_cache.lock();
+            [mx, my]
+                .into_iter()
+                .filter(|m| !cache.contains_key(m))
+                .collect()
+        };
+        if !missing.is_empty() {
+            let resolved = resolve_mints_decimals(&self.rpc, &missing).await;
+            let mut cache = self.dlmm_decimals_cache.lock();
+            for (m, d) in resolved {
+                cache.insert(m, d);
+            }
+        }
+        let cache = self.dlmm_decimals_cache.lock();
+        (
+            cache.get(&mx).copied().unwrap_or(0),
+            cache.get(&my).copied().unwrap_or(0),
+        )
     }
 
     /// Register an additional verified pool dynamically (e.g. a DexScreener-discovered
@@ -618,42 +649,59 @@ impl MultiDexRegistry {
     /// This is the call that ends `MarketGraph` starvation: with opposing Raydium
     /// / Orca / Meteora SOL-USDC pools populated, `find_base_cycles` immediately
     /// discovers real cross-DEX 2-hop arbitrage.
-    pub async fn fetch_live_pool_states(&self, current_slot: Slot) -> Vec<PoolState> {
+    /// Batched `getMultipleAccounts` (batch-100) through the registry's shared
+    /// `RpcPool` — per-provider token buckets, backoffs, and telemetry apply.
+    ///
+    /// This replaced the previous per-account `PacedAccountFetcher` fan-out:
+    /// ~163 pool + ~68 vault + ~200 derived accounts fetched ONE BY ONE every
+    /// 750ms cycle (the worker's "parallel batch-100" log label was false).
+    /// That is 300-400 HTTP requests per cycle against free-tier endpoints,
+    /// guaranteeing permanent 429 cooldowns, which starved every downstream
+    /// consumer (seeding, hydration, health, Jito) into fail-closed zeros.
+    /// Batch-100 collapses the same data to 4-6 requests per cycle (~60x less).
+    async fn batch_fetch_accounts(
+        rpc: &RpcPool,
+        keys: &[Pubkey],
+        into: &mut std::collections::HashMap<Pubkey, (u64, Vec<u8>)>,
+    ) -> u64 {
+        let mut max_slot = 0u64;
+        for chunk in keys.chunks(100) {
+            let refs_owned: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+            let refs: Vec<&str> = refs_owned.iter().map(|s| s.as_str()).collect();
+            let Ok((accounts, slot)) = rpc.get_multiple_accounts_with_slot(&refs).await else {
+                continue;
+            };
+            max_slot = max_slot.max(slot);
+            for (val, pk) in accounts.into_iter().zip(chunk.iter()) {
+                let Some(acc) = val else { continue };
+                let Some(raw_b64) = acc
+                    .get("data")
+                    .and_then(|d| d.get(0))
+                    .and_then(|s| s.as_str())
+                else {
+                    continue;
+                };
+                if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                    into.insert(*pk, (slot, bytes));
+                }
+            }
+        }
+        max_slot
+    }
+
+    pub async fn fetch_live_pool_states(&self, _current_slot: Slot) -> Vec<PoolState> {
         if self.pools.is_empty() {
             return Vec::new();
         }
 
-        let fetcher = Arc::new(PacedAccountFetcher::from_env());
         let mut pool_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
             std::collections::HashMap::new();
-        let mut max_observed_slot = current_slot.0;
-
-        // 1. Fetch pool accounts individually (account-by-account) with concurrent worker pacing
+        // 1. Pool accounts — batched (2 batch-100 calls for 163 pools).
         let pool_pubkeys: Vec<Pubkey> = self.pools.iter().map(|p| p.pool_id.0).collect();
-        let pool_results: Vec<(Pubkey, (u64, Vec<u8>))> = stream::iter(pool_pubkeys)
-            .map(|pk| {
-                let f = fetcher.clone();
-                async move {
-                    match f.fetch_single_account(&pk).await {
-                        Ok(res) => Some((pk, res)),
-                        Err(e) => {
-                            debug!("Failed to fetch pool account {pk} individually: {e}");
-                            None
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(4)
-            .filter_map(std::future::ready)
-            .collect()
-            .await;
+        let mut max_observed_slot =
+            Self::batch_fetch_accounts(&self.rpc, &pool_pubkeys, &mut pool_data_map).await;
 
-        for (pk, (slot, bytes)) in pool_results {
-            max_observed_slot = max_observed_slot.max(slot);
-            pool_data_map.insert(pk, (slot, bytes));
-        }
-
-        // 2. Fetch all CPMM vault accounts individually (account-by-account)
+        // 2. CPMM vault accounts — batched (1 batch-100 call for ~68 vaults).
         let mut vault_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
             std::collections::HashMap::new();
         let mut vault_pubkeys: Vec<Pubkey> = Vec::new();
@@ -670,28 +718,9 @@ impl MultiDexRegistry {
                 }
             }
         }
-        let vault_results: Vec<(Pubkey, (u64, Vec<u8>))> = stream::iter(vault_pubkeys)
-            .map(|pk| {
-                let f = fetcher.clone();
-                async move {
-                    match f.fetch_single_account(&pk).await {
-                        Ok(res) => Some((pk, res)),
-                        Err(e) => {
-                            debug!("Failed to fetch vault account {pk} individually: {e}");
-                            None
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(4)
-            .filter_map(std::future::ready)
-            .collect()
-            .await;
-
-        for (pk, (slot, bytes)) in vault_results {
-            max_observed_slot = max_observed_slot.max(slot);
-            vault_data_map.insert(pk, (slot, bytes));
-        }
+        let vault_slot =
+            Self::batch_fetch_accounts(&self.rpc, &vault_pubkeys, &mut vault_data_map).await;
+        max_observed_slot = max_observed_slot.max(vault_slot);
 
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
         let mut derived_pubkeys: Vec<Pubkey> = Vec::new();
@@ -741,28 +770,9 @@ impl MultiDexRegistry {
 
         let mut derived_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
             std::collections::HashMap::new();
-        let derived_results: Vec<(Pubkey, (u64, Vec<u8>))> = stream::iter(derived_pubkeys)
-            .map(|pk| {
-                let f = fetcher.clone();
-                async move {
-                    match f.fetch_single_account(&pk).await {
-                        Ok(res) => Some((pk, res)),
-                        Err(e) => {
-                            debug!("Failed to fetch derived account {pk} individually: {e}");
-                            None
-                        }
-                    }
-                }
-            })
-            .buffer_unordered(4)
-            .filter_map(std::future::ready)
-            .collect()
-            .await;
-
-        for (pk, (slot, bytes)) in derived_results {
-            max_observed_slot = max_observed_slot.max(slot);
-            derived_data_map.insert(pk, (slot, bytes));
-        }
+        let derived_slot =
+            Self::batch_fetch_accounts(&self.rpc, &derived_pubkeys, &mut derived_data_map).await;
+        max_observed_slot = max_observed_slot.max(derived_slot);
 
         let mut dlmm_bins: std::collections::HashMap<PoolId, Vec<arb_types::DlmmBin>> =
             std::collections::HashMap::new();
@@ -957,6 +967,31 @@ impl MultiDexRegistry {
                 _ => arb_types::PoolKind::Cpmm,
             };
 
+            // Canonical DLMM orientation: DexScreener's base/quote ordering is
+            // arbitrary, but the on-chain LbPair fixes token_x @88..120 and
+            // token_y @120..152. Downstream, `quote_pool` derives the swap
+            // direction as `a_to_b = (pool_base == from_mint)`, which is only
+            // correct when pool_base == on-chain token_x. A DexScreener
+            // inversion made HRYEjwdo3bZ1TpXKWKcezqiwSV2Ywuh4LxMa2PzoCnG6 quote
+            // WSOL->USDC as if selling USDC (measured: 100_000 WSOL-raw in ->
+            // 1_249_511 "USDC-raw" out instead of 7_998), a 156x phantom edge
+            // that flooded the pipeline with implausible-ROI rejections
+            // (soak13/14: 4,276 + 1,058, p50 ROI 1,535,076 bps = 153.5x).
+            let (state_base, state_quote, dec_a, dec_b) = if p.protocol == DexProtocol::MeteoraDlmm
+            {
+                match pool_bytes {
+                    Some(d) if d.len() >= 152 => {
+                        let token_x = Pubkey::new_from_array(d[88..120].try_into().unwrap());
+                        let token_y = Pubkey::new_from_array(d[120..152].try_into().unwrap());
+                        let (dx, dy) = self.dlmm_mint_decimals(token_x, token_y).await;
+                        (MintId(token_x), MintId(token_y), dx, dy)
+                    }
+                    _ => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
+                }
+            } else {
+                (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b)
+            };
+
             let (reserve_in, reserve_out) = match p.protocol {
                 DexProtocol::PumpSwap => (0, 0),
                 DexProtocol::PumpFun => match pump_state.as_ref() {
@@ -979,7 +1014,7 @@ impl MultiDexRegistry {
                 DexProtocol::MeteoraDlmm => match (dlmm.as_ref(), pool_bytes) {
                     (Some(d), Some(raw_data)) => {
                         let Some(res) =
-                            compute_dlmm_reserves(d, raw_data, &p.base_mint.0, &p.quote_mint.0)
+                            compute_dlmm_reserves(d, raw_data, &state_base.0, &state_quote.0)
                         else {
                             continue;
                         };
@@ -1138,10 +1173,10 @@ impl MultiDexRegistry {
                 protocol: p.protocol,
                 slot: effective_slot,
                 write_version: wv,
-                base_mint: p.base_mint,
-                quote_mint: p.quote_mint,
-                decimals_a: p.decimals_a,
-                decimals_b: p.decimals_b,
+                base_mint: state_base,
+                quote_mint: state_quote,
+                decimals_a: dec_a,
+                decimals_b: dec_b,
                 reserve_in,
                 reserve_out,
                 fee_numerator: fee_bps as u64,
@@ -2013,6 +2048,30 @@ pub fn decode_dlmm_fee_bps(s: &arb_types::DlmmState) -> Option<u16> {
 }
 
 /// Compute effective base/quote reserves for Meteora DLMM from decoded `DlmmState` bins and raw `LbPair` bytes.
+///
+/// DLMM semantics (verified against the Meteora DLMM program layout): bins with
+/// `bin_id > active_id` hold only token X; bins with `bin_id < active_id` hold
+/// only token Y; the active bin can hold both. The honest two-sided CPMM
+/// approximation for the graph edge is therefore:
+///
+/// - `x_depth = \u{03a3} amount_x` over bins `bin_id >= active_id` (X the pool can sell)
+/// - `y_depth = \u{03a3} amount_y` over bins `bin_id <= active_id` (Y the pool can sell)
+///
+/// Fail-closed rules (each returns `None`, dropping the pool from the graph):
+/// - no bins attached, or the ACTIVE bin itself is missing from the attached
+///   BinArrays (hydration incomplete \u{2014} never guess its contents);
+/// - either side depth is zero (one-sided book: no honest two-sided quote);
+/// - implied price `y_depth / x_depth` diverges from the active-bin price by
+///   more than [`DLMM_RESERVE_PRICE_TOLERANCE`] (corrupt/inconsistent bin data).
+///
+/// The previous implementation derived one side from the other via the active
+/// price whenever the active bin missed one token (`rx else sum` fallbacks).
+/// Measured on mainnet pool HRYEjwdo3bZ1TpXKWKcezqiwSV2Ywuh4LxMa2PzoCnG6
+/// (USDC/WSOL, bin_step=2): active bin held `amount_x=0`, so the fallback
+/// summed 210 bins into `rx=6.57e9 USDC-raw` and derived
+/// `ry=82.26 WSOL` \u{2014} a fake book that produced ~4,134 phantom-arbitrage
+/// rejections per 3-minute soak (implied ROI 1.3M\u{2013}1.5M bps vs the 1500 bps
+/// implausibility ceiling).
 pub fn compute_dlmm_reserves(
     d: &arb_types::DlmmState,
     pool_data: &[u8],
@@ -2030,38 +2089,51 @@ pub fn compute_dlmm_reserves(
         .filter(|_| pool_data.len() >= 152)
         .and_then(|s| <[u8; 32]>::try_from(s).ok())
         .map(Pubkey::new_from_array)?;
-    let active_bin = d.bins.iter().find(|b| b.bin_id == d.active_bin_id);
-    let (bin_x, bin_y) = match active_bin {
-        Some(b) => (b.amount_x, b.amount_y),
-        None => (
-            d.bins.iter().map(|b| b.amount_x).sum(),
-            d.bins.iter().map(|b| b.amount_y).sum(),
-        ),
-    };
+    // The active bin must be present: it anchors both side sums and the
+    // price-consistency check. Missing active bin = incomplete hydration.
+    d.bins.iter().find(|b| b.bin_id == d.active_bin_id)?;
+    let x_depth: u128 = d
+        .bins
+        .iter()
+        .filter(|b| b.bin_id >= d.active_bin_id)
+        .map(|b| b.amount_x)
+        .sum();
+    let y_depth: u128 = d
+        .bins
+        .iter()
+        .filter(|b| b.bin_id <= d.active_bin_id)
+        .map(|b| b.amount_y)
+        .sum();
+    if x_depth == 0 || y_depth == 0 {
+        return None;
+    }
+    // Price-consistency invariant: the side sums must imply a price within a
+    // sane band of the active-bin price. With correctly attached arrays this
+    // holds by construction (bins within \u{00b1}70 bins of active); a violation
+    // means corrupt or mismatched bin data, never a real market state.
+    let implied_q64 =
+        (ruint::aliases::U256::from(y_depth) << 64usize) / ruint::aliases::U256::from(x_depth);
+    let p_u256 = ruint::aliases::U256::from(p_x_in_y);
+    let band = p_u256 * ruint::aliases::U256::from(DLMM_RESERVE_PRICE_TOLERANCE);
+    if implied_q64 > band
+        || implied_q64 < p_u256 / ruint::aliases::U256::from(DLMM_RESERVE_PRICE_TOLERANCE)
+    {
+        return None;
+    }
     if tx == *base_mint {
-        let rx = if bin_x > 0 {
-            bin_x
-        } else {
-            d.bins.iter().map(|b| b.amount_x).sum()
-        };
-        let ry_u256 =
-            (ruint::aliases::U256::from(rx) * ruint::aliases::U256::from(p_x_in_y)) >> 64usize;
-        let ry = ry_u256.try_into().unwrap_or(u128::MAX);
-        Some((rx, ry))
+        Some((x_depth, y_depth))
     } else if tx == *quote_mint {
-        let ry = if bin_y > 0 {
-            bin_y
-        } else {
-            d.bins.iter().map(|b| b.amount_y).sum()
-        };
-        let rx_u256 =
-            (ruint::aliases::U256::from(ry) << 64usize) / ruint::aliases::U256::from(p_x_in_y);
-        let rx = rx_u256.try_into().unwrap_or(u128::MAX);
-        Some((ry, rx))
+        Some((y_depth, x_depth))
     } else {
         Some((0, 0))
     }
 }
+
+/// Max allowed ratio between the bin-sum implied price and the active-bin
+/// price. 4x is far outside any correctly-hydrated \u{00b1}1-bin-array window
+/// (\u{00b1}70 bins * 0.02% \u{2248} \u{00b1}1.4% for the tightest bin_step=2 pools) yet
+/// still catches grossly corrupt data.
+const DLMM_RESERVE_PRICE_TOLERANCE: u64 = 4;
 
 /// Decode a u64 token amount from raw SPL token account bytes (offset 64..72).
 pub fn decode_spl_token_amount_bytes(bytes: &[u8]) -> Option<u64> {
@@ -2358,5 +2430,122 @@ mod tests {
         let mut data = vec![0u8; 300];
         data[290..298].copy_from_slice(&100u64.to_le_bytes()); // 1 bps
         assert_eq!(resolve_fee_bps(DexProtocol::RaydiumCpmm, &data), Some(1));
+    }
+
+    // ---- compute_dlmm_reserves fail-closed forensics (soak10/11 phantom ROI) ----
+
+    fn dlmm_probe_state(active_id: i32, mut bins: Vec<arb_types::DlmmBin>) -> arb_types::DlmmState {
+        bins.sort_by_key(|b| b.bin_id);
+        arb_types::DlmmState {
+            active_bin_id: active_id,
+            status: 0,
+            bin_step_bps: 10,
+            bins,
+            params: None,
+            volatility_accumulator: 0,
+            volatility_reference: 0,
+            index_reference: active_id,
+            last_update_timestamp: 0,
+        }
+    }
+
+    fn dlmm_probe_pool_bytes(token_x: Pubkey, token_y: Pubkey) -> Vec<u8> {
+        let mut data = vec![0u8; 152];
+        data[88..120].copy_from_slice(token_x.as_ref());
+        data[120..152].copy_from_slice(token_y.as_ref());
+        data
+    }
+
+    #[test]
+    fn dlmm_reserves_fail_closed_when_active_bin_missing() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        let d = dlmm_probe_state(
+            1000,
+            vec![
+                arb_types::DlmmBin {
+                    bin_id: 998,
+                    amount_x: 0,
+                    amount_y: 1_000_000,
+                },
+                arb_types::DlmmBin {
+                    bin_id: 1002,
+                    amount_x: 1_000_000,
+                    amount_y: 0,
+                },
+            ],
+        );
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
+    }
+
+    #[test]
+    fn dlmm_reserves_fail_closed_on_one_sided_book() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        // HRYEjw mainnet shape: active bin holds only Y (amount_x=0) and no
+        // bin at/above active holds X. The old fallback summed distant bins
+        // into a fake x-side and derived y from price — producing the
+        // ~130x phantom ROI. Must now fail closed.
+        let d = dlmm_probe_state(
+            1000,
+            vec![arb_types::DlmmBin {
+                bin_id: 1000,
+                amount_x: 0,
+                amount_y: 1_444_908_165,
+            }],
+        );
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
+    }
+
+    #[test]
+    fn dlmm_reserves_sum_correct_sides_both_directions() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        let d = dlmm_probe_state(
+            1000,
+            vec![
+                arb_types::DlmmBin {
+                    bin_id: 998,
+                    amount_x: 0,
+                    amount_y: 500,
+                },
+                arb_types::DlmmBin {
+                    bin_id: 1000,
+                    amount_x: 1_000,
+                    amount_y: 2_700,
+                },
+                arb_types::DlmmBin {
+                    bin_id: 1002,
+                    amount_x: 3_000,
+                    amount_y: 0,
+                },
+            ],
+        );
+        // x_depth = bins >= 1000 => 1000 + 3000 = 4000
+        // y_depth = bins <= 1000 => 500 + 2700 = 3200
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), Some((4000, 3200)));
+        // Flipped pool orientation (token_x is the quote mint): reserves swap.
+        assert_eq!(compute_dlmm_reserves(&d, &data, &y, &x), Some((3200, 4000)));
+    }
+
+    #[test]
+    fn dlmm_reserves_reject_price_inconsistent_bins() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        // active_id=1000, step=10bps => p ~ 2.717 y-raw per x-raw. A book
+        // implying 0.1 y-raw per x-raw is >4x below p: corrupt data.
+        let d = dlmm_probe_state(
+            1000,
+            vec![arb_types::DlmmBin {
+                bin_id: 1000,
+                amount_x: 1_000_000,
+                amount_y: 100_000,
+            }],
+        );
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
     }
 }

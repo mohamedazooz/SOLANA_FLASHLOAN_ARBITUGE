@@ -360,7 +360,18 @@ impl RpcPool {
             }
         };
 
-        // 1. Explicit numbered priority slots (SOLANA_RPC_1_URL .. SOLANA_RPC_10_URL)
+        // 1. Explicit primary endpoint — MUST be first: `SOLANA_RPC_PRIMARY` is
+        // the documented primary key (also read by `PacedAccountFetcher::from_env`),
+        // but it was never collected here, so operators setting only
+        // PRIMARY + FALLBACK_1/2 got an RpcPool containing just
+        // `SOLANA_MAINNET_RPC_FALLBACK` (measured in soak5: pool of 1 =
+        // api.mainnet-beta, permanently 429-cooled; discovery degraded
+        // 162 -> 93 pools and dropped Raydium every ~90s cycle).
+        if let Some(val) = lookup("SOLANA_RPC_PRIMARY") {
+            push_unique(&val);
+        }
+
+        // 1b. Explicit numbered priority slots (SOLANA_RPC_1_URL .. SOLANA_RPC_10_URL)
         for n in 1..=10 {
             let key = format!("SOLANA_RPC_{n}_URL");
             if let Some(val) = lookup(&key) {
@@ -381,6 +392,21 @@ impl RpcPool {
         }
         if let Some(fast_ep) = lookup("FAST_ENDPOINT") {
             push_unique(&fast_ep);
+        }
+
+        // 2b. Explicit fallback URLs + role-separated Alchemy URL — same keys
+        // `PacedAccountFetcher::from_env` honors. Omitting them here meant the
+        // RpcPool and the paced fetcher disagreed on the configured provider
+        // set, so discovery/health/Jito traffic never reached the operator's
+        // declared fallbacks.
+        for key in [
+            "SOLANA_RPC_FALLBACK_1",
+            "SOLANA_RPC_FALLBACK_2",
+            "ALCHEMY_RPC_URL",
+        ] {
+            if let Some(val) = lookup(key) {
+                push_unique(&val);
+            }
         }
 
         // 3. Alchemy keys (synthesized if not already present via numbered slots)
@@ -1566,6 +1592,44 @@ mod tests {
                 "https://solana-rpc.rpcfast.com/?api_key=test_fast_key_9999",
                 "https://solana-mainnet.g.alchemy.com/v2/alch_key_1111",
                 "https://solana-mainnet.g.alchemy.com/v2/alch_key_2222",
+            ]
+        );
+    }
+
+    /// Regression for the soak5 finding: an operator config of
+    /// SOLANA_RPC_PRIMARY + SOLANA_RPC_FALLBACK_1/2 + ALCHEMY_RPC_URL
+    /// (the exact key set `PacedAccountFetcher::from_env` honors) previously
+    /// produced an RpcPool containing ONLY SOLANA_MAINNET_RPC_FALLBACK,
+    /// starving discovery/health/Jito onto a single rate-limited endpoint.
+    #[test]
+    fn test_collect_rpc_urls_includes_primary_and_fallback_keys() {
+        let mut vars = HashMap::new();
+        vars.insert("SOLANA_RPC_PRIMARY", "https://solana-rpc.publicnode.com");
+        vars.insert(
+            "SOLANA_RPC_FALLBACK_1",
+            "https://api.mainnet-beta.solana.com",
+        );
+        vars.insert(
+            "SOLANA_RPC_FALLBACK_2",
+            "https://solana-rpc.publicnode.com/?extra=dup",
+        );
+        vars.insert(
+            "ALCHEMY_RPC_URL",
+            "https://solana-mainnet.g.alchemy.com/v2/alch_url_key",
+        );
+        vars.insert(
+            "SOLANA_MAINNET_RPC_FALLBACK",
+            "https://api.mainnet-beta.solana.com",
+        );
+
+        let urls = RpcPool::collect_rpc_urls(|k| vars.get(k).map(|v| v.to_string()));
+        assert_eq!(
+            urls,
+            vec![
+                "https://solana-rpc.publicnode.com",
+                "https://api.mainnet-beta.solana.com",
+                "https://solana-rpc.publicnode.com/?extra=dup",
+                "https://solana-mainnet.g.alchemy.com/v2/alch_url_key",
             ]
         );
     }
