@@ -1,7 +1,7 @@
 //! Keypair signer, ALT handle, Kamino bundle params and versioned transaction
 //! wrapper types.
 
-use super::*;
+use crate::*;
 
 /// In-memory Keypair Signer securely decoded from Base58 with real Ed25519 signing.
 #[derive(Clone)]

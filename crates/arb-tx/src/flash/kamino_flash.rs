@@ -1,6 +1,6 @@
 //! Kamino flash-loan parameter struct and borrow/repay instruction builders.
 
-use super::*;
+use crate::*;
 
 /// Kamino Flash Loan configuration parameters.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,7 +1,7 @@
 //! Core instruction primitives: AccountMeta, CompiledInstruction,
 //! compute-budget instructions, Jito tip builders and wire helpers.
 
-use super::*;
+use crate::*;
 
 /// Metadata for accounts passed in Solana instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]

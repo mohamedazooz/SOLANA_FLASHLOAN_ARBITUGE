@@ -1,6 +1,6 @@
 //! PumpSwap v2 swap instruction builders.
 
-use super::*;
+use crate::*;
 
 /// PumpSwap trade mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

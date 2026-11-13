@@ -1,6 +1,6 @@
 //! Orca Whirlpool swap instruction builder and PDA derivation.
 
-use super::*;
+use crate::*;
 
 /// Derive Whirlpool TickArray PDA for a given start tick index.
 pub fn derive_orca_tick_array_pda(whirlpool: &Pubkey, start_tick_index: i32) -> Pubkey {

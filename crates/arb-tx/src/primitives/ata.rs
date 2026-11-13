@@ -1,7 +1,7 @@
 //! ATA derivation, idempotent ATA creation, token-account close, sync-native
 //! and system transfer helpers.
 
-use super::*;
+use crate::*;
 
 /// Derive Associated Token Address (ATA) deterministically for a wallet and mint.
 pub fn get_associated_token_address(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {

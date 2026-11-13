@@ -36,119 +36,16 @@ pub use arb_constants::{
     WSOL_MINT, get_cu_limit_for_hops, jito_tip_account_for_leader, jito_tip_account_for_slot,
 };
 
-pub mod alt;
-pub use alt::{
-    AltManager, MAX_ALT_EXTEND_ADDRESSES, address_lookup_table_program_id, create_lookup_table,
-    derive_lookup_table_address, extend_lookup_table,
-};
-pub mod master_alt;
-pub use master_alt::{MAX_ALT_ADDRESSES, StaticMasterAlt};
-pub mod meteora_dlmm;
-pub use meteora_dlmm::{
-    DlmmSwapAccountSet, MAX_BIN_PER_ARRAY, SwapDirection, SwapMode, build_swap2_exact_in,
-    build_swap2_exact_out, derive_directional_bin_arrays,
-};
-pub mod compiler;
-pub use compiler::{
-    ByteBudgetReport, CompileResult, CompiledV0Transaction, CompiledV1Transaction,
-    LegExecutionAccounts, LegSwapParams, RejectionReason, ThreeLegMemeArbitrageContext,
-    compile_3leg_meme_dlmm_arb,
-};
-pub mod adaptive;
-pub use adaptive::{
-    AdaptiveTxCompiler, CONFIG_MASK_CU_LIMIT, CONFIG_MASK_HEAP_SIZE, CONFIG_MASK_LOADED_DATA_LIMIT,
-    CONFIG_MASK_PRIORITY_FEE, CompiledAdaptiveTransaction, CompilerCapabilities,
-    FormatSelectionReason, MAX_V1_ADDRESSES, MAX_V1_INSTRUCTIONS, SOLANA_PACKET_LEGACY_MTU,
-    SOLANA_PACKET_V1_MTU, TransactionVersion, V0_VERSION_DISCRIMINATOR, V1_VERSION_DISCRIMINATOR,
-    V1ConfigParams, extract_adaptive_transaction_signature, rpc_max_supported_version_from_wire,
-    v1_executed_instruction_index,
-};
-pub mod meteora_atomic_builder;
-pub use meteora_atomic_builder::{
-    METEORA_TWO_POOL_V1_DEFAULT_CU_LIMIT, METEORA_TWO_POOL_V1_DEFAULT_LOADED_DATA_LIMIT,
-    METEORA_TWO_POOL_V1_MAX_CU_LIMIT, MeteoraAtomicArbitrageTx, MeteoraDlmmAtomicArbitrageBuilder,
-    MeteoraTwoPoolV1Config,
-};
-pub mod dlmm_bin_discovery;
-pub use dlmm_bin_discovery::{
-    BinArrayPlanError, DlmmBinArrayPlan, estimate_legacy_message_size, plan_bin_arrays,
-    required_bin_array_count, verify_bin_array_coverage,
-};
-pub mod dlmm_flash_arb;
-pub use dlmm_flash_arb::{
-    FlashArbError, FlashArbParams, FlashArbPoolLeg, FlashTwoPoolArbitrageTx,
-    assemble_flash_funded_two_pool, build_flash_funded_two_pool_transaction,
-    estimate_v0_transaction_size,
-};
-pub mod dlmm_3leg_flash_arb;
-pub use dlmm_3leg_flash_arb::{
-    FlashArb3LegError, FlashArb3LegParams, FlashArb3LegPoolLeg, FlashThreeLegArbitrageTx,
-    assemble_flash_funded_three_pool, build_flash_funded_three_pool_transaction,
-};
-pub mod dlmm_4leg_flash_arb;
-pub use dlmm_4leg_flash_arb::{
-    FlashArb4LegError, FlashArb4LegParams, FlashArb4LegPoolLeg, FlashFourLegArbitrageTx,
-    assemble_flash_funded_four_pool, build_flash_funded_four_pool_v0_transaction,
-    build_flash_funded_four_pool_v1_transaction,
-};
-pub mod cross_dex_flash_arb;
-pub use cross_dex_flash_arb::{
-    CrossDexFlashArbError, CrossDexFlashArbParams, CrossDexFlashArbitrageTx, CrossDexSwapLeg,
-    DexPlatform, assemble_cross_dex_flash_arbitrage, build_cross_dex_flash_arbitrage_v0,
-    build_cross_dex_flash_arbitrage_v1,
-};
-pub mod atomic_integrity;
-pub mod error;
-pub mod jupiter;
-pub mod kamino;
-pub mod pump_fun_raydium;
-pub mod template;
-
-pub use error::TxError;
-pub use jupiter::JupiterClient;
-pub use kamino::{
-    KAMINO_FRACTION_FRAC_BITS, KAMINO_FRACTION_ONE_BITS, KaminoFeeError, KaminoFlashAccounts,
-    calculate_kamino_flash_fee, calculate_kamino_flash_fee_checked,
-    derive_lending_market_authority,
-};
-pub use pump_fun_raydium::{
-    DEFAULT_PRIORITY_FEE_MICROLAMPORTS, JITO_TIP_ACCOUNTS, PUMP_FUN_RAYDIUM_CU_LIMIT,
-    PumpFunRaydiumArbitrageBuilder, build_and_submit_pump_fun_raydium_arbitrage,
-};
-pub use template::{
-    PreWarmedTxTemplate, PrewarmedUnsignedTemplate, TemplateHopRefresh, TemplateRefreshParams,
-};
-
-// R10 split: cohesive groups extracted verbatim into sibling modules;
+// R10 split: cohesive groups extracted verbatim into domain submodules;
 // glob re-exports preserve every existing `arb_tx::` path.
-mod cu;
-pub use cu::*;
-mod instruction;
-pub use instruction::*;
-mod kamino_flash;
-pub use kamino_flash::*;
-mod ata;
-pub use ata::*;
-mod raydium_v4;
-pub use raydium_v4::*;
-mod orca;
-pub use orca::*;
-mod meteora_accounts;
-pub use meteora_accounts::*;
-mod raydium_cpmm;
-pub use raydium_cpmm::*;
-mod raydium_clmm;
-pub use raydium_clmm::*;
-mod pump_fun;
-pub use pump_fun::*;
-mod pump_swap;
-pub use pump_swap::*;
-mod swap_hop;
-pub use swap_hop::*;
-mod signer;
-pub use signer::*;
-mod builder;
-pub use builder::*;
+pub mod flash;
+pub use flash::*;
+pub mod primitives;
+pub use primitives::*;
+pub mod protocols;
+pub use protocols::*;
+pub mod transport;
+pub use transport::*;
 
 #[cfg(test)]
 mod tests {

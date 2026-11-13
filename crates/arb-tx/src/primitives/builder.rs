@@ -1,6 +1,6 @@
 //! Canonical TxBuilder: full transaction assembly, signing and serialization.
 
-use super::*;
+use crate::*;
 
 /// Builder for constructing atomic arbitrage transactions and private bundles.
 #[derive(Debug, Default, Clone)]

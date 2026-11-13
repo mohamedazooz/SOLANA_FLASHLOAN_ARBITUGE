@@ -1,6 +1,6 @@
 //! Pump.fun bonding-curve swap instruction builder.
 
-use super::*;
+use crate::*;
 
 /// Complete 12-Account Matrix for Pump.fun Buy and Sell instructions.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,6 +1,6 @@
 //! Raydium CLMM swap instruction builder and PDA derivation.
 
-use super::*;
+use crate::*;
 
 /// Complete Account Matrix for Raydium CLMM `swap` instruction (with 60-ticks/array tick arrays).
 #[derive(Debug, Clone, PartialEq, Eq)]

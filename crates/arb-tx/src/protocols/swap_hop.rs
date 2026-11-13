@@ -1,6 +1,6 @@
 //! Unified per-hop swap instruction dispatch across all supported protocols.
 
-use super::*;
+use crate::*;
 
 /// Build genuine DEX swap instruction based on protocol hop with complete accounts matrix.
 pub fn build_swap_hop_instruction(

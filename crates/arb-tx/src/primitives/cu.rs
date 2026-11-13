@@ -1,6 +1,6 @@
 //! Compute-unit estimation and dynamic priority-fee calculation.
 
-use super::*;
+use crate::*;
 
 /// Estimate the minimal compute units strictly required by the transaction
 /// before safety buffer is applied, keeping instruction execution minimal and fast.

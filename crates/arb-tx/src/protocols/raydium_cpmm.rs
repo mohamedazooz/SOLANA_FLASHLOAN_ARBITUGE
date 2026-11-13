@@ -1,6 +1,6 @@
 //! Raydium CPMM swap instruction builder and PDA derivation.
 
-use super::*;
+use crate::*;
 
 /// Complete 13-Account Matrix for Raydium CP-Swap (CPMM) `swap_base_input` instruction.
 #[derive(Debug, Clone, PartialEq, Eq)]

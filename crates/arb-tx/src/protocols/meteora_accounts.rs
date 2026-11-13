@@ -1,6 +1,6 @@
 //! Meteora DLMM account matrix, PDA derivation and swap instruction builders.
 
-use super::*;
+use crate::*;
 
 /// Derive the Meteora DLMM reserve (token vault) PDA for a given pool and token mint.
 /// Official seeds from MeteoraAg/dlmm-sdk commons/src/pda.rs: `[lb_pair, token_mint]`
