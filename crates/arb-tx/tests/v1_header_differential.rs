@@ -64,6 +64,7 @@ fn sdk_v1_message(
     solana_message::v1::Message::try_compile_with_config(
         payer,
         instructions,
+        #[allow(clippy::clone_on_copy)]
         blockhash.clone(),
         config,
     )
@@ -626,7 +627,7 @@ fn test_max_account_count() {
     let sdk_result = solana_message::v1::Message::try_compile_with_config(
         &payer_addr,
         &sdk_instructions,
-        bh.clone(),
+        bh,
         sdk_empty_config(),
     );
 

@@ -10,12 +10,14 @@ pub(super) struct DispatchContext<'a> {
     pub expected_stream_generation: u64,
     pub route_label: &'a str,
     pub gross_rev_sol: f64,
+    #[allow(dead_code)] // logged by telemetry sinks, not read on dispatch path
     pub gross_sol: f64,
     pub profit_sol: f64,
     pub live_sol_price: f64,
     pub blockhash_b58: &'a str,
     /// `lastValidBlockHeight` of this blockhash, persisted with the dispatch
     /// intent so recovery can prove expiration with block-height evidence.
+    #[allow(dead_code)] // mirrored into DispatchIntent for recovery evidence
     pub last_valid_block_height: Option<i64>,
     pub cu_limit: u32,
     pub cu_price: u64,
@@ -30,19 +32,6 @@ pub(super) struct DispatchContext<'a> {
     pub t_signing_us: u64,
 }
 
-fn format_mint_short(pk: &Pubkey) -> String {
-    let s = pk.to_string();
-    if s == arb_constants::WSOL_MINT {
-        "WSOL".to_string()
-    } else if s == arb_constants::USDC_MINT {
-        "USDC".to_string()
-    } else if s.len() > 8 {
-        format!("{}...{}", &s[..4], &s[s.len() - 4..])
-    } else {
-        s
-    }
-}
-
 impl Supervisor {
     pub(super) async fn dispatch_opportunity(&self, context: DispatchContext<'_>) {
         let DispatchContext {
@@ -54,11 +43,11 @@ impl Supervisor {
             expected_stream_generation,
             route_label,
             gross_rev_sol,
-            gross_sol,
+            gross_sol: _,
             profit_sol,
             live_sol_price,
             blockhash_b58,
-            last_valid_block_height,
+            last_valid_block_height: _,
             cu_limit,
             cu_price,
             tx_bytes,

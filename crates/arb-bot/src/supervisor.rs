@@ -16,10 +16,9 @@ use arb_sim::{ForkSimulator, Simulator};
 use arb_store::{AttemptRecord, PostgresStore, SqliteStore, Store};
 use arb_tx::{KaminoFlashParams, KeypairSigner, TxBuilder};
 use arb_types::{
-    Bps, DexProtocol, ExecutionOpportunity, InflightStatus, Lamports, MintId, PoolState, RouteId,
-    Slot, SwapHop, TipDecision, TokenAmount,
+    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolState, RouteId, Slot, SwapHop,
+    TipDecision, TokenAmount,
 };
-use base64::prelude::*;
 use solana_pubkey::Pubkey;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -70,6 +69,7 @@ pub struct Supervisor {
     ingest: Arc<IngestClient>,
     graph: parking_lot::Mutex<MarketGraph>,
     risk_gate: Arc<RiskGate>,
+    #[allow(dead_code)] // wired into dispatch when Jito bundles are enabled
     jito_lander: JitoLander,
     tip_strategy: TipStrategy,
     registry: Arc<parking_lot::RwLock<arb_ingest::MultiDexRegistry>>,
@@ -98,6 +98,7 @@ pub struct Supervisor {
     slot_clock: parking_lot::Mutex<SlotClock>,
     /// Measured round-trip time to the block engine, plus the instant of the
     /// previous sample (the EWMA's time weight needs the gap).
+    #[allow(dead_code)] // read by observe_bundle_rtt, active with Jito bundles
     rtt: parking_lot::Mutex<(RttTracker, Option<Instant>)>,
     /// Short-TTL recent-blockhash cache. A blockhash is valid for ~60-90s, so
     /// reusing one for a few seconds removes an RPC round-trip from the send
@@ -506,6 +507,7 @@ impl Supervisor {
     ///
     /// Only accepted submissions are measured: a timeout is the failure mode
     /// being guarded against, not evidence about the normal path.
+    #[allow(dead_code)] // invoked from the Jito bundle submission path
     fn observe_bundle_rtt(&self, elapsed: std::time::Duration) {
         let mut guard = self.rtt.lock();
         let dt_s = guard
