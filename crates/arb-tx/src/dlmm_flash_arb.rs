@@ -392,11 +392,14 @@ pub fn assemble_flash_funded_two_pool(
     ));
 
     // ── Flash repay (borrow instruction index must point at the real borrow) ──
+    // The instruction's `amount` argument is the borrow PRINCIPAL: klend's
+    // `flash_borrow_check_matching_repay` rejects any other value with
+    // `InvalidFlashRepay` (6033); the fee is debited on top by the handler.
     let repay_idx = ixs.len();
     ixs.push(build_kamino_flash_repay_with_index(
         &kamino,
         payer,
-        repay_amount,
+        params.borrow_amount,
         borrow_idx as u8,
     ));
 
@@ -700,9 +703,10 @@ mod tests {
         assert_eq!(repay_idx, 7);
         // Borrow carries the principal.
         assert_eq!(&ixs[borrow_idx].data[8..16], &p.borrow_amount.to_le_bytes());
-        // Repay carries principal + fee and points back at the borrow index.
-        let repay = p.repay_amount();
-        assert_eq!(&ixs[repay_idx].data[8..16], &repay.to_le_bytes());
+        // Repay instruction carries the borrow PRINCIPAL (klend
+        // `flash_borrow_check_matching_repay` enforces
+        // `liquidity_amount == borrow amount`) and points back at the index.
+        assert_eq!(&ixs[repay_idx].data[8..16], &p.borrow_amount.to_le_bytes());
         assert_eq!(ixs[repay_idx].data[16], borrow_idx as u8);
     }
 

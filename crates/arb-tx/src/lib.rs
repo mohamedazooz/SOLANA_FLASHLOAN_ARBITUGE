@@ -61,6 +61,7 @@ pub use adaptive::{
     FormatSelectionReason, MAX_V1_ADDRESSES, MAX_V1_INSTRUCTIONS, SOLANA_PACKET_LEGACY_MTU,
     SOLANA_PACKET_V1_MTU, TransactionVersion, V0_VERSION_DISCRIMINATOR, V1_VERSION_DISCRIMINATOR,
     V1ConfigParams, extract_adaptive_transaction_signature, rpc_max_supported_version_from_wire,
+    v1_executed_instruction_index,
 };
 pub mod meteora_atomic_builder;
 pub use meteora_atomic_builder::{

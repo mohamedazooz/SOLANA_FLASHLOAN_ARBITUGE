@@ -460,10 +460,13 @@ fn transaction_is_borrow_swaps_repay_in_one_atomic_unit() {
     assert_eq!(repay_idx, 7);
     // The repay points back at the borrow.
     assert_eq!(ixs[repay_idx].data[16], borrow_idx as u8);
-    // The repay covers principal + fee.
+    // The repay instruction's `amount` argument is the borrow PRINCIPAL
+    // (klend `flash_borrow_check_matching_repay` enforces the exact match;
+    // the fee is debited on top by the handler, so the total outlay is
+    // `params.repay_amount()` = principal + fee).
     assert_eq!(
         u64::from_le_bytes(ixs[repay_idx].data[8..16].try_into().unwrap()),
-        params.borrow_amount + params.flash_fee
+        params.borrow_amount
     );
 
     let verification = verify_atomic_integrity(

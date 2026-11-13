@@ -341,12 +341,15 @@ pub fn assemble_cross_dex_flash_arbitrage(
         ixs.push(swap_ix);
     }
 
-    // Flash repay
+    // Flash repay — the instruction's `amount` argument is the borrow
+    // PRINCIPAL (klend `flash_borrow_check_matching_repay` enforces
+    // `liquidity_amount == borrow amount`); the fee is debited on top by
+    // the handler.
     let repay_idx = ixs.len();
     ixs.push(build_kamino_flash_repay_with_index(
         &kamino,
         payer,
-        params.repay_amount(),
+        params.borrow_amount,
         borrow_idx as u8,
     ));
 

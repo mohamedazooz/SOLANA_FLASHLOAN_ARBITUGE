@@ -164,6 +164,13 @@ fn assembly_order_borrow_swaps_repay() {
     let repay_ix = &ixs[repay_idx];
     let idx_byte = *repay_ix.data.last().unwrap();
     assert_eq!(idx_byte as usize, borrow_idx);
+
+    // klend's `flash_borrow_check_matching_repay` requires the repay
+    // instruction's `amount` argument to equal the borrow PRINCIPAL exactly
+    // (any other value reverts with InvalidFlashRepay 6033); the origination
+    // fee is debited on top by the handler.
+    let repay_ix_amount = u64::from_le_bytes(repay_ix.data[8..16].try_into().unwrap());
+    assert_eq!(repay_ix_amount, p.borrow_amount);
 }
 
 #[test]
@@ -424,8 +431,11 @@ fn builder_passes_atomic_integrity_for_valid_route() {
     let signer = KeypairSigner::new_random();
     p.payer = signer.pubkey();
     let tx = build_flash_funded_three_pool_transaction(&p, &signer, &[]).unwrap();
-    assert_eq!(tx.borrow_instruction_index, 5);
-    assert_eq!(tx.repay_instruction_index, 9);
+    // V1 path: the two leading ComputeBudget no-ops are stripped from the
+    // executed instruction list, so the reported indices are the executed
+    // positions (build-time 5/9 minus the 2 stripped no-ops).
+    assert_eq!(tx.borrow_instruction_index, 3);
+    assert_eq!(tx.repay_instruction_index, 7);
     assert_eq!(tx.repay_amount, tx.borrow_amount + tx.flash_fee);
     assert_eq!(tx.pool_1, p.leg_1.lb_pair);
     assert_eq!(tx.pool_2, p.leg_2.lb_pair);
