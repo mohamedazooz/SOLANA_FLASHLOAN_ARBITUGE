@@ -40,9 +40,10 @@ pools; fail-closed `TxError::MissingExecutionAccounts`. See
 
 - `cargo fmt --all -- --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
-- `cargo test --workspace --all-targets` (with `.env` sourced): **958 passed,
+- `cargo test --workspace --all-targets` (with `.env` sourced): **961 passed,
   0 failed**, including property/fuzz tests for the V1 path, SDK differential
-  tests (Meteora/Kamino/Solana), fork simulation, and economic invariants.
+  tests (Meteora/Kamino/Solana), fork simulation, economic invariants, and
+  Solami WS-key resolution.
 - Real Helius RPC/WSS connectivity tested; live-network tests skip cleanly
   when the upstream RPC returns 0 pools (environmental, documented).
 - **R-I store fail-closed remediation verified live**: positive smoke run

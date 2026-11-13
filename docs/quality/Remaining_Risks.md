@@ -20,6 +20,21 @@ Honest, severity-ranked. Nothing here is hidden behind a green CI badge.
 
 ## MEDIUM
 
+### Solami WS and Alchemy keys rejected by providers (verified 2026-11-13)
+
+The operator-provided Solami WS key is refused on both known Solami WS paths
+(`wss://ws.solami.dev/ws/sol` → 400 on the raw handshake;
+`/data/subscribe` → 403) and the Alchemy key is refused on RPC and WS (401
+`Must be authenticated!`; 26-char key looks truncated or wrong product).
+Impact: Helius remains the only verified WS provider; the RPC pool rotates
+Helius + Solami RPC (verified, ~21 ms RTT). The WS-key plumbing bug that
+would have silently discarded the operator WS key is fixed
+(`SOLAMI_WS_API_KEY`, see TEST_EVIDENCE). **Blocking action (operator)**:
+obtain a valid Alchemy key, confirm the Solami WS path/protocol with the
+provider, and supply `SOLAMI_GRPC_ENDPOINT` to exercise the Solami
+Yellowstone x-token. Not a code defect — fail-over keeps the bot safe on
+Helius-only.
+
 ### Postgres `NoTls`
 - TLS-requiring PostgreSQL hosts fail closed at connect. Supported topology is
   trusted-network (docker-compose / private VPC). Extending to rustls is a

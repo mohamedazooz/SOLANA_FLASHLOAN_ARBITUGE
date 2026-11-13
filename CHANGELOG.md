@@ -5,6 +5,28 @@ evidence see [`docs/quality/TEST_EVIDENCE.md`](docs/quality/TEST_EVIDENCE.md)
 and for the running remediation register see
 [`docs/audit/REMEDIATION_PLAN.md`](docs/audit/REMEDIATION_PLAN.md).
 
+## 2026-11-13 — Provider matrix + role-separated Solami WS key (PR #11 branch)
+
+### Added
+
+- **`SOLAMI_WS_API_KEY`** — role-separated Solami WebSocket stream key.
+  `resolve_ws_key()` in `arb-ingest/src/solami_stream.rs` resolves the WS key
+  as: explicit `SOLAMI_WS_API_KEY` → `api_key` embedded in `SOLAMI_WS_URL` →
+  `SOLAMI_API_KEY` (legacy fallback). Previously query params were stripped
+  from `SOLAMI_WS_URL`, silently discarding an operator-supplied WS key.
+- **Provider matrix in `.env.example`**: Helius + Alchemy + Solami for RPC,
+  WebSocket, and Yellowstone gRPC, with the exact auto-built URL forms the
+  RPC pool and WS pool construct from each variable.
+- 3 regression tests for key resolution; workspace campaign **961 passed /
+  0 failed**.
+
+### Verified live (2026-11-13)
+
+- Solami RPC: `getHealth` 200 `ok`, live `getSlot` at 21–39 ms RTT.
+- Solami WS and the operator Alchemy key are rejected by the providers
+  (400/403/401) — documented in `docs/quality/Remaining_Risks.md`; Helius
+  remains the only verified WS provider until valid keys are supplied.
+
 ## 2026-11-13 — R-I: store selection fail-closed (PR #11, branch `vibe/store-fail-closed-9d81d9`)
 
 ### Fixed

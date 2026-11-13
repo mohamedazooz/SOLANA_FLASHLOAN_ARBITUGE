@@ -252,3 +252,37 @@ SECURITY_AUDIT, REMEDIATION_PLAN).
   meteora_mainnet_sdk_differential 3, trade_size_optimization_tests 2,
   three_leg_net_economics_tests 9, cross_dex_three_pool_live_loop 5,
   phase17_mainnet_state_verification 8.
+
+## Provider connectivity campaign (2026-11-13, same branch)
+
+Operator-supplied keys for Solami / Helius / Alchemy were wired into the
+gitignored `.env` (never committed) and probed from the sandbox. Results:
+
+| Provider / path | Result | Evidence |
+|---|---|---|
+| Solami RPC `rpc.solami.dev/sol` (SOLAMI_RPC_URL key) | **PASS** | `getHealth` HTTP 200 `"ok"`; `getSlot` returned live mainnet slot 468,776,472, RTT 21–39 ms over 3 samples |
+| Solami RPC `rpc.solami.dev/Solana` (SOLAMI_API_KEY) | FAIL | HTTP 401 — that key is the Yellowstone gRPC x-token, not an RPC key |
+| Solami WS `wss://ws.solami.dev/ws/sol` (operator WS key) | FAIL | HTTP 400 on the raw handshake (path/protocol mismatch, not auth) |
+| Solami WS `wss://ws.solami.dev/data/subscribe` (default path) | FAIL | HTTP 403 with operator WS key, 401 with API key |
+| Alchemy RPC `solana-mainnet.g.alchemy.com/v2/<key>` | FAIL | HTTP 401 `Must be authenticated!` — operator key (26 chars) rejected on RPC and WS alike |
+| Helius RPC/WSS | PASS (existing) | used by every prior smoke run; 429s handled with cooldown/rotation |
+
+- **Fix shipped**: role-separated Solami WebSocket key. `resolve_ws_key()` in
+  `arb-ingest/src/solami_stream.rs` resolves the stream key as explicit
+  `SOLAMI_WS_API_KEY` → `api_key` embedded in `SOLAMI_WS_URL` →
+  `SOLAMI_API_KEY` (legacy behavior). Previously the code stripped query
+  params from `SOLAMI_WS_URL`, silently discarding an operator-supplied WS
+  key.
+- **Regression tests** (`cargo test -p arb-ingest --lib`):
+  `resolve_ws_key_prefers_explicit_override`,
+  `resolve_ws_key_extracts_embedded_url_param`,
+  `resolve_ws_key_falls_back_to_general_api_key`.
+- **Campaign on final tree**: fmt clean; clippy `-D warnings` clean;
+  **961 passed / 0 failed** workspace-wide.
+- **Provider matrix documented** in `.env.example` (Helius + Alchemy +
+  Solami, RPC + WS + Yellowstone gRPC, with the exact auto-built URL forms).
+  Real key values live only in the gitignored `.env`.
+- **Open operator actions**: a valid Alchemy key (current one is rejected),
+  the correct Solami WS path/protocol, and `SOLAMI_GRPC_ENDPOINT` to exercise
+  the Solami Yellowstone x-token. Until then Helius remains the only verified
+  market-data provider and the RPC pool rotates Helius + Solami RPC.
