@@ -477,8 +477,12 @@ mod raydium_tests {
             gamma in 9_000..10_000u128,
         ) {
             if let Some(out) = cpmm_out(dx, x, y, gamma) {
-                assert!(out > 0);
                 assert!(out <= y);
+                if out == 0 {
+                    // Floor-rounded dust output is only valid when the exact
+                    // quotient is below 1: gamma*dx*y < denom.
+                    assert!(gamma * dx * y < 10_000 * x + gamma * dx);
+                }
             }
         }
 

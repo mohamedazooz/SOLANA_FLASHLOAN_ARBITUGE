@@ -250,6 +250,21 @@ pub enum DexProtocol {
 }
 
 impl DexProtocol {
+    /// Canonical protocol name used by the route monitor, web API and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RaydiumV4 => "raydium_v4",
+            Self::RaydiumCpmm => "raydium_cpmm",
+            Self::RaydiumClmm => "raydium_clmm",
+            Self::OrcaWhirlpool => "orca_whirlpool",
+            Self::MeteoraDlmm => "meteora_dlmm",
+            Self::MeteoraDammV2 => "meteora_damm_v2",
+            Self::RaydiumLaunchLab => "raydium_launchlab",
+            Self::PumpFun => "pump_fun",
+            Self::PumpSwap => "pump_swap",
+        }
+    }
+
     /// Pricing family. Determines which curve the quote model must use.
     ///
     /// Program ids live only in `arb-constants` (single source of truth); this

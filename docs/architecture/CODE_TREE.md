@@ -137,11 +137,12 @@ SOLANA_FLASHLOAN_ARBITUGE/
 │
 ├── web/                           React + TypeScript + Vite control app
 │   └── src/
-│       ├── App.tsx                sections A–I, WS with backoff+jitter reconnect
+│       ├── App.tsx                sections A–I + J (Route Monitor), WS with
+│       │                          backoff+jitter reconnect
 │       ├── api.ts                 REST client
 │       ├── components/            Overview, Opportunities, Pools, Executions,
-│       │                          StrategyConfig, Providers, RiskControl, Logs,
-│       │                          TelegramPanel, Login
+│       │                          StrategyConfig, Providers, RouteMonitor,
+│       │                          RiskControl, Logs, TelegramPanel, Login
 │       └── styles.css
 │
 ├── docs/                          see docs/README.md (architecture/ operations/

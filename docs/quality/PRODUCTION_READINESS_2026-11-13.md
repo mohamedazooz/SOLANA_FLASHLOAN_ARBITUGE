@@ -102,7 +102,7 @@ model). E2E-verified: login → authenticated REST → WS upgrade with `?token=`
 | ~~R10~~ | ✅ CLOSED — arb-tx lib split into flash/protocols/primitives/transport | maintainability | — |
 | ~~R12~~ | ✅ CLOSED — `dispatch_intents` persisted; startup reconciliation polls statuses, marks expired only on slot proof, never resubmits | C | — |
 | — | ≥24 h shadow soak with Helius WSS | validation | required before SHADOW VALIDATED |
-| — | Cross-DEX 3-pool live-loop enumeration (builders exist + tested; loop is same-protocol DLMM) | feature | limits opportunity surface |
+| — | Specialized 3-leg optimizer remains DLMM-only by design; cross-DEX 3/4-pool cycles are covered by the unified graph path with per-pool fee ranking (tested 2026-11-13: `cross_dex_three_pool_live_loop.rs`, 5 tests incl. a DLMM→CPMM→Orca→V4 cycle) | documented limitation | specialized 3-leg economics apply to DLMM cycles only |
 
 ## 8. LIVE / NO-LIVE recommendation
 

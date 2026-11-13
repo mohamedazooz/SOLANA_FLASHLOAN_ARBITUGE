@@ -84,6 +84,12 @@ export interface LogRecord {
   message: string;
 }
 
+export interface ProtocolCoverage {
+  protocol: string;
+  pools: number;
+  avg_fee_bps: number;
+}
+
 export const api = {
   login: (password: string) =>
     request<{ token: string; expires_at_unix: number }>("/api/login", {
@@ -97,6 +103,7 @@ export const api = {
   logs: () => request<LogRecord[]>("/api/logs"),
   pnl: () => request<Record<string, unknown>>("/api/pnl"),
   providers: () => request<Record<string, unknown>>("/api/providers"),
+  routes: () => request<ProtocolCoverage[]>("/api/routes"),
   config: () => request<Record<string, unknown>>("/api/config"),
   updateConfig: (overrides: Record<string, unknown>) =>
     request<{ ok: boolean }>("/api/config", {

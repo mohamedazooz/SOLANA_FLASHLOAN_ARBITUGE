@@ -82,6 +82,7 @@ pub struct StatusSnapshot {
     pub net_pnl_sol: f64,
     pub started_at_unix: u64,
     pub uptime_secs: u64,
+    pub route_coverage: Vec<ProtocolCoverage>,
 }
 
 struct ControlInner {
@@ -104,6 +105,16 @@ struct ControlInner {
     overrides: Mutex<ConfigOverrides>,
 }
 
+/// Per-protocol route coverage published by the supervisor for the unified
+/// route monitor (web section J / Telegram companion). Fees are the registry's
+/// per-pool swap fee in basis points, averaged over that protocol's pools.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProtocolCoverage {
+    pub protocol: String,
+    pub pools: usize,
+    pub avg_fee_bps: f64,
+}
+
 /// Read-only view of supervisor state, refreshed by the supervisor loop.
 /// Stored as data (not closures) so the control service never locks the
 /// supervisor itself.
@@ -113,6 +124,7 @@ pub struct ControlDeps {
     pub pools_tracked: usize,
     pub stream_connected: bool,
     pub helius_connected: bool,
+    pub route_coverage: Vec<ProtocolCoverage>,
 }
 
 #[derive(Debug, Clone)]
@@ -291,7 +303,13 @@ impl ControlService {
             net_pnl_sol,
             started_at_unix: now_unix().saturating_sub(self.inner.started_at.elapsed().as_secs()),
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
+            route_coverage: deps.route_coverage,
         }
+    }
+
+    /// Per-protocol route coverage for the dedicated route monitor endpoint.
+    pub fn route_coverage(&self) -> Vec<ProtocolCoverage> {
+        self.inner.state.lock().route_coverage.clone()
     }
 
     pub fn opportunities(&self, limit: usize) -> Vec<OpportunityRecord> {

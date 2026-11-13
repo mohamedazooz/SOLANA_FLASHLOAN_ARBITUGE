@@ -455,7 +455,34 @@ impl Supervisor {
             pools_tracked: self.ingest.snapshot().pool_count(),
             stream_connected: self.ingest.stream_connected(),
             helius_connected: self.ingest.helius_connected(),
+            route_coverage: self.route_coverage(),
         });
+    }
+
+    /// Per-protocol route coverage for the route monitor: one cheap pass over
+    /// the registry (protocol + fee_bps only, no PoolState clones).
+    fn route_coverage(&self) -> Vec<crate::control_service::ProtocolCoverage> {
+        use std::collections::BTreeMap;
+        let registry = self.registry.read();
+        let mut acc: BTreeMap<&'static str, (usize, u64)> = BTreeMap::new();
+        for p in registry.pools() {
+            let entry = acc.entry(p.protocol.as_str()).or_default();
+            entry.0 += 1;
+            entry.1 += u64::from(p.fee_bps);
+        }
+        acc.into_iter()
+            .map(
+                |(protocol, (pools, fee_sum))| crate::control_service::ProtocolCoverage {
+                    protocol: protocol.to_string(),
+                    pools,
+                    avg_fee_bps: if pools > 0 {
+                        fee_sum as f64 / pools as f64
+                    } else {
+                        0.0
+                    },
+                },
+            )
+            .collect()
     }
 
     /// Fold one accepted block-engine round trip into the latency model.

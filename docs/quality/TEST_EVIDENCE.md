@@ -96,6 +96,49 @@ against this exact tree may be marked PASS.
 - Live Lock: `ARB_LIVE=1` master gate remains protected and enforced.
 - Result: **PASS across entire codebase.**
 
+## Run: 2026-11-13 — cross-DEX route connectivity, route monitor, benchmark, dependency audit
+
+- **Cross-DEX route connectivity** (`crates/arb-engine/tests/cross_dex_three_pool_live_loop.rs`):
+  5 tests, all pass.
+  - 3-pool cycle DLMM → CPMM → V4 discovered by the unified
+    `MarketGraph::find_multi_hop_cycles` path with exact mint continuity and
+    per-hop protocol metadata.
+  - 4-protocol cycle DLMM → CPMM → Orca Whirlpool (CLMM) → Raydium V4 — all
+    executable platforms connected in one route.
+  - Per-pool fee ranking: with two parallel CPMM pools (25 bps vs 200 bps) the
+    cheap pool ranks first by net profit (multigraph exploration).
+  - Per-pool fee accounting: `HopQuote::fee_paid` reflects each pool's own
+    configured fee (CPMM bps; Whirlpool native fee rate).
+  - Adapter-chain quote: WSOL → A → B → WSOL quoted per protocol through the
+    adapter registry with positive chained output.
+- **Property-test flake fixed** (`arb-math/tests/differential.rs::prop_cpmm_output_bounds`):
+  the `out > 0` assertion was wrong for floor-rounded dust trades
+  (minimal failing input `dx=1, x=4, y=1, gamma=9000` → exact quotient < 1);
+  invariant corrected to `out <= y` plus a dust-condition proof.
+- **Full campaign**: `cargo fmt --all -- --check` clean; `cargo clippy
+  --workspace --all-targets -- -D warnings` 0 warnings; `cargo test -q
+  --workspace --all-targets` (with `.env` sourced) → **946 passed / 0 failed**.
+- **Performance benchmark** (`cargo run --release -p arb-bot --bin latency-bench`,
+  real mainnet bytes + live blockhash + Helius RPC):
+  Raydium v4 decode 4 ns/op; Orca decode 2 ns/op; `optimal_two_pool` 289 ns/op;
+  Ed25519 signing + wire 14.7 µs/op; Helius RPC RTT avg 18.43 ms
+  (min 12.40 / max 29.86); Jito block-engine probes 66–733 ms (Amsterdam
+  fastest). Critical path dominated by network RTT, not local compute.
+- **Dependency audit** (`cargo-audit` 0.23, 1490 advisories, 878 locked crates):
+  0 critical/high. 3 medium, all transitive, none with a semver-compatible fix
+  (verified via `cargo update --dry-run`):
+  RUSTSEC-2026-0459 `libsqlite3-sys 0.30.1` (via rusqlite/sqlx → arb-store;
+  fix needs rusqlite ≥0.38/sqlx bump — deferred, storage-layer breaking),
+  RUSTSEC-2024-0437 `protobuf 2.28.0` (via prometheus → arb-metrics; needs
+  prometheus upgrade), RUSTSEC-2025-XXXX `rsa 0.9.10` Marvin Attack (lockfile
+  entry with no inverse path in the current target graph per `cargo tree
+  --target all -i`). 5 unmaintained warnings (ansi_term, bincode, derivative,
+  libsecp256k1, paste) — no fixes available upstream.
+- **Route monitor added**: supervisor publishes per-protocol coverage
+  (pools + avg fee bps) → `ControlDeps`/`StatusSnapshot` → `GET /api/routes`
+  + web section **J · Route Monitor** (`web/src/components/RouteMonitor.tsx`).
+  `cargo check -p arb-bot` clean; `web` `tsc --noEmit` + `npm run build` pass.
+
 ## Required next evidence run
 
 Run `bash scripts/verify-linux.sh` on Linux with Rust 1.99.1 and cargo-deny installed.

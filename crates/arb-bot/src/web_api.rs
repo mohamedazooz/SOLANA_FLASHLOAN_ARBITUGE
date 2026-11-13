@@ -254,6 +254,13 @@ async fn providers(State(state): State<WebState>, headers: HeaderMap) -> Respons
     Json(state.control.providers()).into_response()
 }
 
+async fn routes(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = authed(&state, &headers) {
+        return resp;
+    }
+    Json(state.control.route_coverage()).into_response()
+}
+
 async fn config_get(State(state): State<WebState>, headers: HeaderMap) -> Response {
     if let Err(resp) = authed(&state, &headers) {
         return resp;
@@ -452,6 +459,7 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/logs", get(logs))
         .route("/api/pnl", get(pnl))
         .route("/api/providers", get(providers))
+        .route("/api/routes", get(routes))
         .route("/api/config", get(config_get).post(config_post))
         .route("/api/control/{action}", post(control_post))
         .route("/api/ws", get(ws_events))

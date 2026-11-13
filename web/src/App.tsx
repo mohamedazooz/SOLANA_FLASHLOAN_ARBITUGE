@@ -8,6 +8,7 @@ import Pools from "./components/Pools";
 import Executions from "./components/Executions";
 import StrategyConfig from "./components/StrategyConfig";
 import Providers from "./components/Providers";
+import RouteMonitor from "./components/RouteMonitor";
 import RiskControl from "./components/RiskControl";
 import Logs from "./components/Logs";
 import TelegramPanel from "./components/TelegramPanel";
@@ -20,6 +21,7 @@ const SECTIONS: { id: string; label: string; el: (status: StatusSnapshot | null,
   { id: "executions", label: "D · Execution Monitor", el: () => <Executions /> },
   { id: "strategy", label: "E · Strategy Config", el: (_s, reload) => <StrategyConfig onSaved={reload} /> },
   { id: "providers", label: "F · Providers", el: () => <Providers /> },
+  { id: "routes", label: "J · Route Monitor", el: () => <RouteMonitor /> },
   { id: "risk", label: "G · Risk & Emergency", el: (s, reload) => <RiskControl status={s} onChanged={reload} /> },
   { id: "logs", label: "H · Logs & Analytics", el: () => <Logs /> },
   { id: "telegram", label: "I · Telegram", el: () => <TelegramPanel /> },

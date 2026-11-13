@@ -57,6 +57,7 @@ Axum REST+WS API, one React dashboard. Telegram and the web app call the **same*
 | GET | `/api/logs` | Bearer | bounded log ring |
 | GET | `/api/pnl` | Bearer | realized counters (quote-time economics only) |
 | GET | `/api/providers` | Bearer | provider health snapshot |
+| GET | `/api/routes` | Bearer | per-protocol route coverage (pools, avg fee bps) |
 | GET | `/api/config` | Bearer | active strategy config + overrides |
 | POST | `/api/config` | Bearer | validated `ConfigOverrides` merge |
 | POST | `/api/control/{action}` | Bearer | `status/start/stop/shadow/paper/live/opportunities/pnl/providers/config/emergency-stop/clear-emergency-stop` |
@@ -84,6 +85,11 @@ G **Risk & Emergency** — start/stop/shadow/paper; live requires typing
 `CONFIRM-LIVE`; emergency stop engage/clear.
 H **Logs & Analytics** — live logs + counters.
 I **Telegram** — connectivity, recent commands/alerts.
+J **Route Monitor** — per-protocol route coverage published by the supervisor
+each cycle from the live registry: pool count, share of tracked pools, average
+per-pool swap fee in bps, and routability. Cross-protocol cycles are enumerated
+by the unified multi-hop graph and priced per hop with each pool's own fee
+model; a protocol with zero registered pools contributes no edges.
 
 Frontend polls REST every 5 s and applies WS pushes live; WS reconnects with
 backoff and re-authenticates via `?token=`.
