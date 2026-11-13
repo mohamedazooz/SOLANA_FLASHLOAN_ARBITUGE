@@ -305,6 +305,27 @@ impl Supervisor {
         );
         let disc = arb_ingest::PoolDiscovery::new(self.rpc_pool.clone());
         let mut disc_cfg = arb_ingest::DiscoveryConfig::default();
+        // Hot-meme extension without recompiling: `ARB_DISCOVERY_HUBS` is a
+        // comma-separated list of mint pubkeys merged into the default hub set
+        // (dedup). Invalid entries are logged and skipped — discovery never
+        // fails closed because of a malformed env value.
+        if let Ok(hubs_raw) = std::env::var("ARB_DISCOVERY_HUBS") {
+            for raw in hubs_raw.split(',') {
+                let mint = raw.trim();
+                if mint.is_empty() {
+                    continue;
+                }
+                match Pubkey::from_str(mint) {
+                    Ok(pk) => {
+                        let id = arb_types::MintId(pk);
+                        if !disc_cfg.hub_mints.contains(&id) {
+                            disc_cfg.hub_mints.push(id);
+                        }
+                    }
+                    Err(_) => warn!("ARB_DISCOVERY_HUBS: skipping invalid mint '{mint}'"),
+                }
+            }
+        }
         let max_per_venue = self.config.strategy.max_per_venue.unwrap_or(33);
         disc_cfg.max_per_venue = max_per_venue;
         disc_cfg.min_tvl_usd = self
