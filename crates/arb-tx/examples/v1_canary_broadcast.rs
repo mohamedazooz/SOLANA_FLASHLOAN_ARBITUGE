@@ -187,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(v) => (
             v.get("value")
                 .and_then(|x| x.get("err"))
-                .map_or(true, |e| e.is_null()),
+                .is_none_or(|e| e.is_null()),
             v.get("value")
                 .and_then(|x| x.get("err"))
                 .filter(|e| !e.is_null())
@@ -278,7 +278,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let evidence = json!({
-        "generated_at_unix": started.elapsed().as_secs() + 0,
+        "generated_at_unix": started.elapsed().as_secs(),
         "transport": endpoint,
         "transaction_version": "V1",
         "version_byte": version_byte,
