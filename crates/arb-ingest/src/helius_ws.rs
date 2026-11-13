@@ -26,7 +26,27 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-const MAX_WS_ACCOUNT_SUBS: usize = 48;
+/// Hard ceiling on concurrent `accountSubscribe` streams per connection.
+///
+/// With 160+ registered pools this budget is the binding coverage constraint:
+/// every Raydium V4/CPMM pool consumes TWO subscriptions (base + quote vault)
+/// and every Orca/DLMM pool consumes ONE (pool account), so the historical
+/// default of 48 left most of the registered market graph permanently blind —
+/// those pools keep their zero-value discovery-time state, the graph
+/// freshness filter drops them, and `find_base_cycles` sees no WSOL-anchored
+/// cycles (measured: 49/320 directed edges, 0 opportunities in a 3-min run).
+///
+/// Overridable via `WS_MAX_ACCOUNT_SUBS`. Raising it is safe against
+/// restrictive providers: a rejected subscription flips `account_sub_limited`
+/// and the worker stops queueing (fail-closed, no teardown loop).
+fn max_ws_account_subs() -> usize {
+    std::env::var("WS_MAX_ACCOUNT_SUBS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(48)
+        .min(1_024)
+}
 
 pub struct HeliusWsClient {
     pub ws_urls: Vec<String>,
@@ -262,6 +282,33 @@ impl HeliusWsClient {
         }
     }
 
+    /// Subscription-priority score for a tracked account: 0 when the account
+    /// belongs to a pool paired with the WSOL base anchor (vault accounts map
+    /// through `vault_to_pools`; pool accounts are their own `PoolId`),
+    /// 1 otherwise. O(1) map lookups, no allocation on the hot path.
+    fn account_wsol_linkage(&self, acc: &Pubkey) -> u8 {
+        let wsol = match Pubkey::from_str(arb_constants::WSOL_MINT) {
+            Ok(k) => k,
+            Err(_) => return 1,
+        };
+        let pools_of = |pool_id: &PoolId| {
+            self.registered_pools
+                .read()
+                .get(pool_id)
+                .map(|p| p.base_mint.0 == wsol || p.quote_mint.0 == wsol)
+                .unwrap_or(false)
+        };
+        if let Some(targets) = self.vault_to_pools.read().get(acc) {
+            if targets.iter().any(|(id, _)| pools_of(id)) {
+                return 0;
+            }
+        }
+        if pools_of(&PoolId(*acc)) {
+            return 0;
+        }
+        1
+    }
+
     pub fn current_slot(&self) -> u64 {
         self.latest_slot.load(Ordering::Acquire)
     }
@@ -443,7 +490,16 @@ impl HeliusWsClient {
                                 .copied()
                                 .collect()
                         };
-                        raw.into_iter().take(MAX_WS_ACCOUNT_SUBS).collect()
+                        // Subscription priority: accounts of pools paired with a
+                        // base anchor (WSOL) first. `find_base_cycles` only emits
+                        // opportunities for cycles that start and end at a base
+                        // anchor, so under a tight subscription budget every slot
+                        // spent on a pool that cannot close a WSOL cycle is a slot
+                        // taken from one that can. Stable sort keeps discovery
+                        // order inside each tier.
+                        let mut raw = raw;
+                        raw.sort_by_key(|acc| self.account_wsol_linkage(acc));
+                        raw.into_iter().take(max_ws_account_subs()).collect()
                     };
                     let mut next_req_id = 100u64;
                     if let Some(first_acc) = pending_subs.pop_front() {
@@ -1030,5 +1086,108 @@ mod tests {
         assert_eq!(updated.slot, Slot(101));
         assert_eq!(updated.reserve_in, 3_500_000);
         assert_eq!(updated.reserve_out, 2_000_000);
+    }
+
+    /// Serializes the env-mutating `max_ws_account_subs` tests: cargo runs
+    /// tests in parallel threads and `std::env::set_var` is process-global.
+    static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    #[test]
+    fn max_ws_account_subs_parses_env_rejects_zero_and_caps() {
+        let _guard = ENV_LOCK.lock();
+
+        // Safety: `set_var`/`remove_var` are unsafe in edition 2024 because
+        // concurrent readers observe UB; every reader of `WS_MAX_ACCOUNT_SUBS`
+        // in this test binary runs under `ENV_LOCK`, so the mutation is
+        // serialized against all reads.
+        unsafe {
+            // Unset -> historical default 48.
+            std::env::remove_var("WS_MAX_ACCOUNT_SUBS");
+        }
+        assert_eq!(max_ws_account_subs(), 48);
+
+        // Valid override passes through.
+        unsafe {
+            std::env::set_var("WS_MAX_ACCOUNT_SUBS", "512");
+        }
+        assert_eq!(max_ws_account_subs(), 512);
+
+        // Provider fail-safe ceiling: never exceed 1024 account subs.
+        unsafe {
+            std::env::set_var("WS_MAX_ACCOUNT_SUBS", "9999");
+        }
+        assert_eq!(max_ws_account_subs(), 1_024);
+
+        // 0 would mean "subscribe to nothing" -> rejected, default applies.
+        unsafe {
+            std::env::set_var("WS_MAX_ACCOUNT_SUBS", "0");
+        }
+        assert_eq!(max_ws_account_subs(), 48);
+
+        // Garbage parses to nothing -> default.
+        unsafe {
+            std::env::set_var("WS_MAX_ACCOUNT_SUBS", "not-a-number");
+        }
+        assert_eq!(max_ws_account_subs(), 48);
+
+        unsafe {
+            std::env::remove_var("WS_MAX_ACCOUNT_SUBS");
+        }
+    }
+
+    #[test]
+    fn account_wsol_linkage_prioritizes_wsol_pools_over_others() {
+        let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+
+        // Orca pool paired against WSOL: registers the pool account only.
+        let wsol_pool = RegisteredPool {
+            pool_id: PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::OrcaWhirlpool,
+            base_mint: MintId(wsol),
+            quote_mint: MintId(Pubkey::new_unique()),
+            decimals_a: 9,
+            decimals_b: 6,
+            base_vault: Pubkey::new_unique(),
+            quote_vault: Pubkey::new_unique(),
+            fee_bps: 25,
+        };
+        client.register_pool(&wsol_pool);
+        assert_eq!(client.account_wsol_linkage(&wsol_pool.pool_id.0), 0);
+
+        // Raydium pool paired against WSOL: both vaults map through
+        // `vault_to_pools` and must score 0 (they cost 2 sub slots each).
+        let raydium_pool = RegisteredPool {
+            pool_id: PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::RaydiumV4,
+            base_mint: MintId(Pubkey::new_unique()),
+            quote_mint: MintId(wsol),
+            decimals_a: 6,
+            decimals_b: 9,
+            base_vault: Pubkey::new_unique(),
+            quote_vault: Pubkey::new_unique(),
+            fee_bps: 25,
+        };
+        client.register_pool(&raydium_pool);
+        assert_eq!(client.account_wsol_linkage(&raydium_pool.base_vault), 0);
+        assert_eq!(client.account_wsol_linkage(&raydium_pool.quote_vault), 0);
+
+        // Non-WSOL pool (USDC/USDT style) still gets subscribed, just last.
+        let non_wsol_pool = RegisteredPool {
+            pool_id: PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::OrcaWhirlpool,
+            base_mint: MintId(Pubkey::new_unique()),
+            quote_mint: MintId(Pubkey::new_unique()),
+            decimals_a: 6,
+            decimals_b: 6,
+            base_vault: Pubkey::new_unique(),
+            quote_vault: Pubkey::new_unique(),
+            fee_bps: 25,
+        };
+        client.register_pool(&non_wsol_pool);
+        assert_eq!(client.account_wsol_linkage(&non_wsol_pool.pool_id.0), 1);
+
+        // Untracked account: no linkage, lowest priority.
+        assert_eq!(client.account_wsol_linkage(&Pubkey::new_unique()), 1);
     }
 }

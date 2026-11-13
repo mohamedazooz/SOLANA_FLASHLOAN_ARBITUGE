@@ -121,6 +121,34 @@ impl PacedAccountFetcher {
         Self::new(endpoints, max_concurrent, min_interval_ms)
     }
 
+    /// Places endpoint `idx` on cooldown and emits the failure warning ONLY on
+    /// the no-cooldown → cooldown state transition.
+    ///
+    /// Why: with `max_concurrent` in-flight requests, several tasks can select
+    /// the same endpoint before any cooldown insert lands; each 429 response
+    /// then hits this path. Under a rate-limited fallback this produced
+    /// ~39,500 WARN lines in a 3-minute soak (~660/min). Gating the warn on
+    /// the transition (checked under the same `endpoint_cooldowns` lock as the
+    /// insert) collapses that to at most one line per cooldown cycle per
+    /// endpoint (60s for HTTP 429/5xx, 15s for transport errors) while
+    /// preserving the failover behavior exactly.
+    fn cooldown_and_warn(&self, idx: usize, url: &str, cooldown: Duration, detail: String) {
+        let mut guard = self.endpoint_cooldowns.lock();
+        let was_active = guard
+            .get(&idx)
+            .is_some_and(|cooldown_end| Instant::now() < *cooldown_end);
+        guard.insert(idx, Instant::now() + cooldown);
+        drop(guard);
+        if !was_active {
+            warn!(
+                "RPC endpoint {} failed ({}); placing on {}s cooldown and rotating",
+                url,
+                detail,
+                cooldown.as_secs()
+            );
+        }
+    }
+
     pub async fn fetch_single_account(&self, pubkey: &Pubkey) -> Result<(u64, Vec<u8>)> {
         let _permit = self.semaphore.acquire().await.context("semaphore closed")?;
 
@@ -185,13 +213,12 @@ impl PacedAccountFetcher {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.as_u16() == 429 || status.is_server_error() {
-                        warn!(
-                            "RPC endpoint {} returned HTTP {}; placing on 60s cooldown and rotating",
-                            url, status
+                        self.cooldown_and_warn(
+                            idx,
+                            url,
+                            Duration::from_secs(60),
+                            format!("HTTP {status}"),
                         );
-                        self.endpoint_cooldowns
-                            .lock()
-                            .insert(idx, Instant::now() + Duration::from_secs(60));
                         continue;
                     }
                     if let Ok(json_val) = resp.json::<serde_json::Value>().await {
@@ -231,13 +258,12 @@ impl PacedAccountFetcher {
                     }
                 }
                 Err(e) => {
-                    warn!(
-                        "RPC request to {} failed: {e}; placing on 15s cooldown and rotating",
-                        url
+                    self.cooldown_and_warn(
+                        idx,
+                        url,
+                        Duration::from_secs(15),
+                        format!("transport error: {e}"),
                     );
-                    self.endpoint_cooldowns
-                        .lock()
-                        .insert(idx, Instant::now() + Duration::from_secs(15));
                     last_err = anyhow::anyhow!(e);
                     sleep(Duration::from_millis(50)).await;
                 }
@@ -358,13 +384,12 @@ impl PacedAccountFetcher {
                 Ok(resp) => {
                     let status = resp.status();
                     if status.as_u16() == 429 || status.is_server_error() {
-                        warn!(
-                            "RPC endpoint {} returned HTTP {}; placing on 60s cooldown and rotating",
-                            url, status
+                        self.cooldown_and_warn(
+                            idx,
+                            url,
+                            Duration::from_secs(60),
+                            format!("HTTP {status}"),
                         );
-                        self.endpoint_cooldowns
-                            .lock()
-                            .insert(idx, Instant::now() + Duration::from_secs(60));
                         continue;
                     }
                     if let Ok(json_val) = resp.json::<serde_json::Value>().await {
