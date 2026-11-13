@@ -168,6 +168,30 @@ fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("FATAL PANIC: {info}");
+        // Best-effort operator alert: the runtime may already be unwinding, so
+        // this uses a short-lived curl subprocess instead of the async client.
+        if let (Ok(token), Ok(chat)) = (
+            std::env::var("TELEGRAM_BOT_TOKEN"),
+            std::env::var("TELEGRAM_CHAT_ID"),
+        ) {
+            let text = format!("🚨 <b>FATAL PANIC — arb-bot stopped</b>\n<code>{info}</code>");
+            let _ = std::process::Command::new("curl")
+                .args([
+                    "-s",
+                    "-m",
+                    "5",
+                    "-X",
+                    "POST",
+                    &format!("https://api.telegram.org/bot{token}/sendMessage"),
+                    "-d",
+                    &format!("chat_id={chat}"),
+                    "--data-urlencode",
+                    &format!("text={text}"),
+                    "-d",
+                    "parse_mode=HTML",
+                ])
+                .output();
+        }
         default_hook(info);
     }));
 }

@@ -1,0 +1,63 @@
+{
+  "status": "PARTIAL_TIME_BOXED",
+  "mode": {
+    "ARB_MODE": "shadow",
+    "ARB_LIVE": "0",
+    "DRY_RUN": "true"
+  },
+  "rpc": "https://api.mainnet-beta.solana.com (public, no key)",
+  "transport": "HTTP polling + Jito tip WS (no geyser/WS slot feed in-session)",
+  "window": {
+    "start_utc": "2026-11-13T05:34:30.895",
+    "end_utc": "2026-11-13T05:37:20.875",
+    "duration_min": 5
+  },
+  "log_lines_total": 1598,
+  "log_levels": {
+    "INFO": 68,
+    "DEBUG": 31,
+    "WARN": 1494,
+    "ERROR": 5
+  },
+  "rpc_429_events": 1488,
+  "health_sweep_rpc_fail_ticks": 10,
+  "opportunities_emitted_for_signing": 0,
+  "transactions_broadcast": 0,
+  "signatures_created": 0,
+  "findings": [
+    "RPC rate-limit handling VERIFIED: HTTP 429 -> 60s cooldown + endpoint rotation (arb_ingest::registry), no retry storm, no crash",
+    "Health monitor VERIFIED: rpc=FAIL surfaced honestly while stream_ingest=ok, disk=ok, telegram=ok",
+    "Fail-closed VERIFIED: with all RPC endpoints cooling down, zero opportunities emitted, zero stale-cache fallbacks, zero broadcasts",
+    "Durable store VERIFIED: sqlite WAL written continuously (sentinel.db + -wal + -shm) under DATABASE_URL",
+    "Admin fail-closed VERIFIED: web API and /pause,/resume refuse to start without SENTINEL_ADMIN_KEY / WEB_ADMIN_PASSWORD",
+    "Jito tip stream VERIFIED: wss://bundles.jito.wtf connected, tip floor p50/p95 refreshed live (p50=1000-1085, p95=36964-127064 lamports)",
+    "BLOCKER: public-RPC getProgramAccounts burst during discovery exceeds public rate limits; >=24h soak requires operator RPC (Helius/DRPC) + geyser/WS feed"
+  ],
+  "raw_log_session_local": "/tmp/soak/soak.log",
+  "second_run_publicnode": {
+    "rpc_primary": "https://solana-rpc.publicnode.com",
+    "rpc_fallback": "https://api.mainnet-beta.solana.com",
+    "ws": "wss://solana-rpc.publicnode.com (connected, slot+account stream worker active)",
+    "duration_min": 9,
+    "discovery_completed": true,
+    "discovery_results": {
+      "orca": 297,
+      "raydium_v3": 233,
+      "meteora_dlmm_candidates": 34,
+      "pumpfun_curves_paired": 70
+    },
+    "rpc_429_from_publicnode": 0,
+    "rpc_429_from_fallback": 16801,
+    "publicnode_cooldown_events": "entered cooldown ~2.5min in under discovery burst (non-429), rotated to fallback, both fail-closed",
+    "strategy_ticks_fail_closed": true,
+    "opportunities_emitted_for_signing": 0,
+    "transactions_broadcast": 0,
+    "findings": [
+      "publicnode carried FULL discovery to completion (Orca 297 / Raydium v3 233 / Meteora DLMM 34 / Pump.fun 70) with ZERO HTTP 429 \u2014 5x further than api.mainnet-beta which 429'd immediately",
+      "WSS verified: 'WebSocket [1/1] connected to mainnet via wss://solana-rpc.publicnode.com', WS ingestion engine active",
+      "publicnode also rate-limits eventually (non-429, ~2.5min under getProgramAccounts burst) -> continuous operation still requires operator RPC",
+      "Fail-closed chain verified end-to-end: stale pools -> 'No fresh pools within graph max age; skipping tick (fail closed)'; missing SOL/USD -> 'skip graph sizing'",
+      "Pump.fun recent-coins frontend API returned 403 from sandbox IP (not RPC); multi-venue pairing still paired 70 curves"
+    ]
+  }
+}

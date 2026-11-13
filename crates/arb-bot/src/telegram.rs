@@ -250,6 +250,8 @@ impl TelegramNotifier {
         leader: &str,
         cu_limit: u32,
         priority_fee_micro_lamports: u64,
+        price_impact_bps: u16,
+        active_bins: &[Option<i32>],
     ) {
         // Individual alerts are ON by default; set
         // TELEGRAM_SILENCE_INDIVIDUAL_ALERTS=true to suppress them when the
@@ -278,11 +280,25 @@ impl TelegramNotifier {
         } else {
             leader
         };
+        let bins_display = if active_bins.is_empty() {
+            "N/A".to_string()
+        } else {
+            active_bins
+                .iter()
+                .map(|b| match b {
+                    Some(id) => id.to_string(),
+                    None => "-".to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" → ")
+        };
         let msg = format!(
             "🎯 <b>فرصة مربحة (محاكاة ناجحة > $1.00)</b>\n\n\
              🛣️ <b>المسار:</b> <code>{}</code>\n\
              💎 <b>الربح الصافي المتوقع:</b> +{:.6} SOL (~${:.2})\n\
              📈 <b>الإجمالي قبل التكاليف:</b> {:.6} SOL\n\
+             📉 <b>أثر السعر:</b> {} bps\n\
+             🎚️ <b>الأبناء النشيطة (DLMM):</b> <code>{}</code>\n\
              🧊 <b>السلوت:</b> <code>{}</code>\n\
              🔗 <b>Blockhash:</b> <code>{}...</code>\n\
              👑 <b>Jito Leader:</b> <code>{}...</code>\n\
@@ -292,6 +308,8 @@ impl TelegramNotifier {
             net_sol,
             net_usd,
             gross_sol,
+            price_impact_bps,
+            bins_display,
             slot,
             esc(bh_short),
             esc(leader_short),

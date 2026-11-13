@@ -1,0 +1,9 @@
+[Unit]
+Description=arb-bot watchdog health probe
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__HOME__/SOLANA_FLASHLOAN_ARBITUGE
+ExecStart=__HOME__/SOLANA_FLASHLOAN_ARBITUGE/scripts/arb_bot_watchdog.sh
