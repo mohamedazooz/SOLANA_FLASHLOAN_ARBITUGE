@@ -11,13 +11,16 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
 pub mod config;
+pub mod control_service;
 pub mod errors;
 pub mod health_monitor;
 pub mod heartbeat;
 pub mod jito_service;
 pub mod supervisor;
 pub mod telegram;
+pub mod telegram_control;
 pub mod verified_config;
+pub mod web_api;
 
 /// Supported operational modes for the bot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +29,19 @@ pub enum BotMode {
     Simulate,
     Live,
     Canary,
+}
+
+impl BotMode {
+    /// Runtime mode transitions go through a shared `AtomicU8` so the unified
+    /// control service can switch shadow/paper/live without a restart.
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => BotMode::Simulate,
+            2 => BotMode::Live,
+            3 => BotMode::Canary,
+            _ => BotMode::Shadow,
+        }
+    }
 }
 
 impl std::str::FromStr for BotMode {
@@ -324,7 +340,9 @@ async fn main() -> Result<()> {
     info!("TRACE MAIN 1: before Supervisor::new");
     let admin_listen = config.admin.listen.clone();
     let admin_token_env = config.admin.token_env.clone();
-    let supervisor = supervisor::Supervisor::new(args.mode, config);
+    let supervisor_mode_atomic = Arc::new(std::sync::atomic::AtomicU8::new(args.mode as u8));
+    let supervisor =
+        supervisor::Supervisor::with_mode_atomic(Arc::clone(&supervisor_mode_atomic), config);
     let admin_kill_switch = supervisor.kill_switch();
 
     // Operator authentication is mandatory for every mutating admin route.
@@ -423,85 +441,38 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Start Embedded HFT Web Dashboard on 127.0.0.1:8080 (or DASHBOARD_LISTEN)
-    let dashboard_listen =
-        std::env::var("DASHBOARD_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    let ks_dash = supervisor.kill_switch();
-    let mode_dash = args.mode;
-    let ingest_dash = supervisor.ingest();
+    // Unified control service: one command layer shared by the web app and
+    // Telegram. Attached to the supervisor before run so the loop publishes
+    // live state into it.
+    let audit_path =
+        std::env::var("WEB_AUDIT_LOG").unwrap_or_else(|_| "data/web_audit.log".to_string());
+    let control = Arc::new(control_service::ControlService::new(
+        Arc::clone(&supervisor_mode_atomic),
+        supervisor.kill_switch(),
+        audit_path,
+    ));
+    supervisor.attach_control(Arc::clone(&control));
 
-    tokio::spawn(async move {
-        let app = axum::Router::new()
-            .route(
-                "/",
-                axum::routing::get(|| async {
-                    match std::fs::read_to_string("dashboard/index.html") {
-                        Ok(html) => axum::response::Html(html),
-                        Err(_) => axum::response::Html(
-                            include_str!("../../../dashboard/index.html").to_string(),
-                        ),
-                    }
-                }),
-            )
-            .route(
-                "/dashboard",
-                axum::routing::get(|| async {
-                    match std::fs::read_to_string("dashboard/index.html") {
-                        Ok(html) => axum::response::Html(html),
-                        Err(_) => axum::response::Html(
-                            include_str!("../../../dashboard/index.html").to_string(),
-                        ),
-                    }
-                }),
-            )
-            .route(
-                "/api/telemetry",
-                axum::routing::get({
-                    let ks = Arc::clone(&ks_dash);
-                    let ingest = Arc::clone(&ingest_dash);
-                    move || {
-                        let ks = Arc::clone(&ks);
-                        let ingest = Arc::clone(&ingest);
-                        async move {
-                            let current_slot = ingest.current_slot().max(ingest.helius_slot());
-                            let pools = ingest.snapshot().snapshot_pools().len();
-                            let is_paused = ks.is_blocked();
-                            let sim_pnl = arb_metrics::get_simulated_net_profit_total();
-                            let real_pnl = arb_metrics::get_net_profit_total();
-                            let net_sol = if mode_dash == BotMode::Live {
-                                real_pnl
-                            } else {
-                                sim_pnl
-                            };
-                            let opp_count = arb_metrics::get_opportunities_total();
-
-                            let payload = serde_json::json!({
-                                "slot": current_slot,
-                                "mode": mode_dash.to_string(),
-                                "is_paused": is_paused,
-                                "pools": pools,
-                                "net_sol": net_sol,
-                                "net_usd": net_sol * 190.0,
-                                "tip_p50": 50000,
-                                "opportunities_count": opp_count,
-                                "events": []
-                            });
-                            axum::Json(payload)
-                        }
-                    }
-                }),
-            );
-
-        match tokio::net::TcpListener::bind(&dashboard_listen).await {
-            Ok(listener) => {
-                info!("⚡ Embedded HFT Web Dashboard running on http://{dashboard_listen}");
-                let _ = axum::serve(listener, app).await;
+    // Web application server (React frontend + authenticated REST/WS API).
+    // Binds localhost by default; remote access goes through a TLS reverse proxy.
+    let web_bind = std::env::var("WEB_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    {
+        let control = Arc::clone(&control);
+        tokio::spawn(async move {
+            match web_api::serve((*control).clone(), &web_bind).await {
+                Ok(()) => {}
+                Err(err) => warn!("Web API server stopped on {web_bind}: {err}"),
             }
-            Err(e) => {
-                warn!("Could not bind Dashboard HTTP Server on {dashboard_listen}: {e}");
-            }
-        }
-    });
+        });
+    }
+
+    // Telegram command listener: same unified control service as the web app.
+    {
+        let control = Arc::clone(&control);
+        tokio::spawn(async move {
+            telegram_control::run_listener(control).await;
+        });
+    }
 
     info!("TRACE MAIN 2: after Supervisor::new, before run");
     supervisor.run().await?;

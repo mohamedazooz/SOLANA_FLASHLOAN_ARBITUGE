@@ -60,7 +60,7 @@ struct CachedTemplate {
 }
 
 pub struct Supervisor {
-    mode: BotMode,
+    mode: Arc<std::sync::atomic::AtomicU8>,
     config: Config,
     ingest: Arc<IngestClient>,
     graph: parking_lot::Mutex<MarketGraph>,
@@ -112,10 +112,22 @@ pub struct Supervisor {
     pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
     pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
     pub recent_rejected: Arc<parking_lot::Mutex<Vec<crate::telegram::RejectedTradeSummary>>>,
+    /// Unified control service shared with the web API and Telegram. `None`
+    /// until main.rs attaches it (tests construct a supervisor without one).
+    pub control: std::sync::OnceLock<Arc<crate::control_service::ControlService>>,
 }
 
 impl Supervisor {
     pub fn new(mode: BotMode, config: Config) -> Self {
+        Self::with_mode_atomic(
+            Arc::new(std::sync::atomic::AtomicU8::new(mode as u8)),
+            config,
+        )
+    }
+
+    /// Constructor sharing an externally-owned mode atomic — the unified
+    /// control service writes to the same atomic to switch modes at runtime.
+    pub fn with_mode_atomic(mode: Arc<std::sync::atomic::AtomicU8>, config: Config) -> Self {
         info!("TRACE SUP 1: start");
         dotenvy::dotenv().ok();
         let limits = RiskLimits {
@@ -348,7 +360,7 @@ impl Supervisor {
 
         let heartbeat = Arc::new(crate::heartbeat::Heartbeat::new(
             crate::heartbeat::Heartbeat::path_from_env(),
-            mode.to_string(),
+            BotMode::from_u8(mode.load(std::sync::atomic::Ordering::Acquire)).to_string(),
         ));
         info!(
             "Heartbeat writer active: pid={} path={}",
@@ -389,6 +401,7 @@ impl Supervisor {
             recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_rejected: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            control: std::sync::OnceLock::new(),
         }
     }
 
@@ -407,8 +420,39 @@ impl Supervisor {
         Arc::clone(&self.heartbeat)
     }
 
+    /// Effective execution mode. Runtime-switchable through the shared atomic
+    /// so the unified control service (web + Telegram) can transition
+    /// shadow/paper/live without a restart.
     pub fn mode(&self) -> BotMode {
+        BotMode::from_u8(self.mode.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn set_mode(&self, mode: BotMode) {
         self.mode
+            .store(mode as u8, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Attaches the shared control service (called once from main before run).
+    pub fn attach_control(&self, control: Arc<crate::control_service::ControlService>) {
+        let _ = self.control.set(control);
+    }
+
+    fn control(&self) -> Option<&Arc<crate::control_service::ControlService>> {
+        self.control.get()
+    }
+
+    /// Publishes the current live-state view to the unified control service.
+    /// Cheap (small struct copy) and called once per loop iteration.
+    fn publish_control_state(&self, current_slot: Slot) {
+        let Some(control) = self.control() else {
+            return;
+        };
+        control.refresh_deps(crate::control_service::ControlDeps {
+            slot: current_slot.0,
+            pools_tracked: self.ingest.snapshot().pool_count(),
+            stream_connected: self.ingest.stream_connected(),
+            helius_connected: self.ingest.helius_connected(),
+        });
     }
 
     /// Fold one accepted block-engine round trip into the latency model.
@@ -499,7 +543,13 @@ impl Supervisor {
         if guard.len() >= 50 {
             guard.remove(0);
         }
+        let route = trade.route.clone();
         guard.push(trade);
+        drop(guard);
+        if let Some(control) = self.control() {
+            control.record_execution("landed", &route, "trade confirmed landed");
+            control.record_execution_result(true);
+        }
     }
 
     pub fn record_dropped_bundle(&self, dropped: crate::telegram::DroppedTradeSummary) {
@@ -507,12 +557,26 @@ impl Supervisor {
         if guard.len() >= 50 {
             guard.remove(0);
         }
+        let route = dropped.route.clone();
+        let status = dropped.reason.clone();
         guard.push(dropped);
+        drop(guard);
+        if let Some(control) = self.control() {
+            control.record_execution("dropped", &route, &status);
+            control.record_execution_result(false);
+        }
     }
 
     pub fn record_rejected_opportunity(&self, rejected: crate::telegram::RejectedTradeSummary) {
         self.heartbeat
             .observe_rejection(rejected.slot, &rejected.stage, &rejected.reason);
+        if let Some(control) = self.control() {
+            control.record_log(
+                "warn",
+                &rejected.stage,
+                format!("{}: {}", rejected.route, rejected.reason),
+            );
+        }
         let mut guard = self.recent_rejected.lock();
         if guard.len() >= 100 {
             guard.remove(0);
@@ -610,7 +674,7 @@ mod tests {
         let config_str = include_str!("../../../config/config.example.toml");
         let config: Config = toml::from_str(config_str).expect("Valid example config");
         let supervisor = Supervisor::new(BotMode::Shadow, config);
-        assert_eq!(supervisor.mode, BotMode::Shadow);
+        assert_eq!(supervisor.mode(), BotMode::Shadow);
     }
 
     fn pool_at(id: u8, last_update_slot: u64) -> PoolState {
