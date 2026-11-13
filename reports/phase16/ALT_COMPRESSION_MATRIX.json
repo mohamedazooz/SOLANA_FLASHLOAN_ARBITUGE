@@ -5,9 +5,8 @@
     "rungs": [
       {
         "bins_per_leg": 6,
-        "failure_reason": "transaction too large: 1349 bytes, limit 1232",
-        "fits_1232": false,
-        "v0_alt_bytes": null,
+        "fits_1232": true,
+        "v0_alt_bytes": 512,
         "v1_bytes": 2069
       }
     ],
@@ -15,11 +14,11 @@
   },
   {
     "compression_value_rung": {
-      "account_count": 47,
-      "bins_per_leg": 4,
-      "bytes_saved_vs_v1": 720,
-      "v0_alt_bytes": 1151,
-      "v1_inline_bytes": 1871
+      "account_count": 65,
+      "bins_per_leg": 10,
+      "bytes_saved_vs_v1": 1929,
+      "v0_alt_bytes": 536,
+      "v1_inline_bytes": 2465
     },
     "instrument": "real_three_pool_dlmm_route",
     "invariants_proven": [
@@ -35,7 +34,7 @@
         "v0_alt": {
           "alt_addresses": 37,
           "fits_1232": true,
-          "serialized_size_bytes": 854,
+          "serialized_size_bytes": 482,
           "version": "V0"
         },
         "v0_bare": {
@@ -57,7 +56,7 @@
         "v0_alt": {
           "alt_addresses": 40,
           "fits_1232": true,
-          "serialized_size_bytes": 953,
+          "serialized_size_bytes": 488,
           "version": "V0"
         },
         "v0_bare": {
@@ -79,7 +78,7 @@
         "v0_alt": {
           "alt_addresses": 43,
           "fits_1232": true,
-          "serialized_size_bytes": 1052,
+          "serialized_size_bytes": 494,
           "version": "V0"
         },
         "v0_bare": {
@@ -101,7 +100,7 @@
         "v0_alt": {
           "alt_addresses": 46,
           "fits_1232": true,
-          "serialized_size_bytes": 1151,
+          "serialized_size_bytes": 500,
           "version": "V0"
         },
         "v0_bare": {
@@ -121,10 +120,10 @@
         "account_count": 50,
         "bins_per_leg": 5,
         "v0_alt": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 1250 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
+          "alt_addresses": 49,
+          "fits_1232": true,
+          "serialized_size_bytes": 506,
+          "version": "V0"
         },
         "v0_bare": {
           "compiled": false,
@@ -143,10 +142,10 @@
         "account_count": 53,
         "bins_per_leg": 6,
         "v0_alt": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 1349 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
+          "alt_addresses": 52,
+          "fits_1232": true,
+          "serialized_size_bytes": 512,
+          "version": "V0"
         },
         "v0_bare": {
           "compiled": false,
@@ -165,10 +164,10 @@
         "account_count": 56,
         "bins_per_leg": 7,
         "v0_alt": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 1448 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
+          "alt_addresses": 55,
+          "fits_1232": true,
+          "serialized_size_bytes": 518,
+          "version": "V0"
         },
         "v0_bare": {
           "compiled": false,
@@ -187,10 +186,10 @@
         "account_count": 59,
         "bins_per_leg": 8,
         "v0_alt": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 1547 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
+          "alt_addresses": 58,
+          "fits_1232": true,
+          "serialized_size_bytes": 524,
+          "version": "V0"
         },
         "v0_bare": {
           "compiled": false,
@@ -209,10 +208,10 @@
         "account_count": 62,
         "bins_per_leg": 9,
         "v0_alt": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 1646 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
+          "alt_addresses": 61,
+          "fits_1232": true,
+          "serialized_size_bytes": 530,
+          "version": "V0"
         },
         "v0_bare": {
           "compiled": false,
@@ -231,10 +230,10 @@
         "account_count": 65,
         "bins_per_leg": 10,
         "v0_alt": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 1745 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
+          "alt_addresses": 64,
+          "fits_1232": true,
+          "serialized_size_bytes": 536,
+          "version": "V0"
         },
         "v0_bare": {
           "compiled": false,

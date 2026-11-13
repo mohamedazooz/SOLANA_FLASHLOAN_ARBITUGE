@@ -47,7 +47,7 @@ Verified components (all integer / Q64.x fixed-point, no floats):
 
 **Honest limitations:**
 - `spread_bps: 0` on the sampled pairs means the live 2-pool evidence demonstrates correct *rejection*, not profitable *execution*. A profitable route has never been simulated end-to-end on-chain (blocker: funded payer).
-- **ALT compression — now measured, not just discussed** (`reports/phase16/ALT_COMPRESSION_MATRIX.json`): the same 3-pool route compiles as V0+ALT at 854–1,151 B for 38–47 accounts (vs 1,574–1,871 B V1), but saturates at bins ≥5/leg (1,251 B > 1,232 — fails closed). V1 remains the superior transport for this route shape (65 accounts vs ALT's 47 within their respective limits). No silent downgrade in either direction.
+- **ALT compression — corrected measurement** (`reports/phase16/ALT_COMPRESSION_MATRIX.json`): with the ALT derived from the SAME construction it compresses (the initial matrix built it from a different construction, so missed random keys fell back to 32-byte static keys at +99 B/bin), the true cost is **+6 B/bin**: the 3-pool route compiles as V0+ALT at 482–536 B for 38–65 accounts (vs 1,574–2,465 B V1) with no 5-bin cap. The 1,232-byte packet limit is unchanged by ALTs and overflow still fails closed. V1 remains the production default (no ALT lifecycle dependency); V0+ALT is the verified fallback with ~696 B of packet headroom at the V1 account ceiling. No silent downgrade in either direction.
 
 ---
 
@@ -146,7 +146,7 @@ Net = FinalReceived − Principal − FlashFee − DexFees − TransferFees
 4. V1-over-Jito bundle ingress and validator-set sweep — NOT VERIFIED.
 
 **Medium:**
-5. No ALT-compressed variant of the 3-pool DLMM route exists; V1 inline accounts suffice at current sizes (≤62 accounts), but a route needing >64 accounts would be rejected with no fallback except route splitting.
+5. An ALT-compressed variant of the 3-pool DLMM route exists and is verified (482–536 B, bins 1–10/leg); V1 inline accounts suffice at current sizes (≤62 accounts), but a route needing >64 accounts must fall back to V0+ALT (requires the route ALT to be pre-extended one slot ahead — same-slot extension is unusable) or route splitting.
 6. Profitable realized route never observed — all live evidence is in the rejection direction (honest, but the profit path is proven by unit tests only).
 7. Pump.fun front-door surveillance degraded on datacenter IPs (403 from recent-coins API); pairing fallback works.
 

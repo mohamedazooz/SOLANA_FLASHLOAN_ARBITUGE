@@ -175,9 +175,15 @@ fn alt_compression_matrix_same_route_three_ways() {
     let mut compression_value_rung = None;
 
     for bins_per_leg in 1..=12usize {
+        // One construction per rung: all three ways compile the SAME account
+        // set. The ALT must be derived from the very construction it will
+        // compress — an ALT built from any other construction (fresh random
+        // reserves/oracles/bin-array PDAs) misses its targets, and every miss
+        // falls back to a 32-byte static key (+99 B per bin rung instead of
+        // the true +6 B/bin), understating the ALT's real capacity.
+        let mut p = params(signer.pubkey(), bins_per_leg, true);
         // -- Way 1: V1 inline (production default) --
-        let p_v1 = params(signer.pubkey(), bins_per_leg, true);
-        let v1 = match build_flash_funded_three_pool_transaction(&p_v1, &signer, &[]) {
+        let v1 = match build_flash_funded_three_pool_transaction(&p, &signer, &[]) {
             Ok(tx) => tx,
             Err(e) => {
                 rungs.push(json!({
@@ -194,15 +200,15 @@ fn alt_compression_matrix_same_route_three_ways() {
         assert!(v1.tx_size <= V1_MTU);
         let account_count = count_unique_accounts(&signer.pubkey(), &v1.instructions);
 
-        // -- Way 2: V0 WITHOUT ALT --
-        let p_v0_bare = params(signer.pubkey(), bins_per_leg, false);
-        let bare = build_flash_funded_three_pool_transaction(&p_v0_bare, &signer, &[]);
+        // -- Way 2: V0 WITHOUT ALT (same construction, transport flag down) --
+        p.v1_transport_supported = false;
+        let bare = build_flash_funded_three_pool_transaction(&p, &signer, &[]);
 
         // -- Way 3: V0 + ALT (all non-payer accounts compressed) --
         let alt = route_alt(&signer, &v1.instructions);
         assert_eq!(alt.addresses.len(), account_count - 1);
-        let p_v0_alt = params(signer.pubkey(), bins_per_leg, false);
-        let v0_alt = build_flash_funded_three_pool_transaction(&p_v0_alt, &signer, &[alt]);
+        let v0_alt =
+            build_flash_funded_three_pool_transaction(&p, &signer, std::slice::from_ref(&alt));
 
         let mut v0_alt_ok_bytes = None;
         let v0_alt_json = match &v0_alt {
@@ -291,14 +297,14 @@ fn alt_packet_limit_invariant_across_bin_expansion() {
     let mut rungs = Vec::new();
 
     for bins_per_leg in [6usize, 12, 20] {
-        let p_v1 = params(signer.pubkey(), bins_per_leg, true);
-        let v1 = match build_flash_funded_three_pool_transaction(&p_v1, &signer, &[]) {
+        let mut p = params(signer.pubkey(), bins_per_leg, true);
+        let v1 = match build_flash_funded_three_pool_transaction(&p, &signer, &[]) {
             Ok(tx) => tx,
             Err(_) => break, // V1 account ceiling reached; nothing left to compress
         };
         let alt = route_alt(&signer, &v1.instructions);
-        let p_v0 = params(signer.pubkey(), bins_per_leg, false);
-        match build_flash_funded_three_pool_transaction(&p_v0, &signer, &[alt]) {
+        p.v1_transport_supported = false;
+        match build_flash_funded_three_pool_transaction(&p, &signer, std::slice::from_ref(&alt)) {
             Ok(v0_alt) => {
                 assert_eq!(
                     CompiledAdaptiveTransaction::parse_version_from_wire(&v0_alt.wire_bytes)
