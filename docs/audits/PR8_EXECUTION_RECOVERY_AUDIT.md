@@ -78,7 +78,7 @@ documented, not claimed.
 - **Schema exists and is applied**: `dispatch_intents` created by
   `001_init.sql:38` (SQLite, executed in `SqliteStore::open`) and
   `001_postgres_init.sql:50` (Postgres, executed via
-  `sqlx::raw_sql(POSTGRES_INIT_SQL)` in `PostgresStore::open`) — not just
+  `batch_execute(POSTGRES_INIT_SQL)` in `PostgresStore::open`) — not just
   SQL files on disk; the startup path runs them (verified by the fresh-DB
   and legacy-upgrade tests above).
 - **Fail-closed persistence** (PR #8 F1): signature extraction failure or

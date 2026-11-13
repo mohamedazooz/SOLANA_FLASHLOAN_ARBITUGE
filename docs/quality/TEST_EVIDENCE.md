@@ -134,6 +134,11 @@ against this exact tree may be marked PASS.
   entry with no inverse path in the current target graph per `cargo tree
   --target all -i`). 5 unmaintained warnings (ansi_term, bincode, derivative,
   libsecp256k1, paste) — no fixes available upstream.
+  **Update (R-C resolved)**: sqlx removed from arb-store (PostgresStore now
+  uses tokio-postgres 0.7) and rusqlite bumped 0.32 → 0.42; bundled
+  libsqlite3-sys 0.40.0 ships SQLite 3.54.1. `cargo audit` now reports 0
+  vulnerabilities (RUSTSEC-2026-0459 and RUSTSEC-2024-0437 both gone); only
+  the 5 allowed unmaintained warnings remain.
 - **Route monitor added**: supervisor publishes per-protocol coverage
   (pools + avg fee bps) → `ControlDeps`/`StatusSnapshot` → `GET /api/routes`
   + web section **J · Route Monitor** (`web/src/components/RouteMonitor.tsx`).
@@ -187,12 +192,16 @@ SECURITY_AUDIT, REMEDIATION_PLAN).
 - **R-D FIXED**: `prometheus` 0.13.4 → 0.14.0; transitive `protobuf`
   2.28.0 → 3.7.2 — RUSTSEC-2024-0437 resolved. `cargo check --workspace
   --all-targets` clean; full suite green.
-- **R-C BLOCKED (structural, proven)**: attempted rusqlite 0.42
-  (libsqlite3-sys 0.40, patched for RUSTSEC-2026-0459) — cargo rejects the
-  graph because sqlx (0.8 AND 0.9) unconditionally depends on
-  `sqlx-sqlite` pinning `libsqlite3-sys <0.38`, and `links = "sqlite3"`
-  forbids two copies. Reverted to rusqlite 0.32 / sqlx 0.8.6. Exact
-  resolver evidence in docs/audit/REMEDIATION_PLAN.md (R-C).
+- **R-C FIXED**: PostgresStore migrated off sqlx to `tokio-postgres` 0.7
+  (sqlx was used only for PostgreSQL; its unconditional `sqlx-sqlite`
+  dependency pinned `libsqlite3-sys <0.38`, which `links = "sqlite3"`
+  made irreconcilable with the patched rusqlite stack). rusqlite 0.32 →
+  0.42; bundled `libsqlite3-sys` 0.40.0 ships SQLite 3.54.1 (≥ 3.50.4 fix
+  for RUSTSEC-2026-0459). `Cargo.lock` now has exactly one
+  `libsqlite3-sys`; `cargo audit` reports 0 vulnerabilities. Note: the new
+  PostgresStore uses `NoTls` — TLS-requiring PostgreSQL hosts fail closed
+  at connect time (documented in postgres_store.rs); the supported
+  deployment topology (docker-compose / trusted network) is unaffected.
 - **R-E FIXED**: WS auth is now single-use-ticket-only; `?token=` fallback
   removed from `ws_events`; e2e test `web_server_end_to_end_with_ws_upgrade`
   rewritten to request a ticket then upgrade with it (101 asserted).

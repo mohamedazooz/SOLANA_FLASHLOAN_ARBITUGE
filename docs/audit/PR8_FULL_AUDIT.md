@@ -49,7 +49,7 @@ verified** = inspected only, or blocked by environment.
 | ≥24 h shadow soak | Not verified | Sandbox cannot run a 24 h soak; requires VPS deployment |
 | Live transport (V1 direct SWQoS) | Not verified by design | `ARB_LIVE=0`; requires operator authorization + endpoint capability proof |
 | Fork simulation of full 5-instruction tx | Partially verified | `arb-sim` simulation path unit-tested; full mainnet-fork run needs live RPC quota |
-| `rsa`/`protobuf`/`libsqlite3-sys` medium advisories | Open | All need breaking dependency upgrades; documented in TEST_EVIDENCE |
+| `rsa`/`libsqlite3-sys` medium advisories | Open | Need breaking dependency upgrades; documented in TEST_EVIDENCE (`protobuf` since fixed via prometheus 0.14; `libsqlite3-sys` since fixed via R-C resolution — see REMEDIATION_PLAN) |
 
 ## Campaign evidence (this round)
 

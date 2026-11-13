@@ -77,7 +77,8 @@ Full evidence in: [PR7_PR8_INTEGRATION_BASELINE.md](PR7_PR8_INTEGRATION_BASELINE
 
 1. ≥24 h shadow soak with predicted-vs-observed report (R-A).
 2. Authorized canary for live V1 transport (R-B).
-3. libsqlite3-sys RUSTSEC-2026-0459 — structurally blocked (documented R-C).
+3. ~~libsqlite3-sys RUSTSEC-2026-0459~~ — FIXED (R-C resolved: sqlx removed,
+   rusqlite 0.42 / libsqlite3-sys 0.40 with SQLite 3.54.1; cargo audit clean).
 4. HTTPS/TLS termination at the reverse proxy (deployment).
 
 ## Final recommendations
