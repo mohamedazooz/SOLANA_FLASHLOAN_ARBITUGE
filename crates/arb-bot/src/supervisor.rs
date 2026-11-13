@@ -122,6 +122,57 @@ pub struct Supervisor {
     pub control: std::sync::OnceLock<Arc<crate::control_service::ControlService>>,
 }
 
+/// Resolve the configured store to a durable backend. Fail-closed: a
+/// configured-but-unavailable store returns an error and startup aborts —
+/// the supervisor never silently degrades to non-durable in-memory storage,
+/// because dispatch-intent reconciliation (R12) requires durable persistence.
+/// Precedence: `store_url` postgres → `database_url` postgres → `database_url`
+/// sqlite → `store_url` sqlite/plain path.
+fn open_store(store_url: &str, database_url: Option<&str>) -> anyhow::Result<Arc<dyn Store>> {
+    if store_url.starts_with("postgres") {
+        return PostgresStore::open(store_url)
+            .map(|pg| Arc::new(pg) as Arc<dyn Store>)
+            .map_err(|e| anyhow::anyhow!("PostgreSQL store unavailable (fail-closed): {e}"));
+    }
+    if let Some(pg_url) = database_url.filter(|u| u.starts_with("postgres")) {
+        return PostgresStore::open(pg_url)
+            .map(|pg| Arc::new(pg) as Arc<dyn Store>)
+            .map_err(|e| {
+                anyhow::anyhow!("PostgreSQL store from DATABASE_URL unavailable (fail-closed): {e}")
+            });
+    }
+    if let Some(sqlite_url) = database_url.filter(|u| u.starts_with("sqlite://")) {
+        return SqliteStore::open(&sqlite_path_from_url(sqlite_url))
+            .map(|s| Arc::new(s) as Arc<dyn Store>)
+            .map_err(|e| {
+                anyhow::anyhow!("SQLite store from DATABASE_URL unavailable (fail-closed): {e}")
+            });
+    }
+    SqliteStore::open(&sqlite_path_from_url(store_url))
+        .map(|s| Arc::new(s) as Arc<dyn Store>)
+        .map_err(|e| anyhow::anyhow!("SQLite store unavailable (fail-closed): {e}"))
+}
+
+/// Convert a `sqlite://` URL to a filesystem path. `sqlite:///abs/path` yields
+/// `/abs/path`; `sqlite://./rel` and `sqlite://rel` yield the relative path;
+/// plain paths pass through. The URL was previously passed raw to
+/// `Connection::open`, which silently failed on the literal filename and
+/// degraded to in-memory storage.
+fn sqlite_path_from_url(url: &str) -> String {
+    match url.strip_prefix("sqlite://") {
+        Some(rest) => {
+            let no_leading_slashes = rest.trim_start_matches('/');
+            if no_leading_slashes.starts_with("./") || no_leading_slashes.starts_with("../") {
+                // `sqlite:///./rel` — scheme slashes followed by a dot-relative path
+                no_leading_slashes.to_string()
+            } else {
+                rest.to_string()
+            }
+        }
+        None => url.to_string(),
+    }
+}
+
 impl Supervisor {
     pub fn new(mode: BotMode, config: Config) -> Self {
         Self::with_mode_atomic(
@@ -203,53 +254,17 @@ impl Supervisor {
         let ingest = Arc::new(IngestClient::new());
 
         info!("TRACE SUP 2: before store");
-        let store: Arc<dyn Store> = if config.store.url.starts_with("postgres")
-            || config.store.url.starts_with("postgresql")
-        {
-            match PostgresStore::open(&config.store.url) {
-                Ok(pg) => {
-                    // Never log the DSN: it carries the database password.
-                    info!("Connected to PostgreSQL store");
-                    Arc::new(pg)
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to connect to PostgreSQL ({}): falling back to SQLite",
-                        e
-                    );
-                    Arc::new(SqliteStore::open_in_memory().unwrap())
-                }
-            }
-        } else if let Ok(pg_url) = std::env::var("DATABASE_URL") {
-            if pg_url.starts_with("postgres") || pg_url.starts_with("postgresql") {
-                match PostgresStore::open(&pg_url) {
-                    Ok(pg) => {
-                        info!("Connected to PostgreSQL store via DATABASE_URL");
-                        Arc::new(pg)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to connect to PostgreSQL via DATABASE_URL ({}): falling back to SQLite",
-                            e
-                        );
-                        Arc::new(
-                            SqliteStore::open(&config.store.url)
-                                .unwrap_or_else(|_| SqliteStore::open_in_memory().unwrap()),
-                        )
-                    }
-                }
-            } else {
-                Arc::new(
-                    SqliteStore::open(&config.store.url)
-                        .unwrap_or_else(|_| SqliteStore::open_in_memory().unwrap()),
-                )
-            }
-        } else {
-            Arc::new(
-                SqliteStore::open(&config.store.url)
-                    .unwrap_or_else(|_| SqliteStore::open_in_memory().unwrap()),
-            )
-        };
+        // Fail-closed store selection (see `open_store`): a configured but
+        // unavailable store aborts startup. Silent degradation to in-memory
+        // storage would break dispatch-intent durability (R12) and PnL
+        // accounting while appearing healthy.
+        let store: Arc<dyn Store> = open_store(
+            &config.store.url,
+            std::env::var("DATABASE_URL").ok().as_deref(),
+        )
+        .expect(
+            "durable store unavailable; refusing to start (fail-closed: no in-memory fallback)",
+        );
         info!("TRACE SUP 3: after store");
 
         let telegram = TelegramNotifier::from_env();
@@ -704,9 +719,107 @@ mod tests {
     #[test]
     fn test_supervisor_initialization() {
         let config_str = include_str!("../../../config/config.example.toml");
-        let config: Config = toml::from_str(config_str).expect("Valid example config");
+        let mut config: Config = toml::from_str(config_str).expect("Valid example config");
+        // Hermetic durable store: the example URL points at /app/data
+        // (container topology). Point it at a temp file so the fail-closed
+        // store selection succeeds without touching system paths.
+        let db_path = std::env::temp_dir().join(format!(
+            "arb_supervisor_init_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        config.store.url = format!("sqlite://{}", db_path.display());
         let supervisor = Supervisor::new(BotMode::Shadow, config);
         assert_eq!(supervisor.mode(), BotMode::Shadow);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn sqlite_path_from_url_resolves_absolute_relative_and_plain_paths() {
+        assert_eq!(
+            sqlite_path_from_url("sqlite:///app/data/shadow.db"),
+            "/app/data/shadow.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("sqlite:///./data/warm/sentinel_state.db"),
+            "./data/warm/sentinel_state.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("sqlite://./data/warm/sentinel_state.db"),
+            "./data/warm/sentinel_state.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("sqlite://data/shadow.db"),
+            "data/shadow.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("./data/warm/sentinel_state.db"),
+            "./data/warm/sentinel_state.db"
+        );
+    }
+
+    #[test]
+    fn open_store_fails_closed_on_unreachable_postgres() {
+        // Port 1: connection refused. Must error — never an in-memory store.
+        let err = match open_store("postgresql://127.0.0.1:1/nope", None) {
+            Ok(_) => panic!("unreachable postgres must fail closed"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("fail-closed"));
+    }
+
+    #[test]
+    fn open_store_fails_closed_when_database_url_postgres_unreachable() {
+        // DATABASE_URL takes precedence over a valid sqlite store_url and
+        // must fail closed rather than silently falling back.
+        let db_path = std::env::temp_dir().join(format!(
+            "arb_store_prec_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        let store_url = format!("sqlite://{}", db_path.display());
+        let err = match open_store(&store_url, Some("postgresql://127.0.0.1:1/nope")) {
+            Ok(_) => panic!("unreachable DATABASE_URL postgres must fail closed"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("fail-closed"));
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn open_store_sqlite_url_is_durable_file_backed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "arb_store_durable_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        let url = format!("sqlite://{}", db_path.display());
+        let store = open_store(&url, None).expect("sqlite url must open a durable file store");
+        store
+            .record_attempt(&AttemptRecord {
+                id: 1,
+                slot: 1,
+                route_id: "r".into(),
+                expected_net: Lamports(1),
+                tip_lamports: None,
+                decision: "test".into(),
+            })
+            .expect("write must succeed");
+        drop(store);
+        assert!(db_path.exists(), "store must be file-backed, not in-memory");
+        // Data survives close/reopen: durable, not memory-resident.
+        let reopened = open_store(&url, None).expect("reopen");
+        assert_eq!(reopened.get_attempt(1).expect("read").expect("row").id, 1);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     fn pool_at(id: u8, last_update_slot: u64) -> PoolState {

@@ -210,3 +210,79 @@ SECURITY_AUDIT, REMEDIATION_PLAN).
   clippy `-D warnings` 0; **951 passed / 0 failed**; `tsc` + `npm run
   build` clean; `cargo audit` = 3 advisories (1 fixed this round), 0
   critical/high.
+
+## Store fail-closed remediation (R-I, 2026-11-13, post-merge main)
+
+- **Finding**: `Supervisor::new` silently degraded to in-memory SQLite when
+  PostgreSQL was unreachable or the configured SQLite file could not be
+  opened. Root cause chain: (1) fallback to `SqliteStore::open_in_memory()`
+  on any store error; (2) `sqlite://` URLs passed raw to `Connection::open`
+  (no prefix stripping) so the configured file path never opened — including
+  the docker-compose shadow deployment (`sqlite:///app/data/shadow.db` with
+  the `./data` volume mount). Net effect: configured persistence was a no-op
+  while the process appeared healthy.
+- **Fix**: fail-closed `open_store(store_url, database_url)` in
+  `arb-bot/src/supervisor.rs` (precedence: config postgres → DATABASE_URL
+  postgres → DATABASE_URL sqlite → config sqlite/plain path) + correct
+  `sqlite://` URL→path resolution. Startup aborts with an explicit
+  fail-closed error instead of degrading durability.
+- **Regression tests** (`cargo test -p arb-bot --bin arb-bot supervisor::tests`):
+  `open_store_fails_closed_on_unreachable_postgres` (postgresql://127.0.0.1:1 → Err,
+  error names fail-closed); `open_store_fails_closed_when_database_url_postgres_unreachable`
+  (DATABASE_URL precedence, no silent sqlite fallback);
+  `open_store_sqlite_url_is_durable_file_backed` (write → close → reopen →
+  read-back proves file-backed durability, not memory);
+  `sqlite_path_from_url_resolves_absolute_relative_and_plain_paths`.
+- **Campaign on final tree**: fmt clean; clippy `-D warnings` clean;
+  **958 passed / 0 failed** workspace-wide.
+- **Live smoke (release binary, real .env, shadow mode)**:
+  - Positive: `sqlite:///tmp/arb_smoke/shadow_smoke.db` → file + WAL/SHM
+    created (70 KB written in 45 s), `SQLite database initialized with WAL
+    pragmas` in logs — the exact URL form that previously never opened.
+  - Environmental failure injection observed: Helius HTTP 429 → provider
+    cooldown + rotation, health sweep reports `rpc=FAIL` honestly, no
+    stale-data fallback, process stable.
+  - Negative: `sqlite:///proc/nope/impossible.db` → **exit 101** with
+    `durable store unavailable; refusing to start (fail-closed: no in-memory
+    fallback)` — startup refusal proven end-to-end.
+- **Fuzz/property suites (all green)**: arb-dex/fuzzing_decoders 5;
+  arb-math/fuzzing_suite 17; arb-tx: fuzzing_templates 4, v1_property_fuzz 22,
+  adversarial_tests 9, three_pool_flash_arb_tests 17, v1_header_differential
+  12, mainnet_non_broadcast_simulation 2; arb-engine:
+  meteora_mainnet_sdk_differential 3, trade_size_optimization_tests 2,
+  three_leg_net_economics_tests 9, cross_dex_three_pool_live_loop 5,
+  phase17_mainnet_state_verification 8.
+
+## Provider connectivity campaign (2026-11-13, same branch)
+
+Operator-supplied keys for Solami / Helius / Alchemy were wired into the
+gitignored `.env` (never committed) and probed from the sandbox. Results:
+
+| Provider / path | Result | Evidence |
+|---|---|---|
+| Solami RPC `rpc.solami.dev/sol` (SOLAMI_RPC_URL key) | **PASS** | `getHealth` HTTP 200 `"ok"`; `getSlot` returned live mainnet slot 468,776,472, RTT 21–39 ms over 3 samples |
+| Solami RPC `rpc.solami.dev/Solana` (SOLAMI_API_KEY) | FAIL | HTTP 401 — that key is the Yellowstone gRPC x-token, not an RPC key |
+| Solami WS `wss://ws.solami.dev/ws/sol` (operator WS key) | FAIL | HTTP 400 on the raw handshake (path/protocol mismatch, not auth) |
+| Solami WS `wss://ws.solami.dev/data/subscribe` (default path) | FAIL | HTTP 403 with operator WS key, 401 with API key |
+| Alchemy RPC `solana-mainnet.g.alchemy.com/v2/<key>` | FAIL | HTTP 401 `Must be authenticated!` — operator key (26 chars) rejected on RPC and WS alike |
+| Helius RPC/WSS | PASS (existing) | used by every prior smoke run; 429s handled with cooldown/rotation |
+
+- **Fix shipped**: role-separated Solami WebSocket key. `resolve_ws_key()` in
+  `arb-ingest/src/solami_stream.rs` resolves the stream key as explicit
+  `SOLAMI_WS_API_KEY` → `api_key` embedded in `SOLAMI_WS_URL` →
+  `SOLAMI_API_KEY` (legacy behavior). Previously the code stripped query
+  params from `SOLAMI_WS_URL`, silently discarding an operator-supplied WS
+  key.
+- **Regression tests** (`cargo test -p arb-ingest --lib`):
+  `resolve_ws_key_prefers_explicit_override`,
+  `resolve_ws_key_extracts_embedded_url_param`,
+  `resolve_ws_key_falls_back_to_general_api_key`.
+- **Campaign on final tree**: fmt clean; clippy `-D warnings` clean;
+  **961 passed / 0 failed** workspace-wide.
+- **Provider matrix documented** in `.env.example` (Helius + Alchemy +
+  Solami, RPC + WS + Yellowstone gRPC, with the exact auto-built URL forms).
+  Real key values live only in the gitignored `.env`.
+- **Open operator actions**: a valid Alchemy key (current one is rejected),
+  the correct Solami WS path/protocol, and `SOLAMI_GRPC_ENDPOINT` to exercise
+  the Solami Yellowstone x-token. Until then Helius remains the only verified
+  market-data provider and the RPC pool rotates Helius + Solami RPC.

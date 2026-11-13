@@ -26,6 +26,10 @@ gate below is checked by the human owner.
 - [ ] `WEB_ADMIN_PASSWORD` set to a strong secret (in `.env`, never committed).
 - [ ] Telegram allowlist configured; `/live` requires `CONFIRM-LIVE`.
 - [ ] Database backups/restores exercised (SQLite file or PostgreSQL dump).
+- [x] Store selection fail-closed verified (R-I): unreachable PostgreSQL or
+  unopenable SQLite file aborts startup — no silent in-memory fallback;
+  `sqlite://` URLs resolve to real file paths (regression tests in
+  `arb-bot/src/supervisor.rs::tests`).
 - [ ] Provider failover observed live (primary WSS drop → rotation, no stale fallback).
 
 ## Gate 4 — Authorized canary (human approval required)
