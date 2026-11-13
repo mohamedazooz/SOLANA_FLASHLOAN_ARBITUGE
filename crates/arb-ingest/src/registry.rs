@@ -598,10 +598,11 @@ impl MultiDexRegistry {
         }
     }
 
-    /// Resolve canonical DLMM token_x/token_y decimals through an
-    /// immutable cache; misses cost one batched `resolve_mints_decimals` call
-    /// per new mint, ever. Unresolvable mints yield 0, which the economic
-    /// engine rejects fail-closed.
+    /// Resolve canonical pair-mint decimals through an immutable cache; misses
+    /// cost one batched `resolve_mints_decimals` call per new mint, ever.
+    /// Unresolvable mints yield 0, which the economic engine rejects fail-closed.
+    /// Used by both the DLMM and CLMM canonical-orientation blocks in
+    /// [`MultiDexRegistry::fetch_live_pool_states`].
     async fn dlmm_mint_decimals(&self, x: Pubkey, y: Pubkey) -> (u8, u8) {
         let mx = MintId(x);
         let my = MintId(y);
@@ -988,6 +989,70 @@ impl MultiDexRegistry {
                     }
                     _ => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
                 }
+            } else if matches!(
+                p.protocol,
+                DexProtocol::OrcaWhirlpool | DexProtocol::RaydiumClmm
+            ) {
+                // Canonical CLMM orientation: same failure class as the DLMM
+                // DexScreener inversion above. CLMM base/quote come from HTTP
+                // catalogs (Orca `tokenA/tokenB`, Raydium v3 `mintA/mintB`)
+                // and were never verified against pool bytes. Downstream,
+                // `quote_pool` derives `a_to_b = (pool_base == from_mint)`
+                // and `compute_clmm_virtual_reserves` returns (mint_a-side,
+                // mint_b-side) reserves, so `pool_base == on-chain mint_a` is
+                // a hard correctness invariant. Live probe (clmm_probe.rs,
+                // slot 468876781) verified catalog == on-chain 3/3 today, but
+                // nothing failed closed if a catalog schema change inverted
+                // it. The on-chain pool account is ground truth; a catalog
+                // mismatch is now overridden loudly instead of silently
+                // trusted. Mints are immutable in both pool layouts, so the
+                // WS arm inherits this canonicalization from the cache and
+                // must not re-derive it.
+                match pool_bytes.and_then(|d| clmm_onchain_mints(p.protocol, d)) {
+                    Some((mint_a, mint_b)) => {
+                        let catalog_order_verified =
+                            p.base_mint.0 == mint_a && p.quote_mint.0 == mint_b;
+                        if !catalog_order_verified {
+                            warn!(
+                                "MultiDexRegistry: {:?} pool {} — catalog orientation \
+                                     {:?}/{:?} diverges from on-chain mints {:?}/{:?}; using on-chain order",
+                                p.protocol,
+                                p.pool_id,
+                                p.base_mint,
+                                p.quote_mint,
+                                MintId(mint_a),
+                                MintId(mint_b)
+                            );
+                        }
+                        if p.protocol == DexProtocol::RaydiumClmm {
+                            // Raydium PoolState stores mint decimals on-chain
+                            // (dec_0 @233, dec_1 @234) — no RPC needed. Values
+                            // outside 1..=18 are corrupt; fall back to catalog.
+                            let d = pool_bytes.unwrap_or_default();
+                            let dec0 = d[233];
+                            let dec1 = d[234];
+                            let sane = |v: u8, fb: u8| {
+                                if (1..=18).contains(&v) { v } else { fb }
+                            };
+                            (
+                                MintId(mint_a),
+                                MintId(mint_b),
+                                sane(dec0, p.decimals_a),
+                                sane(dec1, p.decimals_b),
+                            )
+                        } else if catalog_order_verified {
+                            // Catalog order verified against chain: its
+                            // decimals are positionally correct, skip RPC.
+                            (MintId(mint_a), MintId(mint_b), p.decimals_a, p.decimals_b)
+                        } else {
+                            // Inverted catalog: catalog decimals are swapped
+                            // too; resolve by mint identity (cached).
+                            let (da, db) = self.dlmm_mint_decimals(mint_a, mint_b).await;
+                            (MintId(mint_a), MintId(mint_b), da, db)
+                        }
+                    }
+                    None => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
+                }
             } else {
                 (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b)
             };
@@ -1210,6 +1275,55 @@ pub fn decode_raydium_vaults(data: &[u8]) -> Option<(Pubkey, Pubkey)> {
     let b: [u8; 32] = data.get(368..400)?.try_into().ok()?;
     let a = Pubkey::new_from_array(a);
     let b = Pubkey::new_from_array(b);
+    if a == Pubkey::default() || b == Pubkey::default() {
+        return None;
+    }
+    Some((a, b))
+}
+
+/// On-chain CLMM token orientation: `(mint_a, mint_b)` as stored in the pool
+/// account bytes. This is the canonical order the quote engine requires
+/// (`a_to_b = pool_base == from_mint` and
+/// [`compute_clmm_virtual_reserves`] returning `(mint_a-side, mint_b-side)`).
+///
+/// Offsets verified against live mainnet via `clmm_probe.rs` (slot 468876781,
+/// Orca SOL/USDC `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` data_len 653;
+/// Raydium CLMM pools data_len 1544), cross-checked against official sources:
+/// - Orca Whirlpool (`orca-so/whirlpools`, `programs/whirlpool/src/state/whirlpool.rs`,
+///   interleaved layout): `token_mint_a @101..133`, `token_vault_a @133..165`,
+///   `fee_growth_global_a @165..181`, `token_mint_b @181..213`. The offsets are
+///   independent of `NUM_REWARDS` (reward infos start after `fee_growth_global_b`),
+///   so both the 525-byte (2-reward) and 653-byte (3-reward) generations decode
+///   identically. Orca does NOT enforce `mint_a < mint_b` on live pools —
+///   no lexicographic shortcut exists.
+/// - Raydium CLMM (`raydium-io/raydium-clmm`, `PoolState`): `token_mint0 @73..105`,
+///   `token_mint1 @105..137`. Raydium does not enforce `mint0 < mint1` either.
+///
+/// Returns `None` (fail-closed) on short/truncated buffers or default pubkeys.
+pub fn clmm_onchain_mints(protocol: DexProtocol, data: &[u8]) -> Option<(Pubkey, Pubkey)> {
+    let (ma, mb): ([u8; 32], [u8; 32]) = match protocol {
+        DexProtocol::OrcaWhirlpool => {
+            if data.len() < 213 {
+                return None;
+            }
+            (
+                data[101..133].try_into().ok()?,
+                data[181..213].try_into().ok()?,
+            )
+        }
+        DexProtocol::RaydiumClmm => {
+            if data.len() < 137 {
+                return None;
+            }
+            (
+                data[73..105].try_into().ok()?,
+                data[105..137].try_into().ok()?,
+            )
+        }
+        _ => return None,
+    };
+    let a = Pubkey::new_from_array(ma);
+    let b = Pubkey::new_from_array(mb);
     if a == Pubkey::default() || b == Pubkey::default() {
         return None;
     }
@@ -2390,6 +2504,80 @@ mod tests {
         assert_eq!(vaults.1, vb);
 
         assert_eq!(decode_raydium_clmm_vaults(&[0u8; 100]), None);
+    }
+
+    fn orca_whirlpool_bytes(len: usize, mint_a: Pubkey, mint_b: Pubkey) -> Vec<u8> {
+        let mut data = vec![0u8; len];
+        data[101..133].copy_from_slice(mint_a.as_ref());
+        data[181..213].copy_from_slice(mint_b.as_ref());
+        data
+    }
+
+    #[test]
+    fn clmm_onchain_mints_orca_interleaved_layout() {
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        for len in [525usize, 653] {
+            let data = orca_whirlpool_bytes(len, ma, mb);
+            let got =
+                clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &data).expect("valid whirlpool");
+            assert_eq!(got, (ma, mb), "len={len}");
+        }
+    }
+
+    #[test]
+    fn clmm_onchain_mints_raydium_layout() {
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        let mut data = vec![0u8; 1544];
+        data[73..105].copy_from_slice(ma.as_ref());
+        data[105..137].copy_from_slice(mb.as_ref());
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::RaydiumClmm, &data).expect("valid clmm"),
+            (ma, mb)
+        );
+    }
+
+    #[test]
+    fn clmm_onchain_mints_fail_closed() {
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &[0u8; 100]),
+            None
+        );
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::RaydiumClmm, &[0u8; 100]),
+            None
+        );
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &[0u8; 245]),
+            None,
+            "default pubkeys must be rejected"
+        );
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::MeteoraDlmm, &orca_whirlpool_bytes(653, ma, mb)),
+            None,
+            "non-CLMM protocols must be rejected"
+        );
+    }
+
+    #[test]
+    fn clmm_onchain_mints_rejects_swapped_layout_bytes() {
+        // A pool account whose @181..213 window is a vault (not a mint) must not
+        // be silently accepted as orientation truth when the catalog disagrees;
+        // the helper returns the raw on-chain order and the registry logs the
+        // divergence. Here we only pin that the helper reads exactly @101/@181.
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        let mut data = orca_whirlpool_bytes(653, ma, mb);
+        let intruder = Pubkey::new_unique();
+        data[133..165].copy_from_slice(intruder.as_ref()); // vault_a slot
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &data).expect("valid"),
+            (ma, mb),
+            "vault_a bytes @133..165 must not leak into the mint read"
+        );
     }
 
     #[test]
