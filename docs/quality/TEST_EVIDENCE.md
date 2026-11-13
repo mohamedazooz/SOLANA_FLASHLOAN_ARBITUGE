@@ -210,3 +210,28 @@ SECURITY_AUDIT, REMEDIATION_PLAN).
   clippy `-D warnings` 0; **951 passed / 0 failed**; `tsc` + `npm run
   build` clean; `cargo audit` = 3 advisories (1 fixed this round), 0
   critical/high.
+
+## Store fail-closed remediation (R-I, 2026-11-13, post-merge main)
+
+- **Finding**: `Supervisor::new` silently degraded to in-memory SQLite when
+  PostgreSQL was unreachable or the configured SQLite file could not be
+  opened. Root cause chain: (1) fallback to `SqliteStore::open_in_memory()`
+  on any store error; (2) `sqlite://` URLs passed raw to `Connection::open`
+  (no prefix stripping) so the configured file path never opened — including
+  the docker-compose shadow deployment (`sqlite:///app/data/shadow.db` with
+  the `./data` volume mount). Net effect: configured persistence was a no-op
+  while the process appeared healthy.
+- **Fix**: fail-closed `open_store(store_url, database_url)` in
+  `arb-bot/src/supervisor.rs` (precedence: config postgres → DATABASE_URL
+  postgres → DATABASE_URL sqlite → config sqlite/plain path) + correct
+  `sqlite://` URL→path resolution. Startup aborts with an explicit
+  fail-closed error instead of degrading durability.
+- **Regression tests** (`cargo test -p arb-bot --bin arb-bot supervisor::tests`):
+  `open_store_fails_closed_on_unreachable_postgres` (postgresql://127.0.0.1:1 → Err,
+  error names fail-closed); `open_store_fails_closed_when_database_url_postgres_unreachable`
+  (DATABASE_URL precedence, no silent sqlite fallback);
+  `open_store_sqlite_url_is_durable_file_backed` (write → close → reopen →
+  read-back proves file-backed durability, not memory);
+  `sqlite_path_from_url_resolves_absolute_relative_and_plain_paths`.
+- **Campaign on final tree**: fmt clean; clippy `-D warnings` clean;
+  **958 passed / 0 failed** workspace-wide.
