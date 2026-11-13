@@ -73,8 +73,11 @@ assemble_flash_arbitrage → dlmm_3leg_flash_arb). No bypass path found in the l
 
 1. **Jupiter residue** — `arb-tx/src/jupiter.rs` + `assemble_jupiter_flash_arbitrage`
    (lib.rs:3315) survived the PR #4 removal; only diagnostic bins reference it.
-   Classification D (duplicate/obsolete path). Action: remove module + assembler +
-   diagnostic-only references, drop `JUPITER_API_KEY`/`JUP_API_KEY` env keys.
+   Classification D (duplicate/obsolete path). Action taken: the dead assembler and
+   the never-read `JupiterConfig` (`config.rs`, `[jupiter]` in `config.toml`) are
+   REMOVED; `JupiterClient` is RETAINED as the independent differential reference
+   used by `bin/validate.rs` (the directives require an external ground truth for
+   math validation — the custom implementation must not validate itself).
 2. **Multiple quote entry points** in arb-engine (`meteora_quote_engine`,
    `cross_pool_dlmm`, `dlmm_flash_arbitrage`, `three_leg_meme_pipeline`, `guarded`).
    The live path uses `three_leg_meme_pipeline`; the others are reachable only from
@@ -178,7 +181,7 @@ clippy `-D warnings` clean, fmt clean. Coverage concentrations:
 
 | # | item | files | class |
 |---|---|---|---|
-| R1 | Remove Jupiter residue + dead env keys | `arb-tx/src/jupiter.rs`, `arb-tx/src/lib.rs:102,108,3315-3342`, `bin/validate.rs`, `bin/live_scanner.rs`, `.env.example` | D |
+| R1 | Remove dead Jupiter assembler + dead JupiterConfig/`[jupiter]` config; keep `JupiterClient` as differential reference | `arb-tx/src/lib.rs`, `arb-bot/src/config.rs`, `config.toml` | D |
 | R2 | Remove `arb-mcp` from default workspace (dead) | `crates/arb-mcp/*`, `Cargo.toml` | E |
 | R3 | Single canonical Kamino fee (arb-engine re-uses arb-tx) | `arb-engine/src/flash_loan_sizing.rs` | D |
 | R4 | Helius provider keys + WSS in config/.env.example | `arb-bot/src/config.rs`, `.env.example` | C |

@@ -7,7 +7,6 @@ pub struct Config {
     pub bot: BotConfig,
     pub rpc: RpcConfig,
     pub jito: JitoConfig,
-    pub jupiter: JupiterConfig,
     pub wallet: WalletConfig,
     pub strategy: StrategyConfig,
     pub risk: RiskConfig,
@@ -126,13 +125,6 @@ pub struct JitoConfig {
     /// Interval between leader-schedule refreshes, in seconds.
     #[serde(default = "default_leader_refresh_secs")]
     pub leader_refresh_secs: u64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct JupiterConfig {
-    pub base_url: String,
-    pub api_key_env: String,
-    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
