@@ -22,7 +22,9 @@ use crate::{
     bin_array_index_for_bin, derive_meteora_bin_array_bitmap_extension_pda,
     derive_meteora_bin_array_pda,
 };
-use arb_constants::METEORA_BINS_PER_BIN_ARRAY;
+use arb_constants::{
+    METEORA_BINS_PER_BIN_ARRAY, meteora_bin_array_index_requires_bitmap_extension,
+};
 use solana_pubkey::Pubkey;
 
 /// Errors raised while planning or verifying a bin-array set.
@@ -74,8 +76,13 @@ pub struct DlmmBinArrayPlan {
     pub pdas: Vec<Pubkey>,
     /// Canonical `BinArrayBitmapExtension` PDA for this pool.
     pub bitmap_extension_pda: Pubkey,
-    /// True when the traversal leaves the active bin array, i.e. the bitmap
-    /// extension account is required by the protocol.
+    /// True when any planned bin-array index falls outside the LbPair default
+    /// bitmap window `[-512, 511]`, i.e. the swap traverses arrays tracked in
+    /// the `BinArrayBitmapExtension` and the account is required by the
+    /// protocol. Official rule `isOverflowDefaultBinArrayBitmap`
+    /// (MeteoraAg/dlmm-sdk, ts-client/src/dlmm/helpers/binArray.ts, IDL constant
+    /// `BIN_ARRAY_BITMAP_SIZE = 512`). This is a property of the INDEX VALUES,
+    /// never of the array count: `indices.len() > 1` is not the protocol rule.
     pub requires_bitmap_extension: bool,
 }
 
@@ -141,6 +148,10 @@ pub fn plan_bin_arrays(
         .map(|idx| derive_meteora_bin_array_pda(lb_pair, *idx))
         .collect();
 
+    let requires_bitmap_extension = indices
+        .iter()
+        .any(|idx| meteora_bin_array_index_requires_bitmap_extension(*idx));
+
     Ok(DlmmBinArrayPlan {
         lb_pair: *lb_pair,
         active_bin_id,
@@ -148,7 +159,7 @@ pub fn plan_bin_arrays(
         bins_traversed,
         first_bin_id,
         last_bin_id,
-        requires_bitmap_extension: indices.len() > 1,
+        requires_bitmap_extension,
         indices,
         pdas,
         bitmap_extension_pda: derive_meteora_bin_array_bitmap_extension_pda(lb_pair),
@@ -310,10 +321,12 @@ mod tests {
 
     #[test]
     fn downward_traversal_crosses_into_the_lower_array() {
-        // Bins 0 .. -69: bin -69 lives in array -1 (floor division).
+        // Bins 0 .. -69: bin -69 lives in array -1 (floor division). Both
+        // indices [-1, 0] sit inside the default bitmap window [-512, 511], so
+        // the Bitmap Extension is NOT required despite the multi-array plan.
         let plan = plan_bin_arrays(&pool(), 0, true, 70).unwrap();
         assert_eq!(plan.indices, vec![0, -1]);
-        assert!(plan.requires_bitmap_extension);
+        assert!(!plan.requires_bitmap_extension);
         assert_eq!(plan.bin_span(), (0, -69));
     }
 
@@ -327,9 +340,50 @@ mod tests {
     }
 
     #[test]
-    fn upward_traversal_crosses_array_boundary() {
+    fn upward_traversal_crosses_array_boundary_inside_default_window() {
+        // Arrays [0, 1] are both inside the default bitmap window, so crossing
+        // the array boundary alone does NOT require the extension.
         let plan = plan_bin_arrays(&pool(), 0, false, 71).unwrap();
         assert_eq!(plan.indices, vec![0, 1]);
+        assert!(!plan.requires_bitmap_extension);
+    }
+
+    #[test]
+    fn bitmap_extension_required_exactly_outside_the_default_window() {
+        // Official window: [-512, 511] (IDL BIN_ARRAY_BITMAP_SIZE = 512).
+        // In-window boundaries never require it.
+        for idx in [-512i64, -511, -1, 0, 1, 510, 511] {
+            let active = (idx * 70) as i32;
+            let plan = plan_bin_arrays(&pool(), active, false, 1).unwrap();
+            assert_eq!(plan.indices, vec![idx]);
+            assert!(
+                !plan.requires_bitmap_extension,
+                "array {idx} is inside the default window"
+            );
+        }
+        // Out-of-window boundaries always require it.
+        for idx in [-513i64, -514, 512, 513] {
+            let active = (idx * 70) as i32;
+            let plan = plan_bin_arrays(&pool(), active, false, 1).unwrap();
+            assert_eq!(plan.indices, vec![idx]);
+            assert!(
+                plan.requires_bitmap_extension,
+                "array {idx} overflows the default bitmap"
+            );
+        }
+    }
+
+    #[test]
+    fn traversal_into_overflow_arrays_requires_the_extension() {
+        // A walk from array 511 into 512 must flip the flag even though the
+        // plan is only two arrays.
+        let plan = plan_bin_arrays(&pool(), 511 * 70, false, 71).unwrap();
+        assert_eq!(plan.indices, vec![511, 512]);
+        assert!(plan.requires_bitmap_extension);
+
+        // And symmetrically downward past -512.
+        let plan = plan_bin_arrays(&pool(), -512 * 70, true, 71).unwrap();
+        assert_eq!(plan.indices, vec![-512, -513]);
         assert!(plan.requires_bitmap_extension);
     }
 

@@ -137,12 +137,17 @@ impl Supervisor {
             sizes
         };
 
+        // Dynamic economics: the candidate-ranking cost model uses the SAME
+        // adaptive CU price and verified tip that the dispatch gate will
+        // charge, so ranking and gating cannot disagree.
         let params = arb_engine::ThreeLegMemeContextParams {
             snapshot_slot: current_slot.0,
             cu_limit: arb_tx::COMPUTE_BUDGET_LIMIT_3HOP,
-            priority_fee_micro_lamports: 1_000,
+            priority_fee_micro_lamports: self
+                .tip_strategy
+                .adaptive_cu_price(&self.recent_landed_cu),
             jito_tip_account: self.jito_service.tip_account_for_slot(current_slot),
-            jito_tip_lamports: 0,
+            jito_tip_lamports: verified_tip_lamports,
             recent_blockhash: [0u8; 32],
             v1_transport_supported: false,
             slippage_bps: tuning.slippage_bps,
