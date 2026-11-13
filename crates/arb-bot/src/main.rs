@@ -23,9 +23,13 @@ pub mod verified_config;
 pub mod web_api;
 
 /// Supported operational modes for the bot.
+///
+/// Mode is controlled exclusively by environment (`ARB_MODE`, plus the
+/// explicit `ARB_LIVE` / `ARB_CANARY` arming flags). There is no shadow mode:
+/// `Simulate` is the non-broadcast default, and `Live` additionally requires
+/// `ARB_LIVE` to be truthy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BotMode {
-    Shadow,
     Simulate,
     Live,
     Canary,
@@ -33,13 +37,12 @@ pub enum BotMode {
 
 impl BotMode {
     /// Runtime mode transitions go through a shared `AtomicU8` so the unified
-    /// control service can switch shadow/paper/live without a restart.
+    /// control service can switch paper/live without a restart.
     pub fn from_u8(v: u8) -> Self {
         match v {
-            1 => BotMode::Simulate,
-            2 => BotMode::Live,
-            3 => BotMode::Canary,
-            _ => BotMode::Shadow,
+            1 => BotMode::Live,
+            2 => BotMode::Canary,
+            _ => BotMode::Simulate,
         }
     }
 }
@@ -49,13 +52,12 @@ impl std::str::FromStr for BotMode {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "shadow" => Ok(BotMode::Shadow),
             "simulate" => Ok(BotMode::Simulate),
             "live" => Ok(BotMode::Live),
             "canary" => Ok(BotMode::Canary),
-            other => anyhow::bail!(
-                "Unknown bot mode: '{other}'. Allowed modes: shadow, simulate, live, canary"
-            ),
+            other => {
+                anyhow::bail!("Unknown bot mode: '{other}'. Allowed modes: simulate, live, canary")
+            }
         }
     }
 }
@@ -63,7 +65,6 @@ impl std::str::FromStr for BotMode {
 impl std::fmt::Display for BotMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BotMode::Shadow => write!(f, "shadow"),
             BotMode::Simulate => write!(f, "simulate"),
             BotMode::Live => write!(f, "live"),
             BotMode::Canary => write!(f, "canary"),
@@ -94,23 +95,21 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut config_path = std::env::var("ARB_CONFIG").unwrap_or_default();
-    let mut cli_mode: Option<String> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Solana Arbitrage Bot\n\nUsage: arb-bot [OPTIONS]\n\nOptions:\n  -c, --config <PATH>  Path to configuration TOML [default: auto-detected]\n  -m, --mode <MODE>    Bot mode: shadow | simulate | live [default: shadow]\n  -h, --help           Print help"
+                    "Solana Arbitrage Bot\n\nUsage: arb-bot [OPTIONS]\n\nOptions:\n  -c, --config <PATH>  Path to configuration TOML [default: auto-detected]\n  -h, --help           Print help\n\nMode is controlled by environment only:\n  ARB_MODE=simulate|live|canary  (default: simulate)\n  live additionally requires ARB_LIVE=1"
                 );
                 std::process::exit(0);
             }
             "--config" | "-c" => {
                 config_path = args.next().context("Missing argument after --config")?;
             }
-            "--mode" | "-m" => {
-                cli_mode = Some(args.next().context("Missing argument after --mode")?);
-            }
-            other => anyhow::bail!("Unknown argument: '{other}'"),
+            other => anyhow::bail!(
+                "Unknown argument: '{other}'. Mode is environment-controlled (ARB_MODE)."
+            ),
         }
     }
 
@@ -126,15 +125,16 @@ fn parse_args() -> Result<Args> {
         }
     }
 
-    // Determine mode precedence:
-    // 1. Explicit CLI argument `--mode`
-    // 2. Environment variable `ARB_MODE` / `ARB_CANARY`
-    // 3. `bot.mode` configured in the target config.toml file
-    // 4. Safe fallback: "shadow"
-    let mode_str = if let Some(m) = cli_mode {
-        m
-    } else if let Ok(m) = std::env::var("ARB_MODE") {
-        m
+    // Mode is environment-controlled only. Precedence:
+    // 1. `ARB_MODE` (explicit simulate|live|canary)
+    // 2. Legacy arming flags: ARB_CANARY, ARB_LIVE/LIVE/EXECUTE_LIVE
+    // 3. Safe fallback: "simulate" (non-broadcast)
+    let mode_str = if let Ok(m) = std::env::var("ARB_MODE") {
+        if !m.trim().is_empty() {
+            m
+        } else {
+            "simulate".to_string()
+        }
     } else if std::env::var("ARB_CANARY").is_ok() {
         "canary".to_string()
     } else if std::env::var("ARB_LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -142,22 +142,8 @@ fn parse_args() -> Result<Args> {
         || std::env::var("EXECUTE_LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     {
         "live".to_string()
-    } else if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        #[derive(serde::Deserialize)]
-        struct PartialConfig {
-            bot: Option<PartialBot>,
-        }
-        #[derive(serde::Deserialize)]
-        struct PartialBot {
-            mode: Option<String>,
-        }
-        toml::from_str::<PartialConfig>(&contents)
-            .ok()
-            .and_then(|c| c.bot)
-            .and_then(|b| b.mode)
-            .unwrap_or_else(|| "shadow".to_string())
     } else {
-        "shadow".to_string()
+        "simulate".to_string()
     };
 
     let mode: BotMode = mode_str.parse()?;
@@ -313,22 +299,11 @@ fn admin_authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {
 #[tokio::main]
 async fn main() -> Result<()> {
     install_panic_hook();
-    // Shadow-only release deliberately does not load .env: no private key or
-    // live-execution flag is needed for read-only market monitoring.
-    #[cfg(not(feature = "shadow-only"))]
     if dotenvy::dotenv().is_ok() {
         // .env loaded
     }
-    #[cfg(feature = "shadow-only")]
-    info!("shadow-only build: dotenv/private-key loading disabled");
 
     let args = parse_args()?;
-    #[cfg(feature = "shadow-only")]
-    if args.mode != BotMode::Shadow {
-        anyhow::bail!(
-            "This binary was compiled with shadow-only; only --mode shadow is permitted. Rebuild a separately audited artifact to change execution mode."
-        );
-    }
 
     init_event_logger();
 
@@ -350,7 +325,7 @@ async fn main() -> Result<()> {
         }
         warn!("LIVE execution mode active on real network funds!");
     } else {
-        info!("Running in safe mode (dry-run / shadow). No live transactions will be submitted.");
+        info!("Running in safe mode (dry-run / simulate). No live transactions will be submitted.");
     }
 
     // Start Prometheus text-exporter metrics server

@@ -364,7 +364,6 @@ pub struct AdminConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct BotConfig {
-    pub mode: String,
     #[serde(default)]
     pub canary: bool,
 }

@@ -57,7 +57,6 @@ pub struct ControlEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
-    Shadow,
     Paper,
     Live,
 }
@@ -544,10 +543,9 @@ impl ControlService {
                     ));
                 }
             }
-            ExecutionMode::Shadow | ExecutionMode::Paper => {}
+            ExecutionMode::Paper => {}
         }
         let bot_mode = match requested {
-            ExecutionMode::Shadow => BotMode::Shadow,
             ExecutionMode::Paper => BotMode::Simulate,
             ExecutionMode::Live => BotMode::Live,
         };
@@ -600,7 +598,6 @@ pub const CONTROL_COMMANDS: &[&str] = &[
     "status",
     "start",
     "stop",
-    "shadow",
     "paper",
     "live",
     "opportunities",
@@ -626,9 +623,6 @@ pub fn execute_command(
         }
         "start" => service.start().map(str::to_string),
         "stop" => service.stop().map(str::to_string),
-        "shadow" => service
-            .set_mode(ExecutionMode::Shadow, arg)
-            .map(|_| "mode -> shadow".to_string()),
         "paper" => service
             .set_mode(ExecutionMode::Paper, arg)
             .map(|_| "mode -> paper".to_string()),
@@ -695,8 +689,6 @@ mod tests {
             );
             assert!(svc.set_mode(ExecutionMode::Live, None).is_err());
         }
-        assert!(svc.set_mode(ExecutionMode::Shadow, None).is_ok());
-        assert_eq!(svc.current_mode(), BotMode::Shadow);
         assert!(svc.set_mode(ExecutionMode::Paper, None).is_ok());
         assert_eq!(svc.current_mode(), BotMode::Simulate);
     }
@@ -707,8 +699,8 @@ mod tests {
         assert!(execute_command(&svc, "/status", None).is_ok());
         assert!(execute_command(&svc, "stop", None).is_ok());
         assert!(svc.status().paused);
-        assert!(execute_command(&svc, "/shadow", None).is_ok());
-        assert_eq!(svc.current_mode(), BotMode::Shadow);
+        assert!(execute_command(&svc, "/paper", None).is_ok());
+        assert_eq!(svc.current_mode(), BotMode::Simulate);
         assert!(execute_command(&svc, "opportunities", None).is_ok());
         assert!(execute_command(&svc, "definitely-not-a-command", None).is_err());
     }

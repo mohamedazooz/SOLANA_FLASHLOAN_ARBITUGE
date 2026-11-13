@@ -67,7 +67,7 @@ jobs:
           echo "==> [2/4] Cleaning old target artifacts > 7 days"
           find target/release/deps -name '*.d' -mtime +7 -delete 2>/dev/null || true
 
-          echo "==> [3/4] Release build (live mode — no shadow-only flag)"
+          echo "==> [3/4] Release build (mode controlled by env: ARB_MODE / ARB_LIVE)"
           cargo build --release --locked -p arb-bot --bin arb-bot
           echo "==> Build SUCCESS: $(./target/release/arb-bot --version 2>/dev/null || echo 'binary ready')"
 
@@ -82,7 +82,7 @@ jobs:
             sleep 2
             mkdir -p logs data/warm
             set -a; . ./.env; set +a
-            nohup ./target/release/arb-bot --mode live >> logs/arb_live.log 2>&1 &
+            nohup ./target/release/arb-bot >> logs/arb_live.log 2>&1 &
             BOT_PID=$!
             sleep 5
             if kill -0 $BOT_PID 2>/dev/null; then

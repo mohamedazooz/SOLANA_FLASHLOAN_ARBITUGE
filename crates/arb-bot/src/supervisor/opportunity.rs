@@ -799,11 +799,11 @@ impl Supervisor {
                             )
                         })
                         .unwrap_or(false);
-                // Shadow and Simulate always compile V1 for RPC simulation.
+                // Simulate mode always compiles V1 for RPC simulation.
                 // A future Live build may compile only when the direct V1
                 // sender is explicitly enabled. Jito is deliberately excluded.
                 let v1_transport_enabled =
-                    matches!(self.mode(), BotMode::Shadow | BotMode::Simulate) || direct_v1_enabled;
+                    matches!(self.mode(), BotMode::Simulate) || direct_v1_enabled;
                 // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
                 let patched_ram = if v1_transport_enabled {
                     None
@@ -902,12 +902,12 @@ impl Supervisor {
                     }
                 }
             } else {
-                // Shadow-only path: build an unsigned V1 envelope with zeroed
+                // Simulate-only path: build an unsigned V1 envelope with zeroed
                 // signature slots. RPC simulation is explicitly sigVerify=false;
                 // no wallet secret is loaded and this byte sequence is never sent.
                 let (blockhash, _lvbh) = self.fetch_recent_blockhash().await;
                 if blockhash == [0u8; 32] {
-                    warn!("Shadow V1 simulation rejected: no valid recent blockhash");
+                    warn!("Simulate V1 simulation rejected: no valid recent blockhash");
                     continue;
                 }
                 blockhash_b58 = bs58::encode(blockhash).into_string();
@@ -919,7 +919,7 @@ impl Supervisor {
                     .and_then(|value| value.parse::<Pubkey>().ok());
                 let Some(payer) = payer else {
                     warn!(
-                        "Shadow V1 simulation rejected: wallet.cold_wallet_pubkey is missing or invalid"
+                        "Simulate V1 simulation rejected: wallet.cold_wallet_pubkey is missing or invalid"
                     );
                     continue;
                 };
@@ -928,7 +928,7 @@ impl Supervisor {
                     .saturating_add(999_999))
                     / 1_000_000;
                 if priority_fee_lamports > u64::MAX as u128 {
-                    warn!("Shadow V1 simulation rejected: priority fee overflow");
+                    warn!("Simulate V1 simulation rejected: priority fee overflow");
                     continue;
                 }
                 let v1_config = arb_tx::V1ConfigParams {
@@ -942,7 +942,7 @@ impl Supervisor {
                 ) {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        warn!("Shadow V1 transaction compilation failed: {error}");
+                        warn!("Simulate V1 transaction compilation failed: {error}");
                         continue;
                     }
                 }
