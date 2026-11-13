@@ -194,8 +194,14 @@ clippy `-D warnings` clean, fmt clean. Coverage concentrations:
 | R11 | Docker + CI + docs refresh | `Dockerfile`, `.github/workflows/*`, `docs/` | infra |
 | R12 | Execution state persistence for safe restart/ambiguous-timeout recovery | `arb-store`, `supervisor/dispatch.rs` | C |
 
-Items R1–R5, R6–R8 (core), R11, R12 are implemented in this branch; R9/R10 are done as
-mechanical splits where they do not churn the hot path.
+Status on this branch (`feat/unified-pipeline-webapp`):
+
+- **Done**: R1 (`ac97205`), R4+R5 (`b62ffae`), R6+R7+R8 (`170f9cc`, `7a149b7`), R11
+  (Docker `web-builder` stage + CI `web` job + this report).
+- **Not yet done (honest)**: R2 (`arb-mcp` still in workspace), R3 (Kamino fee
+  single-source), R9 (`supervisor/run.rs` still 2,134 lines), R10
+  (`arb-tx/src/lib.rs` still 4,799 lines), R12 (execution state persistence for
+  ambiguous-timeout recovery still absent).
 
 ## 12. Honest status register (carried forward)
 
