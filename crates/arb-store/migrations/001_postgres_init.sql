@@ -45,3 +45,16 @@ CREATE INDEX IF NOT EXISTS idx_pg_attempts_slot ON attempts(slot);
 CREATE INDEX IF NOT EXISTS idx_pg_attempts_created_at ON attempts(created_at);
 CREATE INDEX IF NOT EXISTS idx_pg_outcomes_attempt_id ON outcomes(attempt_id);
 CREATE INDEX IF NOT EXISTS idx_pg_fills_attempt_id ON fills(attempt_id);
+
+-- Durable dispatch intents (R12) — see 001_init.sql for the reconciliation rule.
+CREATE TABLE IF NOT EXISTS dispatch_intents (
+    attempt_id BIGINT PRIMARY KEY REFERENCES attempts(id),
+    signature TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    dispatch_slot BIGINT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    resolved_status TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pg_dispatch_intents_status ON dispatch_intents(status);

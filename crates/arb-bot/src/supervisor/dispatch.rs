@@ -479,6 +479,25 @@ impl Supervisor {
                     return;
                 }
 
+                // R12: persist the dispatch intent (signature + transport +
+                // slot) BEFORE the send so a crash/ambiguous timeout is
+                // reconcilable by signature instead of a blind resubmit.
+                let pre_sig = arb_tx::extract_transaction_signature(tx_bytes);
+                if let Some(sig) = pre_sig.as_deref() {
+                    let provider = if is_swqos_route { "swqos" } else { "jito" };
+                    if let Err(err) = self.store.record_dispatch_intent(
+                        &arb_store::DispatchIntentRecord {
+                            attempt_id: record.id,
+                            signature: sig.to_string(),
+                            provider: provider.to_string(),
+                            dispatch_slot: current_slot.0 as i64,
+                            resolved_status: None,
+                        },
+                    ) {
+                        warn!(?err, attempt_id = record.id, "failed to persist dispatch intent");
+                    }
+                }
+
                 let sent_at = Instant::now();
                 let (send_result, was_swqos): (Result<String, String>, bool) = if is_swqos_route {
                     info!(
@@ -664,6 +683,7 @@ impl Supervisor {
                                         "landed",
                                         Some(net_profit_val),
                                     );
+                                    let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {
                                         js.record(
                                             r,
@@ -717,6 +737,13 @@ impl Supervisor {
                                 arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
                                     warn!("⚠️ Execution {:?} in block: {}", status, b_id);
                                     let _ = store.record_outcome(rec_id, "dropped", None);
+                                    let _ = store.resolve_dispatch_intent(
+                                        rec_id,
+                                        match status {
+                                            arb_land::LandStatus::Dropped => "dropped",
+                                            _ => "expired",
+                                        },
+                                    );
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
@@ -748,6 +775,7 @@ impl Supervisor {
                                 arb_land::LandStatus::Failed => {
                                     warn!("⚠️ Execution reverted on-chain: {}", b_id);
                                     let _ = store.record_outcome(rec_id, "failed", None);
+                                    let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
@@ -795,6 +823,9 @@ impl Supervisor {
                             .alert_execution_failed("dispatch", &e.to_string(), route_label)
                             .await;
                         let _ = self.store.record_outcome(record.id, "failed", None);
+                        let _ = self
+                            .store
+                            .resolve_dispatch_intent(record.id, "send_failed");
                         // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
                     }
                 }

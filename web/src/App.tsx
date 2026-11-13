@@ -43,25 +43,47 @@ export default function App() {
     if (!authed) return;
     reload();
     timerRef.current = window.setInterval(reload, 5_000);
-    const ws = new WebSocket(api.wsUrl());
-    ws.onclose = () => {
-      // Reconnect after a delay; the REST poller keeps the UI fresh meanwhile.
-      window.setTimeout(() => window.location.reload(), 10_000);
-    };
-    ws.onmessage = (ev) => {
-      try {
-        const parsed = JSON.parse(ev.data);
-        if (parsed && typeof parsed === "object" && "mode" in parsed) {
-          setStatus(parsed as StatusSnapshot);
+
+    // Reconnect with capped exponential backoff + jitter so a fleet of tabs
+    // never reconnects in lockstep (thundering herd). Bounded attempts; the
+    // REST poller keeps the UI fresh regardless. A 401/expired token surfaces
+    // through the next REST poll instead of a reload loop.
+    let attempt = 0;
+    let reconnectTimer: number | null = null;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      const ws = new WebSocket(api.wsUrl());
+      ws.onopen = () => {
+        attempt = 0;
+      };
+      ws.onclose = () => {
+        if (disposed || attempt >= 8) return;
+        const backoff = Math.min(500 * 2 ** attempt, 30_000);
+        const jitter = Math.random() * 500;
+        attempt += 1;
+        reconnectTimer = window.setTimeout(connect, backoff + jitter);
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.data);
+          if (parsed && typeof parsed === "object" && "mode" in parsed) {
+            setStatus(parsed as StatusSnapshot);
+          }
+        } catch {
+          /* ignore malformed frames */
         }
-      } catch {
-        /* ignore malformed frames */
-      }
+      };
+      wsRef.current = ws;
     };
-    wsRef.current = ws;
+    connect();
+
     return () => {
+      disposed = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (timerRef.current) window.clearInterval(timerRef.current);
-      ws.close();
+      wsRef.current?.close();
     };
   }, [authed]);
 

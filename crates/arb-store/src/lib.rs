@@ -39,6 +39,22 @@ pub struct PnlDaily {
     pub successful: u64,
 }
 
+/// Durable record of one signed-transaction dispatch (R12). Written **before**
+/// the send so a crash/timeout leaves a recoverable trace: reconciliation
+/// checks the signature on-chain first and never blindly resubmits.
+#[derive(Debug, Clone)]
+pub struct DispatchIntentRecord {
+    pub attempt_id: i64,
+    /// Base58 transaction signature (extracted from the signed bytes).
+    pub signature: String,
+    /// Transport label, e.g. `swqos` or `jito`.
+    pub provider: String,
+    /// Slot at dispatch time; blockhash expiry is proven against it.
+    pub dispatch_slot: i64,
+    /// `pending` until reconciliation resolves it; then the on-chain outcome.
+    pub resolved_status: Option<String>,
+}
+
 pub trait Store: Send + Sync {
     fn record_attempt(&self, record: &AttemptRecord) -> Result<()>;
     fn record_outcome(
@@ -52,6 +68,9 @@ pub trait Store: Send + Sync {
     fn fills(&self, attempt_id: i64) -> Result<Vec<FillRecord>>;
     fn pnl_daily(&self, day: &str) -> Result<PnlDaily>;
     fn record_fill(&self, fill: &FillRecord) -> Result<()>;
+    fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()>;
+    fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>>;
+    fn resolve_dispatch_intent(&self, attempt_id: i64, resolved_status: &str) -> Result<()>;
 }
 
 /// Persistent SQLite Store enforcing WAL Pragmas.
@@ -287,14 +306,67 @@ impl Store for SqliteStore {
         .map_err(|e| ArbError::Internal(format!("Failed to insert fill: {e}")))?;
         Ok(())
     }
-}
 
-/// In-Memory store implementation for backward compatibility.
+    fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, status)
+             VALUES (?1, ?2, ?3, ?4, 'pending')",
+            params![intent.attempt_id, intent.signature, intent.provider, intent.dispatch_slot],
+        )
+        .map_err(|e| ArbError::Internal(format!("Failed to insert dispatch intent: {e}")))?;
+        Ok(())
+    }
+
+    fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT attempt_id, signature, provider, dispatch_slot FROM dispatch_intents
+                 WHERE status = 'pending' ORDER BY attempt_id ASC LIMIT ?1",
+            )
+            .map_err(|e| ArbError::Internal(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok(DispatchIntentRecord {
+                    attempt_id: row.get(0).unwrap_or(0),
+                    signature: row.get(1).unwrap_or_default(),
+                    provider: row.get(2).unwrap_or_default(),
+                    dispatch_slot: row.get(3).unwrap_or(0),
+                    resolved_status: None,
+                })
+            })
+            .map_err(|e| ArbError::Internal(e.to_string()))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| ArbError::Internal(e.to_string()))
+    }
+
+    fn resolve_dispatch_intent(&self, attempt_id: i64, resolved_status: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        conn.execute(
+            "UPDATE dispatch_intents SET status = 'resolved', resolved_status = ?2,
+             resolved_at = CURRENT_TIMESTAMP WHERE attempt_id = ?1 AND status = 'pending'",
+            params![attempt_id, resolved_status],
+        )
+        .map_err(|e| ArbError::Internal(format!("Failed to resolve dispatch intent: {e}")))?;
+        Ok(())
+    }
+}
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     attempts: Mutex<Vec<AttemptRecord>>,
     outcomes: Mutex<Vec<(i64, String, Option<Lamports>)>>,
     fills: Mutex<Vec<FillRecord>>,
+    dispatch_intents: Mutex<Vec<(DispatchIntentRecord, String)>>,
 }
 
 impl MemoryStore {
@@ -393,6 +465,42 @@ impl Store for MemoryStore {
         f.push(fill.clone());
         Ok(())
     }
+
+    fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()> {
+        let mut d = self
+            .dispatch_intents
+            .lock()
+            .map_err(|_| ArbError::Internal("lock".into()))?;
+        d.retain(|(existing, _)| existing.attempt_id != intent.attempt_id);
+        d.push((intent.clone(), "pending".to_string()));
+        Ok(())
+    }
+
+    fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>> {
+        let d = self
+            .dispatch_intents
+            .lock()
+            .map_err(|_| ArbError::Internal("lock".into()))?;
+        Ok(d.iter()
+            .filter(|(_, status)| status == "pending")
+            .take(usize::try_from(limit.max(0)).unwrap_or(0))
+            .map(|(intent, _)| intent.clone())
+            .collect())
+    }
+
+    fn resolve_dispatch_intent(&self, attempt_id: i64, resolved_status: &str) -> Result<()> {
+        let mut d = self
+            .dispatch_intents
+            .lock()
+            .map_err(|_| ArbError::Internal("lock".into()))?;
+        for (intent, status) in d.iter_mut() {
+            if intent.attempt_id == attempt_id && status == "pending" {
+                *status = "resolved".to_string();
+                intent.resolved_status = Some(resolved_status.to_string());
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -429,5 +537,52 @@ mod tests {
         let recent = store.get_recent_attempts(10).expect("invariant");
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].id, 101);
+    }
+
+    #[test]
+    fn dispatch_intent_roundtrip_and_reconciliation() {
+        let intent = |id: i64| DispatchIntentRecord {
+            attempt_id: id,
+            signature: format!("sig{id}"),
+            provider: "swqos".into(),
+            dispatch_slot: 700,
+            resolved_status: None,
+        };
+
+        for store in [
+            &SqliteStore::open_in_memory().expect("invariant") as &dyn Store,
+            &MemoryStore::new() as &dyn Store,
+        ] {
+            assert!(store.pending_dispatch_intents(16).unwrap().is_empty());
+            for id in [1i64, 2] {
+                store
+                    .record_attempt(&AttemptRecord {
+                        id,
+                        slot: 700,
+                        route_id: "r".into(),
+                        expected_net: Lamports(1),
+                        tip_lamports: None,
+                        decision: "sent".into(),
+                    })
+                    .unwrap();
+            }
+            store.record_dispatch_intent(&intent(1)).unwrap();
+            store.record_dispatch_intent(&intent(2)).unwrap();
+
+            let pending = store.pending_dispatch_intents(16).unwrap();
+            assert_eq!(pending.len(), 2);
+            assert_eq!(pending[0].attempt_id, 1);
+            assert_eq!(pending[0].signature, "sig1");
+            assert_eq!(pending[0].dispatch_slot, 700);
+
+            store.resolve_dispatch_intent(1, "landed").unwrap();
+            let pending = store.pending_dispatch_intents(16).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].attempt_id, 2);
+
+            // Resolving twice is a no-op (idempotent reconciliation).
+            store.resolve_dispatch_intent(1, "expired").unwrap();
+            assert_eq!(store.pending_dispatch_intents(16).unwrap().len(), 1);
+        }
     }
 }

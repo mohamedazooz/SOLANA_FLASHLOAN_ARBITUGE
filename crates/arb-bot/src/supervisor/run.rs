@@ -234,6 +234,10 @@ impl Supervisor {
     pub async fn run(&self) -> Result<()> {
         info!("Starting Supervisor — Mode: {}", self.mode());
 
+        // R12: reconcile dispatch intents left pending by a previous run
+        // before dispatching anything new.
+        self.reconcile_pending_dispatches().await;
+
         // Publish process identity immediately, before the first tick, so an
         // external verifier can always find the PID/binary it is watching.
         self.heartbeat.observe_tick(0);

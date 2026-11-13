@@ -32,6 +32,7 @@ use tracing::{debug, error, info, warn};
 // Supervisor implementation is split by responsibility. The child modules extend the
 // same type and can access its private state without introducing wrapper indirection.
 mod dispatch;
+mod recovery;
 mod execution;
 mod run;
 

@@ -1,7 +1,7 @@
 //! PostgreSQL Production Store implementation using sqlx.
 //! Provides persistence for attempts, outcomes, fills, token prices, and circuit breaker events.
 
-use crate::{AttemptRecord, FillRecord, POSTGRES_INIT_SQL, PnlDaily, Store};
+use crate::{AttemptRecord, DispatchIntentRecord, FillRecord, POSTGRES_INIT_SQL, PnlDaily, Store};
 use arb_types::{ArbError, Lamports, Result, TokenAmount};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Mutex;
@@ -306,6 +306,74 @@ impl Store for PostgresStore {
                 .execute(&pool)
                 .await
                 .map_err(|e| ArbError::Internal(format!("Failed to insert PG fill: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()> {
+        let pool = self.pool.clone();
+        let (attempt_id, signature, provider, dispatch_slot) = (
+            intent.attempt_id,
+            intent.signature.clone(),
+            intent.provider.clone(),
+            intent.dispatch_slot,
+        );
+        self.block_on(async move {
+            sqlx::query(
+                "INSERT INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, status)
+                 VALUES ($1, $2, $3, $4, 'pending')
+                 ON CONFLICT (attempt_id) DO UPDATE SET
+                    signature = $2, provider = $3, dispatch_slot = $4, status = 'pending',
+                    resolved_status = NULL, resolved_at = NULL",
+            )
+            .bind(attempt_id)
+            .bind(signature)
+            .bind(provider)
+            .bind(dispatch_slot)
+            .execute(&pool)
+            .await
+            .map_err(|e| ArbError::Internal(format!("Failed to insert PG dispatch intent: {e}")))?;
+            Ok(())
+        })
+    }
+
+    fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>> {
+        let pool = self.pool.clone();
+        self.block_on(async move {
+            let rows = sqlx::query_as::<_, (i64, String, String, i64)>(
+                "SELECT attempt_id, signature, provider, dispatch_slot FROM dispatch_intents
+                 WHERE status = 'pending' ORDER BY attempt_id ASC LIMIT $1",
+            )
+            .bind(limit)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| ArbError::Internal(format!("Failed to query PG dispatch intents: {e}")))?;
+            Ok(rows
+                .into_iter()
+                .map(|(attempt_id, signature, provider, dispatch_slot)| DispatchIntentRecord {
+                    attempt_id,
+                    signature,
+                    provider,
+                    dispatch_slot,
+                    resolved_status: None,
+                })
+                .collect())
+        })
+    }
+
+    fn resolve_dispatch_intent(&self, attempt_id: i64, resolved_status: &str) -> Result<()> {
+        let pool = self.pool.clone();
+        let resolved_status = resolved_status.to_string();
+        self.block_on(async move {
+            sqlx::query(
+                "UPDATE dispatch_intents SET status = 'resolved', resolved_status = $2,
+                 resolved_at = CURRENT_TIMESTAMP WHERE attempt_id = $1 AND status = 'pending'",
+            )
+            .bind(attempt_id)
+            .bind(resolved_status)
+            .execute(&pool)
+            .await
+            .map_err(|e| ArbError::Internal(format!("Failed to resolve PG dispatch intent: {e}")))?;
             Ok(())
         })
     }

@@ -13,9 +13,11 @@
 //! - No private keys or signing secrets are ever exposed to the browser.
 
 use crate::control_service::{ConfigOverrides, ControlService, execute_command};
+use axum::extract::DefaultBodyLimit;
+use axum::middleware;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::{Json as AxumJson, Router};
@@ -455,7 +457,27 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/ws", get(ws_events))
         .route("/", get(index))
         .route("/health", get(health))
+        .layer(middleware::from_fn(security_headers))
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state))
+}
+
+/// Baseline security headers on every response (OWASP secure-headers baseline).
+/// TLS termination happens at the reverse proxy; these apply at any origin.
+async fn security_headers(
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert(
+        "cache-control",
+        HeaderValue::from_static("no-store"),
+    );
+    res
 }
 
 /// Spawns the web server bound to `bind_addr` (default `127.0.0.1:8080`).
