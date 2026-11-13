@@ -3309,63 +3309,6 @@ impl TxBuilder {
         Ok(ixs)
     }
 
-    /// Assemble atomic Kamino Flash Loan arbitrage using Jupiter v6 Swap Instructions.
-    /// Order: ComputeBudget -> FlashBorrow -> Jupiter Swaps (all accounts resolved) -> FlashRepay -> Jito Tip.
-    #[allow(clippy::too_many_arguments)]
-    pub fn assemble_jupiter_flash_arbitrage(
-        payer: Pubkey,
-        tip_account: Pubkey,
-        tip_amount: Lamports,
-        cu_limit: u32,
-        priority_fee_micro_lamports: u64,
-        borrow_amount: u64,
-        kamino_params: &KaminoFlashParams,
-        jupiter_swap_instructions: Vec<CompiledInstruction>,
-        _flash_loan_fee_sf: u64,
-    ) -> Result<Vec<CompiledInstruction>> {
-        let mut ixs = Vec::new();
-
-        // 1. Compute Budget Limit & Dynamic Priority Fee
-        let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        ixs.push(build_compute_unit_limit(effective_cu));
-        ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
-
-        // 2. Kamino Flash Borrow
-        let borrow_idx = ixs.len();
-        ixs.push(build_kamino_flash_borrow(
-            kamino_params,
-            payer,
-            borrow_amount,
-        ));
-
-        // 3. Jupiter Swap Instructions (All accounts resolved by Jupiter API)
-        for ix in jupiter_swap_instructions {
-            ixs.push(ix);
-        }
-
-        // 4. Kamino Flash Repay — the `amount` argument MUST be the borrow
-        // principal (klend enforces `liquidity_amount == borrow amount`); the
-        // origination fee is debited separately, on top, from the same source
-        // ATA at repay time, so the caller must fund `principal + fee`.
-        ixs.push(build_kamino_flash_repay_with_index(
-            kamino_params,
-            payer,
-            borrow_amount,
-            borrow_idx as u8,
-        ));
-
-        // 5. Jito Tip at the end
-        if tip_amount.as_u64() > 0 {
-            ixs.push(build_marked_jito_tip_instruction(
-                payer,
-                tip_account,
-                tip_amount,
-            ));
-        }
-
-        Ok(ixs)
-    }
-
     /// Assemble Kamino flash loan with split DEX swap legs.
     /// Order: ComputeBudget -> FlashBorrow -> Split Swaps -> Return Swap -> FlashRepay -> Jito Tip
     #[allow(clippy::too_many_arguments)]

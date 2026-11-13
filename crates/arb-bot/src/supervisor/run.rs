@@ -88,12 +88,35 @@ impl Supervisor {
         if fresh_pools.len() < 3 || max_sizing == 0 {
             return Vec::new();
         }
-        let tuning = self
+        let mut tuning = self
             .config
             .strategy
             .dlmm_three_leg
             .clone()
             .unwrap_or_default();
+        // Unified-control runtime overrides (web section E / Telegram /config)
+        // are applied at this single boundary; the pipeline below stays pure.
+        if let Some(control) = self.control() {
+            let overrides = control.overrides();
+            if let Some(usd) = overrides.min_net_profit_usd {
+                let sol_price = *self.last_known_live_sol_price.read();
+                if sol_price > 0.0 {
+                    let floor = (usd / sol_price * 1e9).round();
+                    if floor.is_finite() && floor >= 0.0 && floor < u64::MAX as f64 {
+                        tuning.min_profit_lamports = tuning.min_profit_lamports.max(floor as u64);
+                    }
+                }
+            }
+            if let Some(min_borrow) = overrides.min_borrow_lamports {
+                tuning.input_size = tuning.input_size.max(min_borrow);
+            }
+            if let Some(max_borrow) = overrides.max_borrow_lamports {
+                tuning.max_input = tuning.max_input.min(max_borrow);
+            }
+            if let Some(bps) = overrides.max_slippage_bps {
+                tuning.slippage_bps = bps;
+            }
+        }
         let payer = self
             .keypair
             .as_ref()
@@ -123,9 +146,11 @@ impl Supervisor {
             recent_blockhash: [0u8; 32],
             v1_transport_supported: false,
             slippage_bps: tuning.slippage_bps,
-            min_profit_lamports: tuning
-                .min_profit_lamports
-                .max(self.config.strategy.min_net_profit_abs),
+            min_profit_lamports: crate::config::min_net_profit_floor_lamports(
+                tuning
+                    .min_profit_lamports
+                    .max(self.config.strategy.min_net_profit_abs),
+            ),
             flash_loan_fee_sf,
             network_cost_lamports: self
                 .three_leg_network_cost_lamports(verified_tip_lamports, payer),
@@ -207,7 +232,7 @@ impl Supervisor {
     }
 
     pub async fn run(&self) -> Result<()> {
-        info!("Starting Supervisor — Mode: {}", self.mode);
+        info!("Starting Supervisor — Mode: {}", self.mode());
 
         // Publish process identity immediately, before the first tick, so an
         // external verifier can always find the PID/binary it is watching.
@@ -371,7 +396,7 @@ impl Supervisor {
         // Emit startup & initial market snapshot AFTER discovery and seeding succeed
         self.telegram
             .alert_startup(
-                &self.mode.to_string(),
+                &self.mode().to_string(),
                 seeded_cache_count,
                 crate::live_execution_enabled(),
             )
@@ -502,6 +527,7 @@ impl Supervisor {
             // task above only refreshes the file; this counter is what proves
             // the strategy loop itself is still turning.
             self.heartbeat.observe_tick(current_slot.0);
+            self.publish_control_state(current_slot);
 
             // Health sweep every 100 ticks (~30s): watches the ingestion stream, disk, Telegram.
             // Logs the exact reason for any outage; never blocks trading.
@@ -824,6 +850,26 @@ impl Supervisor {
                         "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",
                         three_leg_opps.len()
                     );
+                }
+                if let Some(control) = self.control() {
+                    for o in three_leg_opps.iter().take(16) {
+                        control.record_opportunity(crate::control_service::OpportunityRecord {
+                            captured_at_unix: 0,
+                            slot: current_slot.0,
+                            route: o
+                                .hops
+                                .iter()
+                                .map(|h| format!("{}", h.pool_id))
+                                .collect::<Vec<_>>()
+                                .join("\u{2192}"),
+                            protocol: "meteora-dlmm-3leg".to_string(),
+                            borrow_lamports: o.size_in.0,
+                            expected_output_lamports: o.expected_out.0,
+                            net_profit_lamports: o.net_profit.0 as i64,
+                            eligible: true,
+                            reject_reason: None,
+                        });
+                    }
                 }
 
                 // Merge + dedupe by sorted pool set, then rank by net profit so
@@ -1300,7 +1346,7 @@ impl Supervisor {
                 let trade_size_usd = base_price_usd.map(|price| {
                     (opp.size_in.as_u64() as f64 / 10_f64.powi(opp.base_decimals as i32)) * price
                 });
-                let bypass_risk_gate = !matches!(self.mode, BotMode::Live)
+                let bypass_risk_gate = !matches!(self.mode(), BotMode::Live)
                     && std::env::var("BYPASS_RISK_GATE")
                         .map(|v| {
                             matches!(
@@ -1312,7 +1358,7 @@ impl Supervisor {
                 if bypass_risk_gate {
                     warn!(
                         "BYPASS_RISK_GATE active in {} mode: notional and impact risk checks skipped",
-                        self.mode
+                        self.mode()
                     );
                 }
 
@@ -1596,7 +1642,7 @@ impl Supervisor {
                     // A future Live build may compile only when the direct V1
                     // sender is explicitly enabled. Jito is deliberately excluded.
                     let v1_transport_enabled =
-                        matches!(self.mode, BotMode::Shadow | BotMode::Simulate)
+                        matches!(self.mode(), BotMode::Shadow | BotMode::Simulate)
                             || direct_v1_enabled;
                     // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
                     let patched_ram = if v1_transport_enabled {
@@ -1779,7 +1825,7 @@ impl Supervisor {
                         .unwrap_or(0),
                     ),
                     tip_lamports: Some(tip),
-                    decision: format!("{}", self.mode),
+                    decision: format!("{}", self.mode()),
                 };
                 let _ = self.store.record_attempt(&record);
 
@@ -1849,7 +1895,7 @@ impl Supervisor {
                     pools_str,
                     initial_loan_base,
                     base_mint,
-                    if self.mode == BotMode::Live {
+                    if self.mode() == BotMode::Live {
                         "DISPATCHING_JITO"
                     } else {
                         "SHADOW_SIMULATED"

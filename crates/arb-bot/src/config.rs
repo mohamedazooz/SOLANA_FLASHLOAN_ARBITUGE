@@ -7,7 +7,6 @@ pub struct Config {
     pub bot: BotConfig,
     pub rpc: RpcConfig,
     pub jito: JitoConfig,
-    pub jupiter: JupiterConfig,
     pub wallet: WalletConfig,
     pub strategy: StrategyConfig,
     pub risk: RiskConfig,
@@ -126,13 +125,6 @@ pub struct JitoConfig {
     /// Interval between leader-schedule refreshes, in seconds.
     #[serde(default = "default_leader_refresh_secs")]
     pub leader_refresh_secs: u64,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct JupiterConfig {
-    pub base_url: String,
-    pub api_key_env: String,
-    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -295,6 +287,31 @@ fn three_leg_default_sizes() -> usize {
     4
 }
 
+/// Effective net-profit floor in WSOL lamports: the TOML floor raised by the
+/// optional USD-denominated override `MIN_NET_PROFIT_USD` converted at
+/// `SOL_USD_PRICE`. Floating point is confined to this config-boundary
+/// conversion; the returned floor is integer lamports and every downstream
+/// decision uses it as-is.
+pub fn min_net_profit_floor_lamports(toml_floor: u64) -> u64 {
+    let parse_env = |key: &str| -> Option<f64> {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+    };
+    let Some(min_usd) = parse_env("MIN_NET_PROFIT_USD").filter(|v| *v >= 0.0) else {
+        return toml_floor;
+    };
+    let Some(sol_price) = parse_env("SOL_USD_PRICE").filter(|v| *v > 0.0) else {
+        return toml_floor;
+    };
+    let lamports = (min_usd / sol_price * 1e9).round();
+    if !lamports.is_finite() || lamports < 0.0 || lamports >= u64::MAX as f64 {
+        return toml_floor;
+    }
+    toml_floor.max(lamports as u64)
+}
+
 fn default_max_orders_per_hour() -> usize {
     10
 }
@@ -412,4 +429,34 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
 
 fn fmt_parse_error(path: &str) -> anyhow::Error {
     anyhow::anyhow!("Failed to parse TOML configuration from '{path}'")
+}
+
+#[cfg(test)]
+mod min_profit_floor_tests {
+    use super::min_net_profit_floor_lamports;
+
+    // One sequential test: the env is process-global and cargo runs test
+    // cases in parallel threads, so per-case env manipulation would race.
+    #[test]
+    fn min_net_profit_floor_matrix() {
+        let baseline = 30_000u64;
+
+        assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
+
+        unsafe { std::env::set_var("MIN_NET_PROFIT_USD", "0.05") };
+        assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
+
+        unsafe { std::env::set_var("SOL_USD_PRICE", "200.0") };
+        assert_eq!(min_net_profit_floor_lamports(baseline), 250_000);
+        assert_eq!(min_net_profit_floor_lamports(1_000_000), 1_000_000);
+
+        unsafe { std::env::set_var("MIN_NET_PROFIT_USD", "-1") };
+        assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
+        unsafe { std::env::set_var("MIN_NET_PROFIT_USD", "abc") };
+        assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
+
+        unsafe { std::env::remove_var("MIN_NET_PROFIT_USD") };
+        unsafe { std::env::remove_var("SOL_USD_PRICE") };
+        assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
+    }
 }

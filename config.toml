@@ -28,11 +28,6 @@ tip_on_unknown_leader = false
 ledger_path = "data/adaptive_ledger.json"   # landing posteriors survive a restart
 leader_refresh_secs = 60
 
-[jupiter]
-base_url = "https://api.jup.ag/swap/v2"
-api_key_env = "JUPITER_API_KEY"
-timeout_ms = 400
-
 [wallet]
 keypair_path = ""
 cold_wallet_pubkey = "2Cby3xFT48ifATWhqDVmpnMCe4tiXvY8MtGFWYDfec7n"

@@ -85,7 +85,7 @@ impl Supervisor {
         // Compile-time shadow-only containment. This guard is intentionally
         // inside the dispatch boundary, not merely a CLI/config convention.
         #[cfg(feature = "shadow-only")]
-        if self.mode == BotMode::Live {
+        if self.mode() == BotMode::Live {
             error!("shadow-only build rejected Live dispatch before any transport call");
             let _ = self
                 .store
@@ -100,7 +100,7 @@ impl Supervisor {
             .map(|pk| pk.to_string())
             .unwrap_or_else(|| "Unknown (Non-Jito / Stale Schedule)".to_string());
 
-        match self.mode {
+        match self.mode() {
             BotMode::Canary => {
                 info!(
                     "canary: simulated valid execution of {} bytes (not broadcast to Jito)",
@@ -253,7 +253,7 @@ impl Supervisor {
                 // Shadow/simulate mode only needs RPC simulation. Live direct
                 // transport remains disabled in this package and must not fall
                 // back to Jito, V0, or legacy when its capability flag is absent.
-                if self.mode == BotMode::Live && !v1_transport_enabled {
+                if self.mode() == BotMode::Live && !v1_transport_enabled {
                     warn!("V1 direct transport not enabled; refusing dispatch");
                     return;
                 }
