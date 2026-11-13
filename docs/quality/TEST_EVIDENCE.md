@@ -235,3 +235,20 @@ SECURITY_AUDIT, REMEDIATION_PLAN).
   `sqlite_path_from_url_resolves_absolute_relative_and_plain_paths`.
 - **Campaign on final tree**: fmt clean; clippy `-D warnings` clean;
   **958 passed / 0 failed** workspace-wide.
+- **Live smoke (release binary, real .env, shadow mode)**:
+  - Positive: `sqlite:///tmp/arb_smoke/shadow_smoke.db` → file + WAL/SHM
+    created (70 KB written in 45 s), `SQLite database initialized with WAL
+    pragmas` in logs — the exact URL form that previously never opened.
+  - Environmental failure injection observed: Helius HTTP 429 → provider
+    cooldown + rotation, health sweep reports `rpc=FAIL` honestly, no
+    stale-data fallback, process stable.
+  - Negative: `sqlite:///proc/nope/impossible.db` → **exit 101** with
+    `durable store unavailable; refusing to start (fail-closed: no in-memory
+    fallback)` — startup refusal proven end-to-end.
+- **Fuzz/property suites (all green)**: arb-dex/fuzzing_decoders 5;
+  arb-math/fuzzing_suite 17; arb-tx: fuzzing_templates 4, v1_property_fuzz 22,
+  adversarial_tests 9, three_pool_flash_arb_tests 17, v1_header_differential
+  12, mainnet_non_broadcast_simulation 2; arb-engine:
+  meteora_mainnet_sdk_differential 3, trade_size_optimization_tests 2,
+  three_leg_net_economics_tests 9, cross_dex_three_pool_live_loop 5,
+  phase17_mainnet_state_verification 8.

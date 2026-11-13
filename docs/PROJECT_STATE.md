@@ -36,15 +36,21 @@ Pump.fun, PumpSwap. Dynamic account resolution everywhere; zero hardcoded
 pools; fail-closed `TxError::MissingExecutionAccounts`. See
 [`architecture/PROTOCOL_COMPATIBILITY.md`](architecture/PROTOCOL_COMPATIBILITY.md).
 
-## Verification status (last full campaign: 2026-11-13, branch `feat/remediation-r2-r12`)
+## Verification status (last full campaign: 2026-11-13, branch `vibe/store-fail-closed-9d81d9`, PR #11)
 
 - `cargo fmt --all -- --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
-- `cargo test --workspace --all-targets` (with `.env` sourced): **941 passed,
+- `cargo test --workspace --all-targets` (with `.env` sourced): **958 passed,
   0 failed**, including property/fuzz tests for the V1 path, SDK differential
   tests (Meteora/Kamino/Solana), fork simulation, and economic invariants.
 - Real Helius RPC/WSS connectivity tested; live-network tests skip cleanly
   when the upstream RPC returns 0 pools (environmental, documented).
+- **R-I store fail-closed remediation verified live**: positive smoke run
+  (release binary, shadow mode, real Helius) created a durable SQLite file +
+  WAL; negative smoke run with an impossible store path refused startup
+  (exit 101, explicit fail-closed message) instead of silently falling back
+  to in-memory. See `quality/TEST_EVIDENCE.md` and
+  `audit/DATABASE_AND_RECOVERY_AUDIT.md`.
 - Web app: authenticated Axum API (constant-time login, rate-limited, session
   tokens, security headers, 64 KB body limit, localhost bind) + React UI
   (sections A–I, WS reconnect with exponential backoff + jitter).
