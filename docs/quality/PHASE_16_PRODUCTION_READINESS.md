@@ -50,11 +50,11 @@ Fee was **read live from the reserve account** (`kamino_flash_loan_fee_sf_live =
 
 ### 2.2 On-chain evidence (simulation, `err: null`)
 
-Source: `reports/phase16/v1_flash_spine_live.json` (raw `simulateTransaction` response), reproduced in `reports/v1_mainnet_probe/probe_report_2026-11-13.json`:
+Source: `reports/phase16/v1_flash_spine_live.json` (raw `simulateTransaction` response), reproduced in `reports/v1_mainnet_probe/probe_report_2026-11-13.json`. **Reproduced on a second independent provider** (`solana-rpc.publicnode.com`, solana-core 4.4.1): `err: null`, 63,005 CU, same 26-log borrow+repay pattern (`reports/phase16/v1_publicnode_sim_results.json`) — two independent RPC stacks accept the V1 flash spine.
 
 | Metric | Value |
 |---|---|
-| RPC cluster | `api.mainnet-beta.solana.com`, solana-core **4.4.0**, feature-set 2681577653 |
+| RPC cluster | `api.mainnet-beta.solana.com` (4.4.0) + `solana-rpc.publicnode.com` (4.4.1), feature-set 2681577653 |
 | Transaction version | **V1** (0x81 discriminator), wire size **638 bytes** |
 | Simulation result | **`err: null`** |
 | CU consumed | **62,584 / 65,165** (two runs) |
@@ -99,7 +99,7 @@ Self-calibrating rungs land **exactly** on 1232 / 1500 / 2000 / 3000 / 3500 / 40
 
 ### 3.3 Live 2-pool DLMM route (mainnet discovery + honest unprofitability)
 
-`cargo test -p arb-sim --release --test meteora_mainnet_simulation_test` against live mainnet:
+`SOLANA_RPC_URL=https://solana-rpc.publicnode.com cargo test -p arb-sim --release --test meteora_mainnet_simulation_test` against live mainnet (evidence: `reports/phase16/publicnode_2pool_dlmm_evidence.json`, fresh slots 468,814,886–87):
 
 - Live pool discovery found 3 DLMM pools above the TVL floor; bin-level quotes computed from **real pool state** (904-byte DLMM pool accounts, owner `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` verified).
 - Quote result: **honest negative net profit** (`is_profitable: false`, realized net −1,120 raw units on 1,000,000 in) — the gate refuses to sign. This is the system working as designed.
@@ -163,7 +163,17 @@ Bin-array account requirements were exercised up to 12 bins/leg (62 accounts, 2,
 - No WS geyser stream configured in-session ⇒ the freshness gate skips stale-state opportunities by design (fail-closed, not stale-fallback). Zero opportunities were emitted for signing — correct under shadow policy.
 - Full metrics (opportunities, rejections, CU, latency percentiles) are persisted by the binary to the durable store and metrics sinks; the soak harness summary is in `reports/phase16/shadow_soak_summary.json`.
 
-### 6.2 24-hour soak gate (BLOCKED — operator)
+### 6.2 Second soak run — publicnode RPC + WSS (same session)
+
+Re-run with operator-suggested endpoints: `SOLANA_RPC_1_URL=https://solana-rpc.publicnode.com`, `SOLANA_RPC_2_URL=https://api.mainnet-beta.solana.com`, `SOLANA_WS_PRIMARY=wss://solana-rpc.publicnode.com`:
+
+- **Zero HTTP 429 from publicnode** (vs 16,801 from the official fallback); RpcPool active with 2 endpoints, rotation + 60 s cooldown observed live.
+- **Full discovery completed** on publicnode: Orca 297, Raydium v3 233, Meteora DLMM 34 candidates, Pump.fun 70 curves paired (front-door recent-coins API 403 from datacenter IP; pairing fallback worked).
+- **WSS verified:** `WebSocket [1/1] connected to mainnet via wss://solana-rpc.publicnode.com`; WS slot+account ingestion engine active.
+- Fail-closed chain verified continuously: stale pools ⇒ `No fresh pools within graph max age; skipping tick (fail closed)`; missing SOL/USD ⇒ `skip graph sizing`; zero opportunities signed, zero broadcasts, zero stale fallbacks.
+- publicnode also rate-limits eventually (non-429, ~2.5 min under discovery burst) — continuous operation still requires operator RPC.
+
+### 6.3 24-hour soak gate (BLOCKED — operator)
 
 Required before any live consideration: ≥24h `ARB_MODE=shadow` on operator infrastructure with geyser/WS feed, durable `DATABASE_URL`, and post-run metric extraction. Command template in §9.
 
@@ -229,11 +239,17 @@ timeout 86400 ./target/release/arb-bot
 
 ---
 
-## 10. Production Verdict
+## 10. Engine-Level Deep Audit
+
+See **`docs/quality/PHASE_16_ENGINE_AUDIT_AND_EVIDENCE.md`** for the full-disclosure engine-by-engine audit (discovery, DLMM math, flash loan, Bellman-Ford algorithm, dynamic sizing, profit engine, freshness), including the complete `saturating_sub` disclosure and the float-in-graph-layer analysis.
+
+---
+
+## 11. Production Verdict
 
 **MAINNET SIMULATION VERIFIED**
 
-- Flash-loan spine (Kamino borrow + repay) **executed successfully on live mainnet via simulation** (`err: null`, program logs prove both instructions ran inside one V1 transaction).
+- Flash-loan spine (Kamino borrow + repay) **executed successfully on live mainnet via simulation on TWO independent RPC providers** (`err: null`, program logs prove both instructions ran inside one V1 transaction).
 - Real 3-pool DLMM arbitrage transactions >1,232 bytes compile, sign, and pass signature verification as V1; wire-format capacity proven to 4,000 bytes with explicit rejection at 4,097 and at the SIMD-0385 64-account ceiling.
 - Profitability, freshness, and atomicity gates all demonstrated rejecting bad routes (structural loss, stale quotes, unfunded payer) — fail-closed everywhere.
 - **Not** PRODUCTION CANDIDATE: V1 broadcast, full-route funded sim, and 24h soak remain operator-gated (§8). Live trading stays disabled (`ARB_LIVE=0`).
