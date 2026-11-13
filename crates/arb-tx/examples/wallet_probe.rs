@@ -35,7 +35,11 @@ async fn main() {
     probe(&signer).await;
 }
 
-async fn rpc(client: &reqwest::Client, url: &str, body: serde_json::Value) -> Option<serde_json::Value> {
+async fn rpc(
+    client: &reqwest::Client,
+    url: &str,
+    body: serde_json::Value,
+) -> Option<serde_json::Value> {
     client
         .post(url)
         .json(&body)
@@ -87,8 +91,13 @@ async fn probe(signer: &KeypairSigner) {
             json!({"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":[ata.to_string(), {"encoding":"base64"}]}),
         )
         .await;
-        let exists = acc.map(|v| !v["result"]["value"].is_null()).unwrap_or(false);
-        println!("{name} ATA {ata}: {}", if exists { "EXISTS" } else { "missing" });
+        let exists = acc
+            .map(|v| !v["result"]["value"].is_null())
+            .unwrap_or(false);
+        println!(
+            "{name} ATA {ata}: {}",
+            if exists { "EXISTS" } else { "missing" }
+        );
         if exists {
             let amt = rpc(
                 &client,

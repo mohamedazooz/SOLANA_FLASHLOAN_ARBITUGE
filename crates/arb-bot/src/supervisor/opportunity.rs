@@ -250,9 +250,7 @@ impl Supervisor {
                     .unwrap_or(false)
             });
             if !transfer_fees_verified_zero {
-                debug!(
-                    "Opportunity skipped: route carries unverified Token-2022 transfer fees"
-                );
+                debug!("Opportunity skipped: route carries unverified Token-2022 transfer fees");
                 continue;
             }
             let real_net_base_raw = calculate_net_profit_raw(
@@ -1030,8 +1028,8 @@ impl Supervisor {
                 .expected_out
                 .as_u64()
                 .saturating_sub(opp.size_in.as_u64());
-            let deductions_base = cycle_gross_base_raw.saturating_sub(real_net_base_raw) as f64
-                / base_scale;
+            let deductions_base =
+                cycle_gross_base_raw.saturating_sub(real_net_base_raw) as f64 / base_scale;
             let roi_pct = if opp.size_in.as_u64() > 0 {
                 (real_net_base_raw as f64 / opp.size_in.as_u64() as f64) * 100.0
             } else {

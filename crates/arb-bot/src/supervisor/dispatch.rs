@@ -1,5 +1,7 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
+use arb_types::InflightStatus;
+use base64::prelude::*;
 
 pub(super) struct DispatchContext<'a> {
     pub opp: &'a ExecutionOpportunity,
@@ -10,12 +12,14 @@ pub(super) struct DispatchContext<'a> {
     pub expected_stream_generation: u64,
     pub route_label: &'a str,
     pub gross_rev_sol: f64,
+    #[allow(dead_code)] // logged by telemetry sinks, not read on dispatch path
     pub gross_sol: f64,
     pub profit_sol: f64,
     pub live_sol_price: f64,
     pub blockhash_b58: &'a str,
     /// `lastValidBlockHeight` of this blockhash, persisted with the dispatch
     /// intent so recovery can prove expiration with block-height evidence.
+    #[allow(dead_code)] // mirrored into DispatchIntent for recovery evidence
     pub last_valid_block_height: Option<i64>,
     pub cu_limit: u32,
     pub cu_price: u64,

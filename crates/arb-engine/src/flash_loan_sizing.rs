@@ -110,9 +110,9 @@ pub fn calculate_optimal_flash_loan(
 
     // 4. Apply reserve fraction (don't drain pools completely). Floor again:
     // the kept reserve can only be larger than the exact fraction.
-    let reserve_adjusted =
-        bottleneck.saturating_mul(10_000u64.saturating_sub(config.reserve_fraction_bps.min(10_000)))
-            / 10_000;
+    let reserve_adjusted = bottleneck
+        .saturating_mul(10_000u64.saturating_sub(config.reserve_fraction_bps.min(10_000)))
+        / 10_000;
 
     // 5. Clamp to configured bounds
     let borrow_amount = reserve_adjusted

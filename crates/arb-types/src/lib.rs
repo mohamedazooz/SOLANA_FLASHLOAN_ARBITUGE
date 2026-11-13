@@ -1193,7 +1193,8 @@ impl ExecutionOpportunity {
     /// Builders MUST use this instead of the raw field so an operator
     /// misconfiguration can never disable the min-out protection entirely.
     pub fn effective_hop_slippage_bps(&self) -> u64 {
-        self.hop_slippage_bps.min(arb_constants::HOP_SLIPPAGE_MAX_BPS)
+        self.hop_slippage_bps
+            .min(arb_constants::HOP_SLIPPAGE_MAX_BPS)
     }
 }
 
