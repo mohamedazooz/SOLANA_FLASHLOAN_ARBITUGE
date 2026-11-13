@@ -759,8 +759,9 @@ mod tests {
         unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
     }
 
-    #[test]
-    fn ws_ticket_is_single_use_and_unknown_tickets_fail() {
+    #[tokio::test]
+    async fn ws_ticket_is_single_use_and_unknown_tickets_fail() {
+        let _env = ENV_LOCK.lock().await;
         unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
         let state = test_state();
 
