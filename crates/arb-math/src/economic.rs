@@ -470,6 +470,7 @@ pub fn calculate_net_profit_raw(
 /// Fails closed rather than returning a plausible-looking number:
 /// * `sf == u64::MAX` — klend's "flash loans disabled" sentinel.
 /// * `fee_bits >= amount << 60` — klend rejects with `BorrowTooSmall`.
+///
 /// Precise failure modes of the klend flash-loan fee formula. Canonical
 /// definition lives here (arb-math is the leaf math crate); `arb-tx`
 /// re-exports it so the transaction layer and this crate share one type.

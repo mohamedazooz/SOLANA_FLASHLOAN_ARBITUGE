@@ -350,13 +350,15 @@ impl Store for PostgresStore {
             .map_err(|e| ArbError::Internal(format!("Failed to query PG dispatch intents: {e}")))?;
             Ok(rows
                 .into_iter()
-                .map(|(attempt_id, signature, provider, dispatch_slot)| DispatchIntentRecord {
-                    attempt_id,
-                    signature,
-                    provider,
-                    dispatch_slot,
-                    resolved_status: None,
-                })
+                .map(
+                    |(attempt_id, signature, provider, dispatch_slot)| DispatchIntentRecord {
+                        attempt_id,
+                        signature,
+                        provider,
+                        dispatch_slot,
+                        resolved_status: None,
+                    },
+                )
                 .collect())
         })
     }
@@ -373,7 +375,9 @@ impl Store for PostgresStore {
             .bind(resolved_status)
             .execute(&pool)
             .await
-            .map_err(|e| ArbError::Internal(format!("Failed to resolve PG dispatch intent: {e}")))?;
+            .map_err(|e| {
+                ArbError::Internal(format!("Failed to resolve PG dispatch intent: {e}"))
+            })?;
             Ok(())
         })
     }

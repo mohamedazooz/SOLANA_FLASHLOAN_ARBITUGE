@@ -485,16 +485,21 @@ impl Supervisor {
                 let pre_sig = arb_tx::extract_transaction_signature(tx_bytes);
                 if let Some(sig) = pre_sig.as_deref() {
                     let provider = if is_swqos_route { "swqos" } else { "jito" };
-                    if let Err(err) = self.store.record_dispatch_intent(
-                        &arb_store::DispatchIntentRecord {
-                            attempt_id: record.id,
-                            signature: sig.to_string(),
-                            provider: provider.to_string(),
-                            dispatch_slot: current_slot.0 as i64,
-                            resolved_status: None,
-                        },
-                    ) {
-                        warn!(?err, attempt_id = record.id, "failed to persist dispatch intent");
+                    if let Err(err) =
+                        self.store
+                            .record_dispatch_intent(&arb_store::DispatchIntentRecord {
+                                attempt_id: record.id,
+                                signature: sig.to_string(),
+                                provider: provider.to_string(),
+                                dispatch_slot: current_slot.0 as i64,
+                                resolved_status: None,
+                            })
+                    {
+                        warn!(
+                            ?err,
+                            attempt_id = record.id,
+                            "failed to persist dispatch intent"
+                        );
                     }
                 }
 
@@ -823,9 +828,7 @@ impl Supervisor {
                             .alert_execution_failed("dispatch", &e.to_string(), route_label)
                             .await;
                         let _ = self.store.record_outcome(record.id, "failed", None);
-                        let _ = self
-                            .store
-                            .resolve_dispatch_intent(record.id, "send_failed");
+                        let _ = self.store.resolve_dispatch_intent(record.id, "send_failed");
                         // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
                     }
                 }

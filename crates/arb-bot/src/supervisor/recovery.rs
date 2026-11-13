@@ -42,11 +42,7 @@ impl Supervisor {
         for intent in pending {
             let status = match self
                 .rpc_pool
-                .poll_signature_until_terminal(
-                    &intent.signature,
-                    POLL_ATTEMPTS,
-                    POLL_INTERVAL,
-                )
+                .poll_signature_until_terminal(&intent.signature, POLL_ATTEMPTS, POLL_INTERVAL)
                 .await
             {
                 Ok(s) if s.is_landed() => "landed",
@@ -65,8 +61,15 @@ impl Supervisor {
                 status,
                 "dispatch intent reconciled (no resubmission — new opportunities dispatch fresh transactions)"
             );
-            if let Err(err) = self.store.resolve_dispatch_intent(intent.attempt_id, status) {
-                warn!(?err, attempt_id = intent.attempt_id, "failed to persist reconciliation");
+            if let Err(err) = self
+                .store
+                .resolve_dispatch_intent(intent.attempt_id, status)
+            {
+                warn!(
+                    ?err,
+                    attempt_id = intent.attempt_id,
+                    "failed to persist reconciliation"
+                );
             }
         }
     }

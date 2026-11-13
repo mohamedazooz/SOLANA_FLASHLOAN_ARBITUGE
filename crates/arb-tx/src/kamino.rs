@@ -214,10 +214,7 @@ pub fn calculate_kamino_flash_fee_checked(
 /// [`calculate_kamino_flash_fee_checked`] on any borrow path.
 #[inline(always)]
 pub fn calculate_kamino_flash_fee(borrow_amount: u64, fee_sf: u64) -> u64 {
-    match arb_math::economic::kamino_flash_fee_unchecked(borrow_amount, fee_sf) {
-        Ok(fee) => fee,
-        Err(_) => u64::MAX,
-    }
+    arb_math::economic::kamino_flash_fee_unchecked(borrow_amount, fee_sf).unwrap_or(u64::MAX)
 }
 
 // ============================================================================
