@@ -382,6 +382,12 @@ impl ControlService {
         self.audit(action, detail);
     }
 
+    /// Live emergency-latch state, consumed by the dispatch fire-time gate so
+    /// an emergency stop blocks in-flight submissions, not just new captures.
+    pub fn is_emergency_stopped(&self) -> bool {
+        self.inner.emergency_stopped.load(Ordering::Acquire)
+    }
+
     pub fn current_mode(&self) -> BotMode {
         BotMode::from_u8(self.inner.supervisor_mode.load(Ordering::Acquire))
     }

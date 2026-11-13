@@ -446,6 +446,26 @@ impl Supervisor {
                     tokio::time::sleep(wait).await;
                 }
 
+                // Final fire-time safety gate: the kill switch / emergency
+                // latch must block in-flight submissions too, not just new
+                // captures — a stop issued during simulation must win.
+                if self.risk_gate.kill_switch().is_blocked()
+                    || self.control().is_some_and(|c| c.is_emergency_stopped())
+                {
+                    warn!(route = %route_label, "Execution aborted by fire-time kill switch / emergency stop");
+                    let _ = self
+                        .store
+                        .record_outcome(record.id, "aborted_kill_switch", None);
+                    self.telegram
+                        .alert_execution_failed(
+                            "risk-gate",
+                            "kill switch / emergency stop active at fire time; transaction not sent",
+                            route_label,
+                        )
+                        .await;
+                    return;
+                }
+
                 // Final fire-time state guard: simulation and the optional
                 // slot-window wait may have outlived the stream generation.
                 // Re-check immediately before any network submission.
@@ -479,28 +499,53 @@ impl Supervisor {
                     return;
                 }
 
-                // R12: persist the dispatch intent (signature + transport +
-                // slot) BEFORE the send so a crash/ambiguous timeout is
-                // reconcilable by signature instead of a blind resubmit.
-                let pre_sig = arb_tx::extract_transaction_signature(tx_bytes);
-                if let Some(sig) = pre_sig.as_deref() {
-                    let provider = if is_swqos_route { "swqos" } else { "jito" };
-                    if let Err(err) =
+                // R12, fail-closed: persist the dispatch intent (signature +
+                // transport + slot) BEFORE the send so a crash/ambiguous
+                // timeout is reconcilable by signature instead of a blind
+                // resubmit. A transaction whose signature cannot be extracted,
+                // or whose intent cannot be durably persisted, MUST NOT be
+                // dispatched — it would be unrecoverable after a crash.
+                let Some(pre_sig) = arb_tx::extract_transaction_signature(tx_bytes) else {
+                    error!(
+                        attempt_id = record.id,
+                        route = %route_label,
+                        "dispatch aborted: transaction signature not extractable (unreconcilable)"
+                    );
+                    let _ = self.store.record_outcome(
+                        record.id,
+                        "dispatch_aborted_unreconcilable",
+                        None,
+                    );
+                    return;
+                };
+                let provider = if is_swqos_route { "swqos" } else { "jito" };
+                if let Err(err) =
+                    self.store
+                        .record_dispatch_intent(&arb_store::DispatchIntentRecord {
+                            attempt_id: record.id,
+                            signature: pre_sig.clone(),
+                            provider: provider.to_string(),
+                            dispatch_slot: current_slot.0 as i64,
+                            resolved_status: None,
+                        })
+                {
+                    error!(
+                        ?err,
+                        attempt_id = record.id,
+                        route = %route_label,
+                        "dispatch aborted: durable intent persistence failed — refusing to send an unrecoverable transaction"
+                    );
+                    let _ =
                         self.store
-                            .record_dispatch_intent(&arb_store::DispatchIntentRecord {
-                                attempt_id: record.id,
-                                signature: sig.to_string(),
-                                provider: provider.to_string(),
-                                dispatch_slot: current_slot.0 as i64,
-                                resolved_status: None,
-                            })
-                    {
-                        warn!(
-                            ?err,
-                            attempt_id = record.id,
-                            "failed to persist dispatch intent"
-                        );
-                    }
+                            .record_outcome(record.id, "dispatch_aborted_unpersisted", None);
+                    self.telegram
+                        .alert_execution_failed(
+                            "dispatch-intent-persistence",
+                            "dispatch intent could not be persisted; transaction not sent",
+                            route_label,
+                        )
+                        .await;
+                    return;
                 }
 
                 let sent_at = Instant::now();

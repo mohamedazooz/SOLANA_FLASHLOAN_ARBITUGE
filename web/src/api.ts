@@ -115,10 +115,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(confirm ? { confirm } : {}),
     }),
-  wsUrl: () => {
-    const token = getToken() ?? "";
+  wsTicket: () =>
+    request<{ ticket: string; expires_at_unix: number }>("/api/ws-ticket", {
+      method: "POST",
+    }),
+  wsUrl: async () => {
+    // Single-use ticket: the long-lived session token never appears in a URL.
+    const { ticket } = await api.wsTicket();
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}`;
+    return `${proto}://${location.host}/api/ws?ticket=${encodeURIComponent(ticket)}`;
   },
 };
 

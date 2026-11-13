@@ -20,6 +20,30 @@ const MAX_PENDING_INTENTS: i64 = 256;
 const POLL_ATTEMPTS: usize = 20;
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 
+/// Deterministic reconciliation decision for one pending dispatch intent.
+///
+/// Pure so recovery behavior is unit-testable without an RPC: a timeout is
+/// ambiguous (never a failure), `expired_unconfirmed` requires slot-proof that
+/// the blockhash validity window is provably past, and anything else stays
+/// honestly `unresolved_after_poll`. Never authorizes a resubmit.
+pub(super) fn classify_reconciliation(
+    poll: Option<arb_ingest::SignatureStatus>,
+    current_slot: i64,
+    dispatch_slot: i64,
+) -> &'static str {
+    match poll {
+        Some(s) if s.is_landed() => "landed",
+        Some(arb_ingest::SignatureStatus::Failed) => "failed_onchain",
+        _ => {
+            if current_slot >= dispatch_slot + BLOCKHASH_VALIDITY_SLOTS {
+                "expired_unconfirmed"
+            } else {
+                "unresolved_after_poll"
+            }
+        }
+    }
+}
+
 impl Supervisor {
     /// Reconcile every pending dispatch intent persisted by a previous run.
     /// Called once at startup, before the run loop starts dispatching.
@@ -40,21 +64,12 @@ impl Supervisor {
         );
         let current_slot = self.ingest.current_slot() as i64;
         for intent in pending {
-            let status = match self
+            let poll = self
                 .rpc_pool
                 .poll_signature_until_terminal(&intent.signature, POLL_ATTEMPTS, POLL_INTERVAL)
                 .await
-            {
-                Ok(s) if s.is_landed() => "landed",
-                Ok(arb_ingest::SignatureStatus::Failed) => "failed_onchain",
-                _ => {
-                    if current_slot >= intent.dispatch_slot + BLOCKHASH_VALIDITY_SLOTS {
-                        "expired_unconfirmed"
-                    } else {
-                        "unresolved_after_poll"
-                    }
-                }
-            };
+                .ok();
+            let status = classify_reconciliation(poll, current_slot, intent.dispatch_slot);
             warn!(
                 attempt_id = intent.attempt_id,
                 provider = %intent.provider,
@@ -72,5 +87,82 @@ impl Supervisor {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arb_ingest::SignatureStatus;
+
+    fn intent(attempt_id: i64) -> arb_store::DispatchIntentRecord {
+        arb_store::DispatchIntentRecord {
+            attempt_id,
+            signature: format!("sig{attempt_id}"),
+            provider: "swqos".into(),
+            dispatch_slot: 1_000,
+            resolved_status: None,
+        }
+    }
+
+    #[test]
+    fn landed_and_failed_statuses_resolve_to_onchain_outcome() {
+        assert_eq!(
+            classify_reconciliation(Some(SignatureStatus::Finalized), 2_000, 1_000),
+            "landed"
+        );
+        assert_eq!(
+            classify_reconciliation(Some(SignatureStatus::Confirmed), 1_001, 1_000),
+            "landed"
+        );
+        assert_eq!(
+            classify_reconciliation(Some(SignatureStatus::Failed), 1_001, 1_000),
+            "failed_onchain"
+        );
+    }
+
+    #[test]
+    fn processed_is_not_landed_and_timeout_is_ambiguous() {
+        assert_eq!(
+            classify_reconciliation(Some(SignatureStatus::Processed), 1_100, 1_000),
+            "unresolved_after_poll",
+            "processed-but-not-confirmed must stay unresolved, never counted as landed"
+        );
+        assert_eq!(
+            classify_reconciliation(None, 1_100, 1_000),
+            "unresolved_after_poll",
+            "poll error/timeout is ambiguous — no failure may be invented"
+        );
+    }
+
+    #[test]
+    fn expiry_requires_slot_proof_of_blockhash_window() {
+        assert_eq!(
+            classify_reconciliation(None, 1_000 + 160, 1_000),
+            "expired_unconfirmed"
+        );
+        assert_eq!(
+            classify_reconciliation(None, 1_000 + 159, 1_000),
+            "unresolved_after_poll",
+            "one slot before the proven window must remain unresolved"
+        );
+    }
+
+    #[test]
+    fn pending_intents_survive_restart_and_resolve_without_resubmission() {
+        let store = arb_store::MemoryStore::new();
+        store.record_dispatch_intent(&intent(1)).unwrap();
+        store.record_dispatch_intent(&intent(2)).unwrap();
+        assert_eq!(store.pending_dispatch_intents(256).unwrap().len(), 2);
+
+        store
+            .resolve_dispatch_intent(1, "expired_unconfirmed")
+            .unwrap();
+        let pending = store.pending_dispatch_intents(256).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].attempt_id, 2);
+
+        store.resolve_dispatch_intent(1, "landed").unwrap();
+        assert_eq!(store.pending_dispatch_intents(256).unwrap().len(), 1);
     }
 }

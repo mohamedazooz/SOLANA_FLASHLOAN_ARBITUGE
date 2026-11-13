@@ -250,14 +250,30 @@ impl Supervisor {
             // chained-quote discovery + 3-leg-native size search. Converted
             // into a standard ExecutionOpportunity so the same economics,
             // risk and dispatch path applies. Fails closed to an empty vec.
-            let three_leg_opps = self.capture_three_leg_dlmm(
-                &fresh_pools,
-                current_slot,
-                max_sizing,
-                verified.flash_loan_fee_sf.value,
-                self.kamino_available_flash_liquidity(current_slot),
-                verified.tip_lamports.value.0,
-            );
+            // Fail-closed liquidity proof: when flash funding is enabled, the
+            // actual supply-vault liquidity must be verifiable — an
+            // unverifiable reserve skips the capture entirely.
+            let flash_liquidity = self.kamino_available_flash_liquidity(current_slot);
+            let flash_liquidity_unverified =
+                self.config.strategy.use_flash_loan && flash_liquidity.is_none();
+            if flash_liquidity_unverified {
+                debug!(
+                    "3-leg capture skipped: flash funding enabled but Kamino supply-vault liquidity unverifiable at slot {}",
+                    current_slot.0
+                );
+            }
+            let three_leg_opps = if flash_liquidity_unverified {
+                Vec::new()
+            } else {
+                self.capture_three_leg_dlmm(
+                    &fresh_pools,
+                    current_slot,
+                    max_sizing,
+                    verified.flash_loan_fee_sf.value,
+                    flash_liquidity,
+                    verified.tip_lamports.value.0,
+                )
+            };
             if !three_leg_opps.is_empty() {
                 info!(
                     "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",

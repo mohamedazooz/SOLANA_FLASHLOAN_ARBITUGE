@@ -56,28 +56,42 @@ export default function App() {
 
     const connect = () => {
       if (disposed) return;
-      const ws = new WebSocket(api.wsUrl());
-      ws.onopen = () => {
-        attempt = 0;
-      };
-      ws.onclose = () => {
-        if (disposed || attempt >= 8) return;
-        const backoff = Math.min(500 * 2 ** attempt, 30_000);
-        const jitter = Math.random() * 500;
-        attempt += 1;
-        reconnectTimer = window.setTimeout(connect, backoff + jitter);
-      };
-      ws.onmessage = (ev) => {
-        try {
-          const parsed = JSON.parse(ev.data);
-          if (parsed && typeof parsed === "object" && "mode" in parsed) {
-            setStatus(parsed as StatusSnapshot);
-          }
-        } catch {
-          /* ignore malformed frames */
-        }
-      };
-      wsRef.current = ws;
+      // The WS URL carries a single-use ticket fetched per connection; if the
+      // ticket request fails (e.g. expired session) the REST poller keeps the
+      // UI fresh and the next poll surfaces the 401.
+      api
+        .wsUrl()
+        .then((url) => {
+          if (disposed) return;
+          const ws = new WebSocket(url);
+          ws.onopen = () => {
+            attempt = 0;
+          };
+          ws.onclose = () => {
+            if (disposed || attempt >= 8) return;
+            const backoff = Math.min(500 * 2 ** attempt, 30_000);
+            const jitter = Math.random() * 500;
+            attempt += 1;
+            reconnectTimer = window.setTimeout(connect, backoff + jitter);
+          };
+          ws.onmessage = (ev) => {
+            try {
+              const parsed = JSON.parse(ev.data);
+              if (parsed && typeof parsed === "object" && "mode" in parsed) {
+                setStatus(parsed as StatusSnapshot);
+              }
+            } catch {
+              /* ignore malformed frames */
+            }
+          };
+          wsRef.current = ws;
+        })
+        .catch(() => {
+          if (disposed || attempt >= 8) return;
+          const backoff = Math.min(500 * 2 ** attempt, 30_000);
+          attempt += 1;
+          reconnectTimer = window.setTimeout(connect, backoff);
+        });
     };
     connect();
 
