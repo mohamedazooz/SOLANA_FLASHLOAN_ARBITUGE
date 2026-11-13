@@ -269,13 +269,6 @@ impl Supervisor {
         info!("TRACE SUP 3: after store");
 
         let telegram = TelegramNotifier::from_env();
-        #[cfg(feature = "shadow-only")]
-        let keypair: Option<KeypairSigner> = {
-            info!("shadow-only build: signer disabled; no wallet material will be loaded");
-            None
-        };
-
-        #[cfg(not(feature = "shadow-only"))]
         let keypair = std::env::var("SOLANA_PRIVATE_KEY")
             .ok()
             .and_then(|pk| match KeypairSigner::from_base58(&pk) {
@@ -734,8 +727,8 @@ mod tests {
                     .as_nanos() as u64
         ));
         config.store.url = format!("sqlite://{}", db_path.display());
-        let supervisor = Supervisor::new(BotMode::Shadow, config);
-        assert_eq!(supervisor.mode(), BotMode::Shadow);
+        let supervisor = Supervisor::new(BotMode::Simulate, config);
+        assert_eq!(supervisor.mode(), BotMode::Simulate);
         let _ = std::fs::remove_file(&db_path);
     }
 

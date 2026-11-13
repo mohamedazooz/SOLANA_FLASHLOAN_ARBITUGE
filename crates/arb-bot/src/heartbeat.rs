@@ -285,7 +285,7 @@ mod tests {
     fn counters_and_status_advance() {
         let hb = Heartbeat::new(
             std::env::temp_dir().join("sentinel-heartbeat-test.json"),
-            "shadow",
+            "simulate",
         );
         assert_eq!(hb.snapshot(None)["status"], "STARTING");
         hb.observe_tick(0);

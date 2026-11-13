@@ -2,7 +2,6 @@
 # Automatically mapped from .env infrastructure credentials
 
 [bot]
-mode = "shadow"
 canary = false
 
 [rpc]

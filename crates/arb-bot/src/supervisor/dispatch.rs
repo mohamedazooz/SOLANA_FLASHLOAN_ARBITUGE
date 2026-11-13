@@ -78,31 +78,6 @@ impl Supervisor {
 
         let active_bins: Vec<Option<i32>> = opp.hops.iter().map(|h| h.active_bin_id).collect();
 
-        #[cfg(feature = "shadow-only")]
-        let _ = (
-            tip,
-            tip_rung,
-            is_swqos_route,
-            expected_stream_generation,
-            payer,
-            route_sig,
-            t_ingest_to_quote_us,
-            t_risk_us,
-            t_assembly_us,
-            t_signing_us,
-        );
-
-        // Compile-time shadow-only containment. This guard is intentionally
-        // inside the dispatch boundary, not merely a CLI/config convention.
-        #[cfg(feature = "shadow-only")]
-        if self.mode() == BotMode::Live {
-            error!("shadow-only build rejected Live dispatch before any transport call");
-            let _ = self
-                .store
-                .record_outcome(record.id, "blocked_shadow_only", None);
-            return;
-        }
-
         // 6. Dispatch based on mode
         let leader_str = self
             .jito_service
@@ -140,7 +115,7 @@ impl Supervisor {
                     )
                     .await;
             }
-            BotMode::Shadow | BotMode::Simulate => {
+            BotMode::Simulate => {
                 arb_metrics::add_simulated_net_profit(profit_sol);
                 let _ = self
                     .store
@@ -163,14 +138,6 @@ impl Supervisor {
                         .await;
                 }
             }
-            #[cfg(feature = "shadow-only")]
-            BotMode::Live => {
-                error!("shadow-only binary has no Live dispatch implementation");
-                let _ = self
-                    .store
-                    .record_outcome(record.id, "blocked_shadow_only", None);
-            }
-            #[cfg(not(feature = "shadow-only"))]
             BotMode::Live => {
                 // Safety Floor Check: Enforce minimum reserve only if configured > 0.
                 // When MIN_SOL_RESERVE_LAMPORTS=0 (fast-path flash loan default), skip the blocking RPC getBalance check completely.

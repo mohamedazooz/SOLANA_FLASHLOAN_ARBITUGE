@@ -7,8 +7,6 @@ autobins = false
 
 [features]
 default = []
-# Compile-time containment: this binary cannot enter a transaction broadcast path.
-shadow-only = []
 
 [[bin]]
 name = "arb-bot"

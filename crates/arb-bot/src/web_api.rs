@@ -729,7 +729,7 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let status = resp.json::<Value>().await.unwrap();
-        assert_eq!(status["mode"], "shadow");
+        assert_eq!(status["mode"], "simulate");
 
         // Raw WS upgrade: browsers authenticate with a single-use ticket
         // (a long-lived token must never appear in a URL).
