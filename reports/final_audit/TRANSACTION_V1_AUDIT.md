@@ -84,3 +84,27 @@ The memo program consumed **17,724 CU** for a 45-byte memo: BPF program cache-mi
 
 * `v1_transport_supported` may now be enabled on this transport via `ARB_V1_TRANSPORT_SUPPORTED=1` (env-gated, fail-closed default unchanged).
 * Canary lesson applied: any V1 transaction must carry a CU limit ≥ the BPF load floor (~20k CU per cold program) plus real route consumption. The 3-leg builder's 260k–400k defaults satisfy this.
+
+## OFFICIAL MAINNET ACTIVATION STATUS (verified online, 2026-11-13)
+
+Sources: [solana.com/upgrades/larger-transaction-sizes](https://solana.com/upgrades/larger-transaction-sizes), [solanacompass epoch-1035 report](https://solanacompass.com/news/transaction-v1-simd-0385-is-live-on-solana-mainnet-at-epoch-1035), [xroot.dev gate tracker](https://xroot.dev/blog/solana-transaction-v1), solana-foundation/solana-dev-skill `transactions-v1.md`.
+
+| Item | Verified value |
+|---|---|
+| Feature gate | `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL` |
+| Mainnet activation | Epoch 1035, ~01:00 UTC 2026-09-15, activation slot 447,120,000 |
+| New size ceiling | 4,096 bytes (SIMD-0296), format SIMD-0385 |
+| RPC requirement | Agave ≥ 4.2.2 (older nodes silently downgrade v1→v0 with zeroed compute budgets during storage) |
+| Submission encoding | `base64` only — base58 `sendTransaction` remains hard-capped at 1,232 bytes |
+| Limits unchanged | 64 accounts (inline, no ALT in v1), 64 instructions, 12 signatures |
+| Scheduler note | Larger transactions may require higher priority fees to land (bandwidth cost) |
+
+### Repository compliance against the activation requirements
+
+| Requirement | Repo status | Evidence |
+|---|---|---|
+| base64 submission | PASS | `rpc_pool.rs:1389,1466` — `encoding: base64` for all `sendTransaction` calls |
+| Never silently downgrade | PASS | Version selection is explicit (`v1_transport_supported` env-gated, fail-closed default); no code path rewrites a v1 tx into v0 |
+| Agave ≥ 4.2.2 provider | PASS (empirical) | Canary landed with `version: 1` on publicnode (solana-core 4.4.0) — attempt 1's data-cap error proves the runtime parsed v1 config values |
+| QUIC stream window 4096 | N/A | We submit via RPC providers, not a self-hosted relayer |
+| Higher priority fee for large tx | NOTED | `adaptive_cu_price` escalates on landed-CU history; large-v1 fee premium is a landing-probability risk, not a correctness defect |
