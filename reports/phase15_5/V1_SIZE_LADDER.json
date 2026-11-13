@@ -85,7 +85,7 @@
       "transaction_version": null
     }
   ],
-  "generated_at_unix": 1794588130,
+  "generated_at_unix": 1794590754,
   "live_rpc_acceptance_evidence": "reports/v1_mainnet_probe/probe_report_2026-11-13.json (live mainnet RPC, solana-core 4.4.0, V1 simulate accepted, units_consumed=62596); not re-claimed by this offline run",
   "real_route_rungs": [
     {

@@ -149,7 +149,18 @@ impl Supervisor {
             jito_tip_account: self.jito_service.tip_account_for_slot(current_slot),
             jito_tip_lamports: verified_tip_lamports,
             recent_blockhash: [0u8; 32],
-            v1_transport_supported: false,
+            // Fail-closed default. May ONLY be set to true after a successful
+            // V1 transport canary (crates/arb-tx/examples/v1_canary_broadcast.rs)
+            // landed on-chain through the configured transport — evidence under
+            // reports/v1_canary/. Never a blind flip.
+            v1_transport_supported: std::env::var("ARB_V1_TRANSPORT_SUPPORTED")
+                .map(|v| {
+                    matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "on"
+                    )
+                })
+                .unwrap_or(false),
             slippage_bps: tuning.slippage_bps,
             min_profit_lamports: crate::config::min_net_profit_floor_lamports(
                 tuning

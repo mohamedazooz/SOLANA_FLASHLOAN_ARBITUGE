@@ -54,3 +54,33 @@ fail closed at >1232 with `TransactionTooLarge` (grep-verified, no downgrade bra
 
 `v1_header_differential.rs` covers 1,231/1,232/1,233 and 4,095/4,096/4,097-byte regimes,
 63/64/65 addresses, and signature-count boundaries. PASS.
+
+---
+
+## LIVE CANARY EVIDENCE (mainnet, 2026-11-13) — BUG-004 RESOLVED
+
+Tool: `crates/arb-tx/examples/v1_canary_broadcast.rs` (non-financial SPL-Memo canary, V1 wire format, preflight ON, no V0 fallback).
+
+### Attempt history (all evidence retained in `reports/v1_canary/`)
+
+| Attempt | Wire | Config | Result | Root cause |
+|---|---|---|---|---|
+| 1 (`canary_1794589933.json`) | 235 B, version_byte 129 | CU 10k, data cap 64 KiB | Preflight rejected: `Transaction exceeded max loaded accounts data size cap` | Loaded-accounts data ceiling 64 KiB too small |
+| 2 (`canary_1794590056.json`) | 235 B | CU 10k, data cap 64 MiB | Preflight rejected: `Instruction 0: Program failed to complete` | CU limit 10,000 < memo BPF load cost |
+| 3 (`canary_1794590368.json`) | 235 B | CU 200k, data cap 64 MiB | **LANDED — finalized** | — |
+
+### Attempt 3 — on-chain evidence
+
+* Signature: `SmR6uhE4dr3PoimphULfC2WQpxA7aTQ7ztu9at2mqvm6VAXzMo1GRWn8KGbwnKivr2aUgUrm1gtHzUcsxhbZgMg`
+* RPC acceptance: yes (send latency 147 ms), preflight simulation passed (memo consumed 17,724 of 200,000 CU)
+* `getTransaction` (maxSupportedTransactionVersion=1): `version: 1`, `status: Ok`, `fee: 6000` lamports (5,000 base + 1,000 priority), slot **469,007,459**, memo log present
+* Transport: `https://solana-rpc.publicnode.com` (solana-core 4.4.0) — parses, simulates, and lands V1
+
+### Root-cause analysis of the earlier failure
+
+The memo program consumed **17,724 CU** for a 45-byte memo: BPF program cache-miss load dominates the instruction's own logic. The initial 10,000 CU config was below the BPF load floor, so the program aborted with `Program failed to complete` — a CU exhaustion symptom, not a V1 format defect. The V1 wire format itself was parsed correctly by the node in every attempt (the data-cap error in attempt 1 proves the runtime read the V1 config values).
+
+### Operational consequence
+
+* `v1_transport_supported` may now be enabled on this transport via `ARB_V1_TRANSPORT_SUPPORTED=1` (env-gated, fail-closed default unchanged).
+* Canary lesson applied: any V1 transaction must carry a CU limit ≥ the BPF load floor (~20k CU per cold program) plus real route consumption. The 3-leg builder's 260k–400k defaults satisfy this.
