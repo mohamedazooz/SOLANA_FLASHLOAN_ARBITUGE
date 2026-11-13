@@ -20,6 +20,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use solana_pubkey::Pubkey;
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 
 /// Maximum MTU payload for legacy and v0 transactions (constrained by IPv6 MTU).
 pub const SOLANA_PACKET_LEGACY_MTU: usize = 1232;
@@ -404,11 +405,43 @@ impl AdaptiveTxCompiler {
         // instructions are successful no-ops in V1, still consuming an
         // instruction slot and 150 CU, so strip them before compiling.
         let compute_budget_program = Pubkey::new_from_array(crate::COMPUTE_BUDGET_PROGRAM_ID);
-        let v1_instructions: Vec<CompiledInstruction> = instructions
-            .iter()
-            .filter(|ix| ix.program_id != compute_budget_program)
-            .cloned()
-            .collect();
+        let mut index_remap: Vec<Option<usize>> = Vec::with_capacity(instructions.len());
+        let mut v1_instructions: Vec<CompiledInstruction> = Vec::with_capacity(instructions.len());
+        for ix in instructions {
+            if ix.program_id == compute_budget_program {
+                index_remap.push(None);
+                continue;
+            }
+            index_remap.push(Some(v1_instructions.len()));
+            v1_instructions.push(ix.clone());
+        }
+        // Stripping shifts every executed instruction position, and klend's
+        // `flash_repay_checks` validates the repay's `borrow_instruction_index`
+        // against the EXECUTED instruction list (read from the instructions
+        // sysvar). Rewrite it so a V1 transaction whose builders emitted
+        // leading ComputeBudget no-ops still pairs borrow/repay correctly
+        // instead of reverting with `InvalidFlashRepay`.
+        let klend_program = Pubkey::from_str(crate::KAMINO_KLEND_PROGRAM_ID)
+            .expect("KAMINO_KLEND_PROGRAM_ID must be a valid pubkey");
+        for ix in &mut v1_instructions {
+            if ix.program_id == klend_program
+                && ix.data.len() >= 17
+                && ix.data[0..8] == crate::FLASH_REPAY_DISCRIMINATOR
+            {
+                let borrow_ix_index = ix.data[16] as usize;
+                let executed_index = index_remap.get(borrow_ix_index).copied().flatten()
+                    .ok_or_else(|| {
+                        TxError::SanitizationError(format!(
+                            "flash-repay borrow_instruction_index {borrow_ix_index} points at a ComputeBudget instruction stripped from the V1 message"
+                        ))
+                    })?;
+                ix.data[16] = u8::try_from(executed_index).map_err(|_| {
+                    TxError::SanitizationError(format!(
+                        "executed borrow instruction index {executed_index} exceeds the u8 instruction index space"
+                    ))
+                })?;
+            }
+        }
         let instructions = v1_instructions.as_slice();
         // SIMD-0160: Sanitization - max 64 instructions per transaction
         if instructions.len() > MAX_V1_INSTRUCTIONS {
@@ -1010,6 +1043,34 @@ impl AdaptiveTxCompiler {
             limit: SOLANA_PACKET_LEGACY_MTU,
         })
     }
+}
+
+/// Position of the instruction at `original` within the EXECUTED V1
+/// instruction list, i.e. after the ComputeBudget no-ops that
+/// [`AdaptiveTxCompiler::compile_v1_message`] strips. Returns `None` when
+/// `original` is out of range or itself a stripped ComputeBudget instruction.
+/// Klend's flash-repay pairing (`borrow_instruction_index`) and any other
+/// instruction-index references must use executed positions, not build-time
+/// positions.
+pub fn v1_executed_instruction_index(
+    instructions: &[CompiledInstruction],
+    original: usize,
+) -> Option<usize> {
+    let compute_budget_program = Pubkey::new_from_array(crate::COMPUTE_BUDGET_PROGRAM_ID);
+    let mut executed = 0usize;
+    for (i, ix) in instructions.iter().enumerate() {
+        if i == original {
+            return if ix.program_id == compute_budget_program {
+                None
+            } else {
+                Some(executed)
+            };
+        }
+        if ix.program_id != compute_budget_program {
+            executed += 1;
+        }
+    }
+    None
 }
 
 /// Helper to count unique accounts across instructions including payer.

@@ -231,7 +231,12 @@ pub struct FlashArb3LegParams {
 }
 
 impl FlashArb3LegParams {
-    /// Amount that must be repaid: principal plus the flash fee.
+    /// Total economic outlay debited at repay time: the principal plus the
+    /// flash fee. This is the repayment-coverage figure for the final output
+    /// — it is NOT the repay instruction's `amount` argument, which klend
+    /// requires to equal the borrow principal exactly (`flash_repay_checks`
+    /// enforces `liquidity_amount == borrow amount`; the fee is debited
+    /// separately, on top, by the handler).
     #[inline]
     pub fn repay_amount(&self) -> u64 {
         self.borrow_amount.saturating_add(self.flash_fee)
@@ -441,11 +446,15 @@ pub fn assemble_flash_funded_three_pool(
     ));
 
     // ── Flash repay (borrow instruction index must point at the real borrow) ──
+    // The instruction's `amount` argument is the borrow PRINCIPAL: klend's
+    // `flash_borrow_check_matching_repay` rejects any other value with
+    // `InvalidFlashRepay` (6033). The fee is debited on top by the handler,
+    // so the settlement account must hold `principal + fee`.
     let repay_idx = ixs.len();
     ixs.push(build_kamino_flash_repay_with_index(
         &kamino,
         payer,
-        repay_amount,
+        params.borrow_amount,
         borrow_idx as u8,
     ));
 
@@ -587,6 +596,20 @@ pub fn build_flash_funded_three_pool_transaction(
         get_associated_token_address_with_program_id(&params.payer, &mint_a, &mint_a_program);
     let intermediate_account_b =
         get_associated_token_address_with_program_id(&params.payer, &mint_b, &mint_b_program);
+
+    // The reported indices must reference the EXECUTED instruction list: the
+    // V1 compiler strips the leading ComputeBudget no-ops, shifting every
+    // subsequent instruction down.
+    let (borrow_idx, repay_idx) = if params.v1_transport_supported {
+        (
+            crate::adaptive::v1_executed_instruction_index(&ixs, borrow_idx)
+                .expect("borrow instruction is never a ComputeBudget no-op"),
+            crate::adaptive::v1_executed_instruction_index(&ixs, repay_idx)
+                .expect("repay instruction is never a ComputeBudget no-op"),
+        )
+    } else {
+        (borrow_idx, repay_idx)
+    };
 
     let repay = params.repay_amount();
     Ok(FlashThreeLegArbitrageTx {
@@ -837,9 +860,11 @@ mod tests {
         assert_eq!(repay_idx, 9);
         // Borrow carries the principal
         assert_eq!(&ixs[borrow_idx].data[8..16], &p.borrow_amount.to_le_bytes());
-        // Repay carries principal + fee and points back at the borrow index
-        let repay = p.repay_amount();
-        assert_eq!(&ixs[repay_idx].data[8..16], &repay.to_le_bytes());
+        // Repay instruction carries the borrow PRINCIPAL (klend
+        // `flash_borrow_check_matching_repay` enforces
+        // `liquidity_amount == borrow amount`; the fee is debited on top by
+        // the handler) and points back at the borrow index.
+        assert_eq!(&ixs[repay_idx].data[8..16], &p.borrow_amount.to_le_bytes());
         assert_eq!(ixs[repay_idx].data[16], borrow_idx as u8);
         // Tip is last instruction
         assert_eq!(ixs.len() - 1, 10);
