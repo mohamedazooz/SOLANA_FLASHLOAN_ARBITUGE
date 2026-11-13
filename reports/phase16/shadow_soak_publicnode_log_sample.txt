@@ -1,0 +1,111 @@
+[2m2026-11-13T05:39:27.476897Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m Detailed event logging active: console + file 'logs/arb_events.log'
+[2m2026-11-13T05:39:27.477184Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m Starting arb-bot in mode: shadow
+[2m2026-11-13T05:39:27.478211Z[0m [32m INFO[0m [2marb_bot::config[0m[2m:[0m ⚡ Flash Loan enabled — zero-risk atomic flash loan execution active
+[2m2026-11-13T05:39:27.478345Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m Configuration loaded — RPC: 
+[2m2026-11-13T05:39:27.478565Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m Max trade size: 25000 USD
+[2m2026-11-13T05:39:27.478734Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m Min net profit: 1000000 lamports (1 bps)
+[2m2026-11-13T05:39:27.478846Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m Running in safe mode (dry-run / shadow). No live transactions will be submitted.
+[2m2026-11-13T05:39:27.479173Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m 📈 Prometheus Metrics Server running on http://127.0.0.1:9100/metrics
+[2m2026-11-13T05:39:27.479305Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m TRACE MAIN 1: before Supervisor::new
+[2m2026-11-13T05:39:27.479423Z[0m [32m INFO[0m [2marb_bot::supervisor[0m[2m:[0m TRACE SUP 1: start
+[2m2026-11-13T05:39:27.482008Z[0m [32m INFO[0m [2marb_bot::supervisor[0m[2m:[0m TRACE SUP 2: before store
+[2m2026-11-13T05:39:27.495238Z[0m [32m INFO[0m [2marb_store[0m[2m:[0m SQLite database initialized with WAL pragmas at /tmp/soak2/sentinel.db
+[2m2026-11-13T05:39:27.495478Z[0m [32m INFO[0m [2marb_bot::supervisor[0m[2m:[0m TRACE SUP 3: after store
+[2m2026-11-13T05:39:27.495790Z[0m [34mDEBUG[0m [2marb_bot::telegram[0m[2m:[0m Telegram credentials not fully configured — notifications disabled
+[2m2026-11-13T05:39:27.496502Z[0m [32m INFO[0m [2marb_bot::supervisor[0m[2m:[0m TRACE SUP 4: after jito_service
+[2m2026-11-13T05:39:27.496691Z[0m [32m INFO[0m [2marb_bot::supervisor[0m[2m:[0m Heartbeat writer active: pid=36314 path=data/heartbeat.json
+[2m2026-11-13T05:39:27.496811Z[0m [32m INFO[0m [2marb_store::redis_cache[0m[2m:[0m Initialized In-Memory Short-TTL Cache with active space reclamation
+[2m2026-11-13T05:39:27.496922Z[0m [33m WARN[0m [2marb_bot[0m[2m:[0m Admin HTTP API disabled: env var 'SENTINEL_ADMIN_KEY' is missing or a placeholder; /pause and /resume stay unavailable (fail closed)
+[2m2026-11-13T05:39:27.497339Z[0m [32m INFO[0m [2marb_bot[0m[2m:[0m TRACE MAIN 2: after Supervisor::new, before run
+[2m2026-11-13T05:39:27.497399Z[0m [33m WARN[0m [2marb_bot[0m[2m:[0m Web API server stopped on 127.0.0.1:8080: WEB_ADMIN_PASSWORD is not set — the web API refuses to start (fail-closed)
+[2m2026-11-13T05:39:27.497441Z[0m [32m INFO[0m [2marb_bot::telegram_control[0m[2m:[0m Telegram control listener disabled (no TELEGRAM_BOT_TOKEN)
+[2m2026-11-13T05:39:27.497661Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Starting Supervisor — Mode: shadow
+[2m2026-11-13T05:39:27.500071Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: So11111111111111111111111111111111111111112
+[2m2026-11-13T05:39:27.500221Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+[2m2026-11-13T05:39:27.500351Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB
+[2m2026-11-13T05:39:27.500468Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr
+[2m2026-11-13T05:39:27.500607Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
+[2m2026-11-13T05:39:27.500715Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: JUPyiwrYJFngUPXSiqZFkKHMXkGs3WEXKaJE1agWK
+[2m2026-11-13T05:39:27.500822Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: jtojtomepa8beP8uL5qyNtYQgwwJjA72yS6JwTL9CZq
+[2m2026-11-13T05:39:27.501051Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB268
+[2m2026-11-13T05:39:27.501183Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 9MCPRCn3cpWFdSmV93hJ1kVXVVdjPpEqfnfYkaZ4TLws
+[2m2026-11-13T05:39:27.501298Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 4k3Dyjzvzp8eMZWUXbBCjEvwSkkU59Y5j3uYBqZ3e5pV
+[2m2026-11-13T05:39:27.501410Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: orcaEKTdK7LKz57AYAYr5viVzNQZfBDyQ7wglX42j56
+[2m2026-11-13T05:39:27.501519Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 6p6xgHyF7AeQHydaKVtRNVUjCAWoTeZwXHnkTXQKpump
+[2m2026-11-13T05:39:27.501645Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump
+[2m2026-11-13T05:39:27.501757Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC
+[2m2026-11-13T05:39:27.501874Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump
+[2m2026-11-13T05:39:27.502654Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY
+[2m2026-11-13T05:39:27.502823Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv
+[2m2026-11-13T05:39:27.502998Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof
+[2m2026-11-13T05:39:27.503174Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3
+[2m2026-11-13T05:39:27.503290Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7
+[2m2026-11-13T05:39:27.503398Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs
+[2m2026-11-13T05:39:27.503506Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS
+[2m2026-11-13T05:39:27.503613Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: MEFNBXixkEbait3xn9bkm8FsMeqEikuY4qLQioNc3gU
+[2m2026-11-13T05:39:27.503721Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: MNDEFzGvMt87uHUueyZk7v2tVSBjg1SxYfWcqMwLTJ4
+[2m2026-11-13T05:39:27.503830Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: 7dHpW9x4G71F2HERCIYy3U64R7oJ2m5m6R3Yh8pJ7T6c
+[2m2026-11-13T05:39:27.503936Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So
+[2m2026-11-13T05:39:27.504043Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1
+[2m2026-11-13T05:39:27.504174Z[0m [32m INFO[0m [2marb_bot::supervisor::run[0m[2m:[0m Monitored Base Token: J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn
+... [16,801 HTTP-429 cooldown/rotate WARN lines from api.mainnet-beta omitted] ...
+[2m2026-11-13T05:47:36.664196Z[0m [34mDEBUG[0m [2marb_bot::supervisor::run[0m[2m:[0m health sweep tick=4600: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: api.mainnet-beta.solana.com(#2) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:47:36.969585Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:37.327315Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:37.592958Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:38.555277Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:39.013764Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:39.125558Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:40.091399Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:40.275967Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:40.541894Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:41.102684Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:41.562248Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:41.594855Z[0m [32m INFO[0m [2marb_ingest::discovery[0m[2m:[0m   Raydium v3 catalog: 2 pools above TVL floor
+[2m2026-11-13T05:47:41.614486Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:42.477295Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:43.343389Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:43.800385Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:44.098974Z[0m [32m INFO[0m [2marb_ingest::discovery[0m[2m:[0m   Meteora DLMM search discovered 34 candidate pools
+[2m2026-11-13T05:47:44.139968Z[0m [33m WARN[0m [2marb_ingest::pumpfun_discovery[0m[2m:[0m Pump.fun recent coins API returned status: 403 Forbidden
+[2m2026-11-13T05:47:44.140239Z[0m [32m INFO[0m [2marb_ingest::pumpfun_discovery[0m[2m:[0m Pump.fun discovery selected 0 high-priority bonding curves for surveillance (requested up to 33)
+[2m2026-11-13T05:47:44.140751Z[0m [32m INFO[0m [2marb_ingest::discovery[0m[2m:[0m   Pump.fun multi-venue bonding curves paired: 36
+[2m2026-11-13T05:47:44.141005Z[0m [33m WARN[0m [2marb_ingest::discovery[0m[2m:[0m resolve_mint_decimals: All 2 matching RPC endpoints failed or rate-limited. Last error: solana-rpc.publicnode.com(#1) in cooldown
+[2m2026-11-13T05:47:44.141383Z[0m [32m INFO[0m [2marb_ingest::discovery[0m[2m:[0m 🔍 Discovery done: 93 pools registered for live monitoring (top <= 33 per venue): {RaydiumClmm: 2, MeteoraDlmm: 33, OrcaWhirlpool: 33, PumpFun: 25}
+[2m2026-11-13T05:47:44.141591Z[0m [32m INFO[0m [2marb_ingest::discovery[0m[2m:[0m 🔍 Discovery: min_tvl=$15000 max_per_venue=33 cap=297 hubs=24
+[2m2026-11-13T05:47:44.774927Z[0m [31mERROR[0m [2marb_bot::health_monitor[0m[2m:[0m health sweep: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: solana-rpc.publicnode.com(#1) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:47:44.775084Z[0m [34mDEBUG[0m [2marb_bot::supervisor::run[0m[2m:[0m health sweep tick=4700: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: solana-rpc.publicnode.com(#1) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:47:45.081039Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:45.437867Z[0m [32m INFO[0m [2marb_ingest::discovery[0m[2m:[0m   Orca catalog: 297 pools above TVL floor
+[2m2026-11-13T05:47:45.618460Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:46.435038Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:46.700245Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:47.562837Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:48.838491Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:49.103576Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:50.067540Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:50.626517Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:51.084654Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:51.541867Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:52.202564Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:52.466582Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:53.024912Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:53.149773Z[0m [31mERROR[0m [2marb_bot::health_monitor[0m[2m:[0m health sweep: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: api.mainnet-beta.solana.com(#2) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:47:53.150006Z[0m [34mDEBUG[0m [2marb_bot::supervisor::run[0m[2m:[0m health sweep tick=4800: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: api.mainnet-beta.solana.com(#2) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:47:53.222047Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:53.983216Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:54.249377Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:55.622209Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:56.082428Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:58.248692Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:58.707536Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:47:59.571993Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:00.132018Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:00.794982Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:00.980176Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:01.757728Z[0m [31mERROR[0m [2marb_bot::health_monitor[0m[2m:[0m health sweep: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: api.mainnet-beta.solana.com(#2) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:48:01.757858Z[0m [34mDEBUG[0m [2marb_bot::supervisor::run[0m[2m:[0m health sweep tick=4900: rpc=FAIL (فشل قراءة السلوت من RPC Pool: All 2 matching RPC endpoints failed or rate-limited. Last error: api.mainnet-beta.solana.com(#2) in cooldown) stream_ingest=ok disk=ok telegram=ok
+[2m2026-11-13T05:48:02.467050Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:02.926289Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:03.110030Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
+[2m2026-11-13T05:48:03.293732Z[0m [34mDEBUG[0m [2marb_bot::supervisor::strategy[0m[2m:[0m Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing
