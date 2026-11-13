@@ -210,6 +210,47 @@ impl TelegramNotifier {
         Ok(())
     }
 
+    /// Send a Telegram message with an optional inline keyboard (JSON value).
+    pub async fn send_message_with_markup(
+        &self,
+        message: &str,
+        reply_markup: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let (Some(token), Some(chat_id)) = (&self.bot_token, &self.chat_id) else {
+            return Ok(());
+        };
+        let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+        let mut payload = json!({
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": true
+        });
+        if let Some(markup) = reply_markup {
+            payload["reply_markup"] = markup;
+        }
+        match self.client.post(&url).json(&payload).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                debug!("Telegram alert delivered (with markup)");
+            }
+            Ok(resp) => warn!("Telegram API returned status {}", resp.status()),
+            Err(e) => error!("Failed to send Telegram alert: {}", e),
+        }
+        Ok(())
+    }
+
+    fn solscan_tx_url(sig: &str) -> String {
+        format!("https://solscan.io/tx/{sig}")
+    }
+
+    fn short_hash(s: &str, keep: usize) -> String {
+        if s.len() <= keep.saturating_mul(2) {
+            s.to_string()
+        } else {
+            format!("{}...{}", &s[..keep], &s[s.len().saturating_sub(keep)..])
+        }
+    }
+
     /// The bot is firing on an opportunity: route, expected net, and slot.
     pub async fn alert_opportunity(
         &self,

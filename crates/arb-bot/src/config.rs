@@ -365,34 +365,185 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
     let mut config: Config = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
 
-    // The deployment environment is the source of truth for the notional cap.
-    if let Ok(raw) = std::env::var("MAX_TRADE_SIZE_USD") {
-        let value: f64 = raw.parse().context("MAX_TRADE_SIZE_USD must be numeric")?;
-        if !value.is_finite() || value <= 0.0 {
-            anyhow::bail!("MAX_TRADE_SIZE_USD must be positive and finite");
+    // The deployment environment (.env) is the source of truth for operational controls.
+    // Parse helpers: invalid values fail closed (error) rather than silently ignored.
+    let env_f64 = |key: &str| -> anyhow::Result<Option<f64>> {
+        match std::env::var(key) {
+            Ok(raw) => {
+                let v: f64 = raw
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("{key} must be numeric"))?;
+                if !v.is_finite() {
+                    anyhow::bail!("{key} must be finite");
+                }
+                Ok(Some(v))
+            }
+            Err(_) => Ok(None),
         }
-        config.risk.max_trade_size_usd = value;
-    }
-    if let Ok(raw) = std::env::var("CHRONOS_DECAY_LAMBDA_PER_SEC") {
-        let value: f64 = raw
-            .parse()
-            .context("CHRONOS_DECAY_LAMBDA_PER_SEC must be numeric")?;
-        if !value.is_finite() || value < 0.0 {
-            anyhow::bail!("CHRONOS_DECAY_LAMBDA_PER_SEC must be finite and non-negative");
+    };
+    let env_u64 = |key: &str| -> anyhow::Result<Option<u64>> {
+        match std::env::var(key) {
+            Ok(raw) => Ok(Some(
+                raw.trim()
+                    .parse()
+                    .with_context(|| format!("{key} must be an integer"))?,
+            )),
+            Err(_) => Ok(None),
         }
-        config.chronos.decay_lambda_per_sec = value;
-    }
-    if let Ok(raw) = std::env::var("CHRONOS_MAX_AGE_MS") {
-        config.chronos.max_age_ms = raw
-            .parse()
-            .context("CHRONOS_MAX_AGE_MS must be an integer")?;
-    }
-    if let Ok(raw) = std::env::var("CHRONOS_MIN_EV_USD") {
-        let value: f64 = raw.parse().context("CHRONOS_MIN_EV_USD must be numeric")?;
-        if !value.is_finite() || value < 0.0 {
-            anyhow::bail!("CHRONOS_MIN_EV_USD must be finite and non-negative");
+    };
+    let env_usize = |key: &str| -> anyhow::Result<Option<usize>> {
+        match std::env::var(key) {
+            Ok(raw) => Ok(Some(
+                raw.trim()
+                    .parse()
+                    .with_context(|| format!("{key} must be an integer"))?,
+            )),
+            Err(_) => Ok(None),
         }
-        config.chronos.min_ev_usd = value;
+    };
+    let env_u32 = |key: &str| -> anyhow::Result<Option<u32>> {
+        match std::env::var(key) {
+            Ok(raw) => Ok(Some(
+                raw.trim()
+                    .parse()
+                    .with_context(|| format!("{key} must be an integer"))?,
+            )),
+            Err(_) => Ok(None),
+        }
+    };
+    let env_bool = |key: &str| -> anyhow::Result<Option<bool>> {
+        match std::env::var(key) {
+            Ok(raw) => {
+                let t = raw.trim().to_ascii_lowercase();
+                Ok(Some(matches!(t.as_str(), "1" | "true" | "yes" | "on")))
+            }
+            Err(_) => Ok(None),
+        }
+    };
+
+    if let Some(v) = env_f64("MAX_TRADE_SIZE_USD")? {
+        if v <= 0.0 {
+            anyhow::bail!("MAX_TRADE_SIZE_USD must be positive");
+        }
+        config.risk.max_trade_size_usd = v;
+    }
+    if let Some(v) = env_f64("CHRONOS_DECAY_LAMBDA_PER_SEC")? {
+        if v < 0.0 {
+            anyhow::bail!("CHRONOS_DECAY_LAMBDA_PER_SEC must be non-negative");
+        }
+        config.chronos.decay_lambda_per_sec = v;
+    }
+    if let Some(v) = env_u64("CHRONOS_MAX_AGE_MS")? {
+        config.chronos.max_age_ms = v;
+    }
+    if let Some(v) = env_f64("CHRONOS_MIN_EV_USD")? {
+        if v < 0.0 {
+            anyhow::bail!("CHRONOS_MIN_EV_USD must be non-negative");
+        }
+        config.chronos.min_ev_usd = v;
+    }
+    if let Some(v) = env_bool("CHRONOS_ENABLED")? {
+        config.chronos.enabled = v;
+    }
+    if let Some(v) = env_u64("CHRONOS_FAILED_ATTEMPT_COST_LAMPORTS")? {
+        config.chronos.failed_attempt_cost_lamports = v;
+    }
+    if let Some(v) = env_f64("CHRONOS_BETA_RISK_FACTOR")? {
+        config.chronos.beta_risk_factor = v;
+    }
+
+    // Risk overrides
+    if let Some(v) = env_f64("MAX_DAILY_LOSS_USD")? {
+        config.risk.max_daily_loss_usd = v;
+    }
+    if let Some(v) = env_f64("MAX_HOURLY_LOSS_USD")? {
+        config.risk.max_hourly_loss_usd = v;
+    }
+    if let Some(v) = env_u64("MAX_CONSECUTIVE_FAILURES")? {
+        config.risk.max_consecutive_failures = v;
+    }
+    if let Some(v) = env_f64("MIN_LANDING_RATE")? {
+        config.risk.min_landing_rate = v;
+    }
+    if let Some(v) = env_u32("MAX_ATTEMPTS_PER_SLOT")? {
+        config.risk.max_attempts_per_slot = v;
+    }
+    if let Some(v) = env_u32("MAX_INFLIGHT_BUNDLES")? {
+        config.risk.max_inflight_bundles = v;
+    }
+    if let Some(v) = env_f64("MAX_TIP_SPEND_RATIO")? {
+        config.risk.max_tip_spend_ratio = v;
+    }
+    if let Some(v) = env_usize("MAX_ORDERS_PER_HOUR")? {
+        config.risk.max_orders_per_hour = v;
+    }
+    if let Some(v) = env_u64("COOLDOWN_SLOTS")? {
+        config.risk.cooldown_slots = v;
+    }
+
+    // Strategy overrides (market data is always live; these control evaluation windows/caps)
+    if let Some(v) = env_u64("STRATEGY_MIN_NET_PROFIT_ABS")? {
+        config.strategy.min_net_profit_abs = v;
+    }
+    if let Some(v) = env_u64("STRATEGY_MIN_NET_PROFIT_BPS")? {
+        config.strategy.min_net_profit_bps = v;
+    }
+    if let Some(v) = env_u64("STRATEGY_MAX_PRICE_IMPACT_BPS")? {
+        config.strategy.max_price_impact_bps = v;
+    }
+    if let Some(v) = env_u64("STRATEGY_MAX_STATE_AGE_SLOTS")? {
+        config.strategy.max_state_age_slots = v;
+    }
+    if let Some(v) = env_u64("STRATEGY_GRAPH_MAX_AGE_SLOTS")? {
+        config.strategy.graph_max_age_slots = Some(v);
+    }
+    if let Some(v) = env_bool("STRATEGY_USE_FLASH_LOAN")? {
+        config.strategy.use_flash_loan = v;
+    }
+    if let Some(v) = env_usize("STRATEGY_MAX_POOLS")? {
+        config.strategy.max_pools = Some(v);
+    }
+    if let Some(v) = env_usize("STRATEGY_MAX_PER_VENUE")? {
+        config.strategy.max_per_venue = Some(v);
+    }
+    if let Some(v) = env_u64("STRATEGY_DISCOVERY_REFRESH_SECS")? {
+        config.strategy.discovery_refresh_secs = Some(v);
+    }
+    if let Some(v) = env_f64("STRATEGY_DISCOVERY_MIN_TVL_USD")? {
+        config.strategy.discovery_min_tvl_usd = Some(v);
+    }
+
+    // Jito overrides
+    if let Some(v) = env_u64("JITO_MAX_TIP_LAMPORTS")? {
+        config.jito.max_tip_lamports = v;
+    }
+    if let Some(v) = env_u64("JITO_TIP_SHARE_BPS")? {
+        config.jito.tip_share_bps = v;
+    }
+    if let Some(v) = env_u64("JITO_MAX_TIP_SHARE_BPS")? {
+        config.jito.max_tip_share_bps = v;
+    }
+    if let Some(v) = env_u64("JITO_MIN_KEEP_LAMPORTS")? {
+        config.jito.min_keep_lamports = v;
+    }
+    if let Some(v) = env_f64("JITO_KEEP_SHARE")? {
+        config.jito.keep_share = v;
+    }
+    if let Some(v) = env_f64("JITO_LADDER_GROWTH")? {
+        config.jito.ladder_growth = v;
+    }
+    if let Some(v) = env_u64("JITO_TIP_FLOOR_MAX_AGE_MS")? {
+        config.jito.tip_floor_max_age_ms = v;
+    }
+    if let Some(v) = env_u64("JITO_TIP_FLOOR_POLL_MS")? {
+        config.jito.tip_floor_poll_ms = v;
+    }
+    if let Some(v) = env_bool("JITO_LEADER_GATE_ENABLED")? {
+        config.jito.leader_gate_enabled = v;
+    }
+    if let Some(v) = env_u64("JITO_LEADER_REFRESH_SECS")? {
+        config.jito.leader_refresh_secs = v;
     }
 
     if config.risk.max_tip_spend_ratio > 1.0 {

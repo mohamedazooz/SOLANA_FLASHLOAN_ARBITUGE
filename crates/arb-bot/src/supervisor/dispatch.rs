@@ -22,6 +22,9 @@ pub(super) struct DispatchContext<'a> {
     pub tx_bytes: &'a Vec<u8>,
     pub record: &'a AttemptRecord,
     pub real_net_profit: Lamports,
+    /// Base mint context for on-chain settlement (balance-delta) verification.
+    pub base_mint: MintId,
+    pub base_decimals: u8,
     pub payer: Pubkey,
     pub route_sig: &'a str,
     pub t_ingest_to_quote_us: u64,
@@ -64,6 +67,8 @@ impl Supervisor {
             tx_bytes,
             record,
             real_net_profit,
+            base_mint,
+            base_decimals,
             payer,
             route_sig,
             t_ingest_to_quote_us,
@@ -173,7 +178,7 @@ impl Supervisor {
                     && current_balance < min_reserve_lamports
                 {
                     warn!(
-                        "🚨 Safety Floor Active: Wallet balance ({} lamports / {:.4} SOL) is below {:.4} SOL minimum reserve — skipping execution to protect fees",
+                        "ðŸš¨ Safety Floor Active: Wallet balance ({} lamports / {:.4} SOL) is below {:.4} SOL minimum reserve â€” skipping execution to protect fees",
                         current_balance,
                         current_balance as f64 / 1e9,
                         min_reserve_lamports as f64 / 1e9
@@ -183,7 +188,7 @@ impl Supervisor {
                         gross_sol,
                         stage: "Safety Floor Reserve".to_string(),
                         reason: format!(
-                            "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                            "Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© ({:.4} SOL) Ø£Ù‚Ù„ Ù…Ù† ØµÙ…Ø§Ù… Ø§Ù„Ø£Ù…Ø§Ù† Ø§Ù„Ø£Ø¯Ù†Ù‰ ({:.4} SOL)",
                             current_balance as f64 / 1e9,
                             min_reserve_lamports as f64 / 1e9
                         ),
@@ -195,7 +200,7 @@ impl Supervisor {
                             gross_sol,
                             "Safety Floor Reserve",
                             &format!(
-                                "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                                "Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© ({:.4} SOL) Ø£Ù‚Ù„ Ù…Ù† ØµÙ…Ø§Ù… Ø§Ù„Ø£Ù…Ø§Ù† Ø§Ù„Ø£Ø¯Ù†Ù‰ ({:.4} SOL)",
                                 current_balance as f64 / 1e9,
                                 min_reserve_lamports as f64 / 1e9
                             ),
@@ -218,7 +223,9 @@ impl Supervisor {
                                     route: route_label.to_string(),
                                     gross_sol,
                                     stage: "Transaction Format Check".to_string(),
-                                    reason: format!("تعذر تحديد إصدار المعاملة: {error}"),
+                                    reason: format!(
+                                        "ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ¯ Ø¥ØµØ¯Ø§Ø± Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø©: {error}"
+                                    ),
                                     slot: current_slot.0,
                                 },
                             );
@@ -329,8 +336,10 @@ impl Supervisor {
                                     "Pre-flight simulation failed ({:?}) - skipping bundle dispatch",
                                     sim_res.error
                                 );
-                                let reason_msg =
-                                    format!("محاكاة المعاملة فشلت على الشبكة: {:?}", sim_res.error);
+                                let reason_msg = format!(
+                                    "Ù…Ø­Ø§ÙƒØ§Ø© Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø© ÙØ´Ù„Øª Ø¹Ù„Ù‰ Ø§Ù„Ø´Ø¨ÙƒØ©: {:?}",
+                                    sim_res.error
+                                );
                                 self.record_rejected_opportunity(
                                     crate::telegram::RejectedTradeSummary {
                                         route: route_label.to_string(),
@@ -386,7 +395,7 @@ impl Supervisor {
                                             "Pre-flight fallback simulation failed ({err_str}) - skipping bundle dispatch"
                                         );
                                         let reason_msg = format!(
-                                            "محاكاة المعاملة فشلت على الشبكة (Fallback RPC): {err_str}"
+                                            "Ù…Ø­Ø§ÙƒØ§Ø© Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø© ÙØ´Ù„Øª Ø¹Ù„Ù‰ Ø§Ù„Ø´Ø¨ÙƒØ© (Fallback RPC): {err_str}"
                                         );
                                         self.record_rejected_opportunity(
                                             crate::telegram::RejectedTradeSummary {
@@ -409,7 +418,7 @@ impl Supervisor {
                                         return;
                                     }
                                     info!(
-                                        "✅ Fallback RpcPool pre-flight simulation succeeded (CU={units_consumed})"
+                                        "âœ… Fallback RpcPool pre-flight simulation succeeded (CU={units_consumed})"
                                     );
                                 }
                                 Err(pool_err) => {
@@ -452,7 +461,7 @@ impl Supervisor {
 
                 // Final fire-time safety gate: the kill switch / emergency
                 // latch must block in-flight submissions too, not just new
-                // captures — a stop issued during simulation must win.
+                // captures â€” a stop issued during simulation must win.
                 if self.risk_gate.kill_switch().is_blocked()
                     || self.control().is_some_and(|c| c.is_emergency_stopped())
                 {
@@ -508,7 +517,7 @@ impl Supervisor {
                 // timeout is reconcilable by signature instead of a blind
                 // resubmit. A transaction whose signature cannot be extracted,
                 // or whose intent cannot be durably persisted, MUST NOT be
-                // dispatched — it would be unrecoverable after a crash.
+                // dispatched â€” it would be unrecoverable after a crash.
                 let Some(pre_sig) = arb_tx::extract_transaction_signature(tx_bytes) else {
                     error!(
                         attempt_id = record.id,
@@ -538,7 +547,7 @@ impl Supervisor {
                         ?err,
                         attempt_id = record.id,
                         route = %route_label,
-                        "dispatch aborted: durable intent persistence failed — refusing to send an unrecoverable transaction"
+                        "dispatch aborted: durable intent persistence failed â€” refusing to send an unrecoverable transaction"
                     );
                     let _ =
                         self.store
@@ -556,7 +565,7 @@ impl Supervisor {
                 let sent_at = Instant::now();
                 let (send_result, was_swqos): (Result<String, String>, bool) = if is_swqos_route {
                     info!(
-                        "⚡ Submitting transaction via direct SWQoS RPC path ({} bytes)...",
+                        "âš¡ Submitting transaction via direct SWQoS RPC path ({} bytes)...",
                         tx_bytes.len()
                     );
                     let b64 = BASE64_STANDARD.encode(tx_bytes.as_slice());
@@ -585,9 +594,9 @@ impl Supervisor {
                     Ok(bundle_id) => {
                         self.observe_bundle_rtt(rtt);
                         if was_swqos {
-                            info!("🚀 Transaction accepted via SWQoS RPC: {}", bundle_id);
+                            info!("ðŸš€ Transaction accepted via SWQoS RPC: {}", bundle_id);
                         } else {
-                            info!("🚀 Bundle accepted by Jito Block Engine: {}", bundle_id);
+                            info!("ðŸš€ Bundle accepted by Jito Block Engine: {}", bundle_id);
                         }
                         self.telegram
                             .alert_opportunity_with_telemetry(
@@ -627,9 +636,8 @@ impl Supervisor {
                         let rung_for_record = tip_rung;
                         let rec_id = record.id;
                         let b_id = bundle_id.clone();
-                        let net_profit_val = opp.net_profit;
-                        let profit_sol_val = profit_sol;
-                        let profit_usd_val = profit_sol * live_sol_price;
+                        // Do not record expected/quoted profit as realized; settlement is on-chain balance-delta verified at landing.
+                        let _net_profit_val = opp.net_profit;
                         let sol_price_val = live_sol_price;
                         let slot_val = current_slot.0;
                         let route_label_task = route_label.to_string();
@@ -642,14 +650,14 @@ impl Supervisor {
                                 }
                                 parts.push(format_mint_short(&h.mint_out.0));
                             }
-                            parts.join(" ➔ ")
+                            parts.join(" âž” ")
                         };
                         let venues_str_val = opp
                             .hops
                             .iter()
                             .map(|h| format!("{:?}", h.protocol))
                             .collect::<Vec<_>>()
-                            .join(" ➔ ");
+                            .join(" âž” ");
                         let rtt_ms = rtt.as_secs_f64() * 1000.0;
                         let land_start = std::time::Instant::now();
                         let recent_landed_task = self.recent_landed.clone();
@@ -701,6 +709,45 @@ impl Supervisor {
                                         + rtt_ms
                                         + landing_ms;
 
+                                    // Settle realized PnL from on-chain balance delta only (fail-closed).
+                                    let (realized_net_lamports, settlement_note) =
+                                        match tx_signature.as_deref() {
+                                            Some(sig) => {
+                                                settle_realized_net_from_chain(
+                                                    &signature_rpc,
+                                                    sig,
+                                                    &payer,
+                                                    &base_mint.0,
+                                                    base_decimals,
+                                                )
+                                                .await
+                                            }
+                                            None => (None, "no transaction signature".to_string()),
+                                        };
+                                    let (reported_profit_sol, reported_profit_usd) =
+                                        if let Some(net) = realized_net_lamports {
+                                            let sol = net.0 as f64 / 1e9;
+                                            let usd = if base_mint.0.to_string()
+                                                == arb_constants::WSOL_MINT
+                                            {
+                                                sol * sol_price_val
+                                            } else {
+                                                // Best-effort USD from configured base conversion is not
+                                                // provable from chain delta here; report 0 (fail-closed).
+                                                0.0
+                                            };
+                                            (sol, usd)
+                                        } else {
+                                            (0.0, 0.0)
+                                        };
+                                    let settlement_line = match realized_net_lamports {
+                                        Some(_) => "• Settlement: <code>on-chain balance delta (verified)</code>".to_string(),
+                                        None => format!(
+                                            "• Settlement: <code>unverified ({})</code> — realized PnL not credited",
+                                            settlement_note
+                                        ),
+                                    };
+
                                     let timings_str = format!(
                                         "• Ingest ➔ Quote: <code>{} µs</code>\n\
                                              • Risk & EV Gates: <code>{} µs</code>\n\
@@ -708,22 +755,30 @@ impl Supervisor {
                                              • Ed25519 Signing: <code>{} µs</code>\n\
                                              • Broadcast RTT: <code>{:.2} ms</code>\n\
                                              • Block Landing: <code>{:.2} ms</code>\n\
-                                             • <b>Total E2E Latency:</b> <code>{:.2} ms</code>",
+                                             • <b>Total E2E Latency:</b> <code>{:.2} ms</code>\n\
+                                             {}",
                                         t_ingest_to_quote_us,
                                         t_risk_us,
                                         t_assembly_us,
                                         t_signing_us,
                                         rtt_ms,
                                         landing_ms,
-                                        total_e2e_ms
+                                        total_e2e_ms,
+                                        settlement_line
                                     );
 
+                                    let outcome_status = if realized_net_lamports.is_some() {
+                                        "landed"
+                                    } else {
+                                        "landed_unsettled"
+                                    };
                                     info!(
-                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: +{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
+                                        "🎯 Execution finalized/landed: {} (slot {})\n• Realized Net: +{:.6} SOL (~${:.2}) [{}]\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
                                         b_id,
                                         effective_slot,
-                                        profit_sol_val,
-                                        profit_usd_val,
+                                        reported_profit_sol,
+                                        reported_profit_usd,
+                                        settlement_note.as_str(),
                                         loan_size_sol_val,
                                         tokens_str_val,
                                         venues_str_val,
@@ -735,9 +790,11 @@ impl Supervisor {
                                     );
                                     let _ = store.record_outcome(
                                         rec_id,
-                                        "landed",
-                                        Some(net_profit_val),
+                                        outcome_status,
+                                        realized_net_lamports,
                                     );
+                                    // Tx landed on-chain; intent resolved as landed. Realized PnL remains
+                                    // fail-closed and is credited only when balance-delta proof is verified.
                                     let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {
                                         js.record(
@@ -751,14 +808,19 @@ impl Supervisor {
                                     // Phase E: track bundle landed for landing rate
                                     risk_gate.record_bundle_landed(Slot(effective_slot), true);
                                     arb_metrics::inc_fills();
-                                    arb_metrics::add_net_profit(profit_sol_val);
+                                    if let Some(net) = realized_net_lamports {
+                                        // Net profit metric is SOL-denominated; credit only for WSOL/base-SOL settlements.
+                                        if base_mint.0.to_string() == arb_constants::WSOL_MINT {
+                                            arb_metrics::add_net_profit(net.0 as f64 / 1e9);
+                                        }
+                                    }
                                     arb_metrics::set_breaker_state(0);
 
                                     // Record landed trade in memory for 5-minute performance digest
                                     let summary = crate::telegram::TradeSummary {
                                         route: route_label_task.clone(),
-                                        profit_sol: profit_sol_val,
-                                        profit_usd: profit_usd_val,
+                                        profit_sol: reported_profit_sol,
+                                        profit_usd: reported_profit_usd,
                                         loan_sol: loan_size_sol_val,
                                         signature: tx_signature
                                             .as_deref()
@@ -779,8 +841,8 @@ impl Supervisor {
                                         .alert_trade_landed(
                                             tx_signature.as_deref(),
                                             &b_id,
-                                            profit_sol_val,
-                                            profit_usd_val,
+                                            reported_profit_sol,
+                                            reported_profit_usd,
                                             loan_size_sol_val,
                                             &tokens_str_val,
                                             &venues_str_val,
@@ -790,7 +852,7 @@ impl Supervisor {
                                         .await;
                                 }
                                 arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
-                                    warn!("⚠️ Execution {:?} in block: {}", status, b_id);
+                                    warn!("âš ï¸ Execution {:?} in block: {}", status, b_id);
                                     let _ = store.record_outcome(rec_id, "dropped", None);
                                     let _ = store.resolve_dispatch_intent(
                                         rec_id,
@@ -802,8 +864,19 @@ impl Supervisor {
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
-                                    // Unlanded/expired Jito bundles pay 0 SOL; do not count phantom tip loss or trip breaker
+                                    // Unlanded/expired bundles: do not assume a fixed on-chain loss.
+                                    // Record an operator/measurement-provided estimate from env if set.
                                     risk_gate.record_bundle_landed(Slot(effective_slot), false);
+                                    let failed_loss_lamports =
+                                        std::env::var("FAILED_BUNDLE_LOSS_LAMPORTS")
+                                            .ok()
+                                            .and_then(|v| v.trim().parse::<u64>().ok())
+                                            .unwrap_or(0);
+                                    if failed_loss_lamports > 0 && sol_price_val > 0.0 {
+                                        let loss_usd =
+                                            (failed_loss_lamports as f64 / 1e9) * sol_price_val;
+                                        risk_gate.record_loss(loss_usd);
+                                    }
 
                                     let dropped = crate::telegram::DroppedTradeSummary {
                                         bundle_id: b_id.clone(),
@@ -828,14 +901,23 @@ impl Supervisor {
                                         .await;
                                 }
                                 arb_land::LandStatus::Failed => {
-                                    warn!("⚠️ Execution reverted on-chain: {}", b_id);
+                                    warn!("âš ï¸ Execution reverted on-chain: {}", b_id);
                                     let _ = store.record_outcome(rec_id, "failed", None);
                                     let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
                                     risk_gate.record_bundle_landed(Slot(effective_slot), false);
-                                    risk_gate.record_loss(5_000.0 / 1e9 * sol_price_val);
+                                    let failed_loss_lamports =
+                                        std::env::var("FAILED_BUNDLE_LOSS_LAMPORTS")
+                                            .ok()
+                                            .and_then(|v| v.trim().parse::<u64>().ok())
+                                            .unwrap_or(0);
+                                    if failed_loss_lamports > 0 && sol_price_val > 0.0 {
+                                        risk_gate.record_loss(
+                                            (failed_loss_lamports as f64 / 1e9) * sol_price_val,
+                                        );
+                                    }
                                     risk_gate.on_failure(Slot(effective_slot));
                                     arb_metrics::set_breaker_state(
                                         if risk_gate.is_breaker_open(Slot(effective_slot)) {
@@ -884,5 +966,387 @@ impl Supervisor {
                 }
             }
         }
+    }
+}
+
+/// Compute realized net profit from on-chain transaction balance delta (fail-closed).
+/// Prefers SPL/wSOL token-balance delta for the payer+base mint; falls back to native
+/// payer lamport delta for WSOL/base-SOL routes when token delta is unavailable.
+/// Returns `None` when evidence is missing, invalid, or the delta is non-positive.
+fn compute_realized_net_from_tx(
+    tx: &serde_json::Value,
+    payer: &Pubkey,
+    base_mint: &Pubkey,
+    base_decimals: u8,
+) -> (Option<Lamports>, &'static str) {
+    let meta = match tx.get("meta") {
+        Some(m) if !m.is_null() => m,
+        _ => return (None, "missing tx meta"),
+    };
+    if meta.get("err").filter(|&e| !e.is_null()).is_some() {
+        return (None, "tx meta reports error");
+    }
+
+    let is_wsol_base = base_mint.to_string() == arb_constants::WSOL_MINT;
+
+    // Prefer token-balance delta for the base mint (covers wSOL-as-SPL and other SPL bases).
+    if let Some(delta_raw) = spl_token_delta_raw(meta, payer, base_mint) {
+        if delta_raw <= 0 {
+            return (None, "non-positive token balance delta");
+        }
+        // Convert base-mint raw units to lamports (9-decimal store/metrics convention).
+        let lamports = if base_decimals == 9 {
+            delta_raw as u64
+        } else if base_decimals < 9 {
+            (delta_raw as u64).saturating_mul(10u64.pow((9 - base_decimals) as u32))
+        } else {
+            (delta_raw as u64) / 10u64.pow((base_decimals - 9) as u32)
+        };
+        if lamports == 0 {
+            return (None, "token delta rounds to zero lamports");
+        }
+        let note = if is_wsol_base {
+            "verified WSOL token balance delta"
+        } else {
+            "verified SPL token balance delta"
+        };
+        return (Some(Lamports(lamports)), note);
+    }
+
+    // Fallback: native SOL balance delta for WSOL/native-base routes when no token delta is provable.
+    if is_wsol_base {
+        let account_keys = tx
+            .get("transaction")
+            .and_then(|t| t.get("message"))
+            .and_then(|m| m.get("accountKeys"));
+        let idx = payer_account_index(account_keys, payer);
+        let Some(i) = idx else {
+            return (None, "payer not found in account keys");
+        };
+        let pre = meta
+            .get("preBalances")
+            .and_then(|b| b.get(i))
+            .and_then(|v| v.as_u64());
+        let post = meta
+            .get("postBalances")
+            .and_then(|b| b.get(i))
+            .and_then(|v| v.as_u64());
+        let (Some(pre), Some(post)) = (pre, post) else {
+            return (None, "missing pre/post lamport balances");
+        };
+        let delta = (post as i64).saturating_sub(pre as i64);
+        if delta <= 0 {
+            return (None, "non-positive SOL balance delta");
+        }
+        return (Some(Lamports(delta as u64)), "verified SOL balance delta");
+    }
+
+    (None, "missing SPL token balance delta for base mint")
+}
+
+/// Fetch and settle realized net profit from on-chain balance delta.
+/// Retries are bounded to tolerate commitment/indexing lag and transient RPC errors
+/// after a confirmed landing. Fail-closed: returns `None` (no credited profit)
+/// when proof is unavailable, permanently invalid, or retries are exhausted.
+async fn settle_realized_net_from_chain(
+    rpc: &arb_ingest::rpc_pool::RpcPool,
+    signature: &str,
+    payer: &Pubkey,
+    base_mint: &Pubkey,
+    base_decimals: u8,
+) -> (Option<Lamports>, String) {
+    const MAX_ATTEMPTS: usize = 8;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+    let mut last_reason = "settlement evidence unavailable".to_string();
+    for attempt in 0..MAX_ATTEMPTS {
+        match rpc.get_transaction(signature).await {
+            Ok(v) if v.is_null() => {
+                last_reason = "transaction not found/indexed yet".to_string();
+            }
+            Ok(tx) => {
+                let (net, reason) =
+                    compute_realized_net_from_tx(&tx, payer, base_mint, base_decimals);
+                if net.is_some() {
+                    return (net, reason.to_string());
+                }
+                // Non-retryable: tx/meta present but proof is definitively invalid or unprovable.
+                if matches!(
+                    reason,
+                    "tx meta reports error"
+                        | "payer not found in account keys"
+                        | "non-positive token balance delta"
+                        | "non-positive SOL balance delta"
+                        | "token delta rounds to zero lamports"
+                ) {
+                    return (None, reason.to_string());
+                }
+                // Potentially transient/index-lag cases (e.g. missing meta/balances/token entries).
+                last_reason = reason.to_string();
+            }
+            Err(e) => {
+                last_reason = format!("getTransaction failed: {e}");
+            }
+        }
+        if attempt + 1 < MAX_ATTEMPTS {
+            tokio::time::sleep(RETRY_DELAY).await;
+        }
+    }
+
+    (
+        None,
+        format!("{last_reason} (unverified after {} attempts)", MAX_ATTEMPTS),
+    )
+}
+
+fn payer_account_index(account_keys: Option<&serde_json::Value>, payer: &Pubkey) -> Option<usize> {
+    let keys = account_keys?.as_array()?;
+    let payer_s = payer.to_string();
+    for (i, k) in keys.iter().enumerate() {
+        // jsonParsed: {"pubkey": "...", ...} ; json: string
+        let pk = k.as_str().map(|s| s.to_string()).or_else(|| {
+            k.get("pubkey")
+                .and_then(|p| p.as_str())
+                .map(|s| s.to_string())
+        });
+        if pk.as_deref() == Some(payer_s.as_str()) {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn spl_token_delta_raw(meta: &serde_json::Value, payer: &Pubkey, mint: &Pubkey) -> Option<i64> {
+    let payer_s = payer.to_string();
+    let mint_s = mint.to_string();
+    let read_side = |key: &str| -> i128 {
+        let Some(arr) = meta.get(key).and_then(|v| v.as_array()) else {
+            return 0;
+        };
+        let mut sum: i128 = 0;
+        for e in arr {
+            let owner = e.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+            let emint = e.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+            if owner != payer_s || emint != mint_s {
+                continue;
+            }
+            let amt = e
+                .get("uiTokenAmount")
+                .and_then(|u| u.get("amount"))
+                .and_then(|a| a.as_str())
+                .and_then(|s| s.parse::<i128>().ok())
+                .unwrap_or(0);
+            sum += amt;
+        }
+        sum
+    };
+    let pre = read_side("preTokenBalances");
+    let post = read_side("postTokenBalances");
+    // If neither side contains the payer+mint, we cannot prove delta.
+    let has_any = meta
+        .get("preTokenBalances")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| {
+            a.iter().any(|e| {
+                e.get("owner").and_then(|v| v.as_str()) == Some(payer_s.as_str())
+                    && e.get("mint").and_then(|v| v.as_str()) == Some(mint_s.as_str())
+            })
+        })
+        || meta
+            .get("postTokenBalances")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| {
+                a.iter().any(|e| {
+                    e.get("owner").and_then(|v| v.as_str()) == Some(payer_s.as_str())
+                        && e.get("mint").and_then(|v| v.as_str()) == Some(mint_s.as_str())
+                })
+            });
+    if !has_any {
+        return None;
+    }
+    Some((post - pre) as i64)
+}
+
+#[cfg(test)]
+mod settlement_tests {
+    use super::*;
+    use serde_json::json;
+    use std::str::FromStr;
+
+    fn pk(s: &str) -> Pubkey {
+        Pubkey::from_str(s).expect("valid pubkey")
+    }
+
+    fn wsol_mint() -> Pubkey {
+        pk(arb_constants::WSOL_MINT)
+    }
+
+    fn usdc_mint() -> Pubkey {
+        pk(arb_constants::USDC_MINT)
+    }
+
+    fn payer() -> Pubkey {
+        // arbitrary valid pubkey
+        pk("11111111111111111111111111111111")
+    }
+
+    #[test]
+    fn missing_meta_fails_closed() {
+        let tx = json!({"transaction": {"message": {"accountKeys": []}}});
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &wsol_mint(), 9);
+        assert!(net.is_none());
+        assert_eq!(reason, "missing tx meta");
+    }
+
+    #[test]
+    fn tx_meta_error_fails_closed() {
+        let tx = json!({"meta": {"err": {"InstructionError": [0, "Custom"]}}});
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &wsol_mint(), 9);
+        assert!(net.is_none());
+        assert_eq!(reason, "tx meta reports error");
+    }
+
+    #[test]
+    fn wsol_token_balance_delta_verified() {
+        let p = payer().to_string();
+        let m = wsol_mint().to_string();
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "1000000000", "decimals": 9}
+                }],
+                "postTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "1500000000", "decimals": 9}
+                }]
+            }
+        });
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &wsol_mint(), 9);
+        assert_eq!(net.map(|n| n.0), Some(500_000_000));
+        assert_eq!(reason, "verified WSOL token balance delta");
+    }
+
+    #[test]
+    fn native_sol_balance_fallback_verified_for_wsol_base() {
+        let p = payer();
+        let ps = p.to_string();
+        let tx = json!({
+            "transaction": {"message": {"accountKeys": [ {"pubkey": ps}, {"pubkey": "SysvarRent111111111111111111111111111111111"} ]}},
+            "meta": {
+                "err": null,
+                "preBalances": [1_000_000_000u64, 0],
+                "postBalances": [1_200_000_000u64, 0],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            }
+        });
+        let (net, reason) = compute_realized_net_from_tx(&tx, &p, &wsol_mint(), 9);
+        assert_eq!(net.map(|n| n.0), Some(200_000_000));
+        assert_eq!(reason, "verified SOL balance delta");
+    }
+
+    #[test]
+    fn spl_base_token_delta_converts_decimals_to_lamports() {
+        let p = payer().to_string();
+        let m = usdc_mint().to_string();
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "1000000", "decimals": 6}
+                }],
+                "postTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "2500000", "decimals": 6}
+                }]
+            }
+        });
+        // delta 1_500_000 raw (6 decimals) -> 1_500_000_000 lamports (9-decimal convention)
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &usdc_mint(), 6);
+        assert_eq!(net.map(|n| n.0), Some(1_500_000_000));
+        assert_eq!(reason, "verified SPL token balance delta");
+    }
+
+    #[test]
+    fn non_positive_token_delta_fails_closed() {
+        let p = payer().to_string();
+        let m = wsol_mint().to_string();
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "1000", "decimals": 9}
+                }],
+                "postTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "900", "decimals": 9}
+                }]
+            }
+        });
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &wsol_mint(), 9);
+        assert!(net.is_none());
+        assert_eq!(reason, "non-positive token balance delta");
+    }
+
+    #[test]
+    fn non_wsol_missing_token_delta_fails_closed() {
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preBalances": [100, 0],
+                "postBalances": [200, 0],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            },
+            "transaction": {"message": {"accountKeys": [{"pubkey": payer().to_string()}]}}
+        });
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &usdc_mint(), 6);
+        assert!(net.is_none());
+        assert_eq!(reason, "missing SPL token balance delta for base mint");
+    }
+
+    #[test]
+    fn wsol_payer_not_found_fails_closed() {
+        let tx = json!({
+            "transaction": {"message": {"accountKeys": [{"pubkey": "SysvarRent111111111111111111111111111111111"}]}},
+            "meta": {
+                "err": null,
+                "preBalances": [1_000],
+                "postBalances": [2_000],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            }
+        });
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &wsol_mint(), 9);
+        assert!(net.is_none());
+        assert_eq!(reason, "payer not found in account keys");
+    }
+
+    #[test]
+    fn token_delta_rounds_to_zero_fails_closed() {
+        let p = payer().to_string();
+        let m = pk("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").to_string(); // arbitrary mint
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "0", "decimals": 12}
+                }],
+                "postTokenBalances": [{
+                    "owner": p, "mint": m,
+                    "uiTokenAmount": {"amount": "5", "decimals": 12}
+                }]
+            }
+        });
+        // 5 raw at 12 decimals -> 0 lamports when downscaling to 9
+        let mint = pk("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        let (net, reason) = compute_realized_net_from_tx(&tx, &payer(), &mint, 12);
+        assert!(net.is_none());
+        assert_eq!(reason, "token delta rounds to zero lamports");
     }
 }

@@ -42,6 +42,9 @@ pub struct MeteoraDlmmPool {
     /// On-chain `index_reference` (bin the volatility accumulator is measured against).
     pub index_reference: i32,
     pub last_update_timestamp: i64,
+    /// Raw `bin_array_bitmap [u64; 16]` from LbPair (offset 584). Used for
+    /// best-effort existence checks when planning directional bin-array coverage.
+    pub bin_array_bitmap: [u64; 16],
     pub bins: Vec<DlmmBin>,
     pub bin_array_pdas: Vec<Pubkey>,
     pub decimals_x: u8,
@@ -72,6 +75,7 @@ impl MeteoraDlmmPool {
             volatility_reference: 0,
             index_reference: 0,
             last_update_timestamp: 0,
+            bin_array_bitmap: [0u64; 16],
             bins: Vec::new(),
             bin_array_pdas: Vec::new(),
             decimals_x: 0,
@@ -84,10 +88,26 @@ impl MeteoraDlmmPool {
         Ok(pool)
     }
 
+    /// Canonical active-bin-derived bin array index (floor division toward -∞),
+    /// per Meteora DLMM layout (`LbPair.active_id` / 70 bins per array).
     pub fn bin_id_to_array_index(bin_id: i32) -> i64 {
-        let b = i64::from(bin_id);
-        let n = METEORA_BINS_PER_BIN_ARRAY;
-        if b >= 0 { b / n } else { (b - (n - 1)) / n }
+        (i64::from(bin_id)).div_euclid(METEORA_BINS_PER_BIN_ARRAY)
+    }
+
+    /// Best-effort check against the LbPair `bin_array_bitmap` for default-range
+    /// array indices. Indices outside the bitmap range return `true` (unknown) so
+    /// callers do not incorrectly drop potentially valid extension-covered arrays.
+    pub fn bin_array_index_maybe_exists(&self, index: i64) -> bool {
+        if index < 0 {
+            return true;
+        }
+        let idx = index as usize;
+        let word = idx / 64;
+        if word >= self.bin_array_bitmap.len() {
+            return true;
+        }
+        let bit = idx % 64;
+        (self.bin_array_bitmap[word] >> bit) & 1 == 1
     }
 
     pub fn derive_bin_array_pda(&self, index: i64) -> Pubkey {
@@ -99,17 +119,43 @@ impl MeteoraDlmmPool {
         pda
     }
 
+    /// Derive directional bin-array PDAs around the on-chain `active_id`.
+    /// Direction-agnostic discovery/subscription path: includes the active array
+    /// and expands both directions, preferring bitmap-known arrays when the bitmap
+    /// indicates absence in the default range. This is fail-safe (never claims
+    /// coverage without active_id-derived arrays) and improves over a fixed
+    /// symmetric guess by anchoring every index to `active_id`.
     pub fn bin_array_pdas_around_active(&self) -> Vec<Pubkey> {
-        let idx = Self::bin_id_to_array_index(self.active_id);
+        let active_idx = Self::bin_id_to_array_index(self.active_id);
         let step = u32::from(self.bin_step.max(1));
-        let bins_traversed = 500u32 / step + 1;
-        let arrays_needed = (bins_traversed as i64).div_euclid(METEORA_BINS_PER_BIN_ARRAY) + 1;
-        let mut indices = Vec::with_capacity(arrays_needed as usize * 2);
-        indices.push(idx);
-        for i in 1..arrays_needed {
-            indices.push(idx - i);
-            indices.push(idx + i);
+        // Conservative depth estimate for quoting/coverage discovery.
+        let bins_traversed = (500u32 / step + 1).max(1);
+        let arrays_each_side =
+            (u64::from(bins_traversed).div_ceil(METEORA_BINS_PER_BIN_ARRAY.unsigned_abs()) as i64)
+                .saturating_add(1);
+
+        let mut indices = Vec::new();
+        for offset in 0..=arrays_each_side {
+            if offset == 0 {
+                indices.push(active_idx);
+                continue;
+            }
+            for candidate in [active_idx - offset, active_idx + offset] {
+                if self.bin_array_index_maybe_exists(candidate) {
+                    indices.push(candidate);
+                }
+            }
         }
+        if indices.is_empty() {
+            indices.push(active_idx);
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        // Keep active array first for callers that prefer it.
+        if let Some(pos) = indices.iter().position(|&i| i == active_idx) {
+            indices.swap(0, pos);
+        }
+
         indices
             .into_iter()
             .map(|i| self.derive_bin_array_pda(i))
@@ -406,6 +452,16 @@ impl AmmPool for MeteoraDlmmPool {
         self.reserve_x = read_pk(152)?;
         self.reserve_y = read_pk(184)?;
         self.oracle = read_pk(552)?;
+        if data.len() >= 712 {
+            for (i, word) in self.bin_array_bitmap.iter_mut().enumerate() {
+                let start = 584 + i * 8;
+                let end = start + 8;
+                *word = u64::from_le_bytes(data[start..end].try_into().unwrap_or([0; 8]));
+            }
+        } else {
+            self.bin_array_bitmap = [0u64; 16];
+        }
+        // Derive directional bin-array PDAs from the authoritative on-chain active_id.
         self.bin_array_pdas = self.bin_array_pdas_around_active();
         Ok(())
     }

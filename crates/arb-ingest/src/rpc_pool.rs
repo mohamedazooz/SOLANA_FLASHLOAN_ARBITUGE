@@ -1499,6 +1499,21 @@ impl RpcPool {
             .unwrap_or(10_000);
         Ok(fee)
     }
+    /// Fetch a confirmed transaction with `jsonParsed` encoding and
+    /// `maxSupportedTransactionVersion: 1` so legacy, v0, and v1 transactions are readable.
+    /// Returns the raw JSON `result` (or null if not found yet).
+    pub async fn get_transaction(&self, signature: &str) -> Result<serde_json::Value> {
+        let params = json!([
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": "confirmed",
+                "maxSupportedTransactionVersion": 1
+            }
+        ]);
+        let res = self.call("getTransaction", params).await?;
+        Ok(res)
+    }
 }
 
 #[cfg(test)]

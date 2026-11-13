@@ -24,7 +24,12 @@ fn allowed_chats() -> Option<Vec<i64>> {
     let raw = std::env::var("TELEGRAM_CONTROL_CHAT_IDS").ok()?;
     let ids: Vec<i64> = raw
         .split(',')
-        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .filter_map(|s| {
+            let id = s.trim().parse::<i64>().ok()?;
+            // Reject chat id 0: Telegram chat IDs are non-zero; 0 is used as a
+            // sentinel for malformed updates and must never be allowlisted.
+            (id != 0).then_some(id)
+        })
         .collect();
     if ids.is_empty() {
         return None;

@@ -81,7 +81,7 @@ pub fn derive_meteora_oracle_pda(pool: &Pubkey) -> Pubkey {
 /// `METEORA_BINS_PER_BIN_ARRAY = 70` bins per array; uses floor division
 /// toward negative infinity so negative bin IDs map correctly.
 pub fn bin_array_index_for_bin(bin_id: i32) -> i64 {
-    (bin_id as i64).div_euclid(METEORA_BINS_PER_BIN_ARRAY)
+    (i64::from(bin_id)).div_euclid(METEORA_BINS_PER_BIN_ARRAY)
 }
 
 /// Complete account matrix for a Meteora DLMM `swap2` instruction.

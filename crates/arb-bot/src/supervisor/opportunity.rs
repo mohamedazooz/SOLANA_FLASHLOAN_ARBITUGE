@@ -1,6 +1,6 @@
 //! Opportunity processing (R9 split from strategy.rs): the per-candidate gate
-//! ladder — risk gate, tip ladder, decoupled profit protection, implausibility
-//! gate, EV gate, economic invariants — followed by transaction assembly,
+//! ladder Ã¢â‚¬â€ risk gate, tip ladder, decoupled profit protection, implausibility
+//! gate, EV gate, economic invariants Ã¢â‚¬â€ followed by transaction assembly,
 //! V1 compilation and dispatch. Extracted verbatim from the strategy cycle.
 use super::*;
 
@@ -49,7 +49,7 @@ impl Supervisor {
             let target_slot = Slot(current_slot.0.saturating_add(1));
             let tip_account = self.jito_service.tip_account_for_slot(target_slot);
 
-            // 3. Per-tx cost basis — ONE list, used by both the Jito edge
+            // 3. Per-tx cost basis Ã¢â‚¬â€ ONE list, used by both the Jito edge
             //    estimate and the go/no-go gate (TX-02):
             //    flash fee (verified U68F60 sf) + base fee + priority fee.
             let flash_fee_raw = if self.config.strategy.use_flash_loan {
@@ -102,7 +102,7 @@ impl Supervisor {
                     format!("{:?}:{}", h.protocol, &id[..6.min(id.len())])
                 })
                 .collect::<Vec<_>>()
-                .join(" → ");
+                .join(" Ã¢â€ â€™ ");
 
             let net_before_tip = gross
                 .saturating_sub(flash_fee_raw)
@@ -124,7 +124,7 @@ impl Supervisor {
                 );
                 if gross >= 50_000 {
                     let reason = format!(
-                        "فائض الربح غير كافٍ لتغطية إكرامية Jito مع ضمان بقاء الحد الأدنى للربح الصافي $0.20 (t_max={t_max} lamports)"
+                        "Ã™ÂÃ˜Â§Ã˜Â¦Ã˜Â¶ Ã˜Â§Ã™â€žÃ˜Â±Ã˜Â¨Ã˜Â­ Ã˜ÂºÃ™Å Ã˜Â± Ã™Æ’Ã˜Â§Ã™ÂÃ™Â Ã™â€žÃ˜ÂªÃ˜ÂºÃ˜Â·Ã™Å Ã˜Â© Ã˜Â¥Ã™Æ’Ã˜Â±Ã˜Â§Ã™â€¦Ã™Å Ã˜Â© Jito Ã™â€¦Ã˜Â¹ Ã˜Â¶Ã™â€¦Ã˜Â§Ã™â€  Ã˜Â¨Ã™â€šÃ˜Â§Ã˜Â¡ Ã˜Â§Ã™â€žÃ˜Â­Ã˜Â¯ Ã˜Â§Ã™â€žÃ˜Â£Ã˜Â¯Ã™â€ Ã™â€° Ã™â€žÃ™â€žÃ˜Â±Ã˜Â¨Ã˜Â­ Ã˜Â§Ã™â€žÃ˜ÂµÃ˜Â§Ã™ÂÃ™Å  $0.20 (t_max={t_max} lamports)"
                     );
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
@@ -172,7 +172,7 @@ impl Supervisor {
                         );
                         if gross >= 50_000 {
                             let reason = format!(
-                                "رفض تسعير الـ Tip من الأوراكل: {:?}",
+                                "Ã˜Â±Ã™ÂÃ˜Â¶ Ã˜ÂªÃ˜Â³Ã˜Â¹Ã™Å Ã˜Â± Ã˜Â§Ã™â€žÃ™â‚¬ Tip Ã™â€¦Ã™â€  Ã˜Â§Ã™â€žÃ˜Â£Ã™Ë†Ã˜Â±Ã˜Â§Ã™Æ’Ã™â€ž: {:?}",
                                 jito_plan.tip.decision
                             );
                             self.record_rejected_opportunity(
@@ -201,7 +201,7 @@ impl Supervisor {
                     debug!("Opportunity skipped: leader is not Jito-Solana (route=PlainRpc)");
                     if gross >= 50_000 {
                         let reason =
-                            "المدقق القائد للسلوت الحالي لا يدعم حزم Jito المباشرة".to_string();
+                            "Current slot leader does not support direct Jito bundles".to_string();
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                             route: route_label.clone(),
                             gross_sol,
@@ -225,7 +225,7 @@ impl Supervisor {
 
             // Go/no-go through the AUTHORITATIVE model with the ACTUAL
             // planned tip: the number that passes is the number that will
-            // be paid. (expected_out is already net of DEX fees — no double
+            // be paid. (expected_out is already net of DEX fees Ã¢â‚¬â€ no double
             // counting; flash/base/priority/tip are the only added costs.)
             // `calculate_net_profit_raw` returns net profit in BASE MINT RAW
             // UNITS (e.g., USDC raw units when base_mint is USDC). It is NOT
@@ -251,7 +251,7 @@ impl Supervisor {
                 debug!("Opportunity rejected: net <= 0 with actual tip {tip}");
                 if gross > 0 {
                     let reason = format!(
-                        "تآكل الربح بالكامل: تكاليف الفلاش لوان + البقشيش + رسوم الشبكة فاقت الربح الإجمالي (الوحدة الأساسية: {})",
+                        "Ã˜ÂªÃ˜Â¢Ã™Æ’Ã™â€ž Ã˜Â§Ã™â€žÃ˜Â±Ã˜Â¨Ã˜Â­ Ã˜Â¨Ã˜Â§Ã™â€žÃ™Æ’Ã˜Â§Ã™â€¦Ã™â€ž: Ã˜ÂªÃ™Æ’Ã˜Â§Ã™â€žÃ™Å Ã™Â Ã˜Â§Ã™â€žÃ™ÂÃ™â€žÃ˜Â§Ã˜Â´ Ã™â€žÃ™Ë†Ã˜Â§Ã™â€  + Ã˜Â§Ã™â€žÃ˜Â¨Ã™â€šÃ˜Â´Ã™Å Ã˜Â´ + Ã˜Â±Ã˜Â³Ã™Ë†Ã™â€¦ Ã˜Â§Ã™â€žÃ˜Â´Ã˜Â¨Ã™Æ’Ã˜Â© Ã™ÂÃ˜Â§Ã™â€šÃ˜Âª Ã˜Â§Ã™â€žÃ˜Â±Ã˜Â¨Ã˜Â­ Ã˜Â§Ã™â€žÃ˜Â¥Ã˜Â¬Ã™â€¦Ã˜Â§Ã™â€žÃ™Å  (Ã˜Â§Ã™â€žÃ™Ë†Ã˜Â­Ã˜Â¯Ã˜Â© Ã˜Â§Ã™â€žÃ˜Â£Ã˜Â³Ã˜Â§Ã˜Â³Ã™Å Ã˜Â©: {})",
                         opp.hops
                             .first()
                             .map(|h| h.mint_in.to_string())
@@ -288,14 +288,15 @@ impl Supervisor {
             let max_implausible_roi_bps: u128 = std::env::var("ARB_MAX_IMPLAUSIBLE_ROI_BPS")
                 .ok()
                 .and_then(|v| v.trim().parse::<u128>().ok())
-                .unwrap_or(1_500); // 15% ceiling
+                .map(|v| v.clamp(100, 5_000))
+                .unwrap_or(1_500); // 15% ceiling, server-clamped
             if implied_roi_bps > max_implausible_roi_bps {
                 warn!(
                     "Opportunity rejected: implied ROI {implied_roi_bps} bps exceeds implausibility ceiling {max_implausible_roi_bps} bps (stale-quote artifact)"
                 );
                 if gross > 0 {
                     let reason = format!(
-                        "ROI وهمي ({} bps) فوق سقف الإستحالة {} bps — quote stale/inconsistent (phantom edge); rejected fail-closed",
+                        "Implied ROI {} bps exceeds server ceiling {} bps (stale/inconsistent quote); rejected fail-closed",
                         implied_roi_bps, max_implausible_roi_bps
                     );
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
@@ -332,7 +333,9 @@ impl Supervisor {
                 Err(e) => {
                     debug!("Cannot convert min profit floor to base mint: {e}; failing closed");
                     if gross > 0 {
-                        let reason = format!("تعذر تحويل حد الربح الأدنى إلى الوحدات الأساسية: {e}");
+                        let reason = format!(
+                            "Ã˜ÂªÃ˜Â¹Ã˜Â°Ã˜Â± Ã˜ÂªÃ˜Â­Ã™Ë†Ã™Å Ã™â€ž Ã˜Â­Ã˜Â¯ Ã˜Â§Ã™â€žÃ˜Â±Ã˜Â¨Ã˜Â­ Ã˜Â§Ã™â€žÃ˜Â£Ã˜Â¯Ã™â€ Ã™â€° Ã˜Â¥Ã™â€žÃ™â€° Ã˜Â§Ã™â€žÃ™Ë†Ã˜Â­Ã˜Â¯Ã˜Â§Ã˜Âª Ã˜Â§Ã™â€žÃ˜Â£Ã˜Â³Ã˜Â§Ã˜Â³Ã™Å Ã˜Â©: {e}"
+                        );
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                             route: route_label.clone(),
                             gross_sol,
@@ -364,7 +367,7 @@ impl Supervisor {
                     let min_in_base =
                         min_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                     let reason = format!(
-                        "صافي الربح ({:.6} {}) أقل من الحد الأدنى المطلوب ({:.6} {})",
+                        "Ã˜ÂµÃ˜Â§Ã™ÂÃ™Å  Ã˜Â§Ã™â€žÃ˜Â±Ã˜Â¨Ã˜Â­ ({:.6} {}) Ã˜Â£Ã™â€šÃ™â€ž Ã™â€¦Ã™â€  Ã˜Â§Ã™â€žÃ˜Â­Ã˜Â¯ Ã˜Â§Ã™â€žÃ˜Â£Ã˜Â¯Ã™â€ Ã™â€° Ã˜Â§Ã™â€žÃ™â€¦Ã˜Â·Ã™â€žÃ™Ë†Ã˜Â¨ ({:.6} {})",
                         net_in_base,
                         opp.hops
                             .first()
@@ -428,7 +431,7 @@ impl Supervisor {
                     debug!("Opportunity rejected by Chronos EV Gate: {reason}");
                     if gross > 0 {
                         let reason_msg = format!(
-                            "بوابة Chronos EV رفضت التنفيذ: {reason} (زمن المعالجة: {:.1}ms)",
+                            "Ã˜Â¨Ã™Ë†Ã˜Â§Ã˜Â¨Ã˜Â© Chronos EV Ã˜Â±Ã™ÂÃ˜Â¶Ã˜Âª Ã˜Â§Ã™â€žÃ˜ÂªÃ™â€ Ã™ÂÃ™Å Ã˜Â°: {reason} (Ã˜Â²Ã™â€¦Ã™â€  Ã˜Â§Ã™â€žÃ™â€¦Ã˜Â¹Ã˜Â§Ã™â€žÃ˜Â¬Ã˜Â©: {:.1}ms)",
                             latency_ms
                         );
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
@@ -452,7 +455,7 @@ impl Supervisor {
                 }
             }
 
-            // State age in SLOTS — fail closed on any unresolvable pool.
+            // State age in SLOTS Ã¢â‚¬â€ fail closed on any unresolvable pool.
             let state_age_slots = max_state_age_slots(&opp.hops, pools, current_slot);
 
             // Split routing is disabled until per-leg AMM quote, fee, slippage,
@@ -557,7 +560,9 @@ impl Supervisor {
             if let Err(reason) = risk_check {
                 debug!("Opportunity rejected by RiskGate: {reason}");
                 if gross > 0 {
-                    let reason_msg = format!("قيود RiskGate رفضت التنفيذ: {reason}");
+                    let reason_msg = format!(
+                        "Ã™â€šÃ™Å Ã™Ë†Ã˜Â¯ RiskGate Ã˜Â±Ã™ÂÃ˜Â¶Ã˜Âª Ã˜Â§Ã™â€žÃ˜ÂªÃ™â€ Ã™ÂÃ™Å Ã˜Â°: {reason}"
+                    );
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
                         gross_sol,
@@ -590,10 +595,10 @@ impl Supervisor {
             let ixs: Vec<arb_tx::CompiledInstruction> = if let Some(ref s) = split
                 && self.config.strategy.use_flash_loan
             {
-                // ── Split routing: one swap leg per venue, then the RETURN hop,
-                //    all wrapped in a single Kamino flash loan ──
+                // Ã¢â€â‚¬Ã¢â€â‚¬ Split routing: one swap leg per venue, then the RETURN hop,
+                //    all wrapped in a single Kamino flash loan Ã¢â€â‚¬Ã¢â€â‚¬
                 info!(
-                    "🔀 RouteArchitect N-way split EXECUTING: {} legs (impact {}bps > {}bps)",
+                    "Ã°Å¸â€â‚¬ RouteArchitect N-way split EXECUTING: {} legs (impact {}bps > {}bps)",
                     s.legs.len(),
                     opp.price_impact_bps.0,
                     self.config.strategy.max_price_impact_bps
@@ -664,7 +669,7 @@ impl Supervisor {
                 // The RETURN hop (second hop of the opportunity) sells the
                 // summed split output back to the borrowed mint. Omitting it
                 // would leave the flash loan holding the intermediate token
-                // and fail the repay — the split route is incomplete without it.
+                // and fail the repay Ã¢â‚¬â€ the split route is incomplete without it.
                 if opp.hops.len() >= 2 {
                     let return_hop = &opp.hops[1];
                     // Calculate min_out using the estimated total output and slippage
@@ -740,7 +745,7 @@ impl Supervisor {
                 blockhash_b58 = bs58::encode(blockhash).into_string();
                 // Fail fast: a zero blockhash must never be sent.
                 if blockhash == [0u8; 32] {
-                    let reason_msg = "فشل جلب أحدث Blockhash صالح من شبكة سولانا (Zero Blockhash)";
+                    let reason_msg = "Failed to fetch valid recent blockhash from Solana network (zero blockhash)";
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
                         gross_sol,
@@ -925,7 +930,7 @@ impl Supervisor {
             // Rejection is delegated to on-chain guards: Kamino flash-repay
             // fails if the balance is short, and each hop carries min_amount_out
             // at DEFAULT_HOP_SLIPPAGE_BPS. Note this is a slippage bound rather
-            // than a profit floor — a floor would need a final-hop minimum
+            // than a profit floor Ã¢â‚¬â€ a floor would need a final-hop minimum
             // derived from `size_in + costs + tip` propagated per hop.
 
             info!(
@@ -962,7 +967,7 @@ impl Supervisor {
             // All monetary values below are in BASE MINT raw units (e.g.,
             // USDC raw units when base_mint is USDC). We convert to
             // human-readable decimal form using the base mint's own decimals
-            // — never assuming SOL (9 decimals) or lamports.
+            // Ã¢â‚¬â€ never assuming SOL (9 decimals) or lamports.
             let Some(base_mint) = opp.hops.first().map(|h| h.mint_in) else {
                 continue;
             };
@@ -971,9 +976,9 @@ impl Supervisor {
             let _size_in_base = opp.size_in.as_u64() as f64 / base_scale;
             let _gross_base = opp.expected_out.as_u64() as f64 / base_scale;
 
-            // For SOL-denominated display, convert base-mint raw → lamports
+            // For SOL-denominated display, convert base-mint raw Ã¢â€ â€™ lamports
             // using the verified rate. Fail closed (0.0) if conversion is
-            // unavailable — never guess.
+            // unavailable Ã¢â‚¬â€ never guess.
             let profit_lamports = arb_types::dimensional::base_raw_to_lamports_checked(
                 real_net_base_raw as u128,
                 verified.lamports_per_base_raw.value,
@@ -988,7 +993,7 @@ impl Supervisor {
                 .iter()
                 .map(|h| format!("{:?} ({})", h.protocol, h.pool_id.0))
                 .collect::<Vec<_>>()
-                .join(" ➔ ");
+                .join(" Ã¢Å¾â€ ");
             let initial_loan_base = opp.size_in.as_u64() as f64 / base_scale;
             let gross_rev_base = opp.expected_out.as_u64() as f64 / base_scale;
             let deductions_base =
@@ -1042,7 +1047,7 @@ impl Supervisor {
                 roi_pct
             );
 
-            // ── Non-broadcast route simulation (fail closed when enabled) ──
+            // Ã¢â€â‚¬Ã¢â€â‚¬ Non-broadcast route simulation (fail closed when enabled) Ã¢â€â‚¬Ã¢â€â‚¬
             // Submits the serialized route to `simulateTransaction` against
             // real mainnet state with `replaceRecentBlockhash: true` and
             // `sigVerify: false`. It never signs and never broadcasts.
@@ -1069,7 +1074,7 @@ impl Supervisor {
                                     route: route_label.clone(),
                                     gross_sol,
                                     stage: "Pre-flight Simulation".to_string(),
-                                    reason: format!("تعذّر تشغيل المحاكاة: {e}"),
+                                    reason: format!("Ã˜ÂªÃ˜Â¹Ã˜Â°Ã™â€˜Ã˜Â± Ã˜ÂªÃ˜Â´Ã˜ÂºÃ™Å Ã™â€ž Ã˜Â§Ã™â€žÃ™â€¦Ã˜Â­Ã˜Â§Ã™Æ’Ã˜Â§Ã˜Â©: {e}"),
                                     slot: current_slot.0,
                                 },
                             );
@@ -1083,8 +1088,10 @@ impl Supervisor {
                         fork_result.error
                     );
                     if gross > 0 {
-                        let reason =
-                            format!("محاكاة المعاملة رفضت التنفيذ: {:?}", fork_result.error);
+                        let reason = format!(
+                            "Ã™â€¦Ã˜Â­Ã˜Â§Ã™Æ’Ã˜Â§Ã˜Â© Ã˜Â§Ã™â€žÃ™â€¦Ã˜Â¹Ã˜Â§Ã™â€¦Ã™â€žÃ˜Â© Ã˜Â±Ã™ÂÃ˜Â¶Ã˜Âª Ã˜Â§Ã™â€žÃ˜ÂªÃ™â€ Ã™ÂÃ™Å Ã˜Â°: {:?}",
+                            fork_result.error
+                        );
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                             route: route_label.clone(),
                             gross_sol,
@@ -1113,7 +1120,7 @@ impl Supervisor {
                 );
             }
 
-            // ── Phase 15.3: Economic Invariant Gate ──
+            // Ã¢â€â‚¬Ã¢â€â‚¬ Phase 15.3: Economic Invariant Gate Ã¢â€â‚¬Ã¢â€â‚¬
             // Reject any candidate that fails a core economic invariant before
             // it reaches the transaction compiler. Fail closed.
             let invariant_result = self.validate_economic_invariants(
@@ -1163,7 +1170,16 @@ impl Supervisor {
                 cu_price,
                 tx_bytes: &tx_bytes,
                 record: &record,
-                real_net_profit: Lamports(real_net_base_raw),
+                real_net_profit: Lamports(
+                    arb_types::dimensional::base_raw_to_lamports_checked(
+                        real_net_base_raw as u128,
+                        verified.lamports_per_base_raw.value,
+                        verified.lamports_per_base_denom.value,
+                    )
+                    .unwrap_or(0),
+                ), // store/dispatch fields are lamport-denominated
+                base_mint,
+                base_decimals: opp.base_decimals,
                 payer,
                 route_sig: &route_sig,
                 t_ingest_to_quote_us,
