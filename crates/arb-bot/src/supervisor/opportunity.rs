@@ -291,7 +291,9 @@ impl Supervisor {
                 .unwrap_or(1_500); // 15% ceiling
             if implied_roi_bps > max_implausible_roi_bps {
                 warn!(
-                    "Opportunity rejected: implied ROI {implied_roi_bps} bps exceeds implausibility ceiling {max_implausible_roi_bps} bps (stale-quote artifact)"
+                    "Opportunity rejected: implied ROI {implied_roi_bps} bps exceeds implausibility ceiling {max_implausible_roi_bps} bps (stale-quote artifact); route={route_label} size_in={} slot={}",
+                    opp.size_in.as_u64(),
+                    current_slot.0
                 );
                 if gross > 0 {
                     let reason = format!(

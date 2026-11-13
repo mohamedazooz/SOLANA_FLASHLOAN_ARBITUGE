@@ -9,7 +9,7 @@ use crate::{
     decode_dlmm_state, decode_orca_fee_bps, decode_spl_token_amount_bytes, next_pool_write_version,
     slot_integrity,
 };
-use arb_types::{DexProtocol, PoolId, Slot};
+use arb_types::{DexProtocol, MintId, PoolId, Slot};
 use base64::Engine;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -338,37 +338,103 @@ impl HeliusWsClient {
             return;
         }
 
-        let fetcher = crate::registry::PacedAccountFetcher::from_env();
+        // Batched bootstrap via the shared RpcPool: ~3 `getMultipleAccounts`
+        // batch-100 requests for ~250 tracked accounts instead of 167
+        // sequential single-account calls. The sequential path was measured
+        // (soak5/soak7) seeding only 2 of ~167 accounts: it starts while both
+        // RPC endpoints are still in 429 cooldown from the discovery burst,
+        // and each single-account failure burns a paced round-trip, so the
+        // run began with ~98% of pools having no initial state — WS vault
+        // updates then had nothing to mutate and the graph sat at 2 edges.
+        let rpc = crate::rpc_pool::RpcPool::from_env();
+
         let mut seeded_count = 0usize;
         let mut latest_slot = 0u64;
 
-        for pk in keys {
-            let expected_owner = self
-                .tracked_accounts
-                .read()
-                .get(&pk)
-                .copied()
-                .unwrap_or_default();
-            match fetcher.fetch_single_account(&pk).await {
-                Ok((slot, bytes)) => {
-                    latest_slot = latest_slot.max(slot);
-                    let snap = AccountSnapshot {
-                        pubkey: pk,
-                        owner: expected_owner,
-                        slot,
-                        write_version: 1,
-                        is_startup: true,
-                        provider_id: ProviderId(2),
-                        bank_id: None,
-                        generation: yellowstone.stream_generation(),
-                        data: Arc::new(bytes),
-                    };
-                    yellowstone.account_store().apply(snap);
-                    seeded_count += 1;
+        // Retry with backoff: this bootstraps the ENTIRE run's initial state.
+        // It fires right after the discovery burst, when both free-tier
+        // endpoints are routinely in 429 cooldown (measured soak8: 0/148
+        // seeded, then the whole run sat at 2 graph edges). A blind single
+        // attempt here is a silent total-seed failure.
+        let mut chunk_results = Vec::new();
+        for attempt in 0..3u32 {
+            if attempt > 0 {
+                sleep(Duration::from_secs(5)).await;
+            }
+            chunk_results = futures::future::join_all(keys.chunks(100).map(|chunk| {
+                let rpc = &rpc;
+                let chunk: Vec<Pubkey> = chunk.to_vec();
+                async move {
+                    let refs_owned: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+                    let refs: Vec<&str> = refs_owned.iter().map(|s| s.as_str()).collect();
+                    (chunk, rpc.get_multiple_accounts_with_slot(&refs).await)
                 }
-                Err(e) => {
-                    debug!("seed_initial_accounts: paced fetch for {pk} failed: {e}");
+            }))
+            .await;
+            if chunk_results.iter().any(|(_, r)| r.is_ok()) {
+                break;
+            }
+            warn!(
+                "seed_initial_accounts: attempt {} of 3 failed (all RPC endpoints rate-limited); retrying in 5s",
+                attempt + 1
+            );
+        }
+
+        let expected_owners = self.tracked_accounts.read().clone();
+        for (chunk_pks, chunk_res) in chunk_results {
+            let Ok((accounts, slot)) = chunk_res else {
+                debug!(
+                    "seed_initial_accounts: batch fetch of {} accounts failed: {}",
+                    chunk_pks.len(),
+                    chunk_res.unwrap_err()
+                );
+                continue;
+            };
+            latest_slot = latest_slot.max(slot);
+            for (val, pk) in accounts.into_iter().zip(chunk_pks.iter()) {
+                let Some(acc) = val else { continue };
+                let Some(owner_str) = acc.get("owner").and_then(|o| o.as_str()) else {
+                    continue;
+                };
+                let Ok(onchain_owner) = Pubkey::from_str(owner_str) else {
+                    continue;
+                };
+                // Fail-closed identity check: never seed an account whose
+                // on-chain owner differs from the program we registered it
+                // under (account-substitution defense at bootstrap).
+                match expected_owners.get(pk) {
+                    Some(expected)
+                        if *expected != Pubkey::default() && *expected != onchain_owner =>
+                    {
+                        debug!(
+                            "seed_initial_accounts: owner mismatch for {pk}: expected {expected}, got {onchain_owner}; skipping"
+                        );
+                        continue;
+                    }
+                    _ => {}
                 }
+                let Some(data_arr) = acc.get("data").and_then(|d| d.as_array()) else {
+                    continue;
+                };
+                let Some(raw_b64) = data_arr.first().and_then(|s| s.as_str()) else {
+                    continue;
+                };
+                let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw_b64) else {
+                    continue;
+                };
+                let snap = AccountSnapshot {
+                    pubkey: *pk,
+                    owner: onchain_owner,
+                    slot,
+                    write_version: 1,
+                    is_startup: true,
+                    provider_id: ProviderId(2),
+                    bank_id: None,
+                    generation: yellowstone.stream_generation(),
+                    data: Arc::new(bytes),
+                };
+                yellowstone.account_store().apply(snap);
+                seeded_count += 1;
             }
         }
 
@@ -378,7 +444,13 @@ impl HeliusWsClient {
                 yellowstone.record_helius_slot(latest_slot);
             }
             info!(
-                "Seeded {seeded_count} initial snapshots via paced single-account RPC at slot {latest_slot}"
+                "Seeded {seeded_count}/{} initial snapshots via batched getMultipleAccounts at slot {latest_slot}",
+                keys.len()
+            );
+        } else {
+            warn!(
+                "seed_initial_accounts: 0/{} snapshots seeded (all RPC endpoints failed or rate-limited); pools stay unseeded until WS updates or the ingestion worker hydrates them",
+                keys.len()
             );
         }
     }
@@ -750,24 +822,35 @@ impl HeliusWsClient {
                 let Some(fee_bps) = decode_dlmm_fee_bps(&dlmm) else {
                     return;
                 };
-                let Some((r_in, r_out)) =
-                    compute_dlmm_reserves(&dlmm, bytes, &reg.base_mint.0, &reg.quote_mint.0)
-                else {
-                    return;
-                };
-                if r_in == 0 || r_out == 0 {
-                    return;
+                // Canonical orientation from the on-chain LbPair (token_x
+                // @88..120, token_y @120..152): discovery base/quote comes from
+                // DexScreener and may be inverted, which flips the swap
+                // direction (`a_to_b = pool_base == from_mint`) and produced
+                // 156x phantom quotes on mainnet (see registry.rs).
+                if bytes.len() >= 152 {
+                    let token_x = Pubkey::new_from_array(bytes[88..120].try_into().unwrap());
+                    let token_y = Pubkey::new_from_array(bytes[120..152].try_into().unwrap());
+                    state.base_mint = MintId(token_x);
+                    state.quote_mint = MintId(token_y);
+                    let Some((r_in, r_out)) =
+                        compute_dlmm_reserves(&dlmm, bytes, &token_x, &token_y)
+                    else {
+                        return;
+                    };
+                    if r_in == 0 || r_out == 0 {
+                        return;
+                    }
+                    state.dlmm = Some(dlmm);
+                    state.fee_numerator = u64::from(fee_bps);
+                    state.fee_denominator = 10_000;
+                    state.reserve_in = r_in;
+                    state.reserve_out = r_out;
+                    state.slot = effective_slot;
+                    state.last_update_slot = effective_slot_u64;
+                    state.last_update_ms = now_ms;
+                    state.write_version = next_pool_write_version();
+                    let _ = yellowstone.apply_pool_update(state);
                 }
-                state.dlmm = Some(dlmm);
-                state.fee_numerator = u64::from(fee_bps);
-                state.fee_denominator = 10_000;
-                state.reserve_in = r_in;
-                state.reserve_out = r_out;
-                state.slot = effective_slot;
-                state.last_update_slot = effective_slot_u64;
-                state.last_update_ms = now_ms;
-                state.write_version = next_pool_write_version();
-                let _ = yellowstone.apply_pool_update(state);
             }
             _ => {}
         }

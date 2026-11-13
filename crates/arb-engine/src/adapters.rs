@@ -739,7 +739,7 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
             max_volatility_accumulator: params.max_volatility_accumulator,
             protocol_share: params.protocol_share,
             base_fee_power_factor: params.base_fee_power_factor,
-            collect_fee_mode: 0,
+            collect_fee_mode: params.collect_fee_mode,
         },
         v_parameters: dlmm::DlmmVariableParameters {
             volatility_accumulator: d0.volatility_accumulator,
@@ -1015,6 +1015,114 @@ mod tests {
         };
         // Without params, quoting must refuse (honest).
         assert!(quote_hop(&mut p, 10_000, true).is_err());
+    }
+
+    /// Regression: `quote_dlmm_hop` must forward the ingested on-chain
+    /// `collect_fee_mode` (LbPair byte @36) into the quote engine instead of
+    /// hardcoding `0` (InputOnly).
+    ///
+    /// Discriminator: single bin priced 4x (bin_step=10000 bps, active_id=2),
+    /// 1% base fee (base_factor=100, power=0), input 10^9 X-raw:
+    /// - InputOnly  -> fee charged on input  ~ 10^7 (X raw)
+    /// - OnlyY      -> fee charged on output ~ 4x10^7 (Y raw, = gross_out * 1%)
+    /// `amount_out` is algebraically identical in both modes (fee deduction
+    /// commutes with the per-bin price multiplication); only the fee
+    /// denomination differs. This is why the hardcode never corrupted profit
+    /// gating but did mislabel every OnlyY fee line.
+    fn dlmm_mode_pool(collect_fee_mode: u8) -> PoolState {
+        PoolState {
+            pool_id: PoolId::new([7; 32]),
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(1),
+            write_version: 1,
+            base_mint: MintId(Pubkey::new_from_array([1; 32])),
+            quote_mint: MintId(Pubkey::new_from_array([2; 32])),
+            decimals_a: 6,
+            decimals_b: 9,
+            reserve_in: 0,
+            reserve_out: 0,
+            fee_numerator: 0,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Dlmm,
+            clmm: None,
+            dlmm: Some(arb_types::DlmmState {
+                active_bin_id: 2,
+                status: 0,
+                bin_step_bps: 10_000,
+                bins: vec![arb_types::DlmmBin {
+                    bin_id: 2,
+                    amount_x: 10u128.pow(12),
+                    amount_y: 4 * 10u128.pow(12),
+                }],
+                params: Some(arb_types::DlmmFeeParams {
+                    base_factor: 100,
+                    filter_period: 30,
+                    decay_period: 600,
+                    reduction_factor: 5000,
+                    variable_fee_control: 0,
+                    max_volatility_accumulator: 0,
+                    protocol_share: 0,
+                    base_fee_power_factor: 0,
+                    function_type: 0,
+                    collect_fee_mode,
+                }),
+                volatility_accumulator: 0,
+                volatility_reference: 0,
+                index_reference: 2,
+                last_update_timestamp: 0,
+            }),
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            last_update_slot: 1,
+            last_update_ms: 0,
+        }
+    }
+
+    #[test]
+    fn dlmm_quote_honors_ingested_collect_fee_mode() {
+        let mut input_only = dlmm_mode_pool(0);
+        let mut only_y = dlmm_mode_pool(1);
+
+        let (out_input_only, fee_input_only) = {
+            let q =
+                quote_hop(&mut input_only, 10u64.pow(9), true).expect("InputOnly pool must quote");
+            (q.amount_out, q.fee_paid)
+        };
+        let (out_only_y, fee_only_y) = {
+            let q = quote_hop(&mut only_y, 10u64.pow(9), true).expect("OnlyY pool must quote");
+            (q.amount_out, q.fee_paid)
+        };
+
+        // Fee denomination: OnlyY charges 1% on the gross OUTPUT (4x price)
+        // => ~4x10^7; InputOnly charges 1% on the input => ~10^7.
+        assert!(
+            fee_only_y >= 35_000_000,
+            "OnlyY fee must be output-denominated (~4x10^7), got {fee_only_y}"
+        );
+        assert!(
+            fee_input_only < 20_000_000,
+            "InputOnly fee must be input-denominated (~10^7), got {fee_input_only}"
+        );
+
+        // Net output is identical in both modes up to rounding dust.
+        let diff = out_input_only.abs_diff(out_only_y);
+        assert!(
+            diff <= 1_000,
+            "amount_out must be mode-invariant up to rounding dust: {out_input_only} vs {out_only_y}"
+        );
+    }
+
+    #[test]
+    fn dlmm_quote_rejects_invalid_collect_fee_mode() {
+        let mut p = dlmm_mode_pool(2);
+        assert!(
+            quote_hop(&mut p, 10u64.pow(9), true).is_err(),
+            "invalid on-chain collect_fee_mode must fail closed, not silently quote as InputOnly"
+        );
     }
 
     #[test]
