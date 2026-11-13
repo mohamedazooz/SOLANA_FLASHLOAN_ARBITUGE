@@ -33,7 +33,10 @@ use tracing::{debug, error, info, warn};
 // same type and can access its private state without introducing wrapper indirection.
 mod dispatch;
 mod execution;
+mod opportunity;
+mod recovery;
 mod run;
+mod strategy;
 
 use execution::max_state_age_slots;
 
@@ -58,6 +61,8 @@ struct CachedTemplate {
     blockhash: Vec<u8>,
     tip: u64,
 }
+
+type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
 
 pub struct Supervisor {
     mode: Arc<std::sync::atomic::AtomicU8>,
@@ -97,7 +102,7 @@ pub struct Supervisor {
     /// Short-TTL recent-blockhash cache. A blockhash is valid for ~60-90s, so
     /// reusing one for a few seconds removes an RPC round-trip from the send
     /// path without risking an expired hash.
-    blockhash_cache: parking_lot::Mutex<Option<([u8; 32], Instant)>>,
+    blockhash_cache: parking_lot::Mutex<Option<CachedBlockhash>>,
     /// Tip paid per `(slot, route)`: a retry inside the same window may not
     /// jump past `ladder_growth × previous`, and a new window starts clean.
     previous_tips: parking_lot::Mutex<std::collections::HashMap<(u64, u32), Lamports>>,
@@ -452,7 +457,34 @@ impl Supervisor {
             pools_tracked: self.ingest.snapshot().pool_count(),
             stream_connected: self.ingest.stream_connected(),
             helius_connected: self.ingest.helius_connected(),
+            route_coverage: self.route_coverage(),
         });
+    }
+
+    /// Per-protocol route coverage for the route monitor: one cheap pass over
+    /// the registry (protocol + fee_bps only, no PoolState clones).
+    fn route_coverage(&self) -> Vec<crate::control_service::ProtocolCoverage> {
+        use std::collections::BTreeMap;
+        let registry = self.registry.read();
+        let mut acc: BTreeMap<&'static str, (usize, u64)> = BTreeMap::new();
+        for p in registry.pools() {
+            let entry = acc.entry(p.protocol.as_str()).or_default();
+            entry.0 += 1;
+            entry.1 += u64::from(p.fee_bps);
+        }
+        acc.into_iter()
+            .map(
+                |(protocol, (pools, fee_sum))| crate::control_service::ProtocolCoverage {
+                    protocol: protocol.to_string(),
+                    pools,
+                    avg_fee_bps: if pools > 0 {
+                        fee_sum as f64 / pools as f64
+                    } else {
+                        0.0
+                    },
+                },
+            )
+            .collect()
     }
 
     /// Fold one accepted block-engine round trip into the latency model.

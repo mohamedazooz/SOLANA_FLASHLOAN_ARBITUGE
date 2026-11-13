@@ -470,7 +470,29 @@ pub fn calculate_net_profit_raw(
 /// Fails closed rather than returning a plausible-looking number:
 /// * `sf == u64::MAX` — klend's "flash loans disabled" sentinel.
 /// * `fee_bits >= amount << 60` — klend rejects with `BorrowTooSmall`.
-pub fn calculate_flash_fee_raw(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
+///
+/// Precise failure modes of the klend flash-loan fee formula. Canonical
+/// definition lives here (arb-math is the leaf math crate); `arb-tx`
+/// re-exports it so the transaction layer and this crate share one type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum KaminoFeeError {
+    /// `flash_loan_fee_sf == u64::MAX` — klend's sentinel for a reserve whose
+    /// flash loans are disabled.
+    #[error("flash loans are disabled on this reserve (flash_loan_fee_sf == u64::MAX)")]
+    FlashLoanDisabled,
+    /// klend reverts with `LendingError::BorrowTooSmall` when the origination
+    /// fee (after the 1-unit floor) is `>=` the principal.
+    #[error("borrow amount too small: origination fee >= principal (klend BorrowTooSmall)")]
+    BorrowTooSmall,
+    /// The fee does not fit `u64`.
+    #[error("flash-loan fee computation overflowed")]
+    Overflow,
+}
+
+/// Canonical klend flash-loan fee WITHOUT the `BorrowTooSmall` guard: the raw
+/// `FeeCalculation::Exclusive` formula only. `arb-tx`'s infallible helper maps
+/// every error to `u64::MAX` (fail closed) on top of this.
+pub fn kamino_flash_fee_unchecked(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
     if fee_sf == u64::MAX {
         return Err(ArbError::InvalidInput(
             "kamino flash loans disabled (flash_loan_fee_sf == u64::MAX)".to_string(),
@@ -479,20 +501,56 @@ pub fn calculate_flash_fee_raw(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
     if borrow_amount == 0 || fee_sf == 0 {
         return Ok(0);
     }
-    // klend Fraction: 60 fractional bits.
+    let fee = kamino_fee_bits(borrow_amount, fee_sf);
+    u64::try_from(fee).map_err(|_| ArbError::Overflow)
+}
+
+/// Canonical klend flash-loan fee with all on-chain failure modes surfaced:
+/// `kamino_flash_fee_unchecked` plus the klend `BorrowTooSmall` guard.
+pub fn kamino_flash_fee_checked(
+    borrow_amount: u64,
+    fee_sf: u64,
+) -> std::result::Result<u64, KaminoFeeError> {
+    if fee_sf == u64::MAX {
+        return Err(KaminoFeeError::FlashLoanDisabled);
+    }
+    if borrow_amount == 0 || fee_sf == 0 {
+        return Ok(0);
+    }
     let one_bits = U256::from(1u128) << 60;
     let amount_bits = U256::from(borrow_amount) << 60;
     let product = U256::from(borrow_amount) * U256::from(fee_sf);
     let fee_bits = product.max(one_bits);
     if fee_bits >= amount_bits {
-        return Err(ArbError::InvalidInput(
-            "kamino flash loan borrow too small: origination fee >= principal".to_string(),
-        ));
+        return Err(KaminoFeeError::BorrowTooSmall);
     }
-    // round to nearest, ties away from zero == (fee_bits + 2^59) >> 60.
     let half = U256::from(1u128) << 59;
     let rounded = (fee_bits + half) >> 60;
-    u64::try_from(rounded).map_err(|_| ArbError::Overflow)
+    u64::try_from(rounded).map_err(|_| KaminoFeeError::Overflow)
+}
+
+/// Exact un-rounded klend fee: `max(borrow * sf / 2^60, 1.0)` in U68F60,
+/// rounded to the nearest integer (ties away from zero). Wide-integer math
+/// (U256) so the product can never overflow.
+fn kamino_fee_bits(borrow_amount: u64, fee_sf: u64) -> U256 {
+    let one_bits = U256::from(1u128) << 60;
+    let product = U256::from(borrow_amount) * U256::from(fee_sf);
+    let fee_bits = product.max(one_bits);
+    // round to nearest, ties away from zero == (fee_bits + 2^59) >> 60.
+    let half = U256::from(1u128) << 59;
+    (fee_bits + half) >> 60
+}
+
+pub fn calculate_flash_fee_raw(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
+    kamino_flash_fee_checked(borrow_amount, fee_sf).map_err(|e| match e {
+        KaminoFeeError::FlashLoanDisabled => ArbError::InvalidInput(
+            "kamino flash loans disabled (flash_loan_fee_sf == u64::MAX)".to_string(),
+        ),
+        KaminoFeeError::BorrowTooSmall => ArbError::InvalidInput(
+            "kamino flash loan borrow too small: origination fee >= principal".to_string(),
+        ),
+        KaminoFeeError::Overflow => ArbError::Overflow,
+    })
 }
 
 #[cfg(test)]

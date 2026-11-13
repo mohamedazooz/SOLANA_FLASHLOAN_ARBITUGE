@@ -2,7 +2,6 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-exclude = ["webhook-service", "solami-probe", "helius-probe"]
 
 [workspace.package]
 edition = "2024"

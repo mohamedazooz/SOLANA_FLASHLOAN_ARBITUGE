@@ -13,9 +13,11 @@
 //! - No private keys or signing secrets are ever exposed to the browser.
 
 use crate::control_service::{ConfigOverrides, ControlService, execute_command};
+use axum::extract::DefaultBodyLimit;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::middleware;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::{Json as AxumJson, Router};
@@ -33,6 +35,11 @@ const MAX_SESSIONS: usize = 64;
 const DEFAULT_SESSION_TTL_SECS: u64 = 3_600;
 const LOGIN_RATE_LIMIT_PER_MIN: u32 = 10;
 const MUTATION_RATE_LIMIT_PER_MIN: u32 = 60;
+/// Single-use WebSocket tickets: short-lived, consumed on first use, so the
+/// long-lived session token never has to appear in a URL (which browsers
+/// require for the WS handshake and which proxy/access logs would retain).
+const WS_TICKET_TTL_SECS: u64 = 60;
+const MAX_WS_TICKETS: usize = 64;
 
 struct Session {
     expires: Instant,
@@ -46,6 +53,7 @@ pub struct WebState {
     session_ttl: Duration,
     login_hits: Arc<Mutex<HashMap<std::net::IpAddr, (Instant, u32)>>>,
     mutation_hits: Arc<Mutex<HashMap<std::net::IpAddr, (Instant, u32)>>>,
+    ws_tickets: Arc<Mutex<HashMap<[u8; 32], Instant>>>,
     ws_clients: Arc<AtomicU64>,
 }
 
@@ -94,8 +102,38 @@ impl WebState {
             session_ttl: Duration::from_secs(ttl),
             login_hits: Arc::new(Mutex::new(HashMap::new())),
             mutation_hits: Arc::new(Mutex::new(HashMap::new())),
+            ws_tickets: Arc::new(Mutex::new(HashMap::new())),
             ws_clients: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Issue a single-use, 60-second WebSocket upgrade ticket. Only callable
+    /// from an authorized session; the ticket hash is stored, the raw value is
+    /// returned once, and the entry is consumed at first use.
+    fn issue_ws_ticket(&self) -> (String, u64) {
+        let mut raw = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut raw);
+        let ticket_hex = hex::encode(raw);
+        let hash = sha256(ticket_hex.as_bytes());
+        let expires = Instant::now() + Duration::from_secs(WS_TICKET_TTL_SECS);
+        let mut tickets = self.ws_tickets.lock();
+        tickets.retain(|_, exp| *exp > Instant::now());
+        if tickets.len() >= MAX_WS_TICKETS {
+            tickets.clear();
+        }
+        tickets.insert(hash, expires);
+        (ticket_hex, now_unix() + WS_TICKET_TTL_SECS)
+    }
+
+    /// Consume a single-use WebSocket ticket. Returns false for unknown,
+    /// expired, or already-used tickets (single-use by removal).
+    fn consume_ws_ticket(&self, ticket: &str) -> bool {
+        let hash = sha256(ticket.trim().as_bytes());
+        let mut tickets = self.ws_tickets.lock();
+        match tickets.remove(&hash) {
+            Some(expires) => expires > Instant::now(),
+            None => false,
+        }
     }
 
     fn rate_ok(
@@ -170,13 +208,14 @@ impl WebState {
 }
 
 /// Client identity for rate limiting. The API binds localhost; remote clients
-/// arrive through the reverse proxy which sets `X-Forwarded-For`. Requests
-/// without the header are treated as local.
+/// arrive through the reverse proxy which APPENDS to `X-Forwarded-For`. The
+/// right-most entry is the one added by the trusted proxy; earlier entries are
+/// client-controlled and spoofable, so they must never be trusted.
 fn ip_of(headers: &HeaderMap) -> std::net::IpAddr {
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
+        .and_then(|v| v.split(',').next_back())
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or_else(|| std::net::IpAddr::from([127, 0, 0, 1]))
 }
@@ -250,6 +289,13 @@ async fn providers(State(state): State<WebState>, headers: HeaderMap) -> Respons
         return resp;
     }
     Json(state.control.providers()).into_response()
+}
+
+async fn routes(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = authed(&state, &headers) {
+        return resp;
+    }
+    Json(state.control.route_coverage()).into_response()
 }
 
 async fn config_get(State(state): State<WebState>, headers: HeaderMap) -> Response {
@@ -352,34 +398,42 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Response {
     Json(json!({"ok": true})).into_response()
 }
 
+/// Issue a single-use WebSocket upgrade ticket for an authorized session so
+/// the long-lived session token never appears in a URL.
+async fn ws_ticket(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = authed(&state, &headers) {
+        return resp;
+    }
+    let (ticket, expires_at_unix) = state.issue_ws_ticket();
+    Json(json!({"ticket": ticket, "expires_at_unix": expires_at_unix})).into_response()
+}
+
 /// WebSocket event stream. Authentication happens once at upgrade time via
-/// the `Authorization` header; after upgrade the socket is receive-only for
-/// the client (server pushes events).
+/// the `Authorization` header, or — because browsers cannot set custom headers
+/// on WebSocket handshakes — via a single-use `?ticket=` issued by
+/// `/api/ws-ticket`. After upgrade the socket is receive-only for the client
+/// (server pushes events).
 async fn ws_events(
     State(state): State<WebState>,
     headers: HeaderMap,
     RawQuery(query): RawQuery,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    // Browsers cannot set custom headers on WebSocket handshakes, so the
-    // session token is accepted from `?token=` as well as the header.
-    let query_token = query.as_deref().and_then(|q| {
-        q.split('&').find_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            (k == "token").then(|| v.to_string())
+    let query_param = |name: &str| {
+        query.as_deref().and_then(|q| {
+            q.split('&').find_map(|pair| {
+                let (k, v) = pair.split_once('=')?;
+                (k == name).then(|| v.to_string())
+            })
         })
-    });
-    let query_ok = query_token
-        .map(|token| {
-            let hash = sha256(token.as_bytes());
-            let sessions = state.sessions.lock();
-            sessions
-                .get(&hash)
-                .map(|s| s.expires > Instant::now())
-                .unwrap_or(false)
-        })
+    };
+    // Single-use ticket only: a long-lived session token must never appear
+    // in a URL (proxy/access-log retention). Browsers authenticate with
+    // `?ticket=` issued by the authed `POST /api/ws-ticket`.
+    let ticket_ok = query_param("ticket")
+        .map(|t| state.consume_ws_ticket(&t))
         .unwrap_or(false);
-    if state.authorize(&headers).is_err() && !query_ok {
+    if state.authorize(&headers).is_err() && !ticket_ok {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "unauthorized"})),
@@ -450,12 +504,31 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/logs", get(logs))
         .route("/api/pnl", get(pnl))
         .route("/api/providers", get(providers))
+        .route("/api/routes", get(routes))
         .route("/api/config", get(config_get).post(config_post))
         .route("/api/control/{action}", post(control_post))
+        .route("/api/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(ws_events))
         .route("/", get(index))
         .route("/health", get(health))
+        .layer(middleware::from_fn(security_headers))
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state))
+}
+
+/// Baseline security headers on every response (OWASP secure-headers baseline).
+/// TLS termination happens at the reverse proxy; these apply at any origin.
+async fn security_headers(req: axum::extract::Request, next: middleware::Next) -> Response {
+    let mut res = next.run(req).await;
+    let headers = res.headers_mut();
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    headers.insert("cache-control", HeaderValue::from_static("no-store"));
+    res
 }
 
 /// Spawns the web server bound to `bind_addr` (default `127.0.0.1:8080`).
@@ -658,11 +731,23 @@ mod tests {
         let status = resp.json::<Value>().await.unwrap();
         assert_eq!(status["mode"], "shadow");
 
-        // Raw WS upgrade: browsers authenticate with ?token=.
+        // Raw WS upgrade: browsers authenticate with a single-use ticket
+        // (a long-lived token must never appear in a URL).
+        let resp = client
+            .post(format!("{base}/api/ws-ticket"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ticket = resp.json::<Value>().await.unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         let key = "dGhlIHNhbXBsZSBub25jZQ=="; // RFC 6455 sample key
         let req = format!(
-            "GET /api/ws?token={token} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            "GET /api/ws?ticket={ticket} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
         );
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         stream.write_all(req.as_bytes()).await.unwrap();
@@ -673,6 +758,27 @@ mod tests {
             head.starts_with("HTTP/1.1 101"),
             "expected 101 switching protocols, got: {head}"
         );
+
+        unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
+    }
+
+    #[tokio::test]
+    async fn ws_ticket_is_single_use_and_unknown_tickets_fail() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let state = test_state();
+
+        let (ticket, expires_at) = state.issue_ws_ticket();
+        assert!(expires_at > now_unix());
+        assert!(
+            state.consume_ws_ticket(&ticket),
+            "fresh ticket must upgrade"
+        );
+        assert!(
+            !state.consume_ws_ticket(&ticket),
+            "a consumed ticket must be rejected (single-use)"
+        );
+        assert!(!state.consume_ws_ticket("not-a-ticket"));
 
         unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
     }

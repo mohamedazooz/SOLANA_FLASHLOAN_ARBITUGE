@@ -82,6 +82,7 @@ pub struct StatusSnapshot {
     pub net_pnl_sol: f64,
     pub started_at_unix: u64,
     pub uptime_secs: u64,
+    pub route_coverage: Vec<ProtocolCoverage>,
 }
 
 struct ControlInner {
@@ -104,6 +105,16 @@ struct ControlInner {
     overrides: Mutex<ConfigOverrides>,
 }
 
+/// Per-protocol route coverage published by the supervisor for the unified
+/// route monitor (web section J / Telegram companion). Fees are the registry's
+/// per-pool swap fee in basis points, averaged over that protocol's pools.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProtocolCoverage {
+    pub protocol: String,
+    pub pools: usize,
+    pub avg_fee_bps: f64,
+}
+
 /// Read-only view of supervisor state, refreshed by the supervisor loop.
 /// Stored as data (not closures) so the control service never locks the
 /// supervisor itself.
@@ -113,6 +124,7 @@ pub struct ControlDeps {
     pub pools_tracked: usize,
     pub stream_connected: bool,
     pub helius_connected: bool,
+    pub route_coverage: Vec<ProtocolCoverage>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,13 +265,18 @@ impl ControlService {
         });
         let line = entry.to_string();
         // Audit writes never block control decisions on failure: the append is
-        // best-effort but every attempt is logged.
-        if let Err(err) = std::fs::OpenOptions::new()
+        // best-effort but every attempt is logged. sync_data() flushes the
+        // entry to disk so a crash cannot silently drop the audit trail for
+        // safety-relevant actions (emergency stop, live confirmation).
+        let result = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.inner.audit_path)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()))
-        {
+            .and_then(|mut f| {
+                std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes())
+                    .and_then(|()| f.sync_data())
+            });
+        if let Err(err) = result {
             tracing::warn!("audit log append failed for {action}: {err}");
         }
     }
@@ -291,7 +308,13 @@ impl ControlService {
             net_pnl_sol,
             started_at_unix: now_unix().saturating_sub(self.inner.started_at.elapsed().as_secs()),
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
+            route_coverage: deps.route_coverage,
         }
+    }
+
+    /// Per-protocol route coverage for the dedicated route monitor endpoint.
+    pub fn route_coverage(&self) -> Vec<ProtocolCoverage> {
+        self.inner.state.lock().route_coverage.clone()
     }
 
     pub fn opportunities(&self, limit: usize) -> Vec<OpportunityRecord> {
@@ -362,6 +385,12 @@ impl ControlService {
     /// Audit entry for actions taken by attached interfaces (web/Telegram).
     pub fn audit_action(&self, action: &str, detail: &str) {
         self.audit(action, detail);
+    }
+
+    /// Live emergency-latch state, consumed by the dispatch fire-time gate so
+    /// an emergency stop blocks in-flight submissions, not just new captures.
+    pub fn is_emergency_stopped(&self) -> bool {
+        self.inner.emergency_stopped.load(Ordering::Acquire)
     }
 
     pub fn current_mode(&self) -> BotMode {

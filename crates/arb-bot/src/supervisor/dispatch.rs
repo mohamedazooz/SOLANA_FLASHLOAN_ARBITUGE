@@ -14,6 +14,9 @@ pub(super) struct DispatchContext<'a> {
     pub profit_sol: f64,
     pub live_sol_price: f64,
     pub blockhash_b58: &'a str,
+    /// `lastValidBlockHeight` of this blockhash, persisted with the dispatch
+    /// intent so recovery can prove expiration with block-height evidence.
+    pub last_valid_block_height: Option<i64>,
     pub cu_limit: u32,
     pub cu_price: u64,
     pub tx_bytes: &'a Vec<u8>,
@@ -55,6 +58,7 @@ impl Supervisor {
             profit_sol,
             live_sol_price,
             blockhash_b58,
+            last_valid_block_height,
             cu_limit,
             cu_price,
             tx_bytes,
@@ -446,6 +450,26 @@ impl Supervisor {
                     tokio::time::sleep(wait).await;
                 }
 
+                // Final fire-time safety gate: the kill switch / emergency
+                // latch must block in-flight submissions too, not just new
+                // captures — a stop issued during simulation must win.
+                if self.risk_gate.kill_switch().is_blocked()
+                    || self.control().is_some_and(|c| c.is_emergency_stopped())
+                {
+                    warn!(route = %route_label, "Execution aborted by fire-time kill switch / emergency stop");
+                    let _ = self
+                        .store
+                        .record_outcome(record.id, "aborted_kill_switch", None);
+                    self.telegram
+                        .alert_execution_failed(
+                            "risk-gate",
+                            "kill switch / emergency stop active at fire time; transaction not sent",
+                            route_label,
+                        )
+                        .await;
+                    return;
+                }
+
                 // Final fire-time state guard: simulation and the optional
                 // slot-window wait may have outlived the stream generation.
                 // Re-check immediately before any network submission.
@@ -474,6 +498,56 @@ impl Supervisor {
                             "Final Stream Readiness",
                             &reason_msg,
                             current_slot.0,
+                        )
+                        .await;
+                    return;
+                }
+
+                // R12, fail-closed: persist the dispatch intent (signature +
+                // transport + slot) BEFORE the send so a crash/ambiguous
+                // timeout is reconcilable by signature instead of a blind
+                // resubmit. A transaction whose signature cannot be extracted,
+                // or whose intent cannot be durably persisted, MUST NOT be
+                // dispatched — it would be unrecoverable after a crash.
+                let Some(pre_sig) = arb_tx::extract_transaction_signature(tx_bytes) else {
+                    error!(
+                        attempt_id = record.id,
+                        route = %route_label,
+                        "dispatch aborted: transaction signature not extractable (unreconcilable)"
+                    );
+                    let _ = self.store.record_outcome(
+                        record.id,
+                        "dispatch_aborted_unreconcilable",
+                        None,
+                    );
+                    return;
+                };
+                let provider = if is_swqos_route { "swqos" } else { "jito" };
+                if let Err(err) =
+                    self.store
+                        .record_dispatch_intent(&arb_store::DispatchIntentRecord {
+                            attempt_id: record.id,
+                            signature: pre_sig.clone(),
+                            provider: provider.to_string(),
+                            dispatch_slot: current_slot.0 as i64,
+                            last_valid_block_height,
+                            resolved_status: None,
+                        })
+                {
+                    error!(
+                        ?err,
+                        attempt_id = record.id,
+                        route = %route_label,
+                        "dispatch aborted: durable intent persistence failed — refusing to send an unrecoverable transaction"
+                    );
+                    let _ =
+                        self.store
+                            .record_outcome(record.id, "dispatch_aborted_unpersisted", None);
+                    self.telegram
+                        .alert_execution_failed(
+                            "dispatch-intent-persistence",
+                            "dispatch intent could not be persisted; transaction not sent",
+                            route_label,
                         )
                         .await;
                     return;
@@ -664,6 +738,7 @@ impl Supervisor {
                                         "landed",
                                         Some(net_profit_val),
                                     );
+                                    let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {
                                         js.record(
                                             r,
@@ -717,6 +792,13 @@ impl Supervisor {
                                 arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
                                     warn!("⚠️ Execution {:?} in block: {}", status, b_id);
                                     let _ = store.record_outcome(rec_id, "dropped", None);
+                                    let _ = store.resolve_dispatch_intent(
+                                        rec_id,
+                                        match status {
+                                            arb_land::LandStatus::Dropped => "dropped",
+                                            _ => "expired",
+                                        },
+                                    );
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
@@ -748,6 +830,7 @@ impl Supervisor {
                                 arb_land::LandStatus::Failed => {
                                     warn!("⚠️ Execution reverted on-chain: {}", b_id);
                                     let _ = store.record_outcome(rec_id, "failed", None);
+                                    let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
@@ -795,6 +878,7 @@ impl Supervisor {
                             .alert_execution_failed("dispatch", &e.to_string(), route_label)
                             .await;
                         let _ = self.store.record_outcome(record.id, "failed", None);
+                        let _ = self.store.resolve_dispatch_intent(record.id, "send_failed");
                         // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
                     }
                 }

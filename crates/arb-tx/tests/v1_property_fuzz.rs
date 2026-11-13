@@ -653,6 +653,20 @@ proptest! {
             "infallible fee must agree with the checked fee on non-disabled reserves");
     }
 
+    // Single-source-of-truth guard: the arb-tx checked API and the arb-math
+    // canonical implementation (via its ArbError-mapped wrapper) must agree
+    // exactly on every input.
+    #[test]
+    fn kamino_fee_single_source_agreement(amount in any::<u64>(), fee_sf in any::<u64>()) {
+        let via_tx = calculate_kamino_flash_fee_checked(amount, fee_sf);
+        let via_math = arb_math::economic::calculate_flash_fee_raw(amount, fee_sf);
+        match (via_tx, via_math) {
+            (Ok(a), Ok(b)) => prop_assert_eq!(a, b),
+            (Err(_), Err(_)) => {}
+            (a, b) => prop_assert!(false, "divergence: tx={a:?} math={b:?}"),
+        }
+    }
+
     #[test]
     fn kamino_fee_monotonic_in_amount(fee_sf in any::<u64>(), a in any::<u64>(), b in any::<u64>()) {
         let (small, large) = if a <= b { (a, b) } else { (b, a) };

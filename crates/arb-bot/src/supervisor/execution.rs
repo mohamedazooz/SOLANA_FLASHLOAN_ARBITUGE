@@ -99,40 +99,44 @@ impl Supervisor {
         }
     }
 
-    pub(super) async fn fetch_recent_blockhash(&self) -> [u8; 32] {
+    /// Returns the blockhash plus its `lastValidBlockHeight` (recovery
+    /// evidence for expiration; `None` only if the RPC omits it).
+    pub(super) async fn fetch_recent_blockhash(&self) -> ([u8; 32], Option<i64>) {
         // Reuse a fresh cached hash: a blockhash stays valid for ~60-90s, so a
         // few seconds of reuse removes an RPC round-trip from the send path
         // without risking an expired hash.
         {
             let cache = self.blockhash_cache.lock();
-            if let Some((bh, at)) = *cache
+            if let Some((bh, at, lvbh)) = *cache
                 && at.elapsed() < std::time::Duration::from_secs(3)
             {
-                return bh;
+                return (bh, lvbh);
             }
         }
         let req_params = serde_json::json!([{"commitment": "confirmed"}]);
         if let Ok(val) = self.rpc_pool.call("getLatestBlockhash", req_params).await {
-            let bh_str = val
+            let value = val
                 .get("value")
+                .cloned()
+                .or_else(|| val.get("result").and_then(|r| r.get("value")).cloned());
+            let bh_str = value
+                .as_ref()
                 .and_then(|v| v.get("blockhash"))
-                .and_then(|b| b.as_str())
-                .or_else(|| {
-                    val.get("result")
-                        .and_then(|r| r.get("value"))
-                        .and_then(|v| v.get("blockhash"))
-                        .and_then(|b| b.as_str())
-                });
+                .and_then(|b| b.as_str());
+            let lvbh = value
+                .as_ref()
+                .and_then(|v| v.get("lastValidBlockHeight"))
+                .and_then(|h| h.as_i64());
 
             if let Some(bh) = bh_str
                 && let Ok(bytes) = bs58::decode(bh).into_vec()
                 && let Ok(arr) = bytes.try_into()
             {
-                *self.blockhash_cache.lock() = Some((arr, Instant::now()));
-                return arr;
+                *self.blockhash_cache.lock() = Some((arr, Instant::now(), lvbh));
+                return (arr, lvbh);
             }
         }
-        [0u8; 32]
+        ([0u8; 32], None)
     }
 
     /// Latest live SOL/USD mid from the tracked SOL-USDC pools, or `None` when

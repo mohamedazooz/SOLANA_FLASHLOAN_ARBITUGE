@@ -1,6 +1,6 @@
 // API client for the arb-bot web backend. The session token lives in
-// sessionStorage (cleared on tab close); it is sent as a Bearer header and as
-// `?token=` for the WebSocket handshake.
+// sessionStorage (cleared on tab close) and is sent as a Bearer header;
+// WebSocket upgrades authenticate with a single-use short-lived ticket.
 
 const TOKEN_KEY = "arb_session_token";
 
@@ -84,6 +84,12 @@ export interface LogRecord {
   message: string;
 }
 
+export interface ProtocolCoverage {
+  protocol: string;
+  pools: number;
+  avg_fee_bps: number;
+}
+
 export const api = {
   login: (password: string) =>
     request<{ token: string; expires_at_unix: number }>("/api/login", {
@@ -97,6 +103,7 @@ export const api = {
   logs: () => request<LogRecord[]>("/api/logs"),
   pnl: () => request<Record<string, unknown>>("/api/pnl"),
   providers: () => request<Record<string, unknown>>("/api/providers"),
+  routes: () => request<ProtocolCoverage[]>("/api/routes"),
   config: () => request<Record<string, unknown>>("/api/config"),
   updateConfig: (overrides: Record<string, unknown>) =>
     request<{ ok: boolean }>("/api/config", {
@@ -108,10 +115,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(confirm ? { confirm } : {}),
     }),
-  wsUrl: () => {
-    const token = getToken() ?? "";
+  wsTicket: () =>
+    request<{ ticket: string; expires_at_unix: number }>("/api/ws-ticket", {
+      method: "POST",
+    }),
+  wsUrl: async () => {
+    // Single-use ticket: the long-lived session token never appears in a URL.
+    const { ticket } = await api.wsTicket();
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}`;
+    return `${proto}://${location.host}/api/ws?ticket=${encodeURIComponent(ticket)}`;
   },
 };
 

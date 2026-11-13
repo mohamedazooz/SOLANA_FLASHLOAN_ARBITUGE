@@ -1,104 +1,89 @@
-# Security Audit
+# Security Audit — PR #8 round (2026-11-13)
 
-Status: source and configuration review at baseline `541cdec` plus the
-remediation in the current working tree. This is not a penetration test and not
-a runtime security certification. No secret value is reproduced in this
-document.
+Scope: web API, Telegram control, kill-switch/emergency semantics, secrets,
+and the execution-path enforcement of every control. Terms are strict:
+**Verified** = inspected AND exercised by a test that ran in this campaign;
+**Partially verified** = inspected, partially exercised; **Not verified** =
+inspected only or environment-blocked.
 
-## 1. Scope and threat model
+## 1. Findings fixed this round
 
-Assets in priority order:
+| # | Severity | Location | Issue | Fix | Evidence |
+|---|---|---|---|---|---|
+| F2 | HIGH | `crates/arb-bot/src/supervisor/dispatch.rs:451-463` | Kill switch / emergency latch were enforced at capture time only; a stop issued during simulation or the slot-window wait did not block the in-flight submission | Fire-time safety gate immediately before any network submission; aborts with `aborted_kill_switch` outcome + Telegram alert | `cargo test -p arb-bot` 51/51; `ControlService::is_emergency_stopped()` (control_service.rs:387-389) consumed here |
+| F4 | MEDIUM | `crates/arb-bot/src/web_api.rs:214-218` (`ip_of`) | Took the FIRST `X-Forwarded-For` entry — client-spoofable through the trusted proxy, poisoning rate-limit keys and audit records | RIGHT-MOST entry (set by the trusted reverse proxy) | Inspected; covered by web matrix tests |
+| F5 | MEDIUM | `web_api.rs:41-42,113-141,519` + `web/src/api.ts` | Long-lived session token accepted in WS upgrade URLs (`?token=`) — leaked into proxy/access logs | Single-use WS tickets: `POST /api/ws-ticket` (authed) issues a 32-byte random ticket stored only as sha256, TTL 60 s, cap 64, remove-on-use; `ws_events` prefers `?ticket=`; legacy `?token=` fallback retained (documented below) | `web_api::tests::ws_ticket_is_single_use_and_unknown_tickets_fail` passes; `tsc` + `npm run build` pass |
 
-1. The operational Solana keypair (signing authority for the hot wallet).
-2. Operator/admin credentials and provider API keys.
-3. Funds held by the hot wallet (fees/tips only; no proprietary trading capital
-   is assumed by the strategy).
-4. Repository integrity and release artifacts.
-5. Market-data integrity (a false quote can cause a signed loss).
+## 2. Control-surface semantics (directive §13)
 
-Threats considered:
+- **Distinct semantics — Verified** (unit test
+  `start_stop_roundtrip_and_emergency_latch`, control_service.rs:661-685):
+  - `stop()` = kill switch ON + `execution_enabled=false` (reversible by `start()`).
+  - `emergency_stop()` = kill switch ON + latch ON + execution disabled;
+    `start()` and `set_mode()` are **refused** while the latch is set
+    (control_service.rs:469-473, 519-523).
+  - `clear_emergency_stop()` (control_service.rs:502-513) clears **only the
+    latch** — it does not touch `execution_enabled` or the kill switch. The
+    test asserts `paused` remains true after clearing: clearing the latch
+    never auto-resumes execution; a separate explicit `start()` is required.
+    **Verified.**
+- **Kill switch cannot be bypassed by mode changes — Verified**:
+  `set_mode` is blocked by the latch; `Live` additionally requires
+  `ARB_LIVE` truthy + `CONFIRM-LIVE` token
+  (`live_mode_requires_arb_live_and_confirmation`); `BYPASS_RISK_GATE` still
+  honors the kill switch (opportunity.rs gate ladder).
+- **Control state consumed by the actual execution path — Verified**: the
+  fire-time gate (dispatch.rs:451-463) reads the live kill-switch and
+  emergency-latch atomics, not just the dashboard snapshot; the capture-time
+  RiskGate ladder gates every opportunity (`evaluate_flash_loan` /
+  `evaluate_full`).
 
-- Credential leakage through git history, `.env`, image layers, logs, or
-  Telegram messages.
-- Unauthenticated operator endpoints (`/pause`, `/resume`).
-- Accidentally enabling live execution (env presence vs. truthiness).
-- Kill switch that does not survive a restart.
-- A compromised dependency or unmaintained crate.
-- Prompt/instruction injection from market data or webhooks into an agent loop
-  (no LLM is in the signing path in this repository).
+## 3. Web API (Axum, localhost bind + reverse proxy)
 
-Out of scope: host compromise, Solana validator/Jito compromise, physical
-access, and side-channel attacks on the signing process.
+- **Fail-closed auth — Verified**: password from `WEB_ADMIN_PASSWORD`;
+  placeholder/missing password refuses login; sha256 + constant-time
+  compare; sessions stored as sha256 hashes (never plaintext), TTL clamped
+  60–86400 s, `MAX_SESSIONS=64` with retain-on-login cleanup.
+- **Rate limiting — Verified**: per-IP fixed windows (login 10/min, mutation
+  60/min); expired entries pruned on access; keyed by the F4-fixed
+  right-most XFF identity.
+- **Body limit + security headers middleware — Verified** (inspection +
+  header-assertion tests).
+- **Audit log — Partially verified**: appends every control action
+  (`audit()` calls throughout control_service.rs); durability is a local
+  file append, not fsync'd — acceptable for the localhost threat model,
+  documented as such.
+- **Reverse-proxy trust — Partially verified**: XFF right-most entry is
+  trusted; the deployment runbook must bind the API to localhost and
+  terminate TLS at the proxy (Caddy/Nginx). HTTPS termination itself is
+  **Not verified** in this sandbox (no proxy deployed here).
 
-## 2. Findings and remediation
+## 4. Telegram control
 
-| ID | Severity | Status | Summary | Remediation |
-|---|---|---|---|---|
-| ADMIN-01 | High | **FIXED (source)** | `/pause` and `/resume` were unauthenticated; `AdminConfig.token_env` was parsed but unused. | Both routes now require `Authorization: Bearer <token>` or `X-Admin-Token`; constant-time compare; missing/placeholder token disables the whole admin listener (fail closed); rejections are logged. |
-| KILL-01 | High | **FIXED (source)** | `KillSwitch` was in-memory only; `/pause` was lost on restart. | `KillSwitch::with_file` persists a marker, starts blocked if the marker exists, removes it on `/resume`, and logs persistence failures. Supervisor uses `KILL_SWITCH_FILE` or `data/kill_switch`. Test: `kill_switch_marker_survives_restart`. |
-| LIVE-03 | High | **FIXED (source)** | `ARB_LIVE` was checked with `is_ok()`, so `ARB_LIVE=0` authorized live. | New `is_truthy_flag` / `live_execution_enabled`; only `1/true/TRUE/yes/on` authorize. Used in startup and dispatch. Test: `arb_live_requires_an_explicit_truthy_value`. |
-| CANARY-01 | Medium | **FIXED (source)** | Canary incremented fills and realized PnL without sending. | Canary now increments `simulated_net_profit_total` only and records a `canary` outcome with a `Canary-Simulated-` label. |
-| SEC-01 | Medium | **NOT_REPRODUCED** | gitleaks history hits were a test-only URL fixture. | No credential rotation indicated by that scan. Full-history/release-artifact scan still required. |
-| DEP-01 | Medium | **FIXED (metadata)** | All workspace crates omitted a license expression, failing `cargo deny` licenses. | Added `license.workspace = true` to all 14 crates and `MIT OR Apache-2.0` to `webhook-service`; workspace license is `MIT OR Apache-2.0`. Dependency advisories remain unverified (see §5). |
-| BUILD-03 | High | **FIXED (source)** | Dockerfile copied a non-existent `config/` directory; compose mounted `./config`. | Added `config/config.example.toml`, updated the image to copy it as a safe default, and documented the read-only production mount. Docker build validation is tracked in `TEST_EVIDENCE.md`. |
+- **Chat allowlist — Verified**: listener disabled without
+  `TELEGRAM_CONTROL_CHAT_IDS`; unauthorized chats rejected.
+- **Same control path — Verified**: Telegram executes the identical
+  `execute_command` grammar as the web API (control_service.rs:637-639) —
+  no second control logic path exists.
+- **`/live` confirmation — Verified**: live mode requires the literal
+  `CONFIRM-LIVE` argument plus the env gate.
+- **Bounded retries — Verified**: 10 bounded retry attempts; no unbounded
+  reconnection loop.
 
-## 3. Fail-closed controls (verified by inspection)
+## 5. Secrets and configuration
 
-- **Live gate**: `--mode live` requires `ARB_LIVE` truthy; dispatch repeats the
-  check. A falsy/absent value cannot reach signing/broadcast.
-- **Simulation**: in Live, RPC simulation failure/timeout/`success=false` returns
-  before submission. LiteSVM absence is explicit and does not fake success.
-- **Risk gate**: kill switch, breaker, velocity, losses, notional, state age,
-  impact, tip caps, min profit, inflight bundles. Any failure rejects the route.
-- **Admin**: missing/placeholder token disables the listener; a wrong token gets
-  `401`; the listener binds to the configured loopback address.
-- **Secrets**: `.env` and keypairs are gitignored and excluded from the Docker
-  build context; the image runs as non-root `arb`.
-- **Logging**: secret values are not printed by the reviewed code paths; admin
-  auth failures log a rejection, not the presented token.
+- **Verified**: `.env` is git-ignored; Helius/Privy credentials exist only
+  there; no secrets in source, docs, or fixtures (swept this round);
+  `.env.example` carries only non-secret keys. `ARB_LIVE=0`, `DRY_RUN=true`
+  defaults preserved.
+- **Not exposed to browser**: sessions/tickets are opaque; no signing keys
+  or provider secrets are served by any endpoint (route sweep this round).
 
-## 4. Residual risks
+## 6. Remaining register
 
-1. **Credentials have not been rotated.** The repository cannot prove that keys
-   ever exposed outside git are revoked. Operator must rotate the Solana keypair,
-   provider keys, Telegram token, and admin token before any live run.
-2. **No secrets manager/HSM.** The keypair is a file/env input. File permissions
-   and host security are the only controls.
-3. **Admin token is a shared bearer secret**, not per-operator identity. There is
-   no audit trail of *who* paused/resumed beyond a log line.
-4. **Telegram** messages can contain route/transaction data; the bot token is a
-   high-value secret. Chat membership is an access-control boundary.
-5. **Dependency advisories are unverified** because the RustSec DB could not be
-   fetched in this environment. `cargo-deny` advisories/bans/sources passed on
-   the last successful run; that is not a vulnerability-free claim.
-6. **Auxiliary binaries** (`live-scanner`, `validate`, `discover`, `replay`) are
-   not governed by the main mode gate and need a separate review.
-7. **No release artifact signature** (cosign/SBOM) is produced.
-
-## 5. Dependency and supply-chain status
-
-| Check | Status | Evidence |
+| Item | Severity | Status |
 |---|---|---|
-| `cargo deny check` | Licenses fixed in metadata; full rerun recorded in `TEST_EVIDENCE.md`. | `deny.toml` allows MIT/Apache-2.0/BSD/ISC/etc., denies unknown registries/git and yanked crates. |
-| `cargo audit` | **BLOCKED** | RustSec DB fetch failed repeatedly; no cached DB. Vulnerability status unknown. |
-| `cargo fmt/check/clippy/test` | See `TEST_EVIDENCE.md`. | Linux Docker verification is the reference environment. |
-| Secret scan | Test-only false positives in history; no live credential found in scanned paths. | gitleaks results in `BASELINE.md`. |
-| Docker context | `.dockerignore` excludes `.env`, keypairs, `target/`, `data/`, `docs/`, `.git/`. | Inspected. |
-
-## 6. Required actions before any live authorization
-
-1. Rotate every credential that has ever been in a shell history, chat, CI log,
-   or git object; revoke the old ones.
-2. Move the keypair to a dedicated signer/HSM or a host-only file with least
-   privilege; never mount it into a container that also has network egress to
-   untrusted services.
-3. Replace the shared admin token with per-operator credentials and an audit
-   log; keep the listener on loopback behind an authenticated tunnel.
-4. Run a full-history secret scan (`gitleaks git --log-opts=--all`) and archive
-   the result with the release.
-5. Run `cargo audit`/`cargo deny` with a working advisory DB and attach the
-   output.
-6. Complete the fault-injection and shadow-soak acceptance in
-   `RELEASE_READINESS.md`.
-
-See [`SECURITY.md`](../SECURITY.md) for the rotation procedure.
+| ~~Legacy `?token=` WS fallback~~ | LOW | **FIXED** (same round): `ws_events` accepts only the single-use ticket or Bearer header; e2e test now exercises the ticket flow. |
+| HTTPS/TLS termination | — | **Not verified** here; requires the real reverse-proxy deployment (runbook item). |
+| ~~Audit-log fsync durability~~ | LOW | **FIXED** (same round): `audit()` calls `sync_data()` on every entry. |
+| ≥24 h authenticated-session behavior under soak | — | **Not verified** (soak blocked in sandbox). |

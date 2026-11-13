@@ -306,7 +306,7 @@ impl RouteArchitectWorker {
     /// DISABLED: the original body synthesized opportunities with a hardcoded 5 bps
     /// Kamino fee and a 50%-of-profit Jito tip (FIN-01 / FIN-03) - exactly the
     /// fabricated economics the remediation forbids. The signature is kept so no
-    /// caller breaks, but the loop does nothing. See docs/PRODUCTION_READINESS.md.
+    /// caller breaks, but the loop does nothing. See docs/quality/PRODUCTION_READINESS_2026-11-13.md.
     pub async fn start_worker_loop(
         self: Arc<Self>,
         _tx_opportunity: UnboundedSender<SplitOpportunity>,

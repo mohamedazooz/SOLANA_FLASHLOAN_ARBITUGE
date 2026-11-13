@@ -8,6 +8,7 @@ import Pools from "./components/Pools";
 import Executions from "./components/Executions";
 import StrategyConfig from "./components/StrategyConfig";
 import Providers from "./components/Providers";
+import RouteMonitor from "./components/RouteMonitor";
 import RiskControl from "./components/RiskControl";
 import Logs from "./components/Logs";
 import TelegramPanel from "./components/TelegramPanel";
@@ -20,6 +21,7 @@ const SECTIONS: { id: string; label: string; el: (status: StatusSnapshot | null,
   { id: "executions", label: "D · Execution Monitor", el: () => <Executions /> },
   { id: "strategy", label: "E · Strategy Config", el: (_s, reload) => <StrategyConfig onSaved={reload} /> },
   { id: "providers", label: "F · Providers", el: () => <Providers /> },
+  { id: "routes", label: "J · Route Monitor", el: () => <RouteMonitor /> },
   { id: "risk", label: "G · Risk & Emergency", el: (s, reload) => <RiskControl status={s} onChanged={reload} /> },
   { id: "logs", label: "H · Logs & Analytics", el: () => <Logs /> },
   { id: "telegram", label: "I · Telegram", el: () => <TelegramPanel /> },
@@ -43,25 +45,61 @@ export default function App() {
     if (!authed) return;
     reload();
     timerRef.current = window.setInterval(reload, 5_000);
-    const ws = new WebSocket(api.wsUrl());
-    ws.onclose = () => {
-      // Reconnect after a delay; the REST poller keeps the UI fresh meanwhile.
-      window.setTimeout(() => window.location.reload(), 10_000);
+
+    // Reconnect with capped exponential backoff + jitter so a fleet of tabs
+    // never reconnects in lockstep (thundering herd). Bounded attempts; the
+    // REST poller keeps the UI fresh regardless. A 401/expired token surfaces
+    // through the next REST poll instead of a reload loop.
+    let attempt = 0;
+    let reconnectTimer: number | null = null;
+    let disposed = false;
+
+    const connect = () => {
+      if (disposed) return;
+      // The WS URL carries a single-use ticket fetched per connection; if the
+      // ticket request fails (e.g. expired session) the REST poller keeps the
+      // UI fresh and the next poll surfaces the 401.
+      api
+        .wsUrl()
+        .then((url) => {
+          if (disposed) return;
+          const ws = new WebSocket(url);
+          ws.onopen = () => {
+            attempt = 0;
+          };
+          ws.onclose = () => {
+            if (disposed || attempt >= 8) return;
+            const backoff = Math.min(500 * 2 ** attempt, 30_000);
+            const jitter = Math.random() * 500;
+            attempt += 1;
+            reconnectTimer = window.setTimeout(connect, backoff + jitter);
+          };
+          ws.onmessage = (ev) => {
+            try {
+              const parsed = JSON.parse(ev.data);
+              if (parsed && typeof parsed === "object" && "mode" in parsed) {
+                setStatus(parsed as StatusSnapshot);
+              }
+            } catch {
+              /* ignore malformed frames */
+            }
+          };
+          wsRef.current = ws;
+        })
+        .catch(() => {
+          if (disposed || attempt >= 8) return;
+          const backoff = Math.min(500 * 2 ** attempt, 30_000);
+          attempt += 1;
+          reconnectTimer = window.setTimeout(connect, backoff);
+        });
     };
-    ws.onmessage = (ev) => {
-      try {
-        const parsed = JSON.parse(ev.data);
-        if (parsed && typeof parsed === "object" && "mode" in parsed) {
-          setStatus(parsed as StatusSnapshot);
-        }
-      } catch {
-        /* ignore malformed frames */
-      }
-    };
-    wsRef.current = ws;
+    connect();
+
     return () => {
+      disposed = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (timerRef.current) window.clearInterval(timerRef.current);
-      ws.close();
+      wsRef.current?.close();
     };
   }, [authed]);
 
