@@ -7,6 +7,7 @@ edition = "2024"
 [dependencies]
 arb-types = { path = "../arb-types" }
 arb-constants = { path = "../arb-constants" }
+arb-math = { path = "../arb-math" }
 solana-pubkey = { workspace = true, features = ["curve25519"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

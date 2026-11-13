@@ -168,56 +168,9 @@ pub const KAMINO_FRACTION_FRAC_BITS: u32 = 60;
 /// `Fraction::ONE.to_bits()` for klend's U68F60 `Fraction` (`1 << 60`).
 pub const KAMINO_FRACTION_ONE_BITS: u128 = 1u128 << KAMINO_FRACTION_FRAC_BITS;
 
-/// Failure modes when reproducing klend's on-chain flash-loan fee exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum KaminoFeeError {
-    /// `flash_loan_fee_sf == u64::MAX` — klend's sentinel for a reserve whose
-    /// flash loans are disabled (`ReserveFees` serde maps `"disabled"` to it).
-    #[error("flash loans are disabled on this reserve (flash_loan_fee_sf == u64::MAX)")]
-    FlashLoanDisabled,
-    /// klend reverts with `LendingError::BorrowTooSmall` when the origination
-    /// fee (after the 1-unit floor) is `>=` the principal.
-    #[error("borrow amount too small: origination fee >= principal (klend BorrowTooSmall)")]
-    BorrowTooSmall,
-    /// The wide-integer `borrow_amount * fee_sf` product overflowed `u128`.
-    #[error("flash-loan fee computation overflowed u128")]
-    Overflow,
-}
-
-/// Raw, un-rounded `Fraction` bits of `max(amount * sf / 2^60, 1.0)`.
-///
-/// klend computes `amount.mul(rate)` on `Fraction` (U68F60). For a `u64` amount
-/// this is `(amount << 60) * sf >> 60 == amount * sf` **exactly** (the shift
-/// cancels), then `.max(minimum_fee)` with `minimum_fee == 1` (`1 << 60` bits).
-/// Returns `None` when `fee_sf` is klend's disabled sentinel (`u64::MAX`) or
-/// when the product overflows `u128`. Failing closed here keeps the infallible
-/// helper from inventing a plausible-looking fee for a disabled reserve.
-#[inline]
-fn kamino_fee_bits(borrow_amount: u64, fee_sf: u64) -> Option<u128> {
-    if fee_sf == u64::MAX {
-        // klend's `ReserveFees` serde maps `"disabled"` to `u64::MAX`; no fee
-        // is defined and the borrow must not be attempted.
-        return None;
-    }
-    if fee_sf == 0 || borrow_amount == 0 {
-        return Some(0);
-    }
-    let raw = (borrow_amount as u128).checked_mul(fee_sf as u128)?;
-    Some(raw.max(KAMINO_FRACTION_ONE_BITS))
-}
-
-/// Round `Fraction` bits to the nearest integer, ties away from zero.
-///
-/// This matches klend's `FractionExtra::to_round` (= `self.round().to_num()`),
-/// where `round` returns the nearest integer and, on an exact half, the value
-/// with the larger magnitude. For `bits = q·2^60 + r` that is `q + (r >= 2^59)`.
-#[inline]
-fn round_fraction_bits_to_u64(bits: u128) -> u64 {
-    let q = bits >> KAMINO_FRACTION_FRAC_BITS;
-    let r = bits & (KAMINO_FRACTION_ONE_BITS - 1);
-    let rounded = q + u128::from(r >= (KAMINO_FRACTION_ONE_BITS >> 1));
-    rounded.min(u64::MAX as u128) as u64
-}
+/// Failure modes when reproducing klend's on-chain flash-loan fee exactly
+/// (canonical definition: `arb_math::economic::KaminoFeeError`).
+pub use arb_math::economic::KaminoFeeError;
 
 /// Exact klend flash-loan origination fee in atomic token units, with all
 /// on-chain failure modes surfaced.
@@ -241,18 +194,7 @@ pub fn calculate_kamino_flash_fee_checked(
     borrow_amount: u64,
     fee_sf: u64,
 ) -> Result<u64, KaminoFeeError> {
-    if fee_sf == u64::MAX {
-        return Err(KaminoFeeError::FlashLoanDisabled);
-    }
-    if fee_sf == 0 || borrow_amount == 0 {
-        return Ok(0);
-    }
-    let amount_bits = (borrow_amount as u128) << KAMINO_FRACTION_FRAC_BITS;
-    let fee_bits = kamino_fee_bits(borrow_amount, fee_sf).ok_or(KaminoFeeError::Overflow)?;
-    if fee_bits >= amount_bits {
-        return Err(KaminoFeeError::BorrowTooSmall);
-    }
-    Ok(round_fraction_bits_to_u64(fee_bits))
+    arb_math::economic::kamino_flash_fee_checked(borrow_amount, fee_sf)
 }
 
 /// Calculate the Kamino flash-loan fee in atomic token units from the raw
@@ -272,9 +214,9 @@ pub fn calculate_kamino_flash_fee_checked(
 /// [`calculate_kamino_flash_fee_checked`] on any borrow path.
 #[inline(always)]
 pub fn calculate_kamino_flash_fee(borrow_amount: u64, fee_sf: u64) -> u64 {
-    match kamino_fee_bits(borrow_amount, fee_sf) {
-        Some(bits) => round_fraction_bits_to_u64(bits),
-        None => u64::MAX,
+    match arb_math::economic::kamino_flash_fee_unchecked(borrow_amount, fee_sf) {
+        Ok(fee) => fee,
+        Err(_) => u64::MAX,
     }
 }
 
