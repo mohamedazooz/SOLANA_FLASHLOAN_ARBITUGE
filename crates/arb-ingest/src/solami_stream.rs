@@ -95,6 +95,26 @@ pub struct SolamiStreamEvent {
     pub backfill: Option<bool>,
 }
 
+/// Resolves the WebSocket API key with role separation from the general API
+/// key: an explicit override wins, then an `api_key` query parameter embedded
+/// in the stream URL, then the general API key fallback.
+fn resolve_ws_key(explicit: Option<&str>, ws_url: &str, fallback: &str) -> String {
+    if let Some(k) = explicit.map(str::trim).filter(|k| !k.is_empty()) {
+        return k.to_string();
+    }
+    if let Some(qpos) = ws_url.find('?') {
+        for pair in ws_url[qpos + 1..].split('&') {
+            if let Some(v) = pair.strip_prefix("api_key=") {
+                let v = v.trim();
+                if !v.is_empty() {
+                    return v.to_string();
+                }
+            }
+        }
+    }
+    fallback.to_string()
+}
+
 /// Solami WebSocket Stream Consumer.
 pub struct SolamiStreamClient {
     pub config: SolamiStreamConfig,
@@ -110,7 +130,8 @@ impl SolamiStreamClient {
     }
 
     /// Attempts to build client using environment variables:
-    /// `SOLAMI_API_KEY` and optional `SOLAMI_WS_URL`.
+    /// `SOLAMI_API_KEY`, optional `SOLAMI_WS_API_KEY` (role-separated stream
+    /// key) and optional `SOLAMI_WS_URL`.
     pub fn from_env() -> Option<Self> {
         let api_key = std::env::var("SOLAMI_API_KEY")
             .ok()
@@ -129,8 +150,12 @@ impl SolamiStreamClient {
             .or_else(|| dotenvy::var("solami_ws_url").ok())
             .unwrap_or_else(|| "wss://ws.solami.dev/data/subscribe".to_string());
 
+        let explicit_ws_key = std::env::var("SOLAMI_WS_API_KEY")
+            .ok()
+            .or_else(|| dotenvy::var("SOLAMI_WS_API_KEY").ok());
+
         let mut config = SolamiStreamConfig {
-            api_key,
+            api_key: resolve_ws_key(explicit_ws_key.as_deref(), &ws_base, &api_key),
             ..Default::default()
         };
         if !ws_base.is_empty() {
@@ -279,6 +304,62 @@ mod tests {
         assert_eq!(
             url,
             "wss://ws.solami.dev/data/subscribe?chain=solana&api_key=sk_test_api_key_12345"
+        );
+    }
+
+    #[test]
+    fn resolve_ws_key_prefers_explicit_override() {
+        assert_eq!(
+            resolve_ws_key(
+                Some("ws_key_explicit"),
+                "wss://ws.solami.dev/ws/sol?api_key=ws_key_embedded",
+                "sk_general"
+            ),
+            "ws_key_explicit"
+        );
+        assert_eq!(
+            resolve_ws_key(Some("   "), "wss://ws.solami.dev/ws/sol", "sk_general"),
+            "sk_general"
+        );
+    }
+
+    #[test]
+    fn resolve_ws_key_extracts_embedded_url_param() {
+        assert_eq!(
+            resolve_ws_key(
+                None,
+                "wss://ws.solami.dev/ws/sol?api_key=ws_key_embedded",
+                "sk_general"
+            ),
+            "ws_key_embedded"
+        );
+        assert_eq!(
+            resolve_ws_key(
+                None,
+                "wss://ws.solami.dev/ws/sol?chain=solana&api_key=ws_key_embedded&x=1",
+                "sk_general"
+            ),
+            "ws_key_embedded"
+        );
+        assert_eq!(
+            resolve_ws_key(
+                None,
+                "wss://ws.solami.dev/ws/sol?chain=solana",
+                "sk_general"
+            ),
+            "sk_general"
+        );
+    }
+
+    #[test]
+    fn resolve_ws_key_falls_back_to_general_api_key() {
+        assert_eq!(
+            resolve_ws_key(None, "wss://ws.solami.dev/ws/sol", "sk_general"),
+            "sk_general"
+        );
+        assert_eq!(
+            resolve_ws_key(None, "wss://ws.solami.dev/data/subscribe", "sk_general"),
+            "sk_general"
         );
     }
 
