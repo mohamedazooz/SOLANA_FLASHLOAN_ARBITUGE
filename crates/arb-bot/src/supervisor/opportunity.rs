@@ -44,6 +44,11 @@ impl Supervisor {
         let quote_ingest_time =
             std::time::Instant::now() - Duration::from_micros(t_ingest_to_quote_us);
         for opp in opportunities {
+            // Config is the single source of truth for the per-hop min-out
+            // floor: stamp it onto every candidate before any builder reads
+            // it. Builders further clamp to HOP_SLIPPAGE_MAX_BPS.
+            let mut opp = opp.clone();
+            opp.hop_slippage_bps = self.config.strategy.hop_slippage_bps;
             let t_risk_start = std::time::Instant::now();
             arb_metrics::inc_opportunities();
             let target_slot = Slot(current_slot.0.saturating_add(1));
@@ -231,6 +236,25 @@ impl Supervisor {
             // UNITS (e.g., USDC raw units when base_mint is USDC). It is NOT
             // in lamports. We must never cast it to `Lamports` or divide by
             // 1e9 as if it were SOL.
+            //
+            // Fail-closed transfer-fee tripwire: the model below passes 0 for
+            // Token-2022 transfer fees because discovery excludes transfer-fee
+            // mints. Re-verify against the live pool states here so a registry
+            // change can never silently reintroduce an unmodeled fee. A hop
+            // pool missing from the pass slice is also unverifiable => reject.
+            let transfer_fees_verified_zero = opp.hops.iter().all(|hop| {
+                pools
+                    .iter()
+                    .find(|p| p.pool_id == hop.pool_id)
+                    .map(|p| p.transfer_fee_bps == 0)
+                    .unwrap_or(false)
+            });
+            if !transfer_fees_verified_zero {
+                debug!(
+                    "Opportunity skipped: route carries unverified Token-2022 transfer fees"
+                );
+                continue;
+            }
             let real_net_base_raw = calculate_net_profit_raw(
                 opp.expected_out.as_u64(),
                 opp.size_in.as_u64(),
@@ -624,7 +648,11 @@ impl Supervisor {
                     debug!("Split route rejected: leg pool mint pair differs from first hop");
                     continue;
                 }
-                let slip = arb_tx::DEFAULT_HOP_SLIPPAGE_BPS;
+                let slip = self
+                    .config
+                    .strategy
+                    .hop_slippage_bps
+                    .min(arb_types::HOP_SLIPPAGE_MAX_BPS);
                 let mut all_legs: Vec<arb_tx::CompiledInstruction> = Vec::new();
                 let mut total_out: u64 = 0;
                 let mut split_route_success = true;
@@ -706,7 +734,7 @@ impl Supervisor {
                         tip,
                         cu_limit,
                         cu_price,
-                        opp,
+                        &opp,
                         kamino_params,
                         verified.flash_loan_fee_sf.value,
                     )
@@ -993,8 +1021,17 @@ impl Supervisor {
                 .join(" ➔ ");
             let initial_loan_base = opp.size_in.as_u64() as f64 / base_scale;
             let gross_rev_base = opp.expected_out.as_u64() as f64 / base_scale;
-            let deductions_base =
-                (opp.gross_profit.as_u64() as f64 - real_net_base_raw as f64) / base_scale;
+            // Deductions = cycle gross (expected_out - size_in, both BASE RAW)
+            // minus the authoritative net. Never reuse `gross_profit` here: it
+            // is carried in LAMPORTS by the engines, and subtracting it from a
+            // BASE-RAW net silently corrupts the PnL display for every base
+            // mint whose decimals differ from WSOL's 9.
+            let cycle_gross_base_raw = opp
+                .expected_out
+                .as_u64()
+                .saturating_sub(opp.size_in.as_u64());
+            let deductions_base = cycle_gross_base_raw.saturating_sub(real_net_base_raw) as f64
+                / base_scale;
             let roi_pct = if opp.size_in.as_u64() > 0 {
                 (real_net_base_raw as f64 / opp.size_in.as_u64() as f64) * 100.0
             } else {
@@ -1119,7 +1156,7 @@ impl Supervisor {
             // Reject any candidate that fails a core economic invariant before
             // it reaches the transaction compiler. Fail closed.
             let invariant_result = self.validate_economic_invariants(
-                opp,
+                &opp,
                 tip,
                 current_slot.0,
                 verified.flash_loan_fee_sf.value,
@@ -1148,7 +1185,7 @@ impl Supervisor {
             }
 
             self.dispatch_opportunity(super::dispatch::DispatchContext {
-                opp,
+                opp: &opp,
                 tip,
                 tip_rung,
                 is_swqos_route,

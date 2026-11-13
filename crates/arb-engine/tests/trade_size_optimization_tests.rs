@@ -68,6 +68,8 @@ fn make_test_pool(
         oracle: pool_pk,
         bin_array_pdas: vec![Pubkey::new_from_array([30 + pool_bytes_id; 32])],
         bitmap_extension: None,
+        pool_token_x: mint_x.0,
+        pool_token_y: mint_y.0,
     };
 
     PoolState {

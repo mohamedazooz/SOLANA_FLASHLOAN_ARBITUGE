@@ -214,6 +214,7 @@ impl Supervisor {
             RouteId(THREE_LEG_ROUTE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
 
         vec![ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id,
             slot: current_slot,
             size_in: TokenAmount(size_in),

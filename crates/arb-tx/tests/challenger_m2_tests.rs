@@ -89,6 +89,7 @@ fn create_n_hop_opportunity(hops_count: usize, size_lamports: u64) -> ExecutionO
     }
 
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(777),
         slot: Slot(2000),
         size_in: TokenAmount(size_lamports),

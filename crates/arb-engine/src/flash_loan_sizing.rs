@@ -14,9 +14,10 @@ pub const KAMINO_FRACTION_ONE_BITS: u128 = 1u128 << KAMINO_FRACTION_FRAC_BITS;
 /// Configuration for adaptive flash loan sizing
 #[derive(Debug, Clone)]
 pub struct FlashLoanSizingConfig {
-    /// Safety factor applied to max capacity (0.0 - 1.0)
-    /// 0.9 = use 90% of max capacity to avoid crossing bins
-    pub safety_factor: f64,
+    /// Safety factor applied to max capacity, in basis points (0 - 10_000).
+    /// 8500 = use 85% of max capacity to avoid crossing bins. Integer-only:
+    /// token-amount math never touches floating point.
+    pub safety_factor_bps: u64,
     /// Minimum flash loan amount (lamports)
     pub min_flash_amount: u64,
     /// Maximum flash loan amount (lamports) - hard cap
@@ -29,21 +30,22 @@ pub struct FlashLoanSizingConfig {
     pub optimize_for_profit: bool,
     /// Max number of bins to cross per leg
     pub max_bins_crossed: u32,
-    /// Reserve fraction to keep in pool (don't drain completely)
-    pub reserve_fraction: f64,
+    /// Reserve fraction to keep in pool (don't drain completely), in basis
+    /// points. 1000 = keep 10% of pool liquidity untouched.
+    pub reserve_fraction_bps: u64,
 }
 
 impl Default for FlashLoanSizingConfig {
     fn default() -> Self {
         Self {
-            safety_factor: 0.85,
+            safety_factor_bps: 8_500,
             min_flash_amount: 100_000,       // 0.0001 WSOL
             max_flash_amount: 5_000_000_000, // 5 WSOL
             max_slippage_bps: 50,            // 0.5%
             target_profit_bps: 100,          // 1%
             optimize_for_profit: true,
             max_bins_crossed: 3,
-            reserve_fraction: 0.1, // Keep 10% in pool
+            reserve_fraction_bps: 1_000, // Keep 10% in pool
         }
     }
 }
@@ -75,8 +77,10 @@ pub struct FlashLoanSizingResult {
     pub capped_at_max: bool,
     /// Whether sizing was constrained by pool capacity
     pub capped_by_capacity: bool,
-    /// Sizing confidence score (0.0 - 1.0)
-    pub confidence: f64,
+    /// Sizing confidence score in basis points (0 - 10_000). Integer-only;
+    /// 10_000 = borrow is negligible relative to pool capacity, lower values
+    /// mean the borrow approaches the capacity bottleneck.
+    pub confidence_bps: u64,
 }
 
 /// Calculate optimal flash loan size for a 3-pool arbitrage
@@ -95,16 +99,20 @@ pub fn calculate_optimal_flash_loan(
     let cap2 = get_leg_capacity(pool2, true); // A -> B (depends on pool1 output)
     let cap3 = get_leg_capacity(pool3, false); // B -> WSOL
 
-    // 2. Apply safety factors
-    let safe_cap1 = (cap1 as f64 * config.safety_factor) as u64;
-    let safe_cap2 = (cap2 as f64 * config.safety_factor) as u64;
-    let safe_cap3 = (cap3 as f64 * config.safety_factor) as u64;
+    // 2. Apply safety factors. Integer-only: floor division keeps the cap at
+    // or below the exact factor, i.e. rounding errs toward smaller borrows.
+    let safe_cap1 = cap1.saturating_mul(config.safety_factor_bps) / 10_000;
+    let safe_cap2 = cap2.saturating_mul(config.safety_factor_bps) / 10_000;
+    let safe_cap3 = cap3.saturating_mul(config.safety_factor_bps) / 10_000;
 
     // 3. The bottleneck is the minimum capacity across all legs
     let bottleneck = safe_cap1.min(safe_cap2).min(safe_cap3);
 
-    // 4. Apply reserve fraction (don't drain pools completely)
-    let reserve_adjusted = (bottleneck as f64 * (1.0 - config.reserve_fraction)) as u64;
+    // 4. Apply reserve fraction (don't drain pools completely). Floor again:
+    // the kept reserve can only be larger than the exact fraction.
+    let reserve_adjusted =
+        bottleneck.saturating_mul(10_000u64.saturating_sub(config.reserve_fraction_bps.min(10_000)))
+            / 10_000;
 
     // 5. Clamp to configured bounds
     let borrow_amount = reserve_adjusted
@@ -176,9 +184,13 @@ pub fn calculate_optimal_flash_loan(
         expected_output: final_expected_output,
     } = outcome;
 
-    // Confidence based on how close to capacity we are
-    let capacity_ratio = final_borrow as f64 / bottleneck.max(1) as f64;
-    let confidence = (1.0 - capacity_ratio).clamp(0.3, 1.0);
+    // Confidence based on how close to capacity we are, in integer bps with
+    // a 3000 bps floor (a saturated borrow still reports 30% confidence).
+    let capacity_ratio_bps = (final_borrow
+        .saturating_mul(10_000)
+        .saturating_div(bottleneck.max(1)))
+    .min(10_000);
+    let confidence_bps = (10_000 - capacity_ratio_bps).max(3_000);
 
     FlashLoanSizingResult {
         borrow_amount: final_borrow,
@@ -193,7 +205,7 @@ pub fn calculate_optimal_flash_loan(
         expected_final_output: final_expected_output,
         capped_at_max,
         capped_by_capacity,
-        confidence,
+        confidence_bps,
     }
 }
 
@@ -414,7 +426,14 @@ fn optimize_size(
             best_expected_output = expected_out;
         }
 
-        test_amount = (test_amount as f64 * 1.5) as u64;
+        // Integer 1.5x growth (floor). The +1 guard guarantees termination
+        // when floor division would stall (e.g. test_amount == 1).
+        let next = test_amount.saturating_mul(3) / 2;
+        test_amount = if next <= test_amount {
+            test_amount.saturating_add(1)
+        } else {
+            next
+        };
     }
 
     // Fine search around best
@@ -493,7 +512,7 @@ mod tests {
     #[test]
     fn test_config_defaults() {
         let config = FlashLoanSizingConfig::default();
-        assert_eq!(config.safety_factor, 0.85);
+        assert_eq!(config.safety_factor_bps, 8_500);
         assert_eq!(config.min_flash_amount, 100_000);
         assert_eq!(config.max_flash_amount, 5_000_000_000);
     }

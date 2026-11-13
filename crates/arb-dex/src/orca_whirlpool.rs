@@ -195,6 +195,7 @@ impl AmmPool for OrcaWhirlpool {
             vault_b: self.token_vault_b,
             oracle: self.derive_oracle_pda(),
             tick_array_pdas: tick_array_pdas.to_vec(),
+            pool_mint_a: self.token_mint_a.0,
         })
     }
 

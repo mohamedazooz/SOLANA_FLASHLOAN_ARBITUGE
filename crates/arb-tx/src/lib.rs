@@ -157,16 +157,22 @@ mod tests {
                 Pubkey::new_unique(),
                 Pubkey::new_unique(),
             ],
+            pool_mint_a: Pubkey::from_str(USDC_MINT).unwrap(),
         }
     }
 
-    fn mock_meteora_dlmm_exec_accounts() -> PoolExecutionAccounts {
+    fn mock_meteora_dlmm_exec_accounts(
+        pool_token_x: Pubkey,
+        pool_token_y: Pubkey,
+    ) -> PoolExecutionAccounts {
         PoolExecutionAccounts::MeteoraDlmm {
             reserve_x: Pubkey::new_unique(),
             reserve_y: Pubkey::new_unique(),
             oracle: Pubkey::new_unique(),
             bin_array_pdas: vec![Pubkey::new_unique(), Pubkey::new_unique()],
             bitmap_extension: None,
+            pool_token_x,
+            pool_token_y,
         }
     }
 
@@ -192,6 +198,7 @@ mod tests {
                 Pubkey::new_unique(),
             ],
             bitmap_extension: None,
+            pool_mint_0: Pubkey::new_unique(),
         }
     }
 
@@ -220,6 +227,7 @@ mod tests {
 
         // 1. Route between permanent base assets (WSOL <-> USDC)
         let opp_base = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(50_000_000_000), // 50 SOL
@@ -250,7 +258,7 @@ mod tests {
                     active_bin_id: None,
                     token_programs: [arb_types::TokenProgramKind::SplToken; 2],
                     trade_intent: Default::default(),
-                    execution_accounts: None,
+                    execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
                 },
             ],
 
@@ -281,6 +289,7 @@ mod tests {
         // 2. Route with intermediate trending token (Ephemeral ATA Create -> Swaps -> Close & Rent Reclaim)
         let intermediate_token = Pubkey::new_from_array([88; 32]);
         let opp_intermediate = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(2),
             slot: Slot(100),
             size_in: TokenAmount(50_000_000_000),
@@ -311,7 +320,7 @@ mod tests {
                     active_bin_id: None,
                     token_programs: [arb_types::TokenProgramKind::SplToken; 2],
                     trade_intent: Default::default(),
-                    execution_accounts: None,
+                    execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
                 },
             ],
 
@@ -665,7 +674,7 @@ mod tests {
                 DexProtocol::MeteoraDlmm,
                 wsol,
                 usdc,
-                Some(mock_meteora_dlmm_exec_accounts()),
+                Some(mock_meteora_dlmm_exec_accounts(wsol, usdc)),
             ),
             (
                 DexProtocol::RaydiumCpmm,
@@ -759,6 +768,7 @@ mod tests {
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
 
         let opp = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000), // 1 SOL borrow
@@ -815,6 +825,7 @@ mod tests {
 
         // If expected_out cannot meet the floor, derive_swap_legs must reject pre-flight
         let failing_opp = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             expected_out: TokenAmount(1_015_000_000), // below floor of 1_018_000_000
             hop_inputs: vec![1_000_000_000, 200_000_000, 1_015_000_000],
             ..opp
@@ -839,6 +850,7 @@ mod tests {
 
         // 1. Route: Pump.fun Buy -> Raydium Sell
         let opp1 = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000), // 1 SOL borrow
@@ -896,6 +908,7 @@ mod tests {
 
         // 2. Route: Raydium Buy -> Pump.fun Sell
         let opp2 = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(2),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000),

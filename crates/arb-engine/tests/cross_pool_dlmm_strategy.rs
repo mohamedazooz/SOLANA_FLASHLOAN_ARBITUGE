@@ -81,6 +81,8 @@ fn dlmm_pool(
             oracle: pk(tag * 10 + 3),
             bin_array_pdas: vec![],
             bitmap_extension: None,
+            pool_token_x: wsol().0,
+            pool_token_y: usdc().0,
         })
     } else {
         None
@@ -454,6 +456,7 @@ fn intermediate_mints_empty_for_two_hop() {
         execution_accounts: None,
     };
     let opp = ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(1),
         slot: Slot(1),
         size_in: TokenAmount(1),

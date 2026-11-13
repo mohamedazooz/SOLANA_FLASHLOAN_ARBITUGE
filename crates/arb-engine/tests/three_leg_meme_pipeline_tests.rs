@@ -107,6 +107,8 @@ fn make_dlmm_pool(
         oracle,
         bin_array_pdas: vec![Pubkey::new_from_array([pool_bytes_id.wrapping_add(50); 32])],
         bitmap_extension: None,
+        pool_token_x: base_mint.0,
+        pool_token_y: quote_mint.0,
     };
 
     PoolState {

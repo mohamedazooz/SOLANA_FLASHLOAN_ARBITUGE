@@ -635,6 +635,7 @@ fn build_context(
             oracle,
             bin_array_pdas: _,
             bitmap_extension,
+            ..
         } = exec
         else {
             return Err(ThreeLegMemePipelineError::UnsupportedExecutionAccounts { leg: idx });

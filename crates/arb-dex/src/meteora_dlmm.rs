@@ -284,6 +284,8 @@ impl AmmPool for MeteoraDlmmPool {
             oracle: self.oracle,
             bin_array_pdas: pdas,
             bitmap_extension: Some(self.derive_bin_array_bitmap_extension_pda()),
+            pool_token_x: self.token_x_mint.0,
+            pool_token_y: self.token_y_mint.0,
         })
     }
 

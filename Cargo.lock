@@ -487,6 +487,7 @@ dependencies = [
  "solana-transaction",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

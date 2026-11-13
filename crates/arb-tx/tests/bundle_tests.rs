@@ -70,8 +70,23 @@ fn mock_raydium_v4_exec_accounts() -> arb_types::PoolExecutionAccounts {
     }
 }
 
+fn mock_orca_whirlpool_exec_accounts() -> arb_types::PoolExecutionAccounts {
+    arb_types::PoolExecutionAccounts::OrcaWhirlpool {
+        vault_a: Pubkey::new_unique(),
+        vault_b: Pubkey::new_unique(),
+        oracle: Pubkey::new_unique(),
+        tick_array_pdas: vec![
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        ],
+        pool_mint_a: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap(),
+    }
+}
+
 fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> ExecutionOpportunity {
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(201),
         slot: Slot(1000),
         size_in: TokenAmount(size_lamports),
@@ -106,7 +121,7 @@ fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> Ex
                 active_bin_id: None,
                 token_programs: [arb_types::TokenProgramKind::SplToken; 2],
                 trade_intent: Default::default(),
-                execution_accounts: None,
+                execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
             },
         ],
         expected_min_final_output: 0,
@@ -120,6 +135,7 @@ fn create_3hop_opportunity(
     size_lamports: u64,
 ) -> ExecutionOpportunity {
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(301),
         slot: Slot(1001),
         size_in: TokenAmount(size_lamports),
@@ -155,7 +171,7 @@ fn create_3hop_opportunity(
                 active_bin_id: None,
                 token_programs: [arb_types::TokenProgramKind::SplToken; 2],
                 trade_intent: Default::default(),
-                execution_accounts: None,
+                execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId::new([3; 32]),
@@ -586,6 +602,7 @@ fn test_invalid_hop_count_rejected() {
 
     // 1-hop opportunity (invalid)
     let one_hop_opp = ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(101),
         slot: Slot(100),
         size_in: TokenAmount(1_000_000),

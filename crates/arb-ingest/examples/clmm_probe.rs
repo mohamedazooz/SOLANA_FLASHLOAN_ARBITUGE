@@ -63,7 +63,7 @@ async fn main() {
         ("RAYDIUM CLMM (WSOL/CC)", RAY_CLMM_WSOL_CC, &ray_windows[..]),
     ] {
         println!("=== {name} [{addr}] ===");
-        let pool = Pubkey::from_str(addr).expect("valid pool");
+        let _pool = Pubkey::from_str(addr).expect("valid pool");
         let refs = [addr];
         let (accounts, slot) = rpc
             .get_multiple_accounts_with_slot(&refs)

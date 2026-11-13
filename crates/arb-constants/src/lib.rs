@@ -353,6 +353,12 @@ pub const LENDING_MARKET_AUTH_SEED: &[u8] = b"lma";
 /// floor is the real safety net.
 pub const DEFAULT_HOP_SLIPPAGE_BPS: u64 = 10;
 
+/// Hard safety ceiling on the per-hop slippage floor (10%). At 1000 bps the
+/// `min_amount_out` still guarantees 90% of the quoted output; beyond this the
+/// floor no longer protects against adverse selection. Operators may lower
+/// the configured value per strategy but can never raise it past this cap.
+pub const HOP_SLIPPAGE_MAX_BPS: u64 = 1_000;
+
 // ============================================================================
 // Compute Budget Limits
 // ============================================================================

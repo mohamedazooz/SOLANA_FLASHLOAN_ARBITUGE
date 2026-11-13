@@ -247,6 +247,7 @@ impl AmmPool for RaydiumClmmPool {
             observation_state: self.observation_key,
             tick_array_pdas: pdas,
             bitmap_extension: self.bitmap_extension,
+            pool_mint_0: self.token_mint_0.0,
         })
     }
 

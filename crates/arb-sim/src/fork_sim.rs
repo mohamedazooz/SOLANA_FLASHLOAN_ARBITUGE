@@ -162,12 +162,28 @@ impl ForkSimulator {
         }
     }
 
-    /// Construct with the same endpoint resolution order the supervisor uses.
+    /// Construct with the same endpoint resolution order the supervisor uses
+    /// (`RpcPool::from_env`): `SOLANA_RPC_PRIMARY` first, then `FAST_ENDPOINT`,
+    /// then the legacy single-endpoint variables.
     pub fn from_env() -> Self {
-        let url = std::env::var("SOLANA_RPC_URL")
+        let url = std::env::var("SOLANA_RPC_PRIMARY")
             .ok()
-            .or_else(|| std::env::var("FAST_ENDPOINT").ok())
-            .or_else(|| std::env::var("HELIUS_RPC_URL").ok());
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("SOLANA_RPC_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .or_else(|| {
+                std::env::var("FAST_ENDPOINT")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .or_else(|| {
+                std::env::var("HELIUS_RPC_URL")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            });
         Self::new(ForkState::default(), url)
     }
 

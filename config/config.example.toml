@@ -74,6 +74,7 @@ base_tokens = [
 min_net_profit_abs = 50000          # 50,000 lamports (strictly above Jito median tip floor ~17k-45k)
 min_net_profit_bps = 5              # 5 bps
 max_price_impact_bps = 40           # 40 bps max impact bound
+hop_slippage_bps = 10               # per-hop min-out floor (bps); hard-capped at 1000 by the builders
 max_state_age_slots = 4             # 4 slots max state age for fresh quotes
 graph_max_age_slots = 15            # discovery-graph horizon (explicit policy; execution still revalidates <= max_state_age_slots)
 use_flash_loan = true

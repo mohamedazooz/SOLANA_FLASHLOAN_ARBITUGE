@@ -1138,6 +1138,7 @@ impl MultiDexRegistry {
                         observation_state,
                         tick_array_pdas: pdas,
                         bitmap_extension: Some(bitmap_extension),
+                        pool_mint_0: Pubkey::new_from_array(d[73..105].try_into().unwrap()),
                     })
                 }
                 (DexProtocol::OrcaWhirlpool, Some(d)) if d.len() >= 245 => {
@@ -1161,6 +1162,7 @@ impl MultiDexRegistry {
                         vault_b: token_vault_b,
                         oracle,
                         tick_array_pdas: tick_arrays,
+                        pool_mint_a: Pubkey::new_from_array(d[101..133].try_into().unwrap()),
                     })
                 }
                 (DexProtocol::MeteoraDlmm, Some(d)) if d.len() >= 216 => {
@@ -1173,12 +1175,16 @@ impl MultiDexRegistry {
                         .unwrap_or_default();
                     let (bitmap_extension, _) =
                         Pubkey::find_program_address(&[b"bitmap", p.pool_id.0.as_ref()], &prog);
+                    let (oracle, _) =
+                        Pubkey::find_program_address(&[b"oracle", p.pool_id.0.as_ref()], &prog);
                     Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
                         reserve_x,
                         reserve_y,
-                        oracle: p.pool_id.0,
+                        oracle,
                         bin_array_pdas: bin_arrays,
                         bitmap_extension: Some(bitmap_extension),
+                        pool_token_x: Pubkey::new_from_array(d[88..120].try_into().unwrap()),
+                        pool_token_y: Pubkey::new_from_array(d[120..152].try_into().unwrap()),
                     })
                 }
                 (DexProtocol::RaydiumV4, Some(d)) if d.len() >= 528 => {
