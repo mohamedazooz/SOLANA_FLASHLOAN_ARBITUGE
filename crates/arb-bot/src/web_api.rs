@@ -481,6 +481,10 @@ mod tests {
 
     const PASSWORD: &str = "test-operator-pass-123";
 
+    // WEB_ADMIN_PASSWORD is process-global; every test that reads or mutates it
+    // must hold this lock so cargo's parallel test threads cannot race.
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn test_control() -> ControlService {
         let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
         ControlService::new(
@@ -501,6 +505,7 @@ mod tests {
     // test cases in parallel threads, so per-test env manipulation would race.
     #[tokio::test]
     async fn web_api_auth_and_control_matrix() {
+        let _env = ENV_LOCK.lock().await;
         unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
 
         // 1. Fail-closed: no password, no API.
@@ -615,6 +620,7 @@ mod tests {
     // authenticated REST call, real WebSocket upgrade (101).
     #[tokio::test]
     async fn web_server_end_to_end_with_ws_upgrade() {
+        let _env = ENV_LOCK.lock().await;
         unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
         let app = router(test_control()).expect("router");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
