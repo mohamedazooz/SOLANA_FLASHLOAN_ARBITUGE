@@ -1,5 +1,7 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
+use arb_types::InflightStatus;
+use base64::prelude::*;
 
 pub(super) struct DispatchContext<'a> {
     pub opp: &'a ExecutionOpportunity,
@@ -32,6 +34,19 @@ pub(super) struct DispatchContext<'a> {
     pub t_signing_us: u64,
 }
 
+fn format_mint_short(pk: &Pubkey) -> String {
+    let s = pk.to_string();
+    if s == arb_constants::WSOL_MINT {
+        "WSOL".to_string()
+    } else if s == arb_constants::USDC_MINT {
+        "USDC".to_string()
+    } else if s.len() > 8 {
+        format!("{}...{}", &s[..4], &s[s.len() - 4..])
+    } else {
+        s
+    }
+}
+
 impl Supervisor {
     pub(super) async fn dispatch_opportunity(&self, context: DispatchContext<'_>) {
         let DispatchContext {
@@ -43,11 +58,11 @@ impl Supervisor {
             expected_stream_generation,
             route_label,
             gross_rev_sol,
-            gross_sol: _,
+            gross_sol,
             profit_sol,
             live_sol_price,
             blockhash_b58,
-            last_valid_block_height: _,
+            last_valid_block_height,
             cu_limit,
             cu_price,
             tx_bytes,
