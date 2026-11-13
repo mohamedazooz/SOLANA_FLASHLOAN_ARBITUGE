@@ -13,6 +13,7 @@ solana-pubkey = { workspace = true, features = ["curve25519"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true
