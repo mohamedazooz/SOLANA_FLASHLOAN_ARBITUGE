@@ -58,3 +58,9 @@ Thumbs.db
 
 *.zip
 
+
+# =============================================================================
+# Web app build output (served by the Rust backend; built in CI/Docker)
+# =============================================================================
+web/dist/
+web/node_modules/

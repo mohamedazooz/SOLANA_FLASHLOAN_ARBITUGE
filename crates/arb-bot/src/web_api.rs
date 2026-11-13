@@ -14,7 +14,7 @@
 
 use crate::control_service::{ConfigOverrides, ControlService, execute_command};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -358,10 +358,33 @@ async fn logout(State(state): State<WebState>, headers: HeaderMap) -> Response {
 async fn ws_events(
     State(state): State<WebState>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    if let Err(resp) = authed(&state, &headers) {
-        return resp;
+    // Browsers cannot set custom headers on WebSocket handshakes, so the
+    // session token is accepted from `?token=` as well as the header.
+    let query_token = query.as_deref().and_then(|q| {
+        q.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == "token").then(|| v.to_string())
+        })
+    });
+    let query_ok = query_token
+        .map(|token| {
+            let hash = sha256(token.as_bytes());
+            let sessions = state.sessions.lock();
+            sessions
+                .get(&hash)
+                .map(|s| s.expires > Instant::now())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if state.authorize(&headers).is_err() && !query_ok {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "unauthorized"})),
+        )
+            .into_response();
     }
     upgrade.on_upgrade(move |socket| ws_loop(state, socket))
 }
@@ -583,6 +606,66 @@ mod tests {
         assert_eq!(
             state.login(limited_ip, PASSWORD),
             Err(StatusCode::TOO_MANY_REQUESTS)
+        );
+
+        unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
+    }
+
+    // End-to-end: real listener on an ephemeral port, real login, real
+    // authenticated REST call, real WebSocket upgrade (101).
+    #[tokio::test]
+    async fn web_server_end_to_end_with_ws_upgrade() {
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let app = router(test_control()).expect("router");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        });
+
+        let client = reqwest::Client::new();
+        let base = format!("http://{addr}");
+
+        let resp = client
+            .post(format!("{base}/api/login"))
+            .json(&serde_json::json!({"password": PASSWORD}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let token = resp.json::<Value>().await.unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = client
+            .get(format!("{base}/api/status"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let status = resp.json::<Value>().await.unwrap();
+        assert_eq!(status["mode"], "shadow");
+
+        // Raw WS upgrade: browsers authenticate with ?token=.
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let key = "dGhlIHNhbXBsZSBub25jZQ=="; // RFC 6455 sample key
+        let req = format!(
+            "GET /api/ws?token={token} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        );
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = vec![0u8; 512];
+        let n = stream.read(&mut buf).await.unwrap();
+        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "expected 101 switching protocols, got: {head}"
         );
 
         unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };

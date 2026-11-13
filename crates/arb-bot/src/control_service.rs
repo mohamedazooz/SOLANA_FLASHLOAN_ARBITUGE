@@ -611,6 +611,9 @@ pub fn execute_command(
         "providers" => Ok(service.providers().to_string()),
         "config" => Ok(service.config_summary().to_string()),
         "emergency-stop" | "emergency_stop" => service.emergency_stop().map(str::to_string),
+        "clear-emergency-stop" | "clear_emergency_stop" => {
+            service.clear_emergency_stop().map(str::to_string)
+        }
         other => Err(ControlError(format!(
             "unknown command '{other}' — available: {}",
             CONTROL_COMMANDS.join(", ")
