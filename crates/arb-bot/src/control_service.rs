@@ -265,13 +265,18 @@ impl ControlService {
         });
         let line = entry.to_string();
         // Audit writes never block control decisions on failure: the append is
-        // best-effort but every attempt is logged.
-        if let Err(err) = std::fs::OpenOptions::new()
+        // best-effort but every attempt is logged. sync_data() flushes the
+        // entry to disk so a crash cannot silently drop the audit trail for
+        // safety-relevant actions (emergency stop, live confirmation).
+        let result = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.inner.audit_path)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()))
-        {
+            .and_then(|mut f| {
+                std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes())
+                    .and_then(|()| f.sync_data())
+            });
+        if let Err(err) = result {
             tracing::warn!("audit log append failed for {action}: {err}");
         }
     }

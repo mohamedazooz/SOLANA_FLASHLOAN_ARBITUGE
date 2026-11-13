@@ -34,8 +34,11 @@ Axum REST+WS API, one React dashboard. Telegram and the web app call the **same*
 - **Sessions**: 32 random bytes → stored as SHA-256 hash in-memory; raw token is
   returned once at login. TTL `WEB_SESSION_TTL_SECS` (60..=86400, default 3600).
   Max 64 concurrent sessions; oldest evicted.
-- **WS auth**: browsers cannot set headers on WebSocket, so
-  `GET /api/ws?token=<session>` is accepted in addition to `Authorization: Bearer`.
+- **WS auth**: browsers cannot set headers on WebSocket, so the client first
+  calls `POST /api/ws-ticket` (Bearer-authed) and upgrades with the returned
+  **single-use** `?ticket=` (60 s TTL, max 64 outstanding, consumed on use,
+  stored only as a SHA-256 hash). The long-lived session token never appears
+  in a URL.
 - **Rate limits**: login 10/min/IP, mutating endpoints 60/min/IP
   (`X-Forwarded-For` honored so the reverse proxy's client IP is used).
 - **Dangerous actions**: `live` mode requires `ARB_LIVE=1` **and**
@@ -61,7 +64,8 @@ Axum REST+WS API, one React dashboard. Telegram and the web app call the **same*
 | GET | `/api/config` | Bearer | active strategy config + overrides |
 | POST | `/api/config` | Bearer | validated `ConfigOverrides` merge |
 | POST | `/api/control/{action}` | Bearer | `status/start/stop/shadow/paper/live/opportunities/pnl/providers/config/emergency-stop/clear-emergency-stop` |
-| GET | `/api/ws` | Bearer or `?token=` | live event fan-out |
+| POST | `/api/ws-ticket` | Bearer | issues a single-use 60 s WS ticket |
+| GET | `/api/ws` | Bearer or single-use `?ticket=` | live event fan-out |
 | GET | `/health` | — | liveness (unauthenticated) |
 | GET | `/` | — | serves `web/dist/index.html` (falls back to legacy `dashboard/`) |
 

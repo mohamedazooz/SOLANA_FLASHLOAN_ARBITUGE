@@ -54,18 +54,23 @@ first per directive.
 |---|---|---|---|
 | R-A | HIGH | ≥24 h shadow soak with predicted-vs-observed comparison | **Blocked**: sandbox cannot run a multi-day soak. Required before any readiness claim beyond Shadow Ready. |
 | R-B | HIGH | Live V1 transport verification (SWQoS direct send) | **Blocked by policy** (`ARB_LIVE=0`) and by directive; gates + flag in place, awaiting authorized canary. |
-| R-C | MEDIUM | `rusqlite`/`libsqlite3-sys` RUSTSEC-2026-0459 (medium, transitive via sqlx) | No semver-compatible fix exists (`cargo update --dry-run`); requires upstream breaking upgrade. Monitored via cargo-audit. |
-| R-D | MEDIUM | `protobuf` RUSTSEC-2024-0437 (medium, transitive via prometheus) | Same: needs breaking major upgrade of the transitive path. |
-| R-E | LOW | Legacy `?token=` WS fallback retained | Remove after frontend ticket rollout is confirmed everywhere. |
+| R-C | MEDIUM | `rusqlite`/`libsqlite3-sys` RUSTSEC-2026-0459 (patched in libsqlite3-sys ≥0.39) | **Structurally blocked**: sqlx (both 0.8 and 0.9) unconditionally depends on `sqlx-sqlite`, which pins `libsqlite3-sys <0.38`; rusqlite versions pairing with ≥0.39 (0.42 → ^0.40) cannot coexist in one graph because `links = "sqlite3"` forbids two copies. Resolution requires dropping one of the two stacks (migrate SQLite storage to sqlx-sqlite, or PostgresStore off sqlx) — a dedicated storage-layer refactor, out of scope here. Monitored via cargo-audit. |
+| R-D | ~~MEDIUM~~ | ~~`protobuf` RUSTSEC-2024-0437 via prometheus~~ | **FIXED this round**: prometheus 0.13 → 0.14 (protobuf 2.28.0 → 3.7.2, patched); workspace compiles + full suite green. |
+| R-E | ~~LOW~~ | ~~Legacy `?token=` WS fallback~~ | **FIXED this round**: `ws_events` now accepts only the single-use ticket (or Bearer header); e2e test exercises the ticket flow end-to-end; frontend + docs updated. |
 | R-F | LOW | 5 unmaintained transitive deps (ansi_term, bincode 1.x, derivative, libsecp256k1, paste) | No runtime exposure identified; track for upstream replacement. |
-| R-G | LOW | Audit log is append-only, not fsync'd | Acceptable for single-operator localhost model; revisit if multi-instance. |
+| R-G | ~~LOW~~ | ~~Audit log not fsync'd~~ | **FIXED this round**: `audit()` now `sync_data()`s every entry; append remains best-effort with warn-on-failure (never blocks control decisions). |
 | R-H | INFO | Mainnet-fork full simulation run | **Blocked**: fork harness requires infrastructure beyond this sandbox; builder/sim units cover the transaction shape. |
 
 ## 5. Verification gates satisfied this round
 
 - `cargo fmt --all -- --check` — clean.
 - `cargo clippy --workspace --all-targets -- -D warnings` — 0 warnings.
-- Full workspace suite green (see TEST_EVIDENCE.md run 2026-11-13 and the
-  final campaign run in this round's commit).
+- Full workspace suite green under CI-equivalent conditions
+  (`env -u WEB_ADMIN_PASSWORD cargo test -q --workspace --all-targets`):
+  **951 passed / 0 failed** after the prometheus 0.14 upgrade and the
+  ticket-only WS change.
 - `tsc` + `npm run build` for the web app — clean.
+- `cargo audit` after upgrades: RUSTSEC-2024-0437 (protobuf) resolved;
+  remaining = R-C (blocked, see above) + rsa (lockfile-only, no inverse
+  path) + 5 unmaintained warnings.
 - CI on PR #8 — green (auto-updates on push to `feat/remediation-r2-r12`).

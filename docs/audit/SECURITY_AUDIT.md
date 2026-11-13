@@ -83,7 +83,7 @@ inspected only or environment-blocked.
 
 | Item | Severity | Status |
 |---|---|---|
-| Legacy `?token=` WS fallback retained | LOW | Deliberate (older clients during migration); ticket is preferred and token never logged. Removal candidate after frontend rollout. |
+| ~~Legacy `?token=` WS fallback~~ | LOW | **FIXED** (same round): `ws_events` accepts only the single-use ticket or Bearer header; e2e test now exercises the ticket flow. |
 | HTTPS/TLS termination | — | **Not verified** here; requires the real reverse-proxy deployment (runbook item). |
-| Audit-log fsync durability | LOW | Documented; acceptable for single-operator localhost model. |
+| ~~Audit-log fsync durability~~ | LOW | **FIXED** (same round): `audit()` calls `sync_data()` on every entry. |
 | ≥24 h authenticated-session behavior under soak | — | **Not verified** (soak blocked in sandbox). |

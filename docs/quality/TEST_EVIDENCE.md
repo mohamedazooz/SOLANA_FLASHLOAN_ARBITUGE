@@ -181,3 +181,23 @@ SECURITY_AUDIT, REMEDIATION_PLAN).
   (control_service.rs:502-513) clears only the latch; `start()` blocked
   while latched (469-473); `start_stop_roundtrip_and_emergency_latch`
   asserts execution stays paused after clearing.
+
+## Dependency-hardening follow-up (2026-11-13, same branch)
+
+- **R-D FIXED**: `prometheus` 0.13.4 → 0.14.0; transitive `protobuf`
+  2.28.0 → 3.7.2 — RUSTSEC-2024-0437 resolved. `cargo check --workspace
+  --all-targets` clean; full suite green.
+- **R-C BLOCKED (structural, proven)**: attempted rusqlite 0.42
+  (libsqlite3-sys 0.40, patched for RUSTSEC-2026-0459) — cargo rejects the
+  graph because sqlx (0.8 AND 0.9) unconditionally depends on
+  `sqlx-sqlite` pinning `libsqlite3-sys <0.38`, and `links = "sqlite3"`
+  forbids two copies. Reverted to rusqlite 0.32 / sqlx 0.8.6. Exact
+  resolver evidence in docs/audit/REMEDIATION_PLAN.md (R-C).
+- **R-E FIXED**: WS auth is now single-use-ticket-only; `?token=` fallback
+  removed from `ws_events`; e2e test `web_server_end_to_end_with_ws_upgrade`
+  rewritten to request a ticket then upgrade with it (101 asserted).
+- **R-G FIXED**: `ControlService::audit()` now `sync_data()`s every entry.
+- **Campaign (CI-equivalent, `env -u WEB_ADMIN_PASSWORD`)**: fmt clean;
+  clippy `-D warnings` 0; **951 passed / 0 failed**; `tsc` + `npm run
+  build` clean; `cargo audit` = 3 advisories (1 fixed this round), 0
+  critical/high.

@@ -427,22 +427,13 @@ async fn ws_events(
             })
         })
     };
-    // Preferred: single-use ticket (consumed here, safe to appear in URLs).
+    // Single-use ticket only: a long-lived session token must never appear
+    // in a URL (proxy/access-log retention). Browsers authenticate with
+    // `?ticket=` issued by the authed `POST /api/ws-ticket`.
     let ticket_ok = query_param("ticket")
         .map(|t| state.consume_ws_ticket(&t))
         .unwrap_or(false);
-    // Fallback: session token in `?token=` (legacy clients).
-    let query_ok = query_param("token")
-        .map(|token| {
-            let hash = sha256(token.as_bytes());
-            let sessions = state.sessions.lock();
-            sessions
-                .get(&hash)
-                .map(|s| s.expires > Instant::now())
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
-    if state.authorize(&headers).is_err() && !ticket_ok && !query_ok {
+    if state.authorize(&headers).is_err() && !ticket_ok {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "unauthorized"})),
@@ -740,11 +731,23 @@ mod tests {
         let status = resp.json::<Value>().await.unwrap();
         assert_eq!(status["mode"], "shadow");
 
-        // Raw WS upgrade: browsers authenticate with ?token=.
+        // Raw WS upgrade: browsers authenticate with a single-use ticket
+        // (a long-lived token must never appear in a URL).
+        let resp = client
+            .post(format!("{base}/api/ws-ticket"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let ticket = resp.json::<Value>().await.unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         let key = "dGhlIHNhbXBsZSBub25jZQ=="; // RFC 6455 sample key
         let req = format!(
-            "GET /api/ws?token={token} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            "GET /api/ws?ticket={ticket} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
         );
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         stream.write_all(req.as_bytes()).await.unwrap();

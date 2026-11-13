@@ -1,6 +1,6 @@
 // API client for the arb-bot web backend. The session token lives in
-// sessionStorage (cleared on tab close); it is sent as a Bearer header and as
-// `?token=` for the WebSocket handshake.
+// sessionStorage (cleared on tab close) and is sent as a Bearer header;
+// WebSocket upgrades authenticate with a single-use short-lived ticket.
 
 const TOKEN_KEY = "arb_session_token";
 
