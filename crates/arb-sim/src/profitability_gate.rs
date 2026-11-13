@@ -102,6 +102,11 @@ pub enum ProfitabilityRejection {
     InconsistentBalances(String),
     /// Simulation caused net lamport loss on fee payer exceeding gross edge.
     UnprofitableSimulation { fee_payer_delta: i128 },
+    /// Gross edge does not cover total execution costs: the route is a
+    /// structural loss. Rejected independently of the configured hurdle so a
+    /// hurdle of 0 (or any non-negative hurdle) can never wave a losing route
+    /// through as "zero profit".
+    NetProfitNegative { gross_edge: u64, total_costs: u64 },
 }
 
 /// Evaluated outcome of the simulation profitability gate.
@@ -231,8 +236,20 @@ impl ProfitabilityGate {
         }
 
         // 4. Net profit hurdle evaluation: gross_edge - total_costs >= strict_profit_hurdle
+        //    A gross edge below total costs is a guaranteed loss and is rejected
+        //    outright, before the hurdle comparison, so the saturating subtraction
+        //    below can never mask a negative net as 0.
         let total_costs = cost_breakdown.total_cost_lamports();
-        let net_profit = gross_edge_lamports.saturating_sub(total_costs);
+        if gross_edge_lamports < total_costs {
+            return SimulationOutcome::Rejected {
+                reason: ProfitabilityRejection::NetProfitNegative {
+                    gross_edge: gross_edge_lamports,
+                    total_costs,
+                },
+                sim_result: Some(sim_result),
+            };
+        }
+        let net_profit = gross_edge_lamports - total_costs;
 
         if net_profit < self.strict_profit_hurdle {
             return SimulationOutcome::Rejected {
@@ -393,5 +410,43 @@ mod tests {
             }
             other => panic!("Expected SimulationError, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_profitability_gate_rejects_structural_loss_even_with_zero_hurdle() {
+        // Regression: with hurdle == 0, the saturating net-profit subtraction
+        // previously mapped a guaranteed loss (gross_edge < total_costs) to
+        // net_profit = 0, which satisfied `0 >= 0` and passed the gate. The
+        // structural-loss check must reject it regardless of the hurdle.
+        let gate = ProfitabilityGate::new(0, 2);
+        let sim = mock_success_sim_result(100, 0);
+        // gross_edge 40_000 < total_costs 45_000 -> structural loss of 5_000 lamports
+        let costs = ExecutionCostBreakdown::standard(20_000, 20_000, 0, 0, 0);
+
+        let outcome = gate.evaluate_simulation(sim, Some(100), 40_000, costs);
+        assert!(!outcome.is_passed());
+        match outcome.rejection_reason().unwrap() {
+            ProfitabilityRejection::NetProfitNegative {
+                gross_edge,
+                total_costs,
+            } => {
+                assert_eq!(*gross_edge, 40_000);
+                assert_eq!(*total_costs, 45_000);
+            }
+            other => panic!("Expected NetProfitNegative, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_profitability_gate_zero_hurdle_passes_exact_breakeven() {
+        // A route that exactly covers all costs with hurdle 0 is not a loss:
+        // it must still pass the structural check (and the hurdle, trivially).
+        let gate = ProfitabilityGate::new(0, 2);
+        let sim = mock_success_sim_result(100, 45_000);
+        let costs = ExecutionCostBreakdown::standard(20_000, 20_000, 0, 0, 0);
+
+        let outcome = gate.evaluate_simulation(sim, Some(100), 45_000, costs);
+        assert!(outcome.is_passed());
+        assert_eq!(outcome.net_profit(), Some(0));
     }
 }
