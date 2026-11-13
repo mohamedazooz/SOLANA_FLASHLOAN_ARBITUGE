@@ -64,3 +64,4 @@ Thumbs.db
 # =============================================================================
 web/dist/
 web/node_modules/
+web/tsconfig.tsbuildinfo
