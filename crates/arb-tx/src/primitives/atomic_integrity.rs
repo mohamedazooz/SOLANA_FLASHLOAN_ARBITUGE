@@ -74,22 +74,32 @@ pub struct AtomicityVerification {
 
 /// Verify that an execution strategy is atomic.
 ///
-/// # Checks
+/// # Enforced checks
 ///
-/// 1. All instructions belong to a single transaction (not split across
-///    bundle transactions).
-/// 2. Flash loan borrow and repay are in the same transaction.
-/// 3. Repayment amount >= borrow amount + fee.
-/// 4. Instruction ordering: borrow before swaps before repay.
-/// 5. Account metas and privileges are valid.
-/// 6. Token program compatibility across instructions.
-/// 7. Mint compatibility between connected hops.
-/// 8. Transaction size limits.
-/// 9. Compute budget constraints.
+/// 1. Execution mode is `SingleTransaction` (a Jito bundle is rejected as
+///    non-atomic).
+/// 2. The instruction list is non-empty.
+/// 3. Flash loan borrow and repay are both present, and borrow precedes repay.
+/// 4. Repayment amount >= borrow amount + fee.
+/// 5. Instruction ordering: repay comes after the first swap.
+/// 6. A **legacy-format lower-bound** size estimate does not exceed 1,232
+///    bytes. This is deliberately conservative: it does not model ALT
+///    compression or the V1 4,096-byte ceiling, so a pass here does not prove a
+///    V1 transaction is within its MTU. Real byte accounting lives in
+///    `transport::adaptive` / `flash::compiler`.
+///
+/// # Advisory / delegated checks
+///
+/// * Account-meta privileges (`verify_account_metas`) and token-program
+///   compatibility (`verify_token_program_compatibility`) currently collect
+///   evidence but never reject; they are advisory only.
+/// * Mint compatibility between connected hops and compute-budget constraints
+///   are enforced by the route builders (`flash::compiler`,
+///   `flash::dlmm_*_flash_arb`) and are NOT re-checked here.
 ///
 /// Returns `AtomicityVerification` with `is_atomic = true` only when all
-/// checks pass. Any failure results in `is_atomic = false` with a rejection
-/// reason.
+/// enforced checks pass. Any failure results in `is_atomic = false` with a
+/// rejection reason.
 pub fn verify_atomic_integrity(
     mode: ExecutionMode,
     instructions: &[CompiledInstruction],
@@ -170,7 +180,8 @@ pub fn verify_atomic_integrity(
         rejection_reason = Some(rej);
     }
 
-    // Check 6: Transaction size limits (1232 bytes for legacy/v0, 4096 for v1).
+    // Check 6: Legacy lower-bound size estimate (1,232 bytes). This does NOT
+    // model ALT compression or the V1 4,096-byte ceiling; see the doc comment.
     if let Some(rej) = verify_transaction_size(instructions) {
         rejection_reason = Some(rej);
     }

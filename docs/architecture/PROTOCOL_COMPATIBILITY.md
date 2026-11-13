@@ -1,5 +1,12 @@
 # Protocol Compatibility
 
+> **Superseded (2026-11-13):** the "fail closed" status for Pump.fun / PumpSwap
+> in this document is stale. Both adapters are implemented and reachable in
+> `crates/arb-tx/src/protocols/swap_hop.rs`. See
+> [`../quality/PHASE_16_PROTOCOL_MATRIX.md`](../quality/PHASE_16_PROTOCOL_MATRIX.md)
+> for the reconciled matrix. The acceptance caveat below still applies: a
+> reachable builder is not live acceptance evidence.
+
 Status: source-level inventory only (revalidated 2026-11-08). "Quote" means a decoder/quote model exists;
 "Build" means the transaction builder can emit a swap instruction; a supervised source path
 does not mean production acceptance. No venue in this archive has complete differential +
