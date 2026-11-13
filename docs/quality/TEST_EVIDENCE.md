@@ -145,3 +145,39 @@ Run `bash scripts/verify-linux.sh` on Linux with Rust 1.99.1 and cargo-deny inst
 Then append exact exit codes, compiler version, OS/container image, commit/archive hash,
 fixture set, test counts, and log locations. Run the protocol differential and local
 validator/fork suites separately; CI success alone does not prove on-chain parity.
+
+## Audit round — PR #8 to Production (2026-11-13, commits 1bc6764 + 116d272 + this commit)
+
+Scope: directive-mandated full audit of PR #8. Findings register and per-fix
+evidence live in `docs/audit/` (7 documents: PR8_FULL_AUDIT, EXECUTION_FLOW_MAP,
+DEPENDENCY_AND_CALL_GRAPH, FINANCIAL_LOGIC_AUDIT, TRANSACTION_FORMAT_AUDIT,
+SECURITY_AUDIT, REMEDIATION_PLAN).
+
+- **Fixes applied**: F1 fail-closed dispatch-intent persistence
+  (`dispatch_aborted_unreconcilable` / `dispatch_aborted_unpersisted`);
+  F2 fire-time kill-switch/emergency gate before any network send;
+  F3 skip 3-leg capture when Kamino liquidity is unverifiable;
+  F4 right-most X-Forwarded-For trust; F5 single-use WS tickets
+  (60 s TTL, sha256-stored, remove-on-use) + `POST /api/ws-ticket`;
+  F6 corrected CPMM dust property invariant + committed regression seed.
+- **New tests**: 4 deterministic `classify_reconciliation` unit tests
+  (`supervisor/recovery.rs`) + 1 WS-ticket single-use test
+  (`web_api.rs`). All ran and passed.
+- **CI incident (honest record)**: first push (1bc6764) failed CI —
+  `web_server_end_to_end_with_ws_upgrade` panicked because the new
+  ws-ticket test mutated the process-global `WEB_ADMIN_PASSWORD` without
+  holding `ENV_LOCK` (passed locally only because `.env` supplies the
+  variable). Root-caused, fixed by making the test async + lock-holding
+  (commit 116d272), reproduced CI conditions locally with
+  `env -u WEB_ADMIN_PASSWORD cargo test` before re-pushing.
+- **Full campaign (CI-equivalent, no `.env`)**: fmt clean; clippy
+  `-D warnings` 0; **951 passed / 0 failed** (`cargo test -q --workspace
+  --all-targets` with `env -u WEB_ADMIN_PASSWORD`). With `.env` sourced:
+  also 951/0.
+- **Web**: `tsc --noEmit` + `npm run build` pass.
+- **CI**: PR #8 checks green — run 43348437340 (Format/check/test/clippy
+  1m18s pass; Web app build pass).
+- **Emergency-latch semantics verified**: `clear_emergency_stop`
+  (control_service.rs:502-513) clears only the latch; `start()` blocked
+  while latched (469-473); `start_stop_roundtrip_and_emergency_latch`
+  asserts execution stays paused after clearing.
