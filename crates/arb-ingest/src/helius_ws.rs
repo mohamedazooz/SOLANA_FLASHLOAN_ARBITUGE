@@ -39,6 +39,13 @@ use tracing::{debug, info, warn};
 /// Overridable via `WS_MAX_ACCOUNT_SUBS`. Raising it is safe against
 /// restrictive providers: a rejected subscription flips `account_sub_limited`
 /// and the worker stops queueing (fail-closed, no teardown loop).
+///
+/// Capability failures (`Method '...' not found` / `unsupported`, e.g. Alchemy
+/// WS rejecting `accountSubscribe` with -32601) are FATAL for the endpoint:
+/// `endpoint_unsupported` is raised, the connection is torn down with a backoff,
+/// and the worker fails over. Treating these as soft warnings strands the bot
+/// on a blind endpoint forever (measured live: 0 account updates, SOL/USD
+/// reference never resolved, graph sizing permanently skipped).
 fn max_ws_account_subs() -> usize {
     std::env::var("WS_MAX_ACCOUNT_SUBS")
         .ok()
@@ -61,6 +68,10 @@ pub struct HeliusWsClient {
     sub_to_account: parking_lot::RwLock<HashMap<u64, Pubkey>>,
     ws_backoffs: parking_lot::RwLock<HashMap<usize, Instant>>,
     account_sub_limited: AtomicBool,
+    /// Current endpoint cannot stream accounts at all (capability failure).
+    /// Reset on every successful connect; checked by the stream loop to break
+    /// and fail over instead of sitting on a blind connection.
+    endpoint_unsupported: AtomicBool,
     probe_confirmed: AtomicBool,
     slot_notify: Arc<Notify>,
 }
@@ -80,6 +91,7 @@ impl HeliusWsClient {
             sub_to_account: parking_lot::RwLock::new(HashMap::new()),
             ws_backoffs: parking_lot::RwLock::new(HashMap::new()),
             account_sub_limited: AtomicBool::new(false),
+            endpoint_unsupported: AtomicBool::new(false),
             probe_confirmed: AtomicBool::new(false),
             slot_notify: Arc::new(Notify::new()),
         }
@@ -529,6 +541,7 @@ impl HeliusWsClient {
                     self.req_to_account.write().clear();
                     self.sub_to_account.write().clear();
                     self.account_sub_limited.store(false, Ordering::Release);
+                    self.endpoint_unsupported.store(false, Ordering::Release);
                     self.probe_confirmed.store(false, Ordering::Release);
 
                     self.is_connected.store(true, Ordering::Release);
@@ -639,6 +652,17 @@ impl HeliusWsClient {
                                                     );
                                                     // Soft warning: do NOT break or fail over on non-fatal subscription rejections
                                                 }
+                                            }
+                                            // Capability failure (e.g. -32601 "Method 'accountSubscribe'
+                                            // not found"): this endpoint can never deliver account
+                                            // updates. Back it off and fail over instead of sitting on a
+                                            // blind connection forever.
+                                            if self.endpoint_unsupported.load(Ordering::Acquire) {
+                                                warn!(
+                                                    "WebSocket [{endpoint_num}/{total_endpoints}] {safe_url} does not support account subscriptions; backing off and failing over"
+                                                );
+                                                self.record_connect_backoff(idx, "accountSubscribe unsupported");
+                                                break;
                                             }
                                         }
                                     }
@@ -862,15 +886,23 @@ impl HeliusWsClient {
     pub fn handle_message(&self, v: &Value, yellowstone: &IngestClient) -> Result<bool, String> {
         if let Some(err_obj) = v.get("error") {
             let req_id = v.get("id").and_then(|i| i.as_u64());
+            let code = err_obj.get("code").and_then(|c| c.as_i64());
             let err_msg = err_obj
                 .get("message")
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown JSON-RPC error");
             let lower = err_msg.to_ascii_lowercase();
-            if lower.contains("limit")
-                || lower.contains("not found")
-                || lower.contains("unsupported")
+            // Capability failure: the endpoint does not implement the method at
+            // all (e.g. Alchemy WS: -32601 "Method 'accountSubscribe' not found").
+            // Retrying on this endpoint is pointless — it can NEVER deliver
+            // account updates. Flag it so the stream loop tears down and fails
+            // over with a backoff.
+            if lower.contains("not found") || lower.contains("unsupported") || code == Some(-32601)
             {
+                self.endpoint_unsupported.store(true, Ordering::Release);
+            } else if lower.contains("limit") {
+                // Transient quota/concurrency limit: stop queueing on this
+                // connection but keep it (existing fail-closed behavior).
                 self.account_sub_limited.store(true, Ordering::Release);
             }
             warn!("WS: subscription rejection warning (non-fatal) for id={req_id:?}: {err_msg}");
@@ -1055,6 +1087,41 @@ mod tests {
         });
         assert_eq!(client.handle_message(&acc_err, &yellowstone), Ok(false));
         assert!(client.account_sub_limited.load(Ordering::Acquire));
+        // A limit rejection must NOT be misclassified as a capability failure.
+        assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
+    }
+
+    /// Regression (live mainnet evidence): Alchemy WS rejects `accountSubscribe`
+    /// with -32601 "Method 'accountSubscribe' not found". The old code treated
+    /// this as a soft warning and kept the connection alive with all pending
+    /// subscriptions cleared — the bot sat on a blind endpoint forever (0
+    /// account updates, no SOL/USD reference, sizing permanently skipped).
+    /// A capability failure must flag the endpoint as unsupported so the stream
+    /// loop backs it off and fails over.
+    #[test]
+    fn handle_message_flags_unsupported_method_as_capability_failure() {
+        let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        let yellowstone = IngestClient::new();
+        let cap_err = json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "error": { "code": -32601, "message": "Method 'accountSubscribe' not found" }
+        });
+        assert_eq!(client.handle_message(&cap_err, &yellowstone), Ok(false));
+        assert!(client.endpoint_unsupported.load(Ordering::Acquire));
+        // Orthogonality: a capability failure is not a subscription quota limit.
+        assert!(!client.account_sub_limited.load(Ordering::Acquire));
+
+        let unsupported_err = json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "error": { "code": -32600, "message": "unsupported method" }
+        });
+        assert_eq!(
+            client.handle_message(&unsupported_err, &yellowstone),
+            Ok(false)
+        );
+        assert!(client.endpoint_unsupported.load(Ordering::Acquire));
     }
 
     #[tokio::test]
