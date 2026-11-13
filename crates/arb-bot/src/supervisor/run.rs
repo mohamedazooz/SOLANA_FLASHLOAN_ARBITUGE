@@ -76,7 +76,63 @@ impl Supervisor {
     ///
     /// No route is ever fabricated: the pipeline returns an error rather than
     /// a guessed chain, and the error is surfaced in the trace log.
-    pub(super) fn capture_three_leg_dlmm(
+    /// Token program owning `mint` on `pool`, from the pool's actual X/Y
+    /// program slots (X = base → index 0, Y = quote → index 1).
+    fn token_program_for_mint_pub(pool: &PoolState, mint: MintId) -> Option<Pubkey> {
+        use arb_types::TokenProgramKind;
+        let idx = if pool.base_mint == mint {
+            0
+        } else if pool.quote_mint == mint {
+            1
+        } else {
+            return None;
+        };
+        match pool.token_programs.get(idx)? {
+            TokenProgramKind::SplToken => Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok(),
+            TokenProgramKind::Token2022 => {
+                Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).ok()
+            }
+        }
+    }
+
+    /// Fetch the payer's real token balances for `atas`. Returns `None` when
+    /// the RPC fetch itself fails (fail-closed: zero-balance unprovable). A
+    /// missing account is provably zero (0); an existing account that cannot
+    /// be decoded yields `u64::MAX` (fail-closed non-zero). SPL/Token-2022
+    /// token accounts both store the amount at byte offset 64..72 (LE).
+    async fn fetch_payer_token_balances(&self, atas: &[Pubkey]) -> Option<Vec<u64>> {
+        use base64::prelude::*;
+        let strs: Vec<String> = atas.iter().map(|p| p.to_string()).collect();
+        let refs: Vec<&str> = strs.iter().map(String::as_str).collect();
+        let accounts = self.rpc_pool.get_multiple_accounts(&refs).await.ok()?;
+        Some(
+            accounts
+                .into_iter()
+                .map(|acc| {
+                    let Some(acc) = acc else {
+                        return 0u64;
+                    };
+                    let Some(data_str) = acc
+                        .get("data")
+                        .and_then(|d| d.get(0))
+                        .and_then(|s| s.as_str())
+                    else {
+                        return u64::MAX;
+                    };
+                    let Ok(bytes) = BASE64_STANDARD.decode(data_str) else {
+                        return u64::MAX;
+                    };
+                    if bytes.len() >= 72 {
+                        u64::from_le_bytes(bytes[64..72].try_into().unwrap_or([0; 8]))
+                    } else {
+                        u64::MAX
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    pub(super) async fn capture_three_leg_dlmm(
         &self,
         fresh_pools: &[PoolState],
         current_slot: Slot,
@@ -191,6 +247,62 @@ impl Supervisor {
 
         let by_id: std::collections::HashMap<Pubkey, &PoolState> =
             fresh_pools.iter().map(|p| (p.pool_id.0, p)).collect();
+
+        // Fail-closed inventory-provenance policy (PR24 §2.2): the chain's
+        // solvency must come from trade proceeds alone. Fetch the payer's
+        // REAL settlement/intermediate ATA balances and reject the chain when
+        // any is non-zero OR when zero-balance cannot be proven. The chain's
+        // leg inputs are already conservatively chained (leg N+1 consumes at
+        // most leg N's enforced min_amount_out), so a rejection here means a
+        // pre-existing balance could otherwise mask a repayment shortfall.
+        let wsol_pubkey = match Pubkey::from_str(arb_tx::WSOL_MINT) {
+            Ok(k) => k,
+            Err(_) => return Vec::new(),
+        };
+        let wsol_ata = arb_tx::get_associated_token_address_with_program_id(
+            &payer,
+            &wsol_pubkey,
+            &params.wsol_token_program,
+        );
+        let leg0_pool = by_id.get(&result.legs[0].pool_id.0).copied();
+        let leg2_pool = by_id.get(&result.legs[2].pool_id.0).copied();
+        let (Some(pool_a), Some(pool_b)) = (leg0_pool, leg2_pool) else {
+            return Vec::new();
+        };
+        let (Some(prog_a), Some(prog_b)) = (
+            Self::token_program_for_mint_pub(pool_a, result.meme_mints[0]),
+            Self::token_program_for_mint_pub(pool_b, result.meme_mints[1]),
+        ) else {
+            debug!("3-leg capture rejected: intermediate token program unresolvable");
+            return Vec::new();
+        };
+        let meme_a_ata = arb_tx::get_associated_token_address_with_program_id(
+            &payer,
+            &result.meme_mints[0].0,
+            &prog_a,
+        );
+        let meme_b_ata = arb_tx::get_associated_token_address_with_program_id(
+            &payer,
+            &result.meme_mints[1].0,
+            &prog_b,
+        );
+        let Some(balances) = self
+            .fetch_payer_token_balances(&[wsol_ata, meme_a_ata, meme_b_ata])
+            .await
+        else {
+            debug!("3-leg capture rejected: ATA balances unfetchable (fail-closed)");
+            return Vec::new();
+        };
+        let balances: Vec<u64> = balances;
+        let wsol_bal = balances.first().copied().unwrap_or(u64::MAX);
+        let a_bal = balances.get(1).copied().unwrap_or(u64::MAX);
+        let b_bal = balances.get(2).copied().unwrap_or(u64::MAX);
+        if wsol_bal > 0 || a_bal > 0 || b_bal > 0 {
+            warn!(
+                "3-leg capture rejected: pre-existing inventory would subsidize execution (wsol={wsol_bal}, meme_a={a_bal}, meme_b={b_bal})"
+            );
+            return Vec::new();
+        }
         let mut hops = Vec::with_capacity(3);
         for leg in result.legs.iter() {
             let Some(pool) = by_id.get(&leg.pool_id.0) else {

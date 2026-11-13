@@ -38,6 +38,10 @@ pub struct ThreeLegMemeContextParams {
     pub payer: Pubkey,
     pub meme_a_ata: Pubkey,
     pub meme_b_ata: Pubkey,
+    /// Payer WSOL settlement ATA balance. Any non-zero value fails the
+    /// pipeline closed: pre-existing WSOL could subsidize the flash-loan
+    /// repayment, breaking the proceeds-only solvency invariant.
+    pub wsol_ata_balance: u64,
     pub meme_a_ata_exists: bool,
     pub meme_b_ata_exists: bool,
     pub meme_a_ata_balance: u64,
@@ -88,6 +92,7 @@ impl Default for ThreeLegMemeContextParams {
             payer: Pubkey::new_unique(),
             meme_a_ata: Pubkey::new_unique(),
             meme_b_ata: Pubkey::new_unique(),
+            wsol_ata_balance: 0,
             meme_a_ata_exists: false,
             meme_b_ata_exists: false,
             meme_a_ata_balance: 0,
@@ -138,6 +143,7 @@ impl ThreeLegMemeContextParams {
                 &Pubkey::new_from_array([1u8; 32]),
                 &spl,
             ),
+            wsol_ata_balance: 0,
             meme_a_ata_exists: false,
             meme_b_ata_exists: false,
             meme_a_ata_balance: 0,
@@ -237,6 +243,10 @@ pub enum ThreeLegMemePipelineError {
         min_final_output: u64,
         required: u64,
     },
+    #[error(
+        "pre-existing {token} ATA balance {balance} would subsidize execution (fail-closed provenance policy)"
+    )]
+    PreExistingInventorySubsidy { token: &'static str, balance: u64 },
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -271,8 +281,16 @@ struct Chain {
 }
 
 /// One fully-evaluated 3-leg orientation at a given input size.
+///
+/// Chaining is CONSERVATIVE (sequential min-out): leg N+1 is quoted at
+/// `slippage_floor(leg N output)`, never at the optimistic expected output.
+/// `inputs[i]` is therefore exactly the amount the on-chain leg-i
+/// instruction can rely on receiving: leg i-1 carries
+/// `min_amount_out = inputs[i]`, so a leg can never consume wallet
+/// inventory beyond what the previous leg guarantees.
 #[derive(Clone, Copy)]
 struct ChainQuote {
+    inputs: [u64; 3],
     out: [u64; 3],
     fee: [u64; 3],
     bins: [u32; 3],
@@ -285,27 +303,46 @@ impl ChainQuote {
     }
 }
 
-/// Chain a quote through the three pools of `chain` at `input` size.
+/// Chain a quote through the three pools of `chain` at `input` size using
+/// CONSERVATIVE sequential chaining:
+///
+///   in1 = input
+///   out1 = quote(p1, in1);   in2 = floor(out1 * (10000 - s) / 10000)
+///   out2 = quote(p2, in2);   in3 = floor(out2 * (10000 - s) / 10000)
+///   out3 = quote(p3, in3)
+///
+/// Each hop's input equals the previous hop's enforced `min_amount_out`,
+/// so the on-chain chain never depends on optimistic outputs and can never
+/// consume pre-existing wallet inventory to bridge a leg shortfall.
+/// Slippage is applied exactly once per hop boundary (no double-count).
+/// All arithmetic is checked/saturating on u64.
 fn quote_chain(
     pools: &[PoolState],
     pool_indexes: (usize, usize, usize),
     a: MintId,
     b: MintId,
     input: u64,
+    slippage_bps: u64,
 ) -> Option<ChainQuote> {
     let wsol = wsol_mint();
     let (i, j, k) = pool_indexes;
     if i >= pools.len() || j >= pools.len() || k >= pools.len() {
         return None;
     }
+    let slippage_floor = |amount: u64| -> u64 {
+        amount.saturating_mul(10_000u64.saturating_sub(slippage_bps)) / 10_000
+    };
     let (p1, p2, p3) = (&pools[i], &pools[j], &pools[k]);
     let (out1, q1, d1) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p1, input, wsol, a)?;
-    let (out2, q2, d2) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p2, out1, a, b)?;
-    let (out3, q3, d3) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p3, out2, b, wsol)?;
+    let in2 = slippage_floor(out1);
+    let (out2, q2, d2) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p2, in2, a, b)?;
+    let in3 = slippage_floor(out2);
+    let (out3, q3, d3) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p3, in3, b, wsol)?;
     if out3 == 0 {
         return None;
     }
     Some(ChainQuote {
+        inputs: [input, in2, in3],
         out: [out1, out2, out3],
         fee: [q1.fee_amount, q2.fee_amount, q3.fee_amount],
         bins: [q1.bins_crossed, q2.bins_crossed, q3.bins_crossed],
@@ -316,7 +353,11 @@ fn quote_chain(
 /// Enumerate all ordered distinct (p1, p2, p3) triples that form a
 /// WSOL -> A -> B -> WSOL cycle. Returns every feasible chain with its quote
 /// at the discovery input size.
-fn enumerate_cycles(pools: &[PoolState], input_size: u64) -> Vec<(Chain, ChainQuote)> {
+fn enumerate_cycles(
+    pools: &[PoolState],
+    input_size: u64,
+    slippage_bps: u64,
+) -> Vec<(Chain, ChainQuote)> {
     let wsol = wsol_mint();
     let n = pools.len();
     let mut out = Vec::new();
@@ -361,7 +402,8 @@ fn enumerate_cycles(pools: &[PoolState], input_size: u64) -> Vec<(Chain, ChainQu
                 if !p2_mints.contains(&a) || !p2_mints.contains(&b) {
                     continue;
                 }
-                let Some(quote) = quote_chain(pools, (i, j, k), a, b, input_size) else {
+                let Some(quote) = quote_chain(pools, (i, j, k), a, b, input_size, slippage_bps)
+                else {
                     continue;
                 };
                 let profit = quote.gross(input_size) as i128;
@@ -408,7 +450,7 @@ pub fn build_three_leg_meme_pipeline(
     // Route graph: pick the most profitable feasible triple at the discovery size.
     let wsol = wsol_mint();
     let discovery_size = params.input_size;
-    let cycles = enumerate_cycles(&candidates, discovery_size);
+    let cycles = enumerate_cycles(&candidates, discovery_size, params.slippage_bps);
     if cycles.is_empty() {
         return Err(ThreeLegMemePipelineError::NoCycleFound {
             pools: candidates.len(),
@@ -455,6 +497,7 @@ pub fn build_three_leg_meme_pipeline(
             best_chain.a,
             best_chain.b,
             *size,
+            params.slippage_bps,
         );
         let profit = quote.map_or(i64::MIN, |q| net_profit_of(q, *size, params));
         tested.push((*size, profit));
@@ -477,6 +520,7 @@ pub fn build_three_leg_meme_pipeline(
             best_chain.a,
             best_chain.b,
             best_size,
+            params.slippage_bps,
         )
         .expect("discovery size must quote")
     });
@@ -492,16 +536,7 @@ pub fn build_three_leg_meme_pipeline(
     let p1 = &candidates[best_chain.i];
     let p2 = &candidates[best_chain.j];
     let p3 = &candidates[best_chain.k];
-    let legs = build_leg_records(
-        p1,
-        p2,
-        p3,
-        best_size,
-        wsol,
-        &chosen_quote,
-        best_chain.a,
-        best_chain.b,
-    )?;
+    let legs = build_leg_records(p1, p2, p3, wsol, &chosen_quote, best_chain.a, best_chain.b)?;
 
     let input = best_size;
     let final_out = legs[2].amount_out;
@@ -555,7 +590,6 @@ fn build_leg_records(
     p1: &PoolState,
     p2: &PoolState,
     p3: &PoolState,
-    input: u64,
     wsol: MintId,
     quote: &ChainQuote,
     a: MintId,
@@ -564,7 +598,6 @@ fn build_leg_records(
     let pool_ids = [p1.pool_id, p2.pool_id, p3.pool_id];
     let from_to = [(wsol, a), (a, b), (b, wsol)];
     let mut legs: Vec<ThreeLegMemeLegQuote> = Vec::with_capacity(3);
-    let mut amount = input;
     for (i, ((from, to), pool_id)) in from_to.iter().zip(pool_ids.iter()).enumerate() {
         legs.push(ThreeLegMemeLegQuote {
             leg: i,
@@ -572,12 +605,11 @@ fn build_leg_records(
             from_mint: *from,
             to_mint: *to,
             swap_for_y: quote.swap_for_y[i],
-            amount_in: amount,
+            amount_in: quote.inputs[i],
             amount_out: quote.out[i],
             fee: quote.fee[i],
             bins_traversed: quote.bins[i],
         });
-        amount = quote.out[i];
     }
     Ok([legs.remove(0), legs.remove(0), legs.remove(0)])
 }
@@ -611,6 +643,28 @@ fn build_context(
     b: MintId,
     wsol: MintId,
 ) -> Result<ThreeLegMemeArbitrageContext, ThreeLegMemePipelineError> {
+    // Fail-closed inventory-provenance policy: any pre-existing payer token
+    // balance in a settlement/intermediate ATA could subsidize a leg shortfall
+    // or the flash-loan repayment. The chain must be solvent from trade
+    // proceeds alone, so a non-zero balance rejects the context outright.
+    if params.wsol_ata_balance > 0 {
+        return Err(ThreeLegMemePipelineError::PreExistingInventorySubsidy {
+            token: "wsol",
+            balance: params.wsol_ata_balance,
+        });
+    }
+    if params.meme_a_ata_balance > 0 {
+        return Err(ThreeLegMemePipelineError::PreExistingInventorySubsidy {
+            token: "meme_a",
+            balance: params.meme_a_ata_balance,
+        });
+    }
+    if params.meme_b_ata_balance > 0 {
+        return Err(ThreeLegMemePipelineError::PreExistingInventorySubsidy {
+            token: "meme_b",
+            balance: params.meme_b_ata_balance,
+        });
+    }
     let wsol_ata = arb_tx::get_associated_token_address_with_program_id(
         &params.payer,
         &wsol.0,
@@ -832,6 +886,7 @@ mod tests {
             payer,
             meme_a_ata: Pubkey::new_from_array([2u8; 32]),
             meme_b_ata: Pubkey::new_from_array([3u8; 32]),
+            wsol_ata_balance: 0,
             meme_a_ata_exists: false,
             meme_b_ata_exists: false,
             meme_a_ata_balance: 0,
@@ -881,5 +936,82 @@ mod tests {
             matches!(err, ThreeLegMemePipelineError::MissingDlmmState { leg: 0 }),
             "unexpected error: {err:?}"
         );
+    }
+
+    /// PR24 §2.2: any pre-existing payer balance in a settlement or
+    /// intermediate ATA must fail the context closed — it could subsidize a
+    /// leg shortfall or the flash-loan repayment.
+    #[test]
+    fn build_context_rejects_pre_existing_inventory() {
+        let wsol = wsol();
+        let a = MintId(Pubkey::new_from_array([92u8; 32]));
+        let b = MintId(Pubkey::new_from_array([93u8; 32]));
+
+        let p1 = pool_without_dlmm_state(1, wsol, a);
+        let p2 = pool_without_dlmm_state(2, a, b);
+        let p3 = pool_without_dlmm_state(3, b, wsol);
+        let legs = [leg_quote(0, &p1), leg_quote(1, &p2), leg_quote(2, &p3)];
+
+        for (token, field) in [("wsol", 0u64), ("meme_a", 1u64), ("meme_b", 2u64)] {
+            let mut params = context_params();
+            match field {
+                0 => params.wsol_ata_balance = 123,
+                1 => params.meme_a_ata_balance = 123,
+                _ => params.meme_b_ata_balance = 123,
+            }
+            let err = build_context(&p1, &p2, &p3, &legs, &params, a, b, wsol)
+                .expect_err("pre-existing inventory must be rejected");
+            assert!(
+                matches!(
+                    err,
+                    ThreeLegMemePipelineError::PreExistingInventorySubsidy { token: t, balance: 123 }
+                        if t == token
+                ),
+                "unexpected error for {token}: {err:?}"
+            );
+        }
+
+        // All-zero provenance passes the subsidy gate (DLMM state still
+        // missing, so the error must be MissingDlmmState, not subsidy).
+        let params = context_params();
+        let err = build_context(&p1, &p2, &p3, &legs, &params, a, b, wsol)
+            .expect_err("dlmm state still missing");
+        assert!(matches!(
+            err,
+            ThreeLegMemePipelineError::MissingDlmmState { leg: 0 }
+        ));
+    }
+
+    /// PR24 §2.3: conservative sequential chaining — leg N+1's input is
+    /// leg N's slippage-floor min output, strictly below the optimistic
+    /// output whenever slippage_bps > 0.
+    #[test]
+    fn quote_chain_inputs_are_conservative_min_outs() {
+        let slippage_bps = 100u64;
+        let floor = |amt: u64| amt.saturating_mul(10_000 - slippage_bps) / 10_000;
+        let wsol = wsol();
+        let a = MintId(Pubkey::new_from_array([94u8; 32]));
+        let b = MintId(Pubkey::new_from_array([95u8; 32]));
+        let mk = |byte: u8, x: MintId, y: MintId| pool_without_dlmm_state(byte, x, y);
+        let pools = [mk(1, wsol, a), mk(2, a, b), mk(3, b, wsol)];
+        // quote_single_hop requires DLMM state; pool_without_dlmm_state has
+        // dlmm: None, so quote_chain returns None here — the conservative
+        // input contract is instead verified through the pipeline-level test
+        // (three_leg_meme_pipeline_tests). This test pins the contract at the
+        // leg-record level using a synthetic ChainQuote.
+        let quote = ChainQuote {
+            inputs: [1_000_000, floor(904_873_582), floor(808_080_808)],
+            out: [904_873_582, 808_080_808, 700_000_000],
+            fee: [1_000; 3],
+            bins: [0; 3],
+            swap_for_y: [true; 3],
+        };
+        let legs = build_leg_records(&pools[0], &pools[1], &pools[2], wsol, &quote, a, b)
+            .expect("leg records");
+        assert_eq!(legs[0].amount_in, 1_000_000);
+        assert_eq!(legs[1].amount_in, floor(legs[0].amount_out));
+        assert_eq!(legs[2].amount_in, floor(legs[1].amount_out));
+        assert!(legs[1].amount_in < legs[0].amount_out);
+        assert!(legs[2].amount_in < legs[1].amount_out);
     }
 }
