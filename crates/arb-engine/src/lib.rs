@@ -328,6 +328,24 @@ pub struct MarketGraph {
     pub economic_config: Option<EconomicConfig>,
 }
 
+/// Per-tick scan telemetry for the base-cycle search.
+///
+/// Without this, a log line of "0 candidate route(s)" is ambiguous between
+/// two fundamentally different causes that demand different fixes:
+/// - `gross_profitable == 0`: the market genuinely had no cycle whose raw
+///   output exceeded its input (nothing to do — correct fail-closed).
+/// - `gross_profitable > 0 && gate_rejected > 0`: cycles existed but the
+///   economic gate (flash fee, min profit, Jito tip) rejected them —
+///   tuning/observability problem, NOT a market absence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BaseCycleScanStats {
+    pub base_anchors: usize,
+    pub two_hop_gross_profitable: u64,
+    pub three_hop_gross_profitable: u64,
+    pub gate_rejected: u64,
+    pub opportunities: u64,
+}
+
 impl MarketGraph {
     pub fn new(base_anchors: Vec<MintId>) -> Self {
         Self {
@@ -590,7 +608,21 @@ impl MarketGraph {
         current_slot: Slot,
         max_trade_size: u64,
     ) -> Vec<ExecutionOpportunity> {
+        self.find_base_cycles_with_stats(current_slot, max_trade_size)
+            .0
+    }
+
+    /// `find_base_cycles` with per-tick scan telemetry (see `BaseCycleScanStats`).
+    pub fn find_base_cycles_with_stats(
+        &self,
+        current_slot: Slot,
+        max_trade_size: u64,
+    ) -> (Vec<ExecutionOpportunity>, BaseCycleScanStats) {
         let mut opportunities = Vec::new();
+        let mut stats = BaseCycleScanStats {
+            base_anchors: self.base_anchors.len(),
+            ..Default::default()
+        };
         let mut route_counter = 1u32;
 
         for &base in &self.base_anchors {
@@ -671,6 +703,7 @@ impl MarketGraph {
                                         Some(e2),
                                     );
                                     if out2 > size_in as u128 {
+                                        stats.two_hop_gross_profitable += 1;
                                         let impact = cpmm_price_impact_bps(
                                             size_in as u128,
                                             l1.r_in,
@@ -714,6 +747,8 @@ impl MarketGraph {
                                         ) {
                                             opportunities.push(opp);
                                             route_counter += 1;
+                                        } else {
+                                            stats.gate_rejected += 1;
                                         }
                                     }
                                 }
@@ -906,6 +941,7 @@ impl MarketGraph {
                                         );
 
                                         if out3 > size_in as u128 {
+                                            stats.three_hop_gross_profitable += 1;
                                             let impact = cpmm_price_impact_bps(
                                                 size_in as u128,
                                                 l1.r_in,
@@ -971,6 +1007,8 @@ impl MarketGraph {
                                             ) {
                                                 opportunities.push(opp);
                                                 route_counter += 1;
+                                            } else {
+                                                stats.gate_rejected += 1;
                                             }
                                         }
                                     }
@@ -984,7 +1022,8 @@ impl MarketGraph {
 
         // Candidate Ranking: Sort opportunities descending by net profit
         opportunities.sort_by_key(|a| std::cmp::Reverse(a.net_profit.0));
-        opportunities
+        stats.opportunities = opportunities.len() as u64;
+        (opportunities, stats)
     }
 
     /// Discover multi-hop arbitrage cycles up to `max_hops` (e.g. 4-hop, 5-hop) using DFS cycle traversal

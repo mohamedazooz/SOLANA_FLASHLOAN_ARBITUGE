@@ -167,6 +167,14 @@ impl Default for DiscoveryConfig {
 pub struct PoolDiscovery {
     rpc: RpcPool,
     http: reqwest::Client,
+    /// Immutable mint-decimal cache. Mint decimals can never change after
+    /// creation, so a resolved value is valid for the process lifetime.
+    /// Without this, every ~90s rediscovery cycle re-resolved the same meme
+    /// mints over RPC; on free-tier endpoints those calls landed during
+    /// 429-cooldown windows, `resolve_mint_decimals` failed, and the cycle
+    /// registered a degraded pool set (measured soak5-soak8: 165 -> 93 pools,
+    /// Raydium venues dropped entirely each cycle).
+    decimals_cache: parking_lot::Mutex<HashMap<MintId, u8>>,
 }
 
 impl PoolDiscovery {
@@ -176,7 +184,11 @@ impl PoolDiscovery {
             .user_agent("arb-bot-discovery/1.0")
             .build()
             .unwrap_or_default();
-        Self { rpc, http }
+        Self {
+            rpc,
+            http,
+            decimals_cache: parking_lot::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Backwards-compatible entry point: sweep with default bounds, using
@@ -811,7 +823,18 @@ impl PoolDiscovery {
         let mut out = HashMap::new();
         let unique: Vec<MintId> = {
             let mut seen = HashSet::new();
-            mints.iter().copied().filter(|m| seen.insert(*m)).collect()
+            mints
+                .iter()
+                .copied()
+                .filter(|m| seen.insert(*m))
+                .filter(|m| match self.decimals_cache.lock().get(m) {
+                    Some(d) => {
+                        out.insert(*m, *d);
+                        false
+                    }
+                    None => true,
+                })
+                .collect()
         };
         if unique.is_empty() {
             return out;
@@ -868,6 +891,7 @@ impl PoolDiscovery {
                     }
                 }
                 out.insert(*mint, bytes[44]);
+                self.decimals_cache.lock().insert(*mint, bytes[44]);
             }
         }
         out

@@ -29,13 +29,14 @@ pub mod rpc_pool;
 pub use rpc_pool::{ProviderHealthReport, RpcPool, RpcPoolHealth, SignatureStatus};
 pub mod registry;
 pub use registry::{
-    DecodedPoolInfo, MultiDexRegistry, RegisteredPool, clmm_tick_array_covers_tick,
-    compute_clmm_virtual_reserves, compute_dlmm_reserves, decode_account_data, decode_clmm_state,
-    decode_dlmm_fee_bps, decode_dlmm_state, decode_orca_fee_bps, decode_orca_vaults,
-    decode_pool_info, decode_raydium_clmm_state, decode_raydium_clmm_vaults,
-    decode_raydium_cpmm_fee_bps, decode_raydium_cpmm_vaults, decode_raydium_fee_bps,
-    decode_raydium_vaults, decode_spl_token_amount_bytes, fetch_accounts_chunked,
-    next_pool_write_version, raydium_clmm_tick_array_pdas, resolve_mints_decimals,
+    DecodedPoolInfo, MultiDexRegistry, RegisteredPool, clmm_onchain_mints,
+    clmm_tick_array_covers_tick, compute_clmm_virtual_reserves, compute_dlmm_reserves,
+    decode_account_data, decode_clmm_state, decode_dlmm_fee_bps, decode_dlmm_state,
+    decode_orca_fee_bps, decode_orca_vaults, decode_pool_info, decode_raydium_clmm_state,
+    decode_raydium_clmm_vaults, decode_raydium_cpmm_fee_bps, decode_raydium_cpmm_vaults,
+    decode_raydium_fee_bps, decode_raydium_vaults, decode_spl_token_amount_bytes,
+    fetch_accounts_chunked, next_pool_write_version, raydium_clmm_tick_array_pdas,
+    resolve_mints_decimals,
 };
 pub mod dual_ingest;
 pub use dual_ingest::{DualIngestShadow, PoolConsistencyCheck, StreamingPoolCache};
