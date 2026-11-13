@@ -58,6 +58,16 @@ impl PostgresStore {
                     .map_err(|e| {
                         ArbError::Internal(format!("Failed to execute PostgreSQL migration: {e}"))
                     })?;
+                // Safe schema evolution for pre-existing databases: CREATE
+                // TABLE IF NOT EXISTS cannot add columns to an existing table.
+                sqlx::raw_sql(
+                    "ALTER TABLE dispatch_intents ADD COLUMN IF NOT EXISTS last_valid_block_height BIGINT",
+                )
+                .execute(&pool)
+                .await
+                .map_err(|e| {
+                    ArbError::Internal(format!("Failed to evolve PostgreSQL schema: {e}"))
+                })?;
                 Ok::<_, ArbError>(pool)
             })
         })
@@ -312,24 +322,27 @@ impl Store for PostgresStore {
 
     fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()> {
         let pool = self.pool.clone();
-        let (attempt_id, signature, provider, dispatch_slot) = (
+        let (attempt_id, signature, provider, dispatch_slot, last_valid_block_height) = (
             intent.attempt_id,
             intent.signature.clone(),
             intent.provider.clone(),
             intent.dispatch_slot,
+            intent.last_valid_block_height,
         );
         self.block_on(async move {
             sqlx::query(
-                "INSERT INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, status)
-                 VALUES ($1, $2, $3, $4, 'pending')
+                "INSERT INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, last_valid_block_height, status)
+                 VALUES ($1, $2, $3, $4, $5, 'pending')
                  ON CONFLICT (attempt_id) DO UPDATE SET
-                    signature = $2, provider = $3, dispatch_slot = $4, status = 'pending',
+                    signature = $2, provider = $3, dispatch_slot = $4,
+                    last_valid_block_height = $5, status = 'pending',
                     resolved_status = NULL, resolved_at = NULL",
             )
             .bind(attempt_id)
             .bind(signature)
             .bind(provider)
             .bind(dispatch_slot)
+            .bind(last_valid_block_height)
             .execute(&pool)
             .await
             .map_err(|e| ArbError::Internal(format!("Failed to insert PG dispatch intent: {e}")))?;
@@ -340,8 +353,8 @@ impl Store for PostgresStore {
     fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>> {
         let pool = self.pool.clone();
         self.block_on(async move {
-            let rows = sqlx::query_as::<_, (i64, String, String, i64)>(
-                "SELECT attempt_id, signature, provider, dispatch_slot FROM dispatch_intents
+            let rows = sqlx::query_as::<_, (i64, String, String, i64, Option<i64>)>(
+                "SELECT attempt_id, signature, provider, dispatch_slot, last_valid_block_height FROM dispatch_intents
                  WHERE status = 'pending' ORDER BY attempt_id ASC LIMIT $1",
             )
             .bind(limit)
@@ -351,12 +364,15 @@ impl Store for PostgresStore {
             Ok(rows
                 .into_iter()
                 .map(
-                    |(attempt_id, signature, provider, dispatch_slot)| DispatchIntentRecord {
-                        attempt_id,
-                        signature,
-                        provider,
-                        dispatch_slot,
-                        resolved_status: None,
+                    |(attempt_id, signature, provider, dispatch_slot, last_valid_block_height)| {
+                        DispatchIntentRecord {
+                            attempt_id,
+                            signature,
+                            provider,
+                            dispatch_slot,
+                            last_valid_block_height,
+                            resolved_status: None,
+                        }
                     },
                 )
                 .collect())

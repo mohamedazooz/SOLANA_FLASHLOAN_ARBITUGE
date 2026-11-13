@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS dispatch_intents (
     signature TEXT NOT NULL,
     provider TEXT NOT NULL,
     dispatch_slot BIGINT NOT NULL,
+    last_valid_block_height BIGINT,
     status TEXT NOT NULL DEFAULT 'pending',
     resolved_status TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

@@ -733,8 +733,10 @@ impl Supervisor {
             );
 
             let blockhash_b58;
+            let mut last_valid_block_height: Option<i64> = None;
             let tx_bytes = if let Some(ref signer) = self.keypair {
-                let blockhash = self.fetch_recent_blockhash().await;
+                let (blockhash, lvbh) = self.fetch_recent_blockhash().await;
+                last_valid_block_height = lvbh;
                 blockhash_b58 = bs58::encode(blockhash).into_string();
                 // Fail fast: a zero blockhash must never be sent.
                 if blockhash == [0u8; 32] {
@@ -875,7 +877,7 @@ impl Supervisor {
                 // Shadow-only path: build an unsigned V1 envelope with zeroed
                 // signature slots. RPC simulation is explicitly sigVerify=false;
                 // no wallet secret is loaded and this byte sequence is never sent.
-                let blockhash = self.fetch_recent_blockhash().await;
+                let (blockhash, _lvbh) = self.fetch_recent_blockhash().await;
                 if blockhash == [0u8; 32] {
                     warn!("Shadow V1 simulation rejected: no valid recent blockhash");
                     continue;
@@ -1156,6 +1158,7 @@ impl Supervisor {
                 profit_sol,
                 live_sol_price,
                 blockhash_b58: &blockhash_b58,
+                last_valid_block_height,
                 cu_limit,
                 cu_price,
                 tx_bytes: &tx_bytes,

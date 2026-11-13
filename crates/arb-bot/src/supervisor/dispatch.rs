@@ -14,6 +14,9 @@ pub(super) struct DispatchContext<'a> {
     pub profit_sol: f64,
     pub live_sol_price: f64,
     pub blockhash_b58: &'a str,
+    /// `lastValidBlockHeight` of this blockhash, persisted with the dispatch
+    /// intent so recovery can prove expiration with block-height evidence.
+    pub last_valid_block_height: Option<i64>,
     pub cu_limit: u32,
     pub cu_price: u64,
     pub tx_bytes: &'a Vec<u8>,
@@ -55,6 +58,7 @@ impl Supervisor {
             profit_sol,
             live_sol_price,
             blockhash_b58,
+            last_valid_block_height,
             cu_limit,
             cu_price,
             tx_bytes,
@@ -526,6 +530,7 @@ impl Supervisor {
                             signature: pre_sig.clone(),
                             provider: provider.to_string(),
                             dispatch_slot: current_slot.0 as i64,
+                            last_valid_block_height,
                             resolved_status: None,
                         })
                 {

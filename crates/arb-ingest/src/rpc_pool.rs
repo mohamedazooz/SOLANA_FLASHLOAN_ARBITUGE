@@ -1094,6 +1094,17 @@ impl RpcPool {
         Ok(bh.to_string())
     }
 
+    /// Fetch current block height. Used by recovery as positive evidence of
+    /// blockhash expiration (current > persisted lastValidBlockHeight).
+    pub async fn get_block_height(&self) -> Result<u64> {
+        let res = self.call("getBlockHeight", json!([])).await?;
+        let h = res
+            .as_u64()
+            .or_else(|| res.get("result").and_then(|r| r.as_u64()))
+            .context("Missing block height in response")?;
+        Ok(h)
+    }
+
     /// Fetch batch account info and latest chain context slot.
     /// Routes 100-account batches to endpoints with `max_batch_size >= 100` (excluding quota-exhausted)
     /// and automatically falls back to 5-account chunks across remaining healthy endpoints (including RPCFast).

@@ -62,6 +62,8 @@ struct CachedTemplate {
     tip: u64,
 }
 
+type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
+
 pub struct Supervisor {
     mode: Arc<std::sync::atomic::AtomicU8>,
     config: Config,
@@ -100,7 +102,7 @@ pub struct Supervisor {
     /// Short-TTL recent-blockhash cache. A blockhash is valid for ~60-90s, so
     /// reusing one for a few seconds removes an RPC round-trip from the send
     /// path without risking an expired hash.
-    blockhash_cache: parking_lot::Mutex<Option<([u8; 32], Instant)>>,
+    blockhash_cache: parking_lot::Mutex<Option<CachedBlockhash>>,
     /// Tip paid per `(slot, route)`: a retry inside the same window may not
     /// jump past `ladder_growth × previous`, and a new window starts clean.
     previous_tips: parking_lot::Mutex<std::collections::HashMap<(u64, u32), Lamports>>,
