@@ -77,10 +77,18 @@ echo "==> [6/7] Service"
 if command -v systemctl >/dev/null 2>&1 && systemctl --user >/dev/null 2>&1 || [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
     sed -e "s|__HOME__|${HOME}|g" -e "s|__USER__|${USER}|g" scripts/arb-bot.service > /tmp/arb-bot.service
     sudo cp /tmp/arb-bot.service /etc/systemd/system/arb-bot.service
+    sed -e "s|__HOME__|${HOME}|g" -e "s|__USER__|${USER}|g" scripts/arb-bot-watchdog.service > /tmp/arb-bot-watchdog.service
+    sudo cp /tmp/arb-bot-watchdog.service /etc/systemd/system/arb-bot-watchdog.service
+    sudo cp scripts/arb-bot-watchdog.timer /etc/systemd/system/arb-bot-watchdog.timer
+    sudo chmod +x "${HOME}/SOLANA_FLASHLOAN_ARBITUGE/scripts/arb_bot_watchdog.sh" \
+                   "${HOME}/SOLANA_FLASHLOAN_ARBITUGE/scripts/arb_bot_failure_alert.sh"
+    sudo cp scripts/arb-bot.logrotate /etc/logrotate.d/arb-bot
     sudo systemctl daemon-reload
     sudo systemctl enable --now arb-bot
+    sudo systemctl enable --now arb-bot-watchdog.timer
     sleep 5
     sudo systemctl status arb-bot --no-pager | head -12 || true
+    sudo systemctl list-timers arb-bot-watchdog.timer --no-pager | head -5 || true
 else
     echo "    systemd unavailable — starting under nohup"
     set -a; . ./.env; set +a
