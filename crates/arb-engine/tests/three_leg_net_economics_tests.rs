@@ -197,11 +197,19 @@ fn route_fails_closed_when_repayment_not_guaranteed() {
     p.network_cost_lamports = 0;
     // 50% per-leg slippage haircut collapses the guaranteed final floor far
     // below principal + fee: the pipeline must fail closed instead of emitting
-    // a route that cannot atomically repay the flash loan.
+    // a route that cannot atomically repay the flash loan. Under conservative
+    // sequential chaining (PR24 §2.3) the collapsed floor is detected even
+    // earlier by the net-profit gate; both variants are fail-closed.
     p.slippage_bps = 5_000;
     let err = build_three_leg_meme_pipeline(&pools, &p).unwrap_err();
-    assert!(matches!(
-        err,
-        arb_engine::ThreeLegMemePipelineError::RepaymentNotGuaranteed { .. }
-    ));
+    assert!(
+        matches!(
+            err,
+            arb_engine::ThreeLegMemePipelineError::RepaymentNotGuaranteed { .. }
+        ) || matches!(
+            err,
+            arb_engine::ThreeLegMemePipelineError::BelowNetProfitFloor { .. }
+        ),
+        "expected a fail-closed rejection, got: {err}"
+    );
 }

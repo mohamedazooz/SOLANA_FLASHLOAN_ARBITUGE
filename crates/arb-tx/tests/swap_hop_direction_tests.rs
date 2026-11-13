@@ -352,3 +352,72 @@ fn dlmm_default_pool_mints_fail_closed() {
         "{err}"
     );
 }
+
+/// PR24 §5 regression: a Y->X DLMM hop must place the POOL's programs in the
+/// fixed swap2 slots (11 = token_x_program, 12 = token_y_program), never the
+/// hop's (in, out) programs. Fixture: X = SPL Token, Y = Token-2022; the hop
+/// sells Y (in, Token-2022) for X (out, SPL). The old mapping put the 2022
+/// program in the x slot — fatal on-chain for any Token-2022 reverse hop.
+#[test]
+fn dlmm_reverse_hop_maps_programs_to_pool_xy_slots() {
+    use std::str::FromStr;
+
+    let token_x = Pubkey::new_unique(); // SPL side
+    let token_y = Pubkey::new_unique(); // Token-2022 side
+    let swap = SwapHop {
+        pool_id: PoolId(Pubkey::new_unique()),
+        protocol: DexProtocol::MeteoraDlmm,
+        mint_in: MintId(token_y),
+        mint_out: MintId(token_x),
+        fee_bps: 25,
+        active_bin_id: None,
+        // SwapHop contract: (mint_in, mint_out) = (2022, SPL).
+        token_programs: [TokenProgramKind::Token2022, TokenProgramKind::SplToken],
+        trade_intent: Default::default(),
+        execution_accounts: Some(dlmm_exec(token_x, token_y)),
+    };
+    let ix = build_swap_hop_instruction(&swap, Pubkey::new_unique(), 1_000_000, 900_000)
+        .expect("reverse DLMM hop must build");
+    let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+    let t22 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+    assert_eq!(
+        ix.accounts[11].pubkey, spl,
+        "slot 11 must be token_x_program (SPL)"
+    );
+    assert_eq!(
+        ix.accounts[12].pubkey, t22,
+        "slot 12 must be token_y_program (2022)"
+    );
+}
+
+/// PR24 §5 regression: the forward X->Y hop keeps the natural orientation.
+#[test]
+fn dlmm_forward_hop_maps_programs_to_pool_xy_slots() {
+    use std::str::FromStr;
+
+    let token_x = Pubkey::new_unique(); // Token-2022 side
+    let token_y = Pubkey::new_unique(); // SPL side
+    let swap = SwapHop {
+        pool_id: PoolId(Pubkey::new_unique()),
+        protocol: DexProtocol::MeteoraDlmm,
+        mint_in: MintId(token_x),
+        mint_out: MintId(token_y),
+        fee_bps: 25,
+        active_bin_id: None,
+        token_programs: [TokenProgramKind::Token2022, TokenProgramKind::SplToken],
+        trade_intent: Default::default(),
+        execution_accounts: Some(dlmm_exec(token_x, token_y)),
+    };
+    let ix = build_swap_hop_instruction(&swap, Pubkey::new_unique(), 1_000_000, 900_000)
+        .expect("forward DLMM hop must build");
+    let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+    let t22 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+    assert_eq!(
+        ix.accounts[11].pubkey, t22,
+        "slot 11 must be token_x_program (2022)"
+    );
+    assert_eq!(
+        ix.accounts[12].pubkey, spl,
+        "slot 12 must be token_y_program (SPL)"
+    );
+}

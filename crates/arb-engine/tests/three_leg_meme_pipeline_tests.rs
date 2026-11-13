@@ -162,6 +162,7 @@ fn params(input_size: u64) -> ThreeLegMemeContextParams {
         payer,
         meme_a_ata: ma_ata,
         meme_b_ata: mb_ata,
+        wsol_ata_balance: 0,
         meme_a_ata_exists: false,
         meme_b_ata_exists: false,
         meme_a_ata_balance: 0,
@@ -232,8 +233,11 @@ fn test_pipeline_discovery_quote_optimizer_resolver_chain() {
         assert_eq!(leg.bins_traversed, 0, "deep bins absorb the full trade");
     }
     assert_eq!(result.legs[0].amount_in, params.input_size);
-    assert_eq!(result.legs[1].amount_in, result.legs[0].amount_out);
-    assert_eq!(result.legs[2].amount_in, result.legs[1].amount_out);
+    // Conservative sequential chaining (PR24 §2.3): leg N+1 is sized at
+    // leg N's slippage-floor min output, never the optimistic output.
+    let floor = |a: u64| a * (10_000 - params.slippage_bps) / 10_000;
+    assert_eq!(result.legs[1].amount_in, floor(result.legs[0].amount_out));
+    assert_eq!(result.legs[2].amount_in, floor(result.legs[1].amount_out));
     assert!(
         result.gross_profit_lamports > 0,
         "fixture route must be profitable"

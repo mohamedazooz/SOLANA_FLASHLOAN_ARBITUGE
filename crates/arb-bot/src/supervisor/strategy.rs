@@ -255,61 +255,9 @@ impl Supervisor {
                 info!("🔁 Multi-hop DFS detected {} route(s)", multi_opps.len());
             }
 
-            // ── Meteora 3-leg (WSOL -> A -> B -> WSOL) pipeline ──
-            // Third candidate class: three distinct DLMM pools on Meteora,
-            // chained-quote discovery + 3-leg-native size search. Converted
-            // into a standard ExecutionOpportunity so the same economics,
-            // risk and dispatch path applies. Fails closed to an empty vec.
-            // Fail-closed liquidity proof: when flash funding is enabled, the
-            // actual supply-vault liquidity must be verifiable — an
-            // unverifiable reserve skips the capture entirely.
-            let flash_liquidity = self.kamino_available_flash_liquidity(current_slot);
-            let flash_liquidity_unverified =
-                self.config.strategy.use_flash_loan && flash_liquidity.is_none();
-            if flash_liquidity_unverified {
-                debug!(
-                    "3-leg capture skipped: flash funding enabled but Kamino supply-vault liquidity unverifiable at slot {}",
-                    current_slot.0
-                );
-            }
-            let three_leg_opps = if flash_liquidity_unverified {
-                Vec::new()
-            } else {
-                self.capture_three_leg_dlmm(
-                    &fresh_pools,
-                    current_slot,
-                    max_sizing,
-                    verified.flash_loan_fee_sf.value,
-                    flash_liquidity,
-                    verified.tip_lamports.value.0,
-                )
-            };
-            if !three_leg_opps.is_empty() {
-                info!(
-                    "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",
-                    three_leg_opps.len()
-                );
-            }
-            if let Some(control) = self.control() {
-                for o in three_leg_opps.iter().take(16) {
-                    control.record_opportunity(crate::control_service::OpportunityRecord {
-                        captured_at_unix: 0,
-                        slot: current_slot.0,
-                        route: o
-                            .hops
-                            .iter()
-                            .map(|h| format!("{}", h.pool_id))
-                            .collect::<Vec<_>>()
-                            .join("\u{2192}"),
-                        protocol: "meteora-dlmm-3leg".to_string(),
-                        borrow_lamports: o.size_in.0,
-                        expected_output_lamports: o.expected_out.0,
-                        net_profit_lamports: o.net_profit.0 as i64,
-                        eligible: true,
-                        reject_reason: None,
-                    });
-                }
-            }
+            // Graph stats for the tick log (snapshot while still locked).
+            let (graph_edges, graph_anchors) =
+                (graph.edges_by_from.len(), graph.base_anchors.len());
 
             // Merge + dedupe by sorted pool set, then rank by net profit so
             // the most profitable route is processed first.
@@ -320,7 +268,7 @@ impl Supervisor {
                 ids.sort_unstable();
                 seen_pool_sets.insert(ids);
             }
-            for mut src in [bf_opps, multi_opps, three_leg_opps] {
+            for mut src in [bf_opps, multi_opps] {
                 src.retain(|o| {
                     let mut ids: Vec<Pubkey> = o.hops.iter().map(|h| h.pool_id.0).collect();
                     ids.sort_unstable();
@@ -333,11 +281,82 @@ impl Supervisor {
                 "Slot {}: graph discovered {} candidate route(s) after dedupe; graph edges={}, base_anchors={}",
                 current_slot.0,
                 merged.len(),
-                graph.edges_by_from.len(),
-                graph.base_anchors.len()
+                graph_edges,
+                graph_anchors
             );
-            merged
+            (merged, seen_pool_sets)
         };
+        let (mut merged, mut seen_pool_sets) = opportunities;
+
+        // ── Meteora 3-leg (WSOL -> A -> B -> WSOL) pipeline ──
+        // Third candidate class: three distinct DLMM pools on Meteora,
+        // chained-quote discovery + 3-leg-native size search. Converted
+        // into a standard ExecutionOpportunity so the same economics,
+        // risk and dispatch path applies. Fails closed to an empty vec.
+        // Fail-closed liquidity proof: when flash funding is enabled, the
+        // actual supply-vault liquidity must be verifiable — an
+        // unverifiable reserve skips the capture entirely.
+        let flash_liquidity = self.kamino_available_flash_liquidity(current_slot);
+        let flash_liquidity_unverified =
+            self.config.strategy.use_flash_loan && flash_liquidity.is_none();
+        if flash_liquidity_unverified {
+            debug!(
+                "3-leg capture skipped: flash funding enabled but Kamino supply-vault liquidity unverifiable at slot {}",
+                current_slot.0
+            );
+        }
+        let three_leg_opps = if flash_liquidity_unverified {
+            Vec::new()
+        } else {
+            self.capture_three_leg_dlmm(
+                &fresh_pools,
+                current_slot,
+                max_sizing,
+                verified.flash_loan_fee_sf.value,
+                flash_liquidity,
+                verified.tip_lamports.value.0,
+            )
+            .await
+        };
+        if !three_leg_opps.is_empty() {
+            info!(
+                "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",
+                three_leg_opps.len()
+            );
+        }
+        if let Some(control) = self.control() {
+            for o in three_leg_opps.iter().take(16) {
+                control.record_opportunity(crate::control_service::OpportunityRecord {
+                    captured_at_unix: 0,
+                    slot: current_slot.0,
+                    route: o
+                        .hops
+                        .iter()
+                        .map(|h| format!("{}", h.pool_id))
+                        .collect::<Vec<_>>()
+                        .join("\u{2192}"),
+                    protocol: "meteora-dlmm-3leg".to_string(),
+                    borrow_lamports: o.size_in.0,
+                    expected_output_lamports: o.expected_out.0,
+                    net_profit_lamports: o.net_profit.0 as i64,
+                    eligible: true,
+                    reject_reason: None,
+                });
+            }
+        }
+
+        // Merge the 3-leg class with the same sorted-pool-set dedupe, then
+        // rank by net profit so the most profitable route is processed first.
+        let mut three_leg_opps = three_leg_opps;
+        three_leg_opps.retain(|o| {
+            let mut ids: Vec<Pubkey> = o.hops.iter().map(|h| h.pool_id.0).collect();
+            ids.sort_unstable();
+            seen_pool_sets.insert(ids)
+        });
+        merged.extend(three_leg_opps);
+        merged.sort_by_key(|o| std::cmp::Reverse(o.net_profit.0));
+        let opportunities = merged;
+
         let t_ingest_to_quote_us = quote_ingest_time.elapsed().as_micros() as u64;
         self.heartbeat
             .observe_quote(current_slot.0, opportunities.len());

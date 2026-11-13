@@ -139,6 +139,7 @@ pub fn params(input_size: u64) -> ThreeLegMemeContextParams {
         payer,
         meme_a_ata: ma_ata,
         meme_b_ata: mb_ata,
+        wsol_ata_balance: 0,
         meme_a_ata_exists: false,
         meme_b_ata_exists: false,
         meme_a_ata_balance: 0,
