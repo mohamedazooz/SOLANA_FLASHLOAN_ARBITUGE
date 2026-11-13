@@ -107,9 +107,35 @@ Self-calibrating rungs land **exactly** on 1232 / 1500 / 2000 / 3000 / 3500 / 40
 - Sim outcome classification: `STALE_QUOTE_REJECTION` on the second pass — quote-freshness gate correctly refused to act on aged state.
 - Full-route successful on-chain simulation of this route is **BLOCKED (operator)**: requires a funded fee payer; the deterministic test payer is unfunded and `InvalidAccountForFee` is the correct RPC response. No component was modified to bypass this.
 
-### 3.4 Bin-array expansion behavior
+### 3.4 ALT / account-compression investigation (measured, same route three ways)
 
-Bin-array account requirements were exercised up to 12 bins/leg (62 accounts, 2,465 bytes) without hitting the 64-account ceiling. Route sizing must remain within the bin-distribution of live pools; the engine's dynamic sizing caps candidate sizes at available per-bin liquidity (see `arb-engine` sizing).
+The directive required investigating safe account compression. Result (`reports/phase16/ALT_COMPRESSION_MATRIX.json`, test `crates/arb-tx/tests/alt_compression_tests.rs`, all sizes measured from actual serialized wire bytes on the **same real three-pool DLMM route**):
+
+| Bins/leg | Accounts | V1 inline | V0 bare | V0 + ALT |
+|---|---|---|---|---|
+| 1 | 38 | 1,574 B | FAIL (>1,232) | **482 B** ✅ |
+| 2 | 41 | 1,673 B | FAIL | **488 B** ✅ |
+| 3 | 44 | 1,772 B | FAIL | **494 B** ✅ |
+| 4 | 47 | 1,871 B | FAIL | **500 B** ✅ |
+| 5 | 50 | 1,970 B | FAIL | **506 B** ✅ |
+| 6 | 53 | 2,069 B | FAIL | **512 B** ✅ |
+| 8 | 59 | 2,267 B | FAIL | **524 B** ✅ |
+| 10 | 65 | 2,465 B | FAIL | **536 B** ✅ (V1 ceiling reached at bins=11) |
+
+**Harness-defect correction (measured twice):** the first revision of this matrix reported v0+ALT = 854→1,151 B with a 5-bin cap at 1,251 B > 1,232. That was a test-harness artifact, not ALT physics: the ALT was derived from one construction of the route while the V0+ALT build re-ran `params()`, regenerating fresh random reserves/oracles/bin-array PDAs. Every missed key fell back to a 32-byte static message key, costing 3 × (32+1) = **99 B per bin rung instead of the true 6 B**. With the ALT derived from the SAME construction (the fixed test compiles all three ways from one `params` instance), the measured growth is **+6 B/bin** (3 × 1-byte index + 3 B loaded-address bookkeeping) and v0+ALT carries the route to the V1 account ceiling with 696 bytes of packet headroom. Diagnostic: `cargo run --release -p arb-tx --example alt_breakdown`.
+
+Engineering conclusions (all proven by test, not estimated):
+
+1. **ALT compresses real payload**: the 38-account 1-bin route → 482 B inside the legacy packet; bare V0 cannot carry even that route (1,595 B). At bins=10 (65 accounts) v0+ALT is 536 B vs 2,465 B V1 — **1,929 B saved**.
+2. **ALT does NOT raise the 1,232-byte packet limit** — the invariant test proves every v0+ALT success stays ≤ 1,232 and overflow fails closed with `TransactionTooLarge`. With +6 B/bin the size ceiling sits near ~120 bins/leg; the binding constraints are instead the ALT 255-index cap (~85 bins/leg) and v0's u8 loaded-writable count (255).
+3. **V1 extends account capacity where ALT cannot**: V1 carries the same route to 65 accounts / 2,465 B and rejects at the SIMD-0385 64-inline-account ceiling (rejection proven).
+4. **No silent downgrade**: with a V1-capable profile the compiler emits V1 even when lookup tables are supplied; V0+ALT is reachable only by explicitly declaring `v1_transport_supported: false`.
+5. **Production choice**: V1 inline remains the default transport (no ALT creation/rent/deployment dependency, larger account capacity); V0+ALT is the verified fallback for V1-incapable endpoints.
+6. **Operational ALT constraints (official docs + open-source searchers)**: addresses added to an ALT are unusable in the same slot (1-slot cooldown; `Transaction address table lookup uses an invalid index`); an extend transaction itself fits ~20–30 addresses inside 1,232 B; and a Jito bundle must not reference an ALT modified inside the same bundle (`jito-labs/mev-bot`). Route ALTs must therefore be pre-created/pre-extended with the stable account set plus the anticipated bin-array window, one slot before execution.
+
+### 3.5 Bin-array expansion behavior
+
+Bin-array account requirements were exercised up to 12 bins/leg without hitting the 64-account ceiling (V1 ladder: 38→62 accounts, 1,574→2,465 B; the 64-inline-account rejection and 67-account runtime rejection are recorded). Route sizing must remain within the bin-distribution of live pools; the engine's dynamic sizing caps candidate sizes at available per-bin liquidity (see `arb-engine` sizing).
 
 ---
 

@@ -59,5 +59,26 @@
       "Fail-closed chain verified end-to-end: stale pools -> 'No fresh pools within graph max age; skipping tick (fail closed)'; missing SOL/USD -> 'skip graph sizing'",
       "Pump.fun recent-coins frontend API returned 403 from sandbox IP (not RPC); multi-venue pairing still paired 70 curves"
     ]
+  },
+  "third_run_publicnode_merged_main": {
+    "branch": "main after merging PRs #12/#13/#14 (includes ops-monitoring changes)",
+    "rpc_primary": "https://solana-rpc.publicnode.com (0 HTTP 429)",
+    "rpc_fallback": "https://api.mainnet-beta.solana.com (6,195 HTTP 429)",
+    "ws": "wss://solana-rpc.publicnode.com",
+    "duration_min": 4.5,
+    "log_levels": {
+      "INFO": 83,
+      "DEBUG": 487,
+      "WARN": 6199,
+      "ERROR": 6
+    },
+    "opportunities_emitted_for_signing": 0,
+    "transactions_broadcast": 0,
+    "durable_store": "sqlite WAL written continuously (/tmp/soak3/sentinel.db*)",
+    "findings": [
+      "Merged-main binary (incl. PR #12 ops observability) runs cleanly: panic hook, watchdog, health sweeps active",
+      "publicnode: zero 429 across the whole run; fallback api.mainnet-beta 429'd 6,195 times and rotated correctly",
+      "Strategy fail-closed ticks throughout: no fresh pools -> skip; zero stale fallbacks, zero broadcasts"
+    ]
   }
 }
