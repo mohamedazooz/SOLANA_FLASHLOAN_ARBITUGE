@@ -587,15 +587,21 @@ impl MarketGraph {
             }
             PoolKind::Dlmm => {
                 let d = edge.dlmm.as_ref()?;
-                let active_bin = d.bins.iter().find(|b| b.bin_id == d.active_bin_id)?;
                 let a_to_b = edge.pool_base == edge.from_mint;
-                let ax = active_bin.amount_x.min(u64::MAX as u128) as u64;
-                let ay = active_bin.amount_y.min(u64::MAX as u128) as u64;
-                arb_math::dlmm::dlmm_active_bin_max_input(
+                let bins: Vec<arb_math::dlmm::DlmmBin> = d
+                    .bins
+                    .iter()
+                    .map(|b| arb_math::dlmm::DlmmBin {
+                        id: b.bin_id,
+                        amount_x: b.amount_x.min(u64::MAX as u128) as u64,
+                        amount_y: b.amount_y.min(u64::MAX as u128) as u64,
+                        price_q64: 0,
+                    })
+                    .collect();
+                arb_math::dlmm::dlmm_multi_bin_max_input(
                     d.active_bin_id,
                     d.bin_step_bps,
-                    ax,
-                    ay,
+                    &bins,
                     a_to_b,
                 )
             }

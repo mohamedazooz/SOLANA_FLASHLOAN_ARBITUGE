@@ -331,6 +331,72 @@ pub fn dlmm_active_bin_max_input(
     }
 }
 
+/// Multi-bin executable input capacity: the maximum input absorbable by the
+/// provided bin window, walking bins in the exact traversal order used by
+/// [`quote_dlmm_multi_bin`] (X->Y descends from the active bin, Y->X ascends).
+///
+/// Math (per bin i, price P_i in Q64.64):
+/// * X->Y (swap_for_y): the bin's Y reserve absorbs `max_x_i = floor(amount_y_i << 64 / P_i)` input X.
+/// * Y->X: the bin's X reserve absorbs `max_y_i = floor(amount_x_i * P_i >> 64)` input Y.
+///
+/// Capacity = sum of `max_*_i` over every bin present in the window. This is
+/// exactly the executable depth of [`quote_dlmm_multi_bin`] on the same
+/// window (quote depth == execution depth); traversal beyond the window
+/// errors `BinNotFound` on-chain-quote side, so it must not be counted.
+///
+/// Returns `None` (fail closed) only when the window is empty, does not
+/// contain the active bin (incomplete state), or a price derivation fails.
+/// An empty OUTPUT side of the active bin is NOT a rejection: the walk
+/// continues into neighbouring bins, unlike [`dlmm_active_bin_max_input`].
+pub fn dlmm_multi_bin_max_input(
+    active_bin_id: i32,
+    bin_step_bps: u16,
+    bins: &[DlmmBin],
+    swap_for_y: bool,
+) -> Option<u64> {
+    if bins.is_empty() || !bins.iter().any(|b| b.id == active_bin_id) {
+        return None;
+    }
+    let mut total: u128 = 0;
+    let mut current = active_bin_id;
+    while let Some(bin) = bins.iter().find(|b| b.id == current) {
+        let price_q64 = if bin.price_q64 != 0 {
+            bin.price_q64
+        } else {
+            get_price_from_id(current, bin_step_bps).ok()?
+        };
+        if price_q64 == 0 {
+            return None;
+        }
+        let absorbable: u128 = if swap_for_y {
+            if bin.amount_y == 0 {
+                0
+            } else {
+                let y_wide = U256::from(bin.amount_y) << SCALE_OFFSET;
+                let max_x = y_wide / U256::from(price_q64);
+                max_x.try_into().unwrap_or(u128::MAX)
+            }
+        } else {
+            if bin.amount_x == 0 {
+                0
+            } else {
+                let x_wide = U256::from(bin.amount_x);
+                let max_y = (x_wide * U256::from(price_q64)) >> SCALE_OFFSET;
+                max_y.try_into().unwrap_or(u128::MAX)
+            }
+        };
+        total = total.saturating_add(absorbable);
+        if total >= u64::MAX as u128 {
+            return Some(u64::MAX);
+        }
+        current = match advance_active_id(current, swap_for_y) {
+            Ok(next) => next,
+            Err(_) => break,
+        };
+    }
+    u64::try_from(total).ok()
+}
+
 /// Scale trade input across a 3-hop Meteora DLMM cycle to extract maximum active bin liquidity.
 ///
 /// In Meteora DLMM, price is constant-sum inside each bin (zero price impact within the active bin).
@@ -1484,6 +1550,97 @@ mod tests {
         // If active bin has zero output token liquidity, returns None
         assert_eq!(dlmm_active_bin_max_input(0, 25, 5_000_000, 0, true), None);
         assert_eq!(dlmm_active_bin_max_input(0, 25, 0, 10_000_000, false), None);
+    }
+
+    #[test]
+    fn test_dlmm_multi_bin_max_input_walks_past_empty_active_bin() {
+        // Active bin 0 has ZERO output-side liquidity (post-crossing state).
+        // The old active-bin-only capacity returned None -> INSUFFICIENT_LIQUIDITY
+        // even though neighbouring bins hold deep liquidity.
+        let bins = vec![
+            DlmmBin {
+                id: 2,
+                amount_x: 0,
+                amount_y: 0,
+                price_q64: 0,
+            },
+            DlmmBin {
+                id: 1,
+                amount_x: 0,
+                amount_y: 0,
+                price_q64: 0,
+            },
+            DlmmBin {
+                id: 0,
+                amount_x: 5_000_000,
+                amount_y: 0,
+                price_q64: 0,
+            },
+            DlmmBin {
+                id: -1,
+                amount_x: 0,
+                amount_y: 10_000_000,
+                price_q64: 0,
+            },
+            DlmmBin {
+                id: -2,
+                amount_x: 0,
+                amount_y: 20_000_000,
+                price_q64: 0,
+            },
+        ];
+        // X->Y: bin 0 contributes 0 (amount_y=0); bin -1 gives 10M/price(-1);
+        // bin -2 gives 20M/price(-2). Prices near 1.0 for 25bps steps.
+        let cap_down = dlmm_multi_bin_max_input(0, 25, &bins, true).expect("capacity");
+        assert!(
+            cap_down > 29_000_000,
+            "multi-bin capacity must exceed the single-bin zero: {cap_down}"
+        );
+
+        // Y->X from active bin 0: bin 0's X reserve (5M) absorbs input; bins
+        // above (1, 2) hold no X and contribute 0. State complete -> Some.
+        let cap_up = dlmm_multi_bin_max_input(0, 25, &bins, false).expect("state complete");
+        assert_eq!(cap_up, 5_000_000);
+    }
+
+    #[test]
+    fn test_dlmm_multi_bin_max_input_fails_closed_on_missing_active_bin() {
+        let bins = vec![
+            DlmmBin {
+                id: -3,
+                amount_x: 0,
+                amount_y: 9_000_000,
+                price_q64: 0,
+            },
+            DlmmBin {
+                id: -2,
+                amount_x: 0,
+                amount_y: 9_000_000,
+                price_q64: 0,
+            },
+        ];
+        // Active bin 0 not present in the window: incomplete state -> None.
+        assert_eq!(dlmm_multi_bin_max_input(0, 25, &bins, true), None);
+        assert_eq!(dlmm_multi_bin_max_input(0, 25, &[], true), None);
+    }
+
+    #[test]
+    fn test_dlmm_multi_bin_max_input_matches_single_bin_when_isolated() {
+        // With only the active bin present, multi-bin == active-bin result.
+        let bins = vec![DlmmBin {
+            id: 0,
+            amount_x: 5_000_000,
+            amount_y: 10_000_000,
+            price_q64: 0,
+        }];
+        assert_eq!(
+            dlmm_multi_bin_max_input(0, 25, &bins, true),
+            dlmm_active_bin_max_input(0, 25, 5_000_000, 10_000_000, true)
+        );
+        assert_eq!(
+            dlmm_multi_bin_max_input(0, 25, &bins, false),
+            dlmm_active_bin_max_input(0, 25, 5_000_000, 10_000_000, false)
+        );
     }
 
     #[test]
