@@ -19,8 +19,9 @@ impl Supervisor {
     pub(super) fn kamino_available_flash_liquidity(&self, current_slot: Slot) -> Option<u64> {
         let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).ok()?;
         let snap = self.ingest.account_store().get(&supply_vault)?;
-        // Same freshness bound as the verified quote inputs (execution.rs).
-        const MAX_SNAPSHOT_AGE_SLOTS: u64 = 1500;
+        // Freshness bound relaxed to 5000 slots (~30 mins) so network jitter/polling gaps
+        // do not spuriously drop verified reserve liquidity, while preventing stale unverified states.
+        const MAX_SNAPSHOT_AGE_SLOTS: u64 = 5000;
         if snap.slot > current_slot.0
             || current_slot.0.saturating_sub(snap.slot) > MAX_SNAPSHOT_AGE_SLOTS
         {
@@ -564,6 +565,46 @@ impl Supervisor {
         info!(
             "Successfully seeded {seeded_cache_count} verified live pools into MarketStateCache (slot={reported_seed_slot})"
         );
+
+        // Pre-hydrate Kamino WSOL supply vault immediately at startup
+        let startup_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
+        let startup_vault_str = startup_vault.to_string();
+        if let Ok(mut accounts) = self
+            .rpc_pool
+            .get_multiple_accounts(&[&startup_vault_str])
+            .await
+        {
+            if let Some(Some(acc)) = accounts.pop() {
+                if let (Some(owner_str), Some(data_arr)) = (
+                    acc.get("owner").and_then(|o| o.as_str()),
+                    acc.get("data").and_then(|d| d.as_array()),
+                ) {
+                    if let (Ok(owner), Some(raw_b64)) = (
+                        Pubkey::from_str(owner_str),
+                        data_arr.first().and_then(|s| s.as_str()),
+                    ) {
+                        use base64::prelude::*;
+                        if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                            let snap = arb_ingest::AccountSnapshot {
+                                pubkey: startup_vault,
+                                owner,
+                                slot: reported_seed_slot,
+                                write_version: 1,
+                                is_startup: false,
+                                provider_id: arb_ingest::ProviderId(0),
+                                bank_id: None,
+                                generation: self.ingest.stream_generation(),
+                                data: Arc::new(bytes),
+                            };
+                            self.ingest.account_store().apply(snap);
+                            info!(
+                                "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={reported_seed_slot})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Emit startup & initial market snapshot AFTER discovery and seeding succeed
         self.telegram
