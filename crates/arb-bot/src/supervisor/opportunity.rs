@@ -96,7 +96,10 @@ impl Supervisor {
                 PRIORITY_FEE_MAX_SHARE_BPS,
             );
             // cu_price is micro-lamports per CU; convert to a lamport estimate.
-            let priority_fee_lamports = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
+            // Ceil: priority fee is a non-refundable cost, so underestimating
+            // it (floor) would overstate net profit. Fail-closed on overflow.
+            let priority_fee_product = cu_price.saturating_mul(cu_limit as u64);
+            let priority_fee_lamports = priority_fee_product.div_ceil(1_000_000);
             let gross = opp.gross_profit.as_u64();
             let gross_sol = gross as f64 / 1e9;
             let route_label = opp
@@ -109,10 +112,15 @@ impl Supervisor {
                 .collect::<Vec<_>>()
                 .join(" → ");
 
+            // Fail-closed: if costs exceed gross, reject instead of saturating to 0.
             let net_before_tip = gross
-                .saturating_sub(flash_fee_raw)
-                .saturating_sub(BASE_FEE_LAMPORTS)
-                .saturating_sub(priority_fee_lamports);
+                .checked_sub(flash_fee_raw)
+                .and_then(|v| v.checked_sub(BASE_FEE_LAMPORTS))
+                .and_then(|v| v.checked_sub(priority_fee_lamports));
+            let Some(net_before_tip) = net_before_tip else {
+                debug!("Opportunity rejected: costs exceed gross profit (fail-closed)");
+                continue;
+            };
 
             // Strict Decoupled Profit Protection Invariant:
             // P_net = G - C_fees - T_Jito >= $0.20 USD
