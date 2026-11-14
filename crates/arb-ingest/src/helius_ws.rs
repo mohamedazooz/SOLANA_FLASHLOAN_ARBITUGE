@@ -181,15 +181,17 @@ impl HeliusWsClient {
             }
         }
 
-        // Prioritize multi-subscription WS endpoints (Alchemy first, then other multi-sub, then single-sub rpcfast).
+        // Prioritize WebSocket endpoints that fully support account subscriptions.
+        // Helius & general multi-sub endpoints come first.
+        // Alchemy WS does not support accountSubscribe on standard tiers, so push it to the back.
         let mut multi_sub: Vec<String> = urls
             .iter()
-            .filter(|u| u.contains("alchemy.com"))
+            .filter(|u| !u.contains("rpcfast.com") && !u.contains("alchemy.com"))
             .cloned()
             .collect();
         multi_sub.extend(
             urls.iter()
-                .filter(|u| !u.contains("rpcfast.com") && !u.contains("alchemy.com"))
+                .filter(|u| u.contains("alchemy.com"))
                 .cloned(),
         );
         multi_sub.extend(urls.into_iter().filter(|u| u.contains("rpcfast.com")));
