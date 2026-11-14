@@ -189,11 +189,7 @@ impl HeliusWsClient {
             .filter(|u| !u.contains("rpcfast.com") && !u.contains("alchemy.com"))
             .cloned()
             .collect();
-        multi_sub.extend(
-            urls.iter()
-                .filter(|u| u.contains("alchemy.com"))
-                .cloned(),
-        );
+        multi_sub.extend(urls.iter().filter(|u| u.contains("alchemy.com")).cloned());
         multi_sub.extend(urls.into_iter().filter(|u| u.contains("rpcfast.com")));
         multi_sub.dedup();
         multi_sub

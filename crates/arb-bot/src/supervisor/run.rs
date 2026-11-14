@@ -494,6 +494,17 @@ impl Supervisor {
             helius_ws.track_account(kamino_supply_vault, token_prog);
             helius_ws.track_account(usdc_mint, token_prog);
 
+            // Track payer WSOL settlement ATA so ata_rent is recognized as 0 without unnecessary fee penalties
+            if let Some(ref kp) = self.keypair {
+                let payer_pk = kp.pubkey();
+                let settlement_ata = arb_tx::get_associated_token_address_with_program_id(
+                    &payer_pk,
+                    &wsol_mint,
+                    &token_prog,
+                );
+                helius_ws.track_account(settlement_ata, token_prog);
+            }
+
             // Register multi-DEX pool vaults/accounts so live WS accountNotification frames
             // update MarketStateCache directly sub-second.
             for reg_pool in self.registry.read().pools() {
