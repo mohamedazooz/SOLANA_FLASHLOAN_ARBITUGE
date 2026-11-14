@@ -15,7 +15,7 @@ tip_floor_percentile = "p50"
 tip_share_bps = 5500
 max_tip_lamports = 2000000
 max_tip_share_bps = 9500
-min_keep_lamports = 1000000       # 1,000,000 lamports (~$0.20 USD strict retained net profit floor)
+min_keep_lamports = 100000        # 100,000 lamports (~$0.02 USD retained net profit floor for broader discovery)
 
 # --- Adaptive tip pricing ---------------------------------------------------
 keep_share = 0.60                 # fraction of the edge that must survive the tip
@@ -66,12 +66,12 @@ base_tokens = [
     "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E", # BTC (wrapped Bitcoin)
 ]
 # High-volatility intermediate mints for 3-hop routes (auto-discovered if not listed)
-min_net_profit_abs = 1000000        # 1,000,000 lamports (0.001 SOL = ~$0.20 USD strict floor above all fees & tip)
+min_net_profit_abs = 100000        # 100,000 lamports (0.0001 SOL = ~$0.02 USD floor to capture smaller high-frequency spreads)
 min_net_profit_bps = 1              # 1 bps
 max_price_impact_bps = 500          # 500 bps max impact bound (relaxed for flash-loan multi-hop arbs)
 hop_slippage_bps = 10               # per-hop min-out floor (bps); hard-capped at 1000 by the builders
 max_state_age_slots = 300            # 300 slots state age window (~2 min) - Option 3 (HTTP-RPC only). Gated by ARB_MAX_IMPLAUSIBLE_ROI_BPS implausibility check.
-graph_max_age_slots = 60             # discovery-graph horizon (capped <= max_state_age_slots)
+graph_max_age_slots = 120            # discovery-graph horizon relaxed from 60 to 120 slots (~48s)
 use_flash_loan = true
 max_per_venue = 33                 # top 33 most active pools per DEX venue across all 9 protocols
 max_pools = 297                    # expanded ceiling for 33 pools * 9 venues = 297
