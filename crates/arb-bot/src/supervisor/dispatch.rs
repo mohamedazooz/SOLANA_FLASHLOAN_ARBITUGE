@@ -32,6 +32,8 @@ pub(super) struct DispatchContext<'a> {
     pub t_risk_us: u64,
     pub t_assembly_us: u64,
     pub t_signing_us: u64,
+    pub pools_count: usize,
+    pub loan_size_sol: f64,
 }
 
 fn format_mint_short(pk: &Pubkey) -> String {
@@ -74,6 +76,8 @@ impl Supervisor {
             t_risk_us,
             t_assembly_us,
             t_signing_us,
+            pools_count,
+            loan_size_sol,
         } = context;
 
         let active_bins: Vec<Option<i32>> = opp.hops.iter().map(|h| h.active_bin_id).collect();
@@ -112,6 +116,8 @@ impl Supervisor {
                         cu_price,
                         opp.price_impact_bps.0,
                         &active_bins,
+                        pools_count,
+                        loan_size_sol,
                     )
                     .await;
             }
@@ -134,6 +140,8 @@ impl Supervisor {
                             cu_price,
                             opp.price_impact_bps.0,
                             &active_bins,
+                            pools_count,
+                            loan_size_sol,
                         )
                         .await;
                 }
@@ -165,6 +173,9 @@ impl Supervisor {
                             min_reserve_lamports as f64 / 1e9
                         ),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -177,6 +188,9 @@ impl Supervisor {
                                 min_reserve_lamports as f64 / 1e9
                             ),
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(profit_sol),
                         )
                         .await;
                     return;
@@ -197,6 +211,9 @@ impl Supervisor {
                                     stage: "Transaction Format Check".to_string(),
                                     reason: format!("تعذر تحديد إصدار المعاملة: {error}"),
                                     slot: current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    net_sol: Some(profit_sol),
                                 },
                             );
                             return;
@@ -215,6 +232,9 @@ impl Supervisor {
                             "Only Solana transaction V1 is permitted; received {tx_version:?}"
                         ),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
                     });
                     return;
                 }
@@ -252,6 +272,9 @@ impl Supervisor {
                         stage: "Transaction Size Check".to_string(),
                         reason: reason.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -260,6 +283,9 @@ impl Supervisor {
                             "Transaction Size Check",
                             &reason,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(profit_sol),
                         )
                         .await;
                     return;
@@ -315,6 +341,9 @@ impl Supervisor {
                                         stage: "Pre-flight Simulation".to_string(),
                                         reason: reason_msg.clone(),
                                         slot: current_slot.0,
+                                        pools_count,
+                                        loan_size_sol,
+                                        net_sol: Some(profit_sol),
                                     },
                                 );
                                 self.telegram
@@ -324,6 +353,9 @@ impl Supervisor {
                                         "Pre-flight Simulation",
                                         &reason_msg,
                                         current_slot.0,
+                                        pools_count,
+                                        loan_size_sol,
+                                        Some(profit_sol),
                                     )
                                     .await;
                                 return;
@@ -372,6 +404,9 @@ impl Supervisor {
                                                 stage: "Pre-flight Simulation".to_string(),
                                                 reason: reason_msg.clone(),
                                                 slot: current_slot.0,
+                                                pools_count,
+                                                loan_size_sol,
+                                                net_sol: Some(profit_sol),
                                             },
                                         );
                                         self.telegram
@@ -381,6 +416,9 @@ impl Supervisor {
                                                 "Pre-flight Simulation",
                                                 &reason_msg,
                                                 current_slot.0,
+                                                pools_count,
+                                                loan_size_sol,
+                                                Some(profit_sol),
                                             )
                                             .await;
                                         return;
@@ -467,6 +505,9 @@ impl Supervisor {
                         stage: "Final Stream Readiness".to_string(),
                         reason: reason_msg.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -475,6 +516,9 @@ impl Supervisor {
                             "Final Stream Readiness",
                             &reason_msg,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(profit_sol),
                         )
                         .await;
                     return;
@@ -579,6 +623,8 @@ impl Supervisor {
                                 cu_price,
                                 opp.price_impact_bps.0,
                                 &active_bins,
+                                pools_count,
+                                loan_size_sol,
                             )
                             .await;
                         self.telegram
