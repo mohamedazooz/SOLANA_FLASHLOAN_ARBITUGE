@@ -318,7 +318,7 @@ pub fn dlmm_active_bin_max_input(
         }
         let y_wide = U256::from(active_bin_amount_y) << SCALE_OFFSET;
         let max_x = y_wide / U256::from(price_q64);
-        let cap_u64: u64 = max_x.try_into().unwrap_or(u64::MAX);
+        let cap_u64: u64 = max_x.try_into().ok()?;
         Some(cap_u64)
     } else {
         if active_bin_amount_x == 0 {
@@ -326,7 +326,7 @@ pub fn dlmm_active_bin_max_input(
         }
         let x_wide = U256::from(active_bin_amount_x);
         let max_y = (x_wide * U256::from(price_q64)) >> SCALE_OFFSET;
-        let cap_u64: u64 = max_y.try_into().unwrap_or(u64::MAX);
+        let cap_u64: u64 = max_y.try_into().ok()?;
         Some(cap_u64)
     }
 }
@@ -374,7 +374,7 @@ pub fn dlmm_multi_bin_max_input(
             } else {
                 let y_wide = U256::from(bin.amount_y) << SCALE_OFFSET;
                 let max_x = y_wide / U256::from(price_q64);
-                max_x.try_into().unwrap_or(u128::MAX)
+                max_x.try_into().ok()?
             }
         } else {
             if bin.amount_x == 0 {
@@ -382,7 +382,7 @@ pub fn dlmm_multi_bin_max_input(
             } else {
                 let x_wide = U256::from(bin.amount_x);
                 let max_y = (x_wide * U256::from(price_q64)) >> SCALE_OFFSET;
-                max_y.try_into().unwrap_or(u128::MAX)
+                max_y.try_into().ok()?
             }
         };
         total = total.saturating_add(absorbable);
@@ -1222,12 +1222,16 @@ fn calculate_price_impact_bps(
     // Expected ideal output without price impact
     let ideal_out: u64 = if swap_for_y {
         let prod = U256::from(amount_in) * U256::from(start_price_q64);
-        (prod >> SCALE_OFFSET).try_into().unwrap_or(u64::MAX)
+        match (prod >> SCALE_OFFSET).try_into() {
+            Ok(v) => v,
+            Err(_) => return Bps(10_000), // Fail-closed: assume maximal price impact on overflow
+        }
     } else {
         let num = U256::from(amount_in) << SCALE_OFFSET;
-        (num / U256::from(start_price_q64))
-            .try_into()
-            .unwrap_or(u64::MAX)
+        match (num / U256::from(start_price_q64)).try_into() {
+            Ok(v) => v,
+            Err(_) => return Bps(10_000), // Fail-closed: assume maximal price impact on overflow
+        }
     };
 
     if ideal_out <= amount_out {

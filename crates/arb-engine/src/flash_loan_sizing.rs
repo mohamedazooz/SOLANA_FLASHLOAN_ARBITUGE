@@ -2,7 +2,7 @@
 //! pool depth, liquidity, and risk parameters. No fixed amounts.
 
 use crate::meteora_quote_engine::MeteoraDlmmCrossPoolQuoteEngine;
-use arb_math::dlmm::dlmm_active_bin_max_input;
+use arb_math::dlmm::{DlmmBin, dlmm_active_bin_max_input, dlmm_multi_bin_max_input};
 use arb_types::{MintId, PoolState};
 
 /// Kamino uses U68F60 (60 fractional bits) for flash loan fees, NOT Q64.64 (64 bits).
@@ -209,9 +209,46 @@ pub fn calculate_optimal_flash_loan(
     }
 }
 
-/// Get maximum input capacity for a single leg
-fn get_leg_capacity(pool: &PoolState, swap_for_y: bool) -> u64 {
+/// Get maximum input capacity for a single leg across up to `max_bins` (default 3)
+fn get_leg_capacity_with_limit(pool: &PoolState, swap_for_y: bool, max_bins: u32) -> u64 {
     if let Some(dlmm) = &pool.dlmm {
+        if dlmm.bins.is_empty() {
+            return 0;
+        }
+
+        // Limit the bin traversal window to max_bins along the direction of traversal
+        // swap_for_y: active_bin_id downwards (decreasing ID)
+        // !swap_for_y: active_bin_id upwards (increasing ID)
+        let active_id = dlmm.active_bin_id;
+        let limit = (max_bins.max(1) - 1) as i32;
+
+        let filtered_bins: Vec<DlmmBin> = dlmm
+            .bins
+            .iter()
+            .filter(|b| {
+                if swap_for_y {
+                    b.bin_id <= active_id && b.bin_id >= active_id.saturating_sub(limit)
+                } else {
+                    b.bin_id >= active_id && b.bin_id <= active_id.saturating_add(limit)
+                }
+            })
+            .map(|b| DlmmBin {
+                id: b.bin_id,
+                amount_x: u64::try_from(b.amount_x).unwrap_or(0),
+                amount_y: u64::try_from(b.amount_y).unwrap_or(0),
+                price_q64: 0,
+            })
+            .collect();
+
+        if let Some(multi_cap) =
+            dlmm_multi_bin_max_input(active_id, dlmm.bin_step_bps, &filtered_bins, swap_for_y)
+        {
+            if multi_cap > 0 {
+                return multi_cap;
+            }
+        }
+
+        // Fallback to single active bin if multi-bin evaluation yielded nothing
         if let Some(active_bin) = dlmm.bins.iter().find(|b| b.bin_id == dlmm.active_bin_id) {
             return dlmm_active_bin_max_input(
                 dlmm.active_bin_id,
@@ -224,6 +261,11 @@ fn get_leg_capacity(pool: &PoolState, swap_for_y: bool) -> u64 {
         }
     }
     0
+}
+
+/// Get maximum input capacity for a single leg (default up to 3 bins)
+fn get_leg_capacity(pool: &PoolState, swap_for_y: bool) -> u64 {
+    get_leg_capacity_with_limit(pool, swap_for_y, 3)
 }
 
 /// Simulate 3-leg chain at given borrow amount
@@ -515,5 +557,67 @@ mod tests {
         assert_eq!(config.safety_factor_bps, 8_500);
         assert_eq!(config.min_flash_amount, 100_000);
         assert_eq!(config.max_flash_amount, 5_000_000_000);
+    }
+
+    #[test]
+    fn test_get_leg_capacity_multi_bin_support() {
+        use arb_types::{DexProtocol, DlmmBin as TypeDlmmBin, DlmmState, PoolId, PoolKind, Slot};
+
+        // Create a pool where active bin 0 has 0 output liquidity, but bin -1 has 10_000_000
+        let dlmm_state = DlmmState {
+            active_bin_id: 0,
+            bin_step_bps: 25,
+            status: 0,
+            bins: vec![
+                TypeDlmmBin {
+                    bin_id: 0,
+                    amount_x: 5_000_000,
+                    amount_y: 0, // 0 Y in active bin
+                },
+                TypeDlmmBin {
+                    bin_id: -1,
+                    amount_x: 0,
+                    amount_y: 10_000_000, // neighbouring bin has Y
+                },
+            ],
+            params: None,
+            volatility_accumulator: 0,
+            volatility_reference: 0,
+            index_reference: 0,
+            last_update_timestamp: 0,
+        };
+
+        let pool = PoolState {
+            pool_id: PoolId::new([1u8; 32]),
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(1),
+            write_version: 1,
+            base_mint: MintId::default(),
+            quote_mint: MintId::default(),
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 0,
+            reserve_out: 0,
+            fee_numerator: 25,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Dlmm,
+            clmm: None,
+            dlmm: Some(dlmm_state),
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            last_update_slot: 1,
+            last_update_ms: 0,
+        };
+
+        // swap_for_y = true: active bin has 0 Y, but multi-bin reaches bin -1
+        let cap = get_leg_capacity(&pool, true);
+        assert!(
+            cap > 0,
+            "Capacity should not be 0 when adjacent bin has liquidity"
+        );
     }
 }

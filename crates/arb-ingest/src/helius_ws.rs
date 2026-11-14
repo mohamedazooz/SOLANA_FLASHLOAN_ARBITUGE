@@ -6,8 +6,8 @@
 use crate::{
     AccountSnapshot, IngestClient, ProviderId, RegisteredPool, clmm_tick_array_covers_tick,
     compute_clmm_virtual_reserves, compute_dlmm_reserves, decode_clmm_state, decode_dlmm_fee_bps,
-    decode_dlmm_state, decode_orca_fee_bps, decode_spl_token_amount_bytes, next_pool_write_version,
-    slot_integrity,
+    decode_dlmm_state, decode_orca_fee_bps, decode_raydium_clmm_state,
+    decode_spl_token_amount_bytes, next_pool_write_version, slot_integrity,
 };
 use arb_types::{DexProtocol, MintId, PoolId, Slot};
 use base64::Engine;
@@ -285,8 +285,18 @@ impl HeliusWsClient {
                     self.track_account(pool.pool_id.0, owner);
                 }
             }
+            DexProtocol::RaydiumClmm => {
+                if let Ok(owner) = Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID) {
+                    self.track_account(pool.pool_id.0, owner);
+                }
+            }
             DexProtocol::MeteoraDlmm => {
                 if let Ok(owner) = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID) {
+                    self.track_account(pool.pool_id.0, owner);
+                }
+            }
+            DexProtocol::PumpFun => {
+                if let Ok(owner) = Pubkey::from_str(arb_constants::PUMP_FUN_PROGRAM_ID) {
                     self.track_account(pool.pool_id.0, owner);
                 }
             }
@@ -875,6 +885,60 @@ impl HeliusWsClient {
                     state.write_version = next_pool_write_version();
                     let _ = yellowstone.apply_pool_update(state);
                 }
+            }
+            DexProtocol::RaydiumClmm => {
+                let Some(mut clmm) = decode_raydium_clmm_state(bytes, reg.fee_bps) else {
+                    return;
+                };
+                let existing_ticks = state
+                    .clmm
+                    .as_ref()
+                    .map(|c| c.tick_arrays.clone())
+                    .unwrap_or_default();
+                if existing_ticks.is_empty()
+                    || !clmm_tick_array_covers_tick(
+                        &existing_ticks,
+                        clmm.tick_current,
+                        clmm.tick_spacing,
+                    )
+                {
+                    return; // Fail closed until hydration fetches shifted tick arrays
+                }
+                clmm.tick_arrays = existing_ticks;
+                let (r_in, r_out) = compute_clmm_virtual_reserves(&clmm);
+                if r_in == 0 || r_out == 0 {
+                    return;
+                }
+                state.clmm = Some(clmm);
+                state.fee_numerator = u64::from(reg.fee_bps.max(1));
+                state.fee_denominator = 10_000;
+                state.reserve_in = r_in;
+                state.reserve_out = r_out;
+                state.slot = effective_slot;
+                state.last_update_slot = effective_slot_u64;
+                state.last_update_ms = now_ms;
+                state.write_version = next_pool_write_version();
+                let _ = yellowstone.apply_pool_update(state);
+            }
+            DexProtocol::PumpFun => {
+                let Ok(pump_state) =
+                    arb_dex::pump_fun::PumpFunBondingCurve::decode_account_data(bytes)
+                else {
+                    return;
+                };
+                if !pump_state.is_tradeable()
+                    || pump_state.virtual_sol_reserves == 0
+                    || pump_state.virtual_token_reserves == 0
+                {
+                    return;
+                }
+                state.reserve_in = u128::from(pump_state.virtual_sol_reserves);
+                state.reserve_out = u128::from(pump_state.virtual_token_reserves);
+                state.slot = effective_slot;
+                state.last_update_slot = effective_slot_u64;
+                state.last_update_ms = now_ms;
+                state.write_version = next_pool_write_version();
+                let _ = yellowstone.apply_pool_update(state);
             }
             _ => {}
         }

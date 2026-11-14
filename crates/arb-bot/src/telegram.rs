@@ -218,20 +218,30 @@ impl TelegramNotifier {
         net_sol: f64,
         net_usd: f64,
         slot: u64,
+        pools_count: usize,
+        loan_size_sol: f64,
     ) {
         if net_sol < self.min_rejected_alert_sol && net_usd < 1.0 {
             return;
         }
+        let loan_usd = loan_size_sol * self.sol_price;
+        let gross_usd = gross_sol * self.sol_price;
         let msg = format!(
-            "🎯 <b>فرصة مقتنصة (> $1.00)</b>\n\n\
+            "🎯 <b>فرصة مراجحة مقتنصة (> $1.00)</b>\n\n\
              🛣️ <b>المسار:</b> <code>{}</code>\n\
-             💰 <b>الربح الصافي المتوقع:</b> +{:.6} SOL (~${:.2})\n\
-             📈 <b>الإجمالي قبل التكاليف:</b> {:.6} SOL\n\
+             🏊 <b>عدد الأحواض:</b> <code>{}</code>\n\
+             🏦 <b>حجم الاقتراض (قرض الفلاش):</b> <code>{:.4} SOL (~${:.2})</code>\n\
+             💰 <b>صافي الربح المتوقع:</b> <b>+{:.6} SOL</b> (~${:.2})\n\
+             📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
              🧊 <b>السلوت:</b> <code>{}</code>",
             esc(route),
+            pools_count,
+            loan_size_sol,
+            loan_usd,
             net_sol,
             net_usd,
             gross_sol,
+            gross_usd,
             slot
         );
         let _ = self.send_message(&msg).await;
@@ -252,6 +262,8 @@ impl TelegramNotifier {
         priority_fee_micro_lamports: u64,
         price_impact_bps: u16,
         active_bins: &[Option<i32>],
+        pools_count: usize,
+        loan_size_sol: f64,
     ) {
         // Individual alerts are ON by default; set
         // TELEGRAM_SILENCE_INDIVIDUAL_ALERTS=true to suppress them when the
@@ -292,22 +304,30 @@ impl TelegramNotifier {
                 .collect::<Vec<_>>()
                 .join(" → ")
         };
+        let loan_usd = loan_size_sol * self.sol_price;
+        let gross_usd = gross_sol * self.sol_price;
         let msg = format!(
-            "🎯 <b>فرصة مربحة (محاكاة ناجحة > $1.00)</b>\n\n\
+            "🎯 <b>فرصة مراجحة مربحة (محاكاة ناجحة > $1.00)</b>\n\n\
              🛣️ <b>المسار:</b> <code>{}</code>\n\
-             💎 <b>الربح الصافي المتوقع:</b> +{:.6} SOL (~${:.2})\n\
-             📈 <b>الإجمالي قبل التكاليف:</b> {:.6} SOL\n\
+             🏊 <b>عدد الأحواض:</b> <code>{}</code>\n\
+             🏦 <b>حجم الاقتراض (قرض الفلاش):</b> <code>{:.4} SOL (~${:.2})</code>\n\
+             💰 <b>صافي الربح المتوقع:</b> <b>+{:.6} SOL</b> (~${:.2})\n\
+             📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
              📉 <b>أثر السعر:</b> {} bps\n\
              🎚️ <b>الأبناء النشيطة (DLMM):</b> <code>{}</code>\n\
              🧊 <b>السلوت:</b> <code>{}</code>\n\
              🔗 <b>Blockhash:</b> <code>{}...</code>\n\
              👑 <b>Jito Leader:</b> <code>{}...</code>\n\
              ⚡ <b>المعالجة:</b> <code>{} CU | Priority: {} µ-lamp</code>\n\
-             🛡️ <b>الحالة:</b> جاهزة للتنفيذ الذري",
+             🛡️ <b>الحالة:</b> جاهزة للتنفيذ الذري على المايننت",
             esc(route),
+            pools_count,
+            loan_size_sol,
+            loan_usd,
             net_sol,
             net_usd,
             gross_sol,
+            gross_usd,
             price_impact_bps,
             bins_display,
             slot,
@@ -328,6 +348,9 @@ impl TelegramNotifier {
         stage: &str,
         reason: &str,
         slot: u64,
+        pools_count: usize,
+        loan_size_sol: f64,
+        net_sol: Option<f64>,
     ) {
         // Individual rejection alerts are ON by default; set
         // TELEGRAM_SILENCE_INDIVIDUAL_ALERTS=true to suppress them when the
@@ -369,16 +392,32 @@ impl TelegramNotifier {
         }
 
         let gross_usd = gross_sol * self.sol_price;
+        let loan_usd = loan_size_sol * self.sol_price;
+        let net_display = match net_sol {
+            Some(n) => {
+                let n_usd = n * self.sol_price;
+                format!("{n:+.6} SOL (~${n_usd:.2})")
+            }
+            None => "غير محقق / تم الرفض قبل حساب الصافي النهائي".to_string(),
+        };
+
         let msg = format!(
-            "🚫 <b>تم رفض فرصة واعدة (> $1.00)</b>\n\n\
+            "🚫 <b>تم رفض فرصة مراجحة واعدة (Rejection Alert)</b>\n\n\
              🛣️ <b>المسار:</b> <code>{}</code>\n\
-             📈 <b>الربح الإجمالي المحتمل:</b> {:.6} SOL (~${:.2})\n\
-             🧩 <b>المرحلة:</b> <code>{}</code>\n\
-             📋 <b>السبب الدقيق:</b> <code>{}</code>\n\
+             🏊 <b>عدد الأحواض:</b> <code>{}</code>\n\
+             🏦 <b>حجم الاقتراض (قرض الفلاش):</b> <code>{:.4} SOL (~${:.2})</code>\n\
+             📈 <b>الربح الإجمالي المحتمل:</b> <code>{:.6} SOL (~${:.2})</code>\n\
+             💰 <b>صافي الربح التقديري:</b> <code>{}</code>\n\
+             🧩 <b>مرحلة الرفض (Pipeline Stage):</b> <code>{}</code>\n\
+             🛑 <b>سبب عدم التنفيذ على المايننت:</b> <code>{}</code>\n\
              🧊 <b>السلوت:</b> <code>{}</code>",
             esc(route),
+            pools_count,
+            loan_size_sol,
+            loan_usd,
             gross_sol,
             gross_usd,
+            esc(&net_display),
             esc(stage),
             esc(reason),
             slot
@@ -662,10 +701,17 @@ impl TelegramNotifier {
                 .iter()
                 .take(8)
                 .map(|r| {
+                    let net_str = match r.net_sol {
+                        Some(n) => format!(" | صافي: {:+.5} SOL", n),
+                        None => String::new(),
+                    };
                     format!(
-                        "• <b>{}</b> (+{:.5} SOL)\n  🧩 <code>{}</code>: <code>{}</code>",
+                        "• <b>{}</b> (إجمالي: +{:.5} SOL{} | أحواض: {} | قرض: {:.2} SOL)\n  🧩 <code>{}</code>: <code>{}</code>",
                         esc(&r.route),
                         r.gross_sol,
+                        net_str,
+                        r.pools_count,
+                        r.loan_size_sol,
                         esc(&r.stage),
                         esc(&r.reason)
                     )
@@ -742,6 +788,9 @@ pub struct RejectedTradeSummary {
     pub stage: String,
     pub reason: String,
     pub slot: u64,
+    pub pools_count: usize,
+    pub loan_size_sol: f64,
+    pub net_sol: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]

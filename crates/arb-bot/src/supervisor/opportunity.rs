@@ -102,6 +102,9 @@ impl Supervisor {
             let priority_fee_lamports = priority_fee_product.div_ceil(1_000_000);
             let gross = opp.gross_profit.as_u64();
             let gross_sol = gross as f64 / 1e9;
+            let loan_size_sol =
+                opp.size_in.as_u64() as f64 / 10f64.powi(i32::from(opp.base_decimals));
+            let pools_count = opp.hops.len();
             let route_label = opp
                 .hops
                 .iter()
@@ -143,9 +146,24 @@ impl Supervisor {
                         route: route_label.clone(),
                         gross_sol,
                         stage: "Profit Floor Protection".to_string(),
-                        reason,
+                        reason: reason.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: None,
                     });
+                    self.telegram
+                        .alert_opportunity_rejected(
+                            &route_label,
+                            gross_sol,
+                            "Profit Floor Protection",
+                            &reason,
+                            current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            None,
+                        )
+                        .await;
                 }
                 continue;
             }
@@ -195,6 +213,9 @@ impl Supervisor {
                                     stage: "Jito Tip Plan".to_string(),
                                     reason: reason.clone(),
                                     slot: current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    net_sol: None,
                                 },
                             );
                             self.telegram
@@ -204,6 +225,9 @@ impl Supervisor {
                                     "Jito Tip Plan",
                                     &reason,
                                     current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    None,
                                 )
                                 .await;
                         }
@@ -221,6 +245,9 @@ impl Supervisor {
                             stage: "Jito Leader Gate".to_string(),
                             reason: reason.clone(),
                             slot: current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            net_sol: None,
                         });
                         self.telegram
                             .alert_opportunity_rejected(
@@ -229,6 +256,9 @@ impl Supervisor {
                                 "Jito Leader Gate",
                                 &reason,
                                 current_slot.0,
+                                pools_count,
+                                loan_size_sol,
+                                None,
                             )
                             .await;
                     }
@@ -293,6 +323,9 @@ impl Supervisor {
                         stage: "Net Profit Economics".to_string(),
                         reason: reason.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: None,
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -301,6 +334,9 @@ impl Supervisor {
                             "Net Profit Economics",
                             &reason,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            None,
                         )
                         .await;
                 }
@@ -330,12 +366,17 @@ impl Supervisor {
                         "ROI وهمي ({} bps) فوق سقف الإستحالة {} bps — quote stale/inconsistent (phantom edge); rejected fail-closed",
                         implied_roi_bps, max_implausible_roi_bps
                     );
+                    let net_sol =
+                        real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
                         gross_sol,
                         stage: "Implausible ROI".to_string(),
                         reason: reason.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(net_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -344,6 +385,9 @@ impl Supervisor {
                             "Implausible ROI",
                             &reason,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(net_sol),
                         )
                         .await;
                 }
@@ -371,6 +415,9 @@ impl Supervisor {
                             stage: "Net Profit Economics".to_string(),
                             reason: reason.clone(),
                             slot: current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            net_sol: None,
                         });
                         self.telegram
                             .alert_opportunity_rejected(
@@ -379,6 +426,9 @@ impl Supervisor {
                                 "Net Profit Economics",
                                 &reason,
                                 current_slot.0,
+                                pools_count,
+                                loan_size_sol,
+                                None,
                             )
                             .await;
                     }
@@ -414,6 +464,9 @@ impl Supervisor {
                         stage: "Net Profit Economics".to_string(),
                         reason: reason.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(net_in_base),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -422,6 +475,9 @@ impl Supervisor {
                             "Net Profit Economics",
                             &reason,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(net_in_base),
                         )
                         .await;
                 }
@@ -463,12 +519,17 @@ impl Supervisor {
                             "بوابة Chronos EV رفضت التنفيذ: {reason} (زمن المعالجة: {:.1}ms)",
                             latency_ms
                         );
+                        let net_in_sol =
+                            real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                             route: route_label.clone(),
                             gross_sol,
                             stage: "Chronos EV Gate".to_string(),
                             reason: reason_msg.clone(),
                             slot: current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            net_sol: Some(net_in_sol),
                         });
                         self.telegram
                             .alert_opportunity_rejected(
@@ -477,6 +538,9 @@ impl Supervisor {
                                 "Chronos EV Gate",
                                 &reason_msg,
                                 current_slot.0,
+                                pools_count,
+                                loan_size_sol,
+                                Some(net_in_sol),
                             )
                             .await;
                     }
@@ -590,12 +654,17 @@ impl Supervisor {
                 debug!("Opportunity rejected by RiskGate: {reason}");
                 if gross > 0 {
                     let reason_msg = format!("قيود RiskGate رفضت التنفيذ: {reason}");
+                    let net_in_sol =
+                        real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
                         gross_sol,
                         stage: "RiskGate Protection".to_string(),
                         reason: reason_msg.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(net_in_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -604,6 +673,9 @@ impl Supervisor {
                             "RiskGate Protection",
                             &reason_msg,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(net_in_sol),
                         )
                         .await;
                 }
@@ -777,12 +849,17 @@ impl Supervisor {
                 // Fail fast: a zero blockhash must never be sent.
                 if blockhash == [0u8; 32] {
                     let reason_msg = "فشل جلب أحدث Blockhash صالح من شبكة سولانا (Zero Blockhash)";
+                    let net_in_sol =
+                        real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
                         gross_sol,
                         stage: "Solana Blockhash".to_string(),
                         reason: reason_msg.to_string(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(net_in_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -791,6 +868,9 @@ impl Supervisor {
                             "Solana Blockhash",
                             reason_msg,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(net_in_sol),
                         )
                         .await;
                     warn!("fetch_recent_blockhash returned zero; skipping opportunity");
@@ -1109,6 +1189,8 @@ impl Supervisor {
                     Err(e) => {
                         warn!("Non-broadcast simulation could not run ({e}) - failing closed");
                         if gross > 0 {
+                            let net_in_sol =
+                                real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                             self.record_rejected_opportunity(
                                 crate::telegram::RejectedTradeSummary {
                                     route: route_label.clone(),
@@ -1116,6 +1198,9 @@ impl Supervisor {
                                     stage: "Pre-flight Simulation".to_string(),
                                     reason: format!("تعذّر تشغيل المحاكاة: {e}"),
                                     slot: current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    net_sol: Some(net_in_sol),
                                 },
                             );
                         }
@@ -1130,12 +1215,17 @@ impl Supervisor {
                     if gross > 0 {
                         let reason =
                             format!("محاكاة المعاملة رفضت التنفيذ: {:?}", fork_result.error);
+                        let net_in_sol =
+                            real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                             route: route_label.clone(),
                             gross_sol,
                             stage: "Pre-flight Simulation".to_string(),
                             reason,
                             slot: current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            net_sol: Some(net_in_sol),
                         });
                         self.telegram
                             .alert_opportunity_rejected(
@@ -1144,6 +1234,9 @@ impl Supervisor {
                                 "Pre-flight Simulation",
                                 &format!("{:?}", fork_result.error),
                                 current_slot.0,
+                                pools_count,
+                                loan_size_sol,
+                                Some(net_in_sol),
                             )
                             .await;
                     }
@@ -1170,12 +1263,17 @@ impl Supervisor {
             if let Err(reason) = invariant_result {
                 debug!("Opportunity rejected by economic invariant gate: {reason}");
                 if gross > 0 {
+                    let net_in_sol =
+                        real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
                         gross_sol,
                         stage: "Economic Invariant Gate".to_string(),
                         reason: reason.clone(),
                         slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(net_in_sol),
                     });
                     self.telegram
                         .alert_opportunity_rejected(
@@ -1184,6 +1282,9 @@ impl Supervisor {
                             "Economic Invariant Gate",
                             &reason,
                             current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(net_in_sol),
                         )
                         .await;
                 }
@@ -1215,6 +1316,8 @@ impl Supervisor {
                 t_risk_us,
                 t_assembly_us,
                 t_signing_us,
+                pools_count,
+                loan_size_sol,
             })
             .await;
         }

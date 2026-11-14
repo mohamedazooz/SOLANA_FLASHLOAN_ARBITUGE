@@ -607,6 +607,49 @@ impl Supervisor {
                     for pool in pools {
                         let _ = ingest_worker_res.apply_pool_update(pool);
                     }
+
+                    // Periodically hydrate Kamino WSOL supply vault snapshot if stale (> 100 slots)
+                    let supply_vault =
+                        Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
+                    let is_vault_stale = match ingest_worker_res.account_store().get(&supply_vault)
+                    {
+                        Some(snap) => s.saturating_sub(snap.slot) > 100,
+                        None => true,
+                    };
+                    if is_vault_stale {
+                        let vault_str = supply_vault.to_string();
+                        if let Ok(mut accounts) =
+                            rpc_worker.get_multiple_accounts(&[&vault_str]).await
+                        {
+                            if let Some(Some(acc)) = accounts.pop() {
+                                if let (Some(owner_str), Some(data_arr)) = (
+                                    acc.get("owner").and_then(|o| o.as_str()),
+                                    acc.get("data").and_then(|d| d.as_array()),
+                                ) {
+                                    if let (Ok(owner), Some(raw_b64)) = (
+                                        Pubkey::from_str(owner_str),
+                                        data_arr.first().and_then(|s| s.as_str()),
+                                    ) {
+                                        use base64::prelude::*;
+                                        if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                                            let snap = arb_ingest::AccountSnapshot {
+                                                pubkey: supply_vault,
+                                                owner,
+                                                slot: s,
+                                                write_version: 1,
+                                                is_startup: false,
+                                                provider_id: arb_ingest::ProviderId(0),
+                                                bank_id: None,
+                                                generation: ingest_worker_res.stream_generation(),
+                                                data: Arc::new(bytes),
+                                            };
+                                            ingest_worker_res.account_store().apply(snap);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });
