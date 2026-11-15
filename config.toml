@@ -13,9 +13,9 @@ commitment = "processed"
 regions = ["frankfurt", "amsterdam", "ny"]
 tip_floor_percentile = "p50"
 tip_share_bps = 5500
-max_tip_lamports = 2000000
+max_tip_lamports = 100000
 max_tip_share_bps = 9500
-min_keep_lamports = 100000        # 100,000 lamports (~$0.02 USD retained net profit floor for broader discovery)
+min_keep_lamports = 20000         # 20,000 lamports (~$0.004 USD retained net profit floor)
 
 # --- Adaptive tip pricing ---------------------------------------------------
 keep_share = 0.60                 # fraction of the edge that must survive the tip
@@ -66,17 +66,32 @@ base_tokens = [
     "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E", # BTC (wrapped Bitcoin)
 ]
 # High-volatility intermediate mints for 3-hop routes (auto-discovered if not listed)
-min_net_profit_abs = 100000        # 100,000 lamports (0.0001 SOL = ~$0.02 USD floor to capture smaller high-frequency spreads)
+min_net_profit_abs = 20000         # 20,000 lamports (~$0.004 USD floor to capture tight high-frequency spreads)
 min_net_profit_bps = 1              # 1 bps
 max_price_impact_bps = 500          # 500 bps max impact bound (relaxed for flash-loan multi-hop arbs)
 hop_slippage_bps = 10               # per-hop min-out floor (bps); hard-capped at 1000 by the builders
 max_state_age_slots = 300            # 300 slots state age window (~2 min) - Option 3 (HTTP-RPC only). Gated by ARB_MAX_IMPLAUSIBLE_ROI_BPS implausibility check.
-graph_max_age_slots = 120            # discovery-graph horizon relaxed from 60 to 120 slots (~48s)
+graph_max_age_slots = 300            # discovery-graph horizon relaxed to 300 slots (~2 min)
 use_flash_loan = true
 max_per_venue = 33                 # top 33 most active pools per DEX venue across all 9 protocols
 max_pools = 297                    # expanded ceiling for 33 pools * 9 venues = 297
-discovery_refresh_secs = 60         # refreshed every 60s for multi-venue balance
-discovery_min_tvl_usd = 15000.0     # $15,000 minimum TVL floor across all Solana pools
+discovery_refresh_secs = 300       # refreshed every 300s to prevent Helius HTTP 429 rate limits
+discovery_min_tvl_usd = 10000.0     # $10,000 minimum TVL floor across all Solana pools
+
+[strategy.dlmm_cross_pool]
+min_spread_bps = 5                  # lower hurdle from 10 to 5 bps
+min_input = 20000000                # 0.02 SOL minimum borrow (tuned to match realistic DLMM pools)
+max_input = 2000000000              # 2.0 SOL maximum borrow
+coarse_samples = 12
+refine_samples = 8
+min_liquidity_bin_raw = 500000
+
+[strategy.dlmm_three_leg]
+input_size = 50000000          # 0.05 SOL base input size tuned for Meteora DLMM meme liquidity
+max_input = 2000000000         # 2.0 SOL candidate input ceiling
+slippage_bps = 15              # 15 bps (0.15%) per leg instead of 100 bps default
+min_profit_lamports = 20000    # 20,000 lamports floor
+size_ladder = 6                # evaluate 6 sizes across candidate ladder
 
 [risk]
 max_trade_size_usd = 25000.0        # $25,000 max borrow size cap for safety guardrails

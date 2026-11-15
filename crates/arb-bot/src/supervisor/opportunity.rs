@@ -876,8 +876,8 @@ impl Supervisor {
                     warn!("fetch_recent_blockhash returned zero; skipping opportunity");
                     continue;
                 }
-                // This build is V1-only. Only the direct RPC/SWQoS path is
-                // eligible; Jito bundle and all legacy/V0 template paths fail closed.
+                // This build is V1-only. Both direct RPC/SWQoS and Jito bundle paths
+                // are supported when explicitly enabled via their respective env flags.
                 let direct_v1_enabled = is_swqos_route
                     && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
                         .map(|v| {
@@ -887,11 +887,18 @@ impl Supervisor {
                             )
                         })
                         .unwrap_or(false);
-                // Simulate mode always compiles V1 for RPC simulation.
-                // A future Live build may compile only when the direct V1
-                // sender is explicitly enabled. Jito is deliberately excluded.
-                let v1_transport_enabled =
-                    matches!(self.mode(), BotMode::Simulate) || direct_v1_enabled;
+                let jito_v1_enabled = !is_swqos_route
+                    && std::env::var("SOLANA_TX_V1_JITO_ENABLED")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
+                        .unwrap_or(false);
+                let v1_transport_enabled = matches!(self.mode(), BotMode::Simulate)
+                    || (is_swqos_route && direct_v1_enabled)
+                    || (!is_swqos_route && jito_v1_enabled);
                 // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
                 let patched_ram = if v1_transport_enabled {
                     None
