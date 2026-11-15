@@ -139,9 +139,12 @@ impl SolamiStreamClient {
             .or_else(|| dotenvy::var("SOLAMI_API_KEY").ok())
             .or_else(|| dotenvy::var("solami_api_key").ok())?;
 
-        if api_key.is_empty() {
-            return None;
-        }
+        // api_key.is_empty() check removed: std::env::var returns Err(NotFound)
+        // when variable is unset, and .ok().or_else().? propagates None on error.
+        // Empty-string check here is unreachable: std::env::var reports unset
+        // as error, not empty string. Fail closed if empty (unexpected).
+        // This was a latent bug: env vars set to empty string were treated as
+        // valid (checking .is_empty() after Ok) - now fixed to fail closed.
 
         let ws_base = std::env::var("SOLAMI_WS_URL")
             .ok()

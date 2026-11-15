@@ -1,4 +1,4 @@
-//! Per-tick strategy cycle (R9 split from run.rs): one slot-advanced tick —
+//! Per-tick strategy cycle (R9 split from run.rs): one slot-advanced tick â€”
 //! verified economic inputs, market snapshot, candidate graph, opportunity
 //! capture (2-pool DLMM / Bellman-Ford / multi-hop / 3-leg), risk gates,
 //! transaction assembly and dispatch. Extracted verbatim; outer-tick `continue`
@@ -43,7 +43,10 @@ impl Supervisor {
         let verified = match self.build_verified_inputs(current_slot).await {
             Ok(v) => v,
             Err(e) => {
-                debug!("verified economic inputs unavailable ({e}); skipping tick (fail closed)");
+                debug!(
+                    slot = current_slot.0,
+                    "verified economic inputs unavailable ({e}); skipping tick (fail closed)"
+                );
                 return Ok(());
             }
         };
@@ -63,13 +66,15 @@ impl Supervisor {
         let quote_ingest_time = std::time::Instant::now();
         let market_snap = self.ingest.snapshot();
         let pools: Vec<PoolState> = market_snap.snapshot_pools();
-        // Reset every cycle: an absent fresh SOL/USDC pool must not reuse an old price.
-        *self.last_known_live_sol_price.write() = 0.0;
 
-        // Track live SOL price from any active SOL-USDC pool (Raydium, Orca, Meteora).
-        // Using all three venues improves price freshness and cross-checks accuracy.
+        // Derive SOL/USD from live, fresh SOL/USDC pools in this snapshot (market data only).
+        // Pick the deepest fresh pool (highest SOL-side reserve) to reduce noise/outliers.
+        // Do not invent a price: if none is available this cycle, clear the cached live price.
+        *self.last_known_live_sol_price.write() = 0.0;
         let wsol_str = arb_tx::WSOL_MINT;
         let usdc_str = arb_tx::USDC_MINT;
+        let mut best_sol_price: Option<(f64, f64)> = None; // (price, sol_reserve)
+        let mut sol_usdc_pools_seen: usize = 0;
         for p in &pools {
             if current_slot.0.saturating_sub(p.last_update_slot)
                 > self.config.strategy.max_state_age_slots
@@ -80,17 +85,43 @@ impl Supervisor {
                 && p.quote_mint.0.to_string() == usdc_str)
                 || (p.base_mint.0.to_string() == usdc_str
                     && p.quote_mint.0.to_string() == wsol_str);
-            if is_sol_usdc && p.reserve_in > 0 && p.reserve_out > 0 {
-                let (sol_res, usdc_res) = if p.base_mint.0.to_string() == wsol_str {
-                    (p.reserve_in as f64 / 1e9, p.reserve_out as f64 / 1e6)
-                } else {
-                    (p.reserve_out as f64 / 1e9, p.reserve_in as f64 / 1e6)
-                };
-                if sol_res > 0.0 {
-                    *self.last_known_live_sol_price.write() = usdc_res / sol_res;
-                    break; // first live SOL/USDC price is sufficient
-                }
+            if !is_sol_usdc || p.reserve_in == 0 || p.reserve_out == 0 {
+                continue;
             }
+            sol_usdc_pools_seen += 1;
+            let (sol_res, usdc_res) = if p.base_mint.0.to_string() == wsol_str {
+                (p.reserve_in as f64 / 1e9, p.reserve_out as f64 / 1e6)
+            } else {
+                (p.reserve_out as f64 / 1e9, p.reserve_in as f64 / 1e6)
+            };
+            if !(sol_res.is_finite() && usdc_res.is_finite()) || sol_res <= 0.0 || usdc_res <= 0.0 {
+                continue;
+            }
+            let px = usdc_res / sol_res;
+            if !px.is_finite() || px <= 0.0 {
+                continue;
+            }
+            match best_sol_price {
+                None => best_sol_price = Some((px, sol_res)),
+                Some((_, best_sol)) if sol_res > best_sol => best_sol_price = Some((px, sol_res)),
+                _ => {}
+            }
+        }
+        if let Some((px, _)) = best_sol_price {
+            *self.last_known_live_sol_price.write() = px;
+            tracing::debug!(
+                slot = current_slot.0,
+                sol_usd = px,
+                sol_usdc_pools = sol_usdc_pools_seen,
+                "live SOL/USD derived from fresh market pools"
+            );
+        } else {
+            tracing::debug!(
+                slot = current_slot.0,
+                total_pools = pools.len(),
+                sol_usdc_pools = sol_usdc_pools_seen,
+                "no fresh live SOL/USD market price available this tick"
+            );
         }
 
         // 2. Update Graph using fresh states only. Trade sizing is governed by RiskGate.
@@ -112,7 +143,12 @@ impl Supervisor {
             _ => 0,
         };
         if max_sizing == 0 {
-            debug!("Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing");
+            debug!(
+                slot = current_slot.0,
+                sol_usd = self.live_sol_price().unwrap_or(0.0),
+                max_trade_size_usd = self.config.risk.max_trade_size_usd,
+                "Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing"
+            );
             return Ok(());
         }
 
@@ -144,7 +180,12 @@ impl Supervisor {
         // Fail-closed: if no fresh pools within the graph max age window,
         // skip this tick entirely. No stale pool may enter a candidate route.
         if fresh_pools.is_empty() {
-            debug!("No fresh pools within graph max age; skipping tick (fail closed)");
+            debug!(
+                slot = current_slot.0,
+                total_pools = pools.len(),
+                max_graph_age_slots = max_graph_age_slots,
+                "No fresh pools within graph max age; skipping tick (fail closed)"
+            );
             return Ok(());
         }
 
@@ -153,7 +194,7 @@ impl Supervisor {
             graph.build_from_pools(&fresh_pools);
             let mut opps = graph.find_base_cycles(current_slot, max_sizing);
 
-            // ── MeteoraDlmmCrossPoolArbitrageStrategy (P0 first strategy) ──
+            // â”€â”€ MeteoraDlmmCrossPoolArbitrageStrategy (P0 first strategy) â”€â”€
             // First-class two-pool DLMM path: distinct same-pair pools,
             // both directions, bounded integer size optimizer, real bin
             // traversal. Merged with the DFS candidates (deduped below).
@@ -221,20 +262,20 @@ impl Supervisor {
             });
             opps.extend(cross_opps);
 
-            // ── Cross-platform multi-hop capture (always evaluated) ──
+            // â”€â”€ Cross-platform multi-hop capture (always evaluated) â”€â”€
             // Best practice: evaluate every candidate class each tick and
             // merge by profitability instead of short-circuiting at the
             // first non-empty class. Previously Bellman-Ford / multi-hop
             // DFS ran only when the base-cycle set was empty, which hid
             // longer cross-DEX routes (3..5 hops) whenever any 2-hop cycle
-            // existed — even when the longer route was more profitable.
+            // existed â€” even when the longer route was more profitable.
             let bf_opps = {
                 let bf_engine = arb_engine::BellmanFordEngine::from_pools(&fresh_pools)
                     .with_economic_config(economic_config.clone());
                 let found = bf_engine.find_negative_cycles(current_slot, max_sizing);
                 if !found.is_empty() {
                     info!(
-                        "🎯 Bellman-Ford detected {} arbitrage cycle(s)",
+                        "ðŸŽ¯ Bellman-Ford detected {} arbitrage cycle(s)",
                         found.len()
                     );
                 }
@@ -242,16 +283,16 @@ impl Supervisor {
             };
             let multi_opps = graph.find_multi_hop_cycles(current_slot, max_sizing, 5);
             if !multi_opps.is_empty() {
-                info!("🔁 Multi-hop DFS detected {} route(s)", multi_opps.len());
+                info!("ðŸ” Multi-hop DFS detected {} route(s)", multi_opps.len());
             }
 
-            // ── Meteora 3-leg (WSOL -> A -> B -> WSOL) pipeline ──
+            // â”€â”€ Meteora 3-leg (WSOL -> A -> B -> WSOL) pipeline â”€â”€
             // Third candidate class: three distinct DLMM pools on Meteora,
             // chained-quote discovery + 3-leg-native size search. Converted
             // into a standard ExecutionOpportunity so the same economics,
             // risk and dispatch path applies. Fails closed to an empty vec.
             // Fail-closed liquidity proof: when flash funding is enabled, the
-            // actual supply-vault liquidity must be verifiable — an
+            // actual supply-vault liquidity must be verifiable â€” an
             // unverifiable reserve skips the capture entirely.
             let flash_liquidity = self.kamino_available_flash_liquidity(current_slot);
             let flash_liquidity_unverified =
@@ -276,30 +317,12 @@ impl Supervisor {
             };
             if !three_leg_opps.is_empty() {
                 info!(
-                    "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",
+                    "ðŸŸ¢ Meteora 3-leg DLMM pipeline captured {} chain(s)",
                     three_leg_opps.len()
                 );
             }
-            if let Some(control) = self.control() {
-                for o in three_leg_opps.iter().take(16) {
-                    control.record_opportunity(crate::control_service::OpportunityRecord {
-                        captured_at_unix: 0,
-                        slot: current_slot.0,
-                        route: o
-                            .hops
-                            .iter()
-                            .map(|h| format!("{}", h.pool_id))
-                            .collect::<Vec<_>>()
-                            .join("\u{2192}"),
-                        protocol: "meteora-dlmm-3leg".to_string(),
-                        borrow_lamports: o.size_in.0,
-                        expected_output_lamports: o.expected_out.0,
-                        net_profit_lamports: o.net_profit.0 as i64,
-                        eligible: true,
-                        reject_reason: None,
-                    });
-                }
-            }
+            // 3-leg candidates are recorded by the validated opportunity pass only.
+            // Emitting them here as eligible would surface pre-gate/phantom PnL on the server/UI.
 
             // Merge + dedupe by sorted pool set, then rank by net profit so
             // the most profitable route is processed first.

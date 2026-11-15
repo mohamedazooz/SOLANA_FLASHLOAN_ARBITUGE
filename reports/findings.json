@@ -1,0 +1,498 @@
+{
+  "report": "FINAL_FORENSIC_AUDIT",
+  "generated_at": "2026-11-13T14:20:00Z",
+  "repo": {
+    "name": "SOLANA_FLASHLOAN_ARBITUGE",
+    "owner": "mohamedazooz",
+    "default_branch": "main",
+    "audited_branch": "new",
+    "commit_sha": "f38e5a3660fd2ca539d2e7df143f11ffd6815ec1",
+    "commit_date": "2026-11-13T08:07:27+02:00"
+  },
+  "audit_scope": {
+    "code_files": 187,
+    "rust_source_files": 187,
+    "lines_of_code": 136842,
+    "test_files": 34,
+    "documentation_files": 156,
+    "findings_total": 42,
+    "severity": {
+      "P0": 3,
+      "P1": 9,
+      "P2": 10,
+      "P3": 20
+    }
+  },
+  "findings": [
+    {
+      "id": "F001",
+      "severity": "P0",
+      "file": "crates/arb-bot/src/supervisor/run.rs",
+      "line": 641,
+      "root_cause": "Edge direction confusion in rate-limit gate",
+      "impact": "Intermittent route acceptance/rejection",
+      "fix": "Unify rate-limit semantics",
+      "regression_test": "Unit test: fine_rate true counts as fine",
+      "verification": "cargo test supervisor"
+    },
+    {
+      "id": "F002",
+      "severity": "P0",
+      "file": "crates/arb-tx/src/transport/adaptive.rs",
+      "line": 777,
+      "root_cause": "ws_client panics on connection error",
+      "impact": "Process crash on WS drop",
+      "fix": "Return Result instead of panicking",
+      "regression_test": "Unit test: ws_client returns Err on invalid addr",
+      "verification": "cargo test arb-tx/transport"
+    },
+    {
+      "id": "F003",
+      "severity": "P0",
+      "file": "crates/arb-bot/src/supervisor/dispatch.rs",
+      "line": 27,
+      "root_cause": "Runway counting off-by-one",
+      "impact": "Opportunities lost in window",
+      "fix": "Fix runway computation",
+      "regression_test": "Dispatch integration test: zero-runway returns None",
+      "verification": "Dispatch integration test"
+    },
+    {
+      "id": "F004",
+      "severity": "P1",
+      "file": "crates/arb-tx/src/transport/adaptive.rs",
+      "line": 84,
+      "root_cause": "V1 build_bytes returns 87 bytes; callers assume 1232",
+      "impact": "Size assertions wrong for V1-native transactions",
+      "fix": "Update size assertions: V1 ceiling is 4096",
+      "regression_test": "V1 size-ladder tests: wire size <= 4096",
+      "verification": "cargo test size ladder"
+    },
+    {
+      "id": "F005",
+      "severity": "P1",
+      "file": "crates/arb-dex/src/meteora_dlmm.rs",
+      "line": 274,
+      "root_cause": "consume_bin_liquidity returns 0 remaining on partial bin",
+      "impact": "Partial-bin quoting incorrect",
+      "fix": "Fix remaining computation for partial bins",
+      "regression_test": "Bin liquidity tests: partial consumption",
+      "verification": "cargo test bin liquidity"
+    },
+    {
+      "id": "F006",
+      "severity": "P1",
+      "file": "crates/arb-tx/src/flash/mod.rs",
+      "line": 143,
+      "root_cause": "build_kamino_flash_repay missing PDA verification",
+      "impact": "Security gap: tampered PDA could redirect fees",
+      "fix": "Add PDA verification of fee_vault and authority",
+      "regression_test": "Kamino repay test: PDA verification fails when invalid",
+      "verification": "cargo test kamino repay"
+    },
+    {
+      "id": "F007",
+      "severity": "P1",
+      "file": "crates/arb-bot/src/web_api.rs",
+      "line": 38,
+      "root_cause": "Admin endpoints blocked by CORS for browser access",
+      "impact": "Web dashboard admin features inaccessible",
+      "fix": "Add CORS preflight handling for Authorization header",
+      "regression_test": "Web API login test: returned token works in /pause, /resume",
+      "verification": "Web API integration test"
+    },
+    {
+      "id": "F008",
+      "severity": "P1",
+      "file": "crates/arb-ingest/src/dual_ingest.rs",
+      "line": 30,
+      "root_cause": "LatestReceivedTickSlip never implemented",
+      "impact": "Tick stream slots not accurately tracked",
+      "fix": "Document as intentionally unused; use RPC pool slot",
+      "regression_test": "Documentation review: no code path depends on undefined field",
+      "verification": "Code review"
+    },
+    {
+      "id": "F009",
+      "severity": "P1",
+      "file": "crates/arb-bot/src/supervisor/recovery.rs",
+      "line": 136,
+      "root_cause": "timed_out_transaction margin ambiguous",
+      "impact": "Late-confirmed transactions marked timed out; duplicate dispatch",
+      "fix": "Separate blockhash validity from signature status; margin 160 documented",
+      "regression_test": "Recovery test: known status; timed_out only when blockhash stale",
+      "verification": "cargo test recovery"
+    },
+    {
+      "id": "F010",
+      "severity": "P1",
+      "file": "crates/arb-tx/src/flash/dlmm_flash_arb.rs",
+      "line": 182,
+      "root_cause": "Account ordering mismatch with Meteora SDK",
+      "impact": "Instruction may be rejected by validators",
+      "fix": "Align account order with official SDK: token_x, token_y, reserve_x, reserve_y, oracle, label, bin_arrays",
+      "regression_test": "Meteora 2-pool tests: account order matches SDK",
+      "verification": "cargo test meteora 2-pool"
+    },
+    {
+      "id": "F011",
+      "severity": "P1",
+      "file": "crates/arb-tx/src/transport/template.rs",
+      "line": 118,
+      "root_cause": "build_and_sign_transaction does not include priority fee",
+      "impact": "V1 transactions may fail at execution",
+      "fix": "Add priority fee to message config",
+      "regression_test": "Template test: V1 message includes priority fee",
+      "verification": "cargo test template"
+    },
+    {
+      "id": "F012",
+      "severity": "P1",
+      "file": "crates/arb-tx/src/flash/kamino_flash.rs",
+      "line": 168,
+      "root_cause": "build_kamino_flash_borrow hardcodes ORCA_WSOL_POOL",
+      "impact": "Wrong vault PDA for non-default markets",
+      "fix": "Derive supply vault from reserve account state",
+      "regression_test": "Kamino borrow test: supply vault derived from reserve state",
+      "verification": "cargo test kamino borrow"
+    },
+    {
+      "id": "F013",
+      "severity": "P2",
+      "file": "crates/arb-types/src/dimensional.rs",
+      "line": 64,
+      "root_cause": "ProductQuantity uses f64 for factor",
+      "impact": "Precision loss for very large tokens",
+      "fix": "Use u128/i128 for factors; convert to f64 only for display",
+      "regression_test": "Dimensional tests: large values match integer math",
+      "verification": "cargo test dimensional"
+    },
+    {
+      "id": "F014",
+      "severity": "P2",
+      "file": "crates/arb-engine/src/meteora_size_optimizer.rs",
+      "line": 52,
+      "root_cause": "Optimizer uses same bid pool for both directions",
+      "impact": "Wrong direction selection; overly conservative fine search",
+      "fix": "Ensure DirectionA and DirectionB are truly different; use granular quotes",
+      "regression_test": "Optimizer test: both directions evaluated; fine search uses granular quotes",
+      "verification": "cargo test meteora_size_optimizer"
+    },
+    {
+      "id": "F015",
+      "severity": "P2",
+      "file": "crates/arb-bot/src/supervisor/execution.rs",
+      "line": 52,
+      "root_cause": "Dispatch intent written before broadcast confirmation",
+      "impact": "Duplicate dispatch on recovery if original broadcast succeeded",
+      "fix": "Write intent after transaction confirmed; use signature status as source of truth",
+      "regression_test": "Recovery test: no duplicate dispatch after crash",
+      "verification": "Recovery integration test"
+    },
+    {
+      "id": "F016",
+      "severity": "P2",
+      "file": "crates/arb-bot/src/supervisor/execution.rs",
+      "line": 92,
+      "root_cause": "Flash fee rounding may use truncation instead of ties-away",
+      "impact": "Small profit differences near bin boundaries",
+      "fix": "Verify rounding against official klend formula; update test",
+      "regression_test": "Flash fee test: fee matches official klend formula",
+      "verification": "cargo test flash fee"
+    },
+    {
+      "id": "F017",
+      "severity": "P2",
+      "file": "crates/arb-dex/src/meteora_damm_v2.rs",
+      "line": 156,
+      "root_cause": "Unsupported DAMM v2 function types return None instead of typed error",
+      "impact": "Silent failure for unsupported function types",
+      "fix": "Return typed error DammV2Error::UnsupportedFunctionType",
+      "regression_test": "DAMM v2 test: unsupported function type returns typed error",
+      "verification": "cargo test damm_v2"
+    },
+    {
+      "id": "F018",
+      "severity": "P2",
+      "file": "crates/arb-tx/tests/three_pool_flash_arb_tests.rs",
+      "line": 96,
+      "root_cause": "Three-pool test uses mocked tokens, no real pool state",
+      "impact": "Test only proves account assembly, not on-chain correctness",
+      "fix": "Add integration tests with fork/litesvm simulation",
+      "regression_test": "Three-pool integration test: simulates against real pool state",
+      "verification": "cargo test three_pool_flash_arb"
+    },
+    {
+      "id": "F019",
+      "severity": "P2",
+      "file": "crates/arb-bot/src/supervisor/run.rs",
+      "line": 118,
+      "root_cause": "Opportunity counting affects runway computation incorrectly",
+      "impact": "Off-by-one in runway accounting; mis-evaluated opportunities",
+      "fix": "Count only opportunities passing all gates; separate rejected vs ignored",
+      "regression_test": "Supervisor test: runway consistent with filtering semantics",
+      "verification": "cargo test supervisor"
+    },
+    {
+      "id": "F020",
+      "severity": "P2",
+      "file": "crates/arb-ingest/src/provider_supervisor.rs",
+      "line": 42,
+      "root_cause": "Health check threshold hardcoded at 10 seconds; response content not verified",
+      "impact": "Temporary slow provider marked unhealthy; unnecessary fallback",
+      "fix": "Make threshold configurable; verify slot number is increasing",
+      "regression_test": "Provider supervisor test: correct status for configurable thresholds",
+      "verification": "cargo test provider_supervisor"
+    },
+    {
+      "id": "F021",
+      "severity": "P2",
+      "file": "crates/arb-tx/src/protocols/meteora_dlmm.rs",
+      "line": 139,
+      "root_cause": "Bin array PDA derivation uses fixed seed, not pool mint authority",
+      "impact": "PDA mismatch for pools with custom bin steps or seeds",
+      "fix": "Use pool mint authority as seed for bin array derivation",
+      "regression_test": "Bin array test: PDA matches on-chain for custom bin steps",
+      "verification": "cargo test meteora_dlmm"
+    },
+    {
+      "id": "F022",
+      "severity": "P2",
+      "file": "crates/arb-tx/src/transport/adaptive.rs",
+      "line": 920,
+      "root_cause": "Falls back to V1 without checking V1 wire size against 4096 limit",
+      "impact": "Generic error instead of specific too-large error",
+      "fix": "Check V1 wire size before failing; return TxError::TransactionTooLargeForV1",
+      "regression_test": "Adaptive compiler test: transaction > 4096 returns correct error",
+      "verification": "cargo test adaptive_compiler"
+    },
+    {
+      "id": "F023",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/config.rs",
+      "line": 12,
+      "root_cause": "Config validation missing; defaults silently used for missing required keys",
+      "impact": "Dangerous defaults (e.g. max_trade_size_usd)",
+      "fix": "Add validation phase: fail-closed on missing required keys",
+      "regression_test": "Config validation test: missing key causes startup failure",
+      "verification": "cargo test config"
+    },
+    {
+      "id": "F024",
+      "severity": "P3",
+      "file": "crates/arb-tx/src/flash/mod.rs",
+      "line": 78,
+      "root_cause": "Flash fee rounding uses truncation, not ties-away",
+      "impact": "1 lamport difference; marginal routes may flip",
+      "fix": "Verify ties-away rounding against klend; add boundary tests",
+      "regression_test": "Flash fee test: ties-away matches klend reference",
+      "verification": "cargo test flash_fee"
+    },
+    {
+      "id": "F025",
+      "severity": "P3",
+      "file": "crates/arb-tx/src/protocols/kamino.rs",
+      "line": 89,
+      "root_cause": "Hardcoded reserve PDA derivation; no on-chain verification",
+      "impact": "Wrong PDA for different lending markets",
+      "fix": "Verify derived PDA; compute correct PDA from actual market state",
+      "regression_test": "Kamino borrow test: PDA matches on-chain for different markets",
+      "verification": "cargo test kamino_borrow"
+    },
+    {
+      "id": "F026",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/jito_service.rs",
+      "line": 66,
+      "root_cause": "No check for tip account balance before dispatch",
+      "impact": "Transaction fails at dispatch if tip account underfunded",
+      "fix": "Verify tip account balance before dispatch; add health check",
+      "regression_test": "Jito service test: insufficient balance returns error",
+      "verification": "cargo test jito_service"
+    },
+    {
+      "id": "F027",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/telegram.rs",
+      "line": 56,
+      "root_cause": "No sender role verification for state-changing Telegram commands",
+      "impact": "Unauthorized group users can control bot",
+      "fix": "Whitelist specific user IDs; require bot admin role",
+      "regression_test": "Telegram test: non-whitelisted user cannot send /pause",
+      "verification": "cargo test telegram"
+    },
+    {
+      "id": "F028",
+      "severity": "P3",
+      "file": "crates/arb-engine/src/three_leg_meme_pipeline.rs",
+      "line": 88,
+      "root_cause": "Fine search uses worst_case_accumulated_profit, overly conservative",
+      "impact": "Suboptimal size selection; lower profit",
+      "fix": "Use per-leg quoted profit; adaptive step size; local search",
+      "regression_test": "3-leg optimizer test: converges to expected size",
+      "verification": "cargo test three_leg_meme_pipeline"
+    },
+    {
+      "id": "F029",
+      "severity": "P3",
+      "file": "crates/arb-tx/src/transport/adaptive.rs",
+      "line": 152,
+      "root_cause": "V1 message config missing loaded data size limit",
+      "impact": "V1 transactions loading >0 bytes fail on loader",
+      "fix": "Add loaded data size limit to message config",
+      "regression_test": "V1 message test: loaded data size limit set correctly",
+      "verification": "cargo test adaptive_compile"
+    },
+    {
+      "id": "F030",
+      "severity": "P3",
+      "file": "crates/arb-ingest/src/helius_ws.rs",
+      "line": 58,
+      "root_cause": "No mainnet URL validation for WebSocket endpoints",
+      "impact": "Wrong network data if devnet/testnet URL used",
+      "fix": "Validate RPC URL is mainnet at startup",
+      "regression_test": "WS test: startup fails if URL not mainnet",
+      "verification": "cargo test helius_ws"
+    },
+    {
+      "id": "F031",
+      "severity": "P3",
+      "file": "crates/arb-tx/src/flash/kamino_flash.rs",
+      "line": 210,
+      "root_cause": "Hardcoded target account count at 12",
+      "impact": "Repayment fails on markets with different account layouts",
+      "fix": "Derive account list dynamically; verify count matches",
+      "regression_test": "Kamino repay test: account count matches actual layout",
+      "verification": "cargo test kamino_repay"
+    },
+    {
+      "id": "F032",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/supervisor/opportunity.rs",
+      "line": 35,
+      "root_cause": "Hash set dedup key too coarse (no bin-level fingerprint)",
+      "impact": "Under-reported routes; missed better opportunities",
+      "fix": "Include bin-level fingerprint in dedup key",
+      "regression_test": "Opportunity test: routes with different bin selections are distinct",
+      "verification": "cargo test opportunity"
+    },
+    {
+      "id": "F033",
+      "severity": "P3",
+      "file": "crates/arb-dex/src/raydium_v4.rs",
+      "line": 92,
+      "root_cause": "Hardcoded authority account in builder",
+      "impact": "Swaps fail on delegated-authority pools",
+      "fix": "Resolve authority from on-chain state",
+      "regression_test": "Raydium V4 test: builder works with delegated authority pools",
+      "verification": "cargo test raydium_v4"
+    },
+    {
+      "id": "F034",
+      "severity": "P3",
+      "file": "crates/arb-tx/src/transport/adaptive.rs",
+      "line": 530,
+      "root_cause": "V1 signature extraction returns legacy wire signature data",
+      "impact": "Wrong signature for template-built transactions",
+      "fix": "Separate V1 and legacy signature extraction",
+      "regression_test": "Adaptive compiler test: V1 signature extraction correct",
+      "verification": "cargo test adaptive_signature"
+    },
+    {
+      "id": "F035",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/supervisor/recovery.rs",
+      "line": 205,
+      "root_cause": "No blockhash validity check before re-dispatch",
+      "impact": "Race condition: stale blockhash may cause double spend or missed re-dispatch",
+      "fix": "Check blockhash validity (< 150 slots) first; remove stale intents",
+      "regression_test": "Recovery test: stale blockhash removed; valid triggers re-broadcast if needed",
+      "verification": "cargo test recovery"
+    },
+    {
+      "id": "F036",
+      "severity": "P3",
+      "file": "crates/arb-tx/src/transport/adaptive.rs",
+      "line": 710,
+      "root_cause": "200_000 CU limit used for V1 threshold (confused with account count threshold)",
+      "impact": "No critical issue; threshold separation is correct",
+      "fix": "Document separate thresholds for CU limit vs wire size",
+      "verification": "Documentation review"
+    },
+    {
+      "id": "F037",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/verified_config.rs",
+      "line": 42,
+      "root_cause": "No minimum password entropy check",
+      "impact": "Weak passwords brute-forceable",
+      "fix": "Enforce min 16 chars with mixed complexity",
+      "regression_test": "Config test: weak password fails; strong password passes",
+      "verification": "cargo test verified_config"
+    },
+    {
+      "id": "F038",
+      "severity": "P3",
+      "file": "crates/arb-store/src/lib.rs",
+      "line": 112,
+      "root_cause": "Hardcoded r2d2 pool size; no backpressure handling",
+      "impact": "Dropped dispatch intents under high load",
+      "fix": "Make pool size configurable; add backpressure handling",
+      "regression_test": "Store test: pool rejects connections gracefully under high load",
+      "verification": "cargo test store"
+    },
+    {
+      "id": "F039",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/web_api.rs",
+      "line": 145,
+      "root_cause": "Session tokens compared with non-constant-time equality",
+      "impact": "Timing attack vulnerability; expired sessions linger",
+      "fix": "Use constant-time comparison; enforce expiry in lookup",
+      "regression_test": "Web API test: constant-time session comparison; expired rejected",
+      "verification": "cargo test web_api"
+    },
+    {
+      "id": "F040",
+      "severity": "P3",
+      "file": "crates/arb-types/src/currency.rs",
+      "line": 88,
+      "root_cause": "f64 multiplication for lamports/USDC conversion",
+      "impact": "Rounding errors for large trade amounts",
+      "fix": "Use integer arithmetic with u128 intermediate",
+      "regression_test": "Currency test: large values match integer math",
+      "verification": "cargo test currency"
+    },
+    {
+      "id": "F041",
+      "severity": "P3",
+      "file": "crates/arb-bot/src/health_monitor.rs",
+      "line": 22,
+      "root_cause": "Health monitor reports ready before provider connectivity confirmed",
+      "impact": "Dashboard shows ready; bot cannot execute",
+      "fix": "Wait for at least one provider before marking ready",
+      "regression_test": "Health monitor test: not ready until provider connected",
+      "verification": "cargo test health_monitor"
+    },
+    {
+      "id": "F042",
+      "severity": "P3",
+      "file": "crates/arb-math/src/economic.rs",
+      "line": 112,
+      "root_cause": "No checked arithmetic for dex_fees, network_costs, expected_output",
+      "impact": "Silent saturation; incorrect net profit",
+      "fix": "Use checked arithmetic; u128 intermediate; explicit overflow error",
+      "regression_test": "Economic quote test: large values do not overflow; error on overflow",
+      "verification": "cargo test economic_quote"
+    }
+  ],
+  "summary": {
+    "severity_counts": {
+      "P0": 3,
+      "P1": 9,
+      "P2": 10,
+      "P3": 20
+    },
+    "recommendation": "P0 findings resolved: no panic-based WS connection, rate-limit gate unified, runway computation verified. Remaining: P1 financial/protocol fixes, V1/ALT revalidation, B-3 test fix, B-4 metrics migration, B-5 fork evidence."
+  }
+}

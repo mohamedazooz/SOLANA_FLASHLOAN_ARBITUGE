@@ -165,11 +165,22 @@ impl Supervisor {
         // evaluate fresh RPC reads against `self.kamino_fallback_store` if needed
         // while preserving `store`'s stream provenance invariants.
         let store = self.ingest.account_store();
+        let max_verified_age = std::env::var("VERIFIED_INPUT_MAX_AGE_SLOTS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(self.config.strategy.max_state_age_slots.max(1));
+        let fallback_accept_age = std::env::var("VERIFIED_INPUT_FALLBACK_MAX_AGE_SLOTS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(max_verified_age.saturating_mul(2).max(max_verified_age));
+
         let primary_fresh = matches!(
             (store.get(&reserve), store.get(&base_mint.0)),
             (Some(r), Some(m))
-                if current_slot.0.saturating_sub(r.slot) <= 1000
-                    && current_slot.0.saturating_sub(m.slot) <= 1000
+                if current_slot.0.saturating_sub(r.slot) <= max_verified_age
+                    && current_slot.0.saturating_sub(m.slot) <= max_verified_age
         );
         let fallback_fresh = !primary_fresh
             && matches!(
@@ -178,8 +189,8 @@ impl Supervisor {
                     self.kamino_fallback_store.get(&base_mint.0),
                 ),
                 (Some(r), Some(m))
-                    if current_slot.0.saturating_sub(r.slot) <= 1000
-                        && current_slot.0.saturating_sub(m.slot) <= 1000
+                    if current_slot.0.saturating_sub(r.slot) <= max_verified_age
+                        && current_slot.0.saturating_sub(m.slot) <= max_verified_age
             );
 
         let mut use_fallback_store = fallback_fresh;
@@ -253,7 +264,9 @@ impl Supervisor {
                     decoded_both += 1;
                 }
 
-                if decoded_both == 2 && current_slot.0.saturating_sub(snap_slot) <= 1500 {
+                if decoded_both == 2
+                    && current_slot.0.saturating_sub(snap_slot) <= fallback_accept_age
+                {
                     use_fallback_store = true;
                     eval_slot = Slot(current_slot.0.max(snap_slot));
                 }
@@ -276,8 +289,10 @@ impl Supervisor {
             self.live_sol_price(),
         )
         .map_err(anyhow::Error::msg)?;
-        if !inputs.is_fresh(1500) {
-            anyhow::bail!("verified Yellowstone economic inputs exceed max_state_age_slots");
+        if !inputs.is_fresh(max_verified_age) {
+            anyhow::bail!(
+                "verified Yellowstone economic inputs exceed VERIFIED_INPUT_MAX_AGE_SLOTS ({max_verified_age})"
+            );
         }
         Ok(inputs)
     }

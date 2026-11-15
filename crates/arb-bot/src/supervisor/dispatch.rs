@@ -173,7 +173,7 @@ impl Supervisor {
                     && current_balance < min_reserve_lamports
                 {
                     warn!(
-                        "🚨 Safety Floor Active: Wallet balance ({} lamports / {:.4} SOL) is below {:.4} SOL minimum reserve — skipping execution to protect fees",
+                        "ðŸš¨ Safety Floor Active: Wallet balance ({} lamports / {:.4} SOL) is below {:.4} SOL minimum reserve â€” skipping execution to protect fees",
                         current_balance,
                         current_balance as f64 / 1e9,
                         min_reserve_lamports as f64 / 1e9
@@ -183,7 +183,7 @@ impl Supervisor {
                         gross_sol,
                         stage: "Safety Floor Reserve".to_string(),
                         reason: format!(
-                            "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                            "Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© ({:.4} SOL) Ø£Ù‚Ù„ Ù…Ù† ØµÙ…Ø§Ù… Ø§Ù„Ø£Ù…Ø§Ù† Ø§Ù„Ø£Ø¯Ù†Ù‰ ({:.4} SOL)",
                             current_balance as f64 / 1e9,
                             min_reserve_lamports as f64 / 1e9
                         ),
@@ -195,7 +195,7 @@ impl Supervisor {
                             gross_sol,
                             "Safety Floor Reserve",
                             &format!(
-                                "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                                "Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© ({:.4} SOL) Ø£Ù‚Ù„ Ù…Ù† ØµÙ…Ø§Ù… Ø§Ù„Ø£Ù…Ø§Ù† Ø§Ù„Ø£Ø¯Ù†Ù‰ ({:.4} SOL)",
                                 current_balance as f64 / 1e9,
                                 min_reserve_lamports as f64 / 1e9
                             ),
@@ -218,7 +218,9 @@ impl Supervisor {
                                     route: route_label.to_string(),
                                     gross_sol,
                                     stage: "Transaction Format Check".to_string(),
-                                    reason: format!("تعذر تحديد إصدار المعاملة: {error}"),
+                                    reason: format!(
+                                        "ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ¯ Ø¥ØµØ¯Ø§Ø± Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø©: {error}"
+                                    ),
                                     slot: current_slot.0,
                                 },
                             );
@@ -329,8 +331,10 @@ impl Supervisor {
                                     "Pre-flight simulation failed ({:?}) - skipping bundle dispatch",
                                     sim_res.error
                                 );
-                                let reason_msg =
-                                    format!("محاكاة المعاملة فشلت على الشبكة: {:?}", sim_res.error);
+                                let reason_msg = format!(
+                                    "Ù…Ø­Ø§ÙƒØ§Ø© Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø© ÙØ´Ù„Øª Ø¹Ù„Ù‰ Ø§Ù„Ø´Ø¨ÙƒØ©: {:?}",
+                                    sim_res.error
+                                );
                                 self.record_rejected_opportunity(
                                     crate::telegram::RejectedTradeSummary {
                                         route: route_label.to_string(),
@@ -386,7 +390,7 @@ impl Supervisor {
                                             "Pre-flight fallback simulation failed ({err_str}) - skipping bundle dispatch"
                                         );
                                         let reason_msg = format!(
-                                            "محاكاة المعاملة فشلت على الشبكة (Fallback RPC): {err_str}"
+                                            "Ù…Ø­Ø§ÙƒØ§Ø© Ø§Ù„Ù…Ø¹Ø§Ù…Ù„Ø© ÙØ´Ù„Øª Ø¹Ù„Ù‰ Ø§Ù„Ø´Ø¨ÙƒØ© (Fallback RPC): {err_str}"
                                         );
                                         self.record_rejected_opportunity(
                                             crate::telegram::RejectedTradeSummary {
@@ -409,7 +413,7 @@ impl Supervisor {
                                         return;
                                     }
                                     info!(
-                                        "✅ Fallback RpcPool pre-flight simulation succeeded (CU={units_consumed})"
+                                        "âœ… Fallback RpcPool pre-flight simulation succeeded (CU={units_consumed})"
                                     );
                                 }
                                 Err(pool_err) => {
@@ -452,7 +456,7 @@ impl Supervisor {
 
                 // Final fire-time safety gate: the kill switch / emergency
                 // latch must block in-flight submissions too, not just new
-                // captures — a stop issued during simulation must win.
+                // captures â€” a stop issued during simulation must win.
                 if self.risk_gate.kill_switch().is_blocked()
                     || self.control().is_some_and(|c| c.is_emergency_stopped())
                 {
@@ -508,7 +512,7 @@ impl Supervisor {
                 // timeout is reconcilable by signature instead of a blind
                 // resubmit. A transaction whose signature cannot be extracted,
                 // or whose intent cannot be durably persisted, MUST NOT be
-                // dispatched — it would be unrecoverable after a crash.
+                // dispatched â€” it would be unrecoverable after a crash.
                 let Some(pre_sig) = arb_tx::extract_transaction_signature(tx_bytes) else {
                     error!(
                         attempt_id = record.id,
@@ -538,7 +542,7 @@ impl Supervisor {
                         ?err,
                         attempt_id = record.id,
                         route = %route_label,
-                        "dispatch aborted: durable intent persistence failed — refusing to send an unrecoverable transaction"
+                        "dispatch aborted: durable intent persistence failed â€” refusing to send an unrecoverable transaction"
                     );
                     let _ =
                         self.store
@@ -556,7 +560,7 @@ impl Supervisor {
                 let sent_at = Instant::now();
                 let (send_result, was_swqos): (Result<String, String>, bool) = if is_swqos_route {
                     info!(
-                        "⚡ Submitting transaction via direct SWQoS RPC path ({} bytes)...",
+                        "âš¡ Submitting transaction via direct SWQoS RPC path ({} bytes)...",
                         tx_bytes.len()
                     );
                     let b64 = BASE64_STANDARD.encode(tx_bytes.as_slice());
@@ -585,9 +589,9 @@ impl Supervisor {
                     Ok(bundle_id) => {
                         self.observe_bundle_rtt(rtt);
                         if was_swqos {
-                            info!("🚀 Transaction accepted via SWQoS RPC: {}", bundle_id);
+                            info!("ðŸš€ Transaction accepted via SWQoS RPC: {}", bundle_id);
                         } else {
-                            info!("🚀 Bundle accepted by Jito Block Engine: {}", bundle_id);
+                            info!("ðŸš€ Bundle accepted by Jito Block Engine: {}", bundle_id);
                         }
                         self.telegram
                             .alert_opportunity_with_telemetry(
@@ -627,7 +631,8 @@ impl Supervisor {
                         let rung_for_record = tip_rung;
                         let rec_id = record.id;
                         let b_id = bundle_id.clone();
-                        let net_profit_val = opp.net_profit;
+                        // Do not record expected/quoted profit as realized; settlement is not balance-delta verified.
+                        let _net_profit_val = opp.net_profit;
                         let profit_sol_val = profit_sol;
                         let profit_usd_val = profit_sol * live_sol_price;
                         let sol_price_val = live_sol_price;
@@ -642,14 +647,14 @@ impl Supervisor {
                                 }
                                 parts.push(format_mint_short(&h.mint_out.0));
                             }
-                            parts.join(" ➔ ")
+                            parts.join(" âž” ")
                         };
                         let venues_str_val = opp
                             .hops
                             .iter()
                             .map(|h| format!("{:?}", h.protocol))
                             .collect::<Vec<_>>()
-                            .join(" ➔ ");
+                            .join(" âž” ");
                         let rtt_ms = rtt.as_secs_f64() * 1000.0;
                         let land_start = std::time::Instant::now();
                         let recent_landed_task = self.recent_landed.clone();
@@ -702,13 +707,13 @@ impl Supervisor {
                                         + landing_ms;
 
                                     let timings_str = format!(
-                                        "• Ingest ➔ Quote: <code>{} µs</code>\n\
-                                             • Risk & EV Gates: <code>{} µs</code>\n\
-                                             • Tx Assembly & ALTs: <code>{} µs</code>\n\
-                                             • Ed25519 Signing: <code>{} µs</code>\n\
-                                             • Broadcast RTT: <code>{:.2} ms</code>\n\
-                                             • Block Landing: <code>{:.2} ms</code>\n\
-                                             • <b>Total E2E Latency:</b> <code>{:.2} ms</code>",
+                                        "â€¢ Ingest âž” Quote: <code>{} Âµs</code>\n\
+                                             â€¢ Risk & EV Gates: <code>{} Âµs</code>\n\
+                                             â€¢ Tx Assembly & ALTs: <code>{} Âµs</code>\n\
+                                             â€¢ Ed25519 Signing: <code>{} Âµs</code>\n\
+                                             â€¢ Broadcast RTT: <code>{:.2} ms</code>\n\
+                                             â€¢ Block Landing: <code>{:.2} ms</code>\n\
+                                             â€¢ <b>Total E2E Latency:</b> <code>{:.2} ms</code>",
                                         t_ingest_to_quote_us,
                                         t_risk_us,
                                         t_assembly_us,
@@ -719,7 +724,7 @@ impl Supervisor {
                                     );
 
                                     info!(
-                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: +{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
+                                        "ðŸŽ¯ Execution finalized/landed: {} (slot {})\nâ€¢ Net Profit: +{:.6} SOL (~${:.2})\nâ€¢ Loan: {:.4} SOL\nâ€¢ Tokens: {}\nâ€¢ Venues: {}\n{}",
                                         b_id,
                                         effective_slot,
                                         profit_sol_val,
@@ -733,11 +738,7 @@ impl Supervisor {
                                             .replace("<b>", "")
                                             .replace("</b>", "")
                                     );
-                                    let _ = store.record_outcome(
-                                        rec_id,
-                                        "landed",
-                                        Some(net_profit_val),
-                                    );
+                                    let _ = store.record_outcome(rec_id, "landed", None);
                                     let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {
                                         js.record(
@@ -790,7 +791,7 @@ impl Supervisor {
                                         .await;
                                 }
                                 arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
-                                    warn!("⚠️ Execution {:?} in block: {}", status, b_id);
+                                    warn!("âš ï¸ Execution {:?} in block: {}", status, b_id);
                                     let _ = store.record_outcome(rec_id, "dropped", None);
                                     let _ = store.resolve_dispatch_intent(
                                         rec_id,
@@ -802,8 +803,19 @@ impl Supervisor {
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
-                                    // Unlanded/expired Jito bundles pay 0 SOL; do not count phantom tip loss or trip breaker
+                                    // Unlanded/expired bundles: do not assume a fixed on-chain loss.
+                                    // Record an operator/measurement-provided estimate from env if set.
                                     risk_gate.record_bundle_landed(Slot(effective_slot), false);
+                                    let failed_loss_lamports =
+                                        std::env::var("FAILED_BUNDLE_LOSS_LAMPORTS")
+                                            .ok()
+                                            .and_then(|v| v.trim().parse::<u64>().ok())
+                                            .unwrap_or(0);
+                                    if failed_loss_lamports > 0 && sol_price_val > 0.0 {
+                                        let loss_usd =
+                                            (failed_loss_lamports as f64 / 1e9) * sol_price_val;
+                                        risk_gate.record_loss(loss_usd);
+                                    }
 
                                     let dropped = crate::telegram::DroppedTradeSummary {
                                         bundle_id: b_id.clone(),
@@ -828,14 +840,23 @@ impl Supervisor {
                                         .await;
                                 }
                                 arb_land::LandStatus::Failed => {
-                                    warn!("⚠️ Execution reverted on-chain: {}", b_id);
+                                    warn!("âš ï¸ Execution reverted on-chain: {}", b_id);
                                     let _ = store.record_outcome(rec_id, "failed", None);
                                     let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
                                     risk_gate.record_bundle_landed(Slot(effective_slot), false);
-                                    risk_gate.record_loss(5_000.0 / 1e9 * sol_price_val);
+                                    let failed_loss_lamports =
+                                        std::env::var("FAILED_BUNDLE_LOSS_LAMPORTS")
+                                            .ok()
+                                            .and_then(|v| v.trim().parse::<u64>().ok())
+                                            .unwrap_or(0);
+                                    if failed_loss_lamports > 0 && sol_price_val > 0.0 {
+                                        risk_gate.record_loss(
+                                            (failed_loss_lamports as f64 / 1e9) * sol_price_val,
+                                        );
+                                    }
                                     risk_gate.on_failure(Slot(effective_slot));
                                     arb_metrics::set_breaker_state(
                                         if risk_gate.is_breaker_open(Slot(effective_slot)) {
