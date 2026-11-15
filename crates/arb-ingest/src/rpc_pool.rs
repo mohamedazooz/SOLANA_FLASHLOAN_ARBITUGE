@@ -370,6 +370,9 @@ impl RpcPool {
         if let Some(val) = lookup("SOLANA_RPC_PRIMARY") {
             push_unique(&val);
         }
+        if let Some(val) = lookup("SOLANA_RPC_SECONDARY") {
+            push_unique(&val);
+        }
 
         // 1b. Explicit numbered priority slots (SOLANA_RPC_1_URL .. SOLANA_RPC_10_URL)
         for n in 1..=10 {
