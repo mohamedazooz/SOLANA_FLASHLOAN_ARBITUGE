@@ -458,62 +458,6 @@ pub fn build_cross_dex_flash_arbitrage_v1(
     })
 }
 
-/// Build cross-DEX flash arbitrage transaction (V0 with ALT)
-pub fn build_cross_dex_flash_arbitrage_v0(
-    params: &CrossDexFlashArbParams,
-    signer: &KeypairSigner,
-    lookup_tables: &[AddressLookupTable],
-) -> Result<CrossDexFlashArbitrageTx, CrossDexFlashArbError> {
-    let (ixs, borrow_idx, repay_idx) = assemble_cross_dex_flash_arbitrage(params)?;
-
-    let wire_bytes = TxBuilder::compile_v0_message(
-        signer.pubkey(),
-        &ixs,
-        params.recent_blockhash,
-        lookup_tables,
-    )
-    .map_err(|e| CrossDexFlashArbError::AtomicityFailed(e.to_string()))?;
-
-    // Check size
-    if wire_bytes.len() > 1232 {
-        return Err(CrossDexFlashArbError::TransactionTooLarge {
-            size: wire_bytes.len(),
-            limit: 1232,
-        });
-    }
-
-    // Build intermediate accounts list
-    let mut intermediate_accounts = Vec::with_capacity(params.legs.len() - 1);
-    for i in 0..(params.legs.len() - 1) {
-        let leg = &params.legs[i];
-        let account = get_associated_token_address_with_program_id(
-            &params.payer,
-            &leg.token_out,
-            &leg.token_out_program,
-        );
-        intermediate_accounts.push(account);
-    }
-
-    Ok(CrossDexFlashArbitrageTx {
-        wire_bytes: wire_bytes.clone(),
-        tx_size: wire_bytes.len(),
-        instructions: ixs,
-        borrow_instruction_index: borrow_idx,
-        repay_instruction_index: repay_idx,
-        borrow_amount: params.borrow_amount,
-        flash_fee: params.flash_fee,
-        repay_amount: params.repay_amount(),
-        settlement_account: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.legs[0].token_in,
-            &params.legs[0].token_in_program,
-        ),
-        intermediate_accounts,
-        dex_platforms: params.legs.iter().map(|leg| leg.dex_platform).collect(),
-        pool_addresses: params.legs.iter().map(|leg| leg.pool_address).collect(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
