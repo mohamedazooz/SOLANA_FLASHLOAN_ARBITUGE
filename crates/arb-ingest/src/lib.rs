@@ -4,6 +4,7 @@
 pub mod gmgn;
 pub use gmgn::{GmgnClient, TrendingToken};
 pub mod dependency_manifest;
+#[cfg(feature = "extra-ingest")]
 pub mod dexscreener;
 pub mod provider_supervisor;
 pub mod quote_readiness;
@@ -14,6 +15,7 @@ pub use dependency_manifest::{
     PoolDependencyManifest, ProtocolDependencyError, ProtocolDependencyInput,
     resolve_protocol_dependencies,
 };
+#[cfg(feature = "extra-ingest")]
 pub use dexscreener::{DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken};
 pub use provider_supervisor::{
     CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus,
@@ -38,7 +40,9 @@ pub use registry::{
     fetch_accounts_chunked, next_pool_write_version, raydium_clmm_tick_array_pdas,
     resolve_mints_decimals,
 };
+#[cfg(feature = "extra-ingest")]
 pub mod dual_ingest;
+#[cfg(feature = "extra-ingest")]
 pub use dual_ingest::{DualIngestShadow, PoolConsistencyCheck, StreamingPoolCache};
 pub mod discovery;
 pub use discovery::{
@@ -56,11 +60,27 @@ pub mod pumpfun_discovery;
 pub use pumpfun_discovery::{PumpFunCoin, PumpFunDiscoveryClient};
 pub mod pumpdev_stream;
 pub use pumpdev_stream::{PumpDevEvent, PumpDevWebSocketClient};
+pub mod capability;
+pub use capability::{
+    AccountDataEncoding, CapabilityError, CommitmentLevel, ProviderCapabilities,
+    ProviderCapabilityRegistry, ProviderTransport, RateLimitPolicy, ReconnectPolicy,
+    SubscriptionMethod,
+};
+pub mod solami_blur;
+pub use solami_blur::{
+    SolamiBlurClient, SolamiBlurConfig, SolamiBlurEvent, SolamiBlurFilterMessage,
+};
+pub mod solami_mirage;
+pub use solami_mirage::{MirageUpdate, SolamiMirageClient, SolamiMirageConfig};
+#[cfg(feature = "extra-ingest")]
 pub mod solami_stream;
+#[cfg(feature = "extra-ingest")]
 pub use solami_stream::{
     SolamiFilterMessage, SolamiStreamClient, SolamiStreamConfig, SolamiStreamEvent,
 };
+#[cfg(feature = "extra-ingest")]
 pub mod bitquery;
+#[cfg(feature = "extra-ingest")]
 pub use bitquery::{
     BitqueryClient, BitqueryConfig, BitqueryTradeEntry, BitqueryWsClient, BitqueryWsMessage,
 };
@@ -380,6 +400,7 @@ pub struct IngestClient {
     /// When set, account updates are decoded into PoolState and written here
     /// instead of (or in addition to) the shared MarketStateCache, enabling
     /// comparison against the HTTP-polling path.
+    #[cfg(feature = "extra-ingest")]
     streaming_cache: parking_lot::Mutex<Option<Arc<StreamingPoolCache>>>,
 }
 
@@ -406,6 +427,7 @@ impl IngestClient {
             helius_connected: std::sync::atomic::AtomicBool::new(false),
             helius_slot: Arc::new(AtomicU64::new(0)),
             provider_id: ProviderId(1),
+            #[cfg(feature = "extra-ingest")]
             streaming_cache: parking_lot::Mutex::new(None),
         }
     }
@@ -783,12 +805,14 @@ impl IngestClient {
     /// When set, Yellowstone account updates are decoded into PoolState and
     /// written to this cache instead of the shared MarketStateCache, enabling
     /// comparison against the HTTP-polling path.
+    #[cfg(feature = "extra-ingest")]
     pub fn with_streaming_cache(self, cache: Arc<StreamingPoolCache>) -> Self {
         *self.streaming_cache.lock() = Some(cache);
         self
     }
 
     /// Get the streaming cache if attached.
+    #[cfg(feature = "extra-ingest")]
     pub fn streaming_cache(&self) -> Option<Arc<StreamingPoolCache>> {
         self.streaming_cache.lock().clone()
     }

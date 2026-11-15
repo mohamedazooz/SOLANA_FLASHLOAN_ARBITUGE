@@ -135,6 +135,7 @@ impl HeliusWsClient {
             "ALCHEMY_WS_URL".to_string(),
             "FAST_WEBSOCKET".to_string(),
             "HELIUS_WS_URL".to_string(),
+            "SOLAMI_RPC_WS_URL".to_string(),
             "SOLAMI_WS_URL".to_string(),
         ]);
 
@@ -751,13 +752,12 @@ impl HeliusWsClient {
         slot: u64,
         yellowstone: &IngestClient,
     ) {
-        let effective_slot_u64 = slot
-            .max(self.latest_slot.load(Ordering::Acquire))
-            .max(yellowstone.current_slot());
-        if effective_slot_u64 == 0 {
+        // Enforce strict slot integrity: never upgrade an old notification to a newer slot.
+        // Drops updates from dead slots or zero slots immediately.
+        if slot == 0 || yellowstone.slot_is_dead(slot) {
             return;
         }
-        let effective_slot = Slot(effective_slot_u64);
+        let update_slot = Slot(slot);
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -779,6 +779,10 @@ impl HeliusWsClient {
                 let Some(mut state) = yellowstone.cache().get_pool(&pool_id) else {
                     continue;
                 };
+                // Reject out-of-order notifications where notification slot is older than pool's known slot
+                if slot < state.last_update_slot {
+                    continue;
+                }
                 if is_base {
                     state.reserve_in = u128::from(amount);
                 } else {
@@ -787,10 +791,14 @@ impl HeliusWsClient {
                 if state.reserve_in == 0 || state.reserve_out == 0 {
                     continue;
                 }
-                state.slot = effective_slot;
-                state.last_update_slot = effective_slot_u64;
+                state.slot = update_slot;
+                state.write_version = if slot > state.last_update_slot {
+                    1
+                } else {
+                    state.write_version.saturating_add(1)
+                };
+                state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                state.write_version = next_pool_write_version();
                 let _ = yellowstone.apply_pool_update(state);
             }
             return;
@@ -805,6 +813,10 @@ impl HeliusWsClient {
         let Some(mut state) = yellowstone.cache().get_pool(&pool_id) else {
             return;
         };
+        // Reject out-of-order notifications
+        if slot < state.last_update_slot {
+            return;
+        }
 
         match reg.protocol {
             DexProtocol::OrcaWhirlpool => {
@@ -826,7 +838,7 @@ impl HeliusWsClient {
                         clmm.tick_spacing,
                     )
                 {
-                    return; // Fail closed until 750ms hydration fetches shifted tick arrays
+                    return; // Fail closed until hydration fetches shifted tick arrays
                 }
                 clmm.tick_arrays = existing_ticks;
                 let (r_in, r_out) = compute_clmm_virtual_reserves(&clmm);
@@ -838,10 +850,14 @@ impl HeliusWsClient {
                 state.fee_denominator = 10_000;
                 state.reserve_in = r_in;
                 state.reserve_out = r_out;
-                state.slot = effective_slot;
-                state.last_update_slot = effective_slot_u64;
+                state.slot = update_slot;
+                state.write_version = if slot > state.last_update_slot {
+                    1
+                } else {
+                    state.write_version.saturating_add(1)
+                };
+                state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                state.write_version = next_pool_write_version();
                 let _ = yellowstone.apply_pool_update(state);
             }
             DexProtocol::MeteoraDlmm => {
@@ -883,10 +899,14 @@ impl HeliusWsClient {
                     state.fee_denominator = 10_000;
                     state.reserve_in = r_in;
                     state.reserve_out = r_out;
-                    state.slot = effective_slot;
-                    state.last_update_slot = effective_slot_u64;
+                    state.slot = update_slot;
+                    state.write_version = if slot > state.last_update_slot {
+                        1
+                    } else {
+                        state.write_version.saturating_add(1)
+                    };
+                    state.last_update_slot = slot;
                     state.last_update_ms = now_ms;
-                    state.write_version = next_pool_write_version();
                     let _ = yellowstone.apply_pool_update(state);
                 }
             }
@@ -918,10 +938,14 @@ impl HeliusWsClient {
                 state.fee_denominator = 10_000;
                 state.reserve_in = r_in;
                 state.reserve_out = r_out;
-                state.slot = effective_slot;
-                state.last_update_slot = effective_slot_u64;
+                state.slot = update_slot;
+                state.write_version = if slot > state.last_update_slot {
+                    1
+                } else {
+                    state.write_version.saturating_add(1)
+                };
+                state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                state.write_version = next_pool_write_version();
                 let _ = yellowstone.apply_pool_update(state);
             }
             DexProtocol::PumpFun => {
@@ -938,10 +962,14 @@ impl HeliusWsClient {
                 }
                 state.reserve_in = u128::from(pump_state.virtual_sol_reserves);
                 state.reserve_out = u128::from(pump_state.virtual_token_reserves);
-                state.slot = effective_slot;
-                state.last_update_slot = effective_slot_u64;
+                state.slot = update_slot;
+                state.write_version = if slot > state.last_update_slot {
+                    1
+                } else {
+                    state.write_version.saturating_add(1)
+                };
+                state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                state.write_version = next_pool_write_version();
                 let _ = yellowstone.apply_pool_update(state);
             }
             _ => {}

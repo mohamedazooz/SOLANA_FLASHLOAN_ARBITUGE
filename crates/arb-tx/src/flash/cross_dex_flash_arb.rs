@@ -393,6 +393,26 @@ pub fn build_cross_dex_flash_arbitrage_v1(
 ) -> Result<CrossDexFlashArbitrageTx, CrossDexFlashArbError> {
     let (ixs, borrow_idx, repay_idx) = assemble_cross_dex_flash_arbitrage(params)?;
 
+    // Atomicity self-check: verify single transaction integrity before signing
+    let verification = crate::atomic_integrity::verify_atomic_integrity(
+        crate::atomic_integrity::ExecutionMode::SingleTransaction,
+        &ixs,
+        Some(borrow_idx),
+        Some(repay_idx),
+        params.borrow_amount,
+        params.repay_amount(),
+        params.flash_fee,
+    )
+    .map_err(|e| CrossDexFlashArbError::AtomicityFailed(e.to_string()))?;
+
+    if !verification.is_atomic {
+        return Err(CrossDexFlashArbError::AtomicityFailed(
+            verification
+                .rejection_reason
+                .unwrap_or_else(|| "atomic integrity check failed".to_string()),
+        ));
+    }
+
     // V1 requires explicit limits
     if params.cu_limit == 0 {
         return Err(CrossDexFlashArbError::MissingComputeUnitLimit);

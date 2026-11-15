@@ -4,6 +4,10 @@ name = "arb-ingest"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+extra-ingest = []
+
 [dependencies]
 arb-types = { path = "../arb-types" }
 arb-dex = { path = "../arb-dex" }
@@ -34,6 +38,7 @@ arb-metrics = { path = "../arb-metrics" }
 [[test]]
 name = "bitquery_ws_live"
 path = "tests/bitquery_ws_live.rs"
+required-features = ["extra-ingest"]
 
 [dev-dependencies]
 arb-engine = { path = "../arb-engine" }
@@ -42,6 +47,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "dual_ingest_bench"
 harness = false
+required-features = ["extra-ingest"]
 
 [lints]
 workspace = true
