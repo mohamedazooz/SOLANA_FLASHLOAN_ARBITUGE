@@ -98,7 +98,6 @@ pub struct Supervisor {
     slot_clock: parking_lot::Mutex<SlotClock>,
     /// Measured round-trip time to the block engine, plus the instant of the
     /// previous sample (the EWMA's time weight needs the gap).
-    #[allow(dead_code)] // read by observe_bundle_rtt, active with Jito bundles
     rtt: parking_lot::Mutex<(RttTracker, Option<Instant>)>,
     /// Short-TTL recent-blockhash cache. A blockhash is valid for ~60-90s, so
     /// reusing one for a few seconds removes an RPC round-trip from the send
@@ -500,7 +499,6 @@ impl Supervisor {
     ///
     /// Only accepted submissions are measured: a timeout is the failure mode
     /// being guarded against, not evidence about the normal path.
-    #[allow(dead_code)] // invoked from the Jito bundle submission path
     fn observe_bundle_rtt(&self, elapsed: std::time::Duration) {
         let mut guard = self.rtt.lock();
         let dt_s = guard
@@ -581,21 +579,37 @@ impl Supervisor {
     }
 
     pub fn record_landed_trade(&self, trade: crate::telegram::TradeSummary) {
-        let mut guard = self.recent_landed.lock();
+        Self::record_landed_trade_task(&self.recent_landed, self.control().cloned(), trade);
+    }
+
+    pub(crate) fn record_landed_trade_task(
+        recent_landed: &parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>,
+        control: Option<Arc<crate::control_service::ControlService>>,
+        trade: crate::telegram::TradeSummary,
+    ) {
+        let mut guard = recent_landed.lock();
         if guard.len() >= 50 {
             guard.remove(0);
         }
         let route = trade.route.clone();
         guard.push(trade);
         drop(guard);
-        if let Some(control) = self.control() {
+        if let Some(control) = control {
             control.record_execution("landed", &route, "trade confirmed landed");
             control.record_execution_result(true);
         }
     }
 
     pub fn record_dropped_bundle(&self, dropped: crate::telegram::DroppedTradeSummary) {
-        let mut guard = self.recent_dropped.lock();
+        Self::record_dropped_bundle_task(&self.recent_dropped, self.control().cloned(), dropped);
+    }
+
+    pub(crate) fn record_dropped_bundle_task(
+        recent_dropped: &parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>,
+        control: Option<Arc<crate::control_service::ControlService>>,
+        dropped: crate::telegram::DroppedTradeSummary,
+    ) {
+        let mut guard = recent_dropped.lock();
         if guard.len() >= 50 {
             guard.remove(0);
         }
@@ -603,7 +617,7 @@ impl Supervisor {
         let status = dropped.reason.clone();
         guard.push(dropped);
         drop(guard);
-        if let Some(control) = self.control() {
+        if let Some(control) = control {
             control.record_execution("dropped", &route, &status);
             control.record_execution_result(false);
         }

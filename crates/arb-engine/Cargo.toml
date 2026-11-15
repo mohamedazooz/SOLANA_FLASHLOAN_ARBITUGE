@@ -4,6 +4,10 @@ name = "arb-engine"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+split-routing = []
+
 [dependencies]
 arb-constants = { path = "../arb-constants" }
 arb-types = { path = "../arb-types" }

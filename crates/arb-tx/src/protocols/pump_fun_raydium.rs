@@ -2,19 +2,23 @@
 //! Builds atomic 2-hop cross-venue arbitrage transactions with compute budget,
 //! slippage control, WSOL wrap/unwrap, Jito tip routing, and MEV protection.
 
-use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::{Result, bail};
 use arb_types::Lamports;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
 use crate::{
-    CompiledInstruction, KeypairSigner, PumpFunAccounts, RaydiumCpmmAccounts, RaydiumV4Accounts,
-    TxBuilder, WSOL_MINT, build_close_token_account, build_compute_unit_limit,
-    build_compute_unit_price, build_create_ata_idempotent, build_marked_jito_tip_instruction,
+    CompiledInstruction, PumpFunAccounts, RaydiumCpmmAccounts, RaydiumV4Accounts, WSOL_MINT,
+    build_close_token_account, build_compute_unit_limit, build_compute_unit_price,
+    build_create_ata_idempotent, build_marked_jito_tip_instruction,
     build_pump_fun_swap_instruction, build_raydium_cpmm_swap_instruction,
     build_raydium_v4_swap_instruction_18, build_sync_native, build_system_transfer,
-    get_associated_token_address, validate_jito_bundle,
+    get_associated_token_address,
 };
+#[cfg(test)]
+use crate::{KeypairSigner, TxBuilder, validate_jito_bundle};
 
 pub const DEFAULT_PRIORITY_FEE_MICROLAMPORTS: u64 = 1_000;
 pub const PUMP_FUN_RAYDIUM_CU_LIMIT: u32 = 260_000;
@@ -339,7 +343,10 @@ impl PumpFunRaydiumArbitrageBuilder {
 
         Ok(ixs)
     }
+}
 
+#[cfg(test)]
+impl PumpFunRaydiumArbitrageBuilder {
     /// Build signed transaction bytes
     pub fn build_signed(&self, signer: &KeypairSigner) -> Result<Vec<u8>> {
         let ixs = self.build_instructions()?;
@@ -370,6 +377,7 @@ impl PumpFunRaydiumArbitrageBuilder {
     }
 }
 
+#[cfg(test)]
 pub fn build_and_submit_pump_fun_raydium_arbitrage() -> Result<Pubkey> {
     PumpFunRaydiumArbitrageBuilder::new().build_and_submit()
 }

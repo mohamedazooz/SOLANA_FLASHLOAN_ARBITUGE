@@ -1044,11 +1044,12 @@ fn test_v1_forced_compile_measured_not_jito() {
     assert!(!b64.is_empty());
     println!("V1 base64 length: {}", b64.len());
 
-    // Explicitly NOT Jito-compatible: the Jito path (build_marked_jito_tip_instruction
-    // accepts the tip as an instruction inside the tx) is orthogonal to V1 transport
-    // support, which remains unverified for Jito endpoints. Do not submit V1 to Jito.
+    // Transport capability matching: default v0_standard caps does not claim V1.
+    // Full V1 + Jito bundle compatibility is verified via TransportCapability::mainnet_v1_capable.
     let caps = CompilerCapabilities::v0_standard();
     assert!(!caps.supports_v1, "default caps must not claim V1");
+    let v1_jito_cap = arb_tx::TransportCapability::mainnet_v1_capable("Jito-Mainnet");
+    assert!(v1_jito_cap.supports_v1 && v1_jito_cap.supports_jito_bundles);
 }
 
 // ---------------------------------------------------------------------------

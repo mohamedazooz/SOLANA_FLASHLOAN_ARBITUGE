@@ -165,8 +165,8 @@ impl Supervisor {
         &self,
         current_slot: Slot,
     ) -> anyhow::Result<VerifiedQuoteInputs> {
-        let base_mint = MintId(Pubkey::from_str(arb_tx::WSOL_MINT)?);
-        let reserve = Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE)?;
+        let base_mint = MintId(crate::verified_config::wsol_mint());
+        let reserve = crate::verified_config::wsol_reserve();
 
         // Ensure Kamino reserve & WSOL mint snapshots exist and stay fresh.
         // Note: `AccountSnapshotStore::apply` refuses `is_startup: true` overwrites

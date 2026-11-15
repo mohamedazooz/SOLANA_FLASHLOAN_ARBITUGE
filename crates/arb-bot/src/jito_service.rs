@@ -516,7 +516,167 @@ impl JitoService {
             }
         }
 
-        (arb_land::LandStatus::Expired, landed_slot, observed_err)
+        // Never mark expired without positive block height proof
+        let current_height = rpc.get_block_height().await.unwrap_or(0);
+        let (lifecycle, reason) = arb_land::evaluate_lifecycle_with_block_height(
+            None,
+            false,
+            None,
+            current_height,
+            0, // fallback without explicit last_valid_block_height
+        );
+        match lifecycle {
+            arb_land::TransactionLifecycle::Expired => {
+                (arb_land::LandStatus::Expired, landed_slot, observed_err.or(reason))
+            }
+            _ => (
+                arb_land::LandStatus::Sent,
+                landed_slot,
+                Some("Polling timeout elapsed without terminal landing; transaction remains in-flight".into()),
+            ),
+        }
+    }
+
+    /// Extended landing verification incorporating lastValidBlockHeight validation.
+    pub async fn verify_landing_with_height(
+        &self,
+        rpc: &RpcPool,
+        bundle_id: &str,
+        tx_signature: Option<&str>,
+        attempts: u32,
+        interval: Duration,
+        last_valid_block_height: u64,
+    ) -> (arb_land::TransactionLifecycle, Option<u64>, Option<String>) {
+        let mut landed_slot = None;
+        let mut observed_err = None;
+
+        for _ in 0..attempts {
+            tokio::time::sleep(interval).await;
+
+            // Track 1: Jito Block Engine getBundleStatuses
+            if let Ok(records) = self.lander.get_bundle_statuses_detailed(bundle_id).await {
+                if let Some(record) = records.first() {
+                    if let Some(slot) = record.slot {
+                        landed_slot = Some(slot);
+                    }
+                    if let Some(ref err) = record.err {
+                        observed_err = Some(err.clone());
+                    }
+
+                    match record.status {
+                        arb_land::LandStatus::Landed => {
+                            let sig = tx_signature
+                                .or_else(|| record.transactions.first().map(String::as_str));
+                            if let Some(s) = sig {
+                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                                    if sig_status == arb_ingest::SignatureStatus::Failed {
+                                        return (
+                                            arb_land::TransactionLifecycle::Failed,
+                                            landed_slot,
+                                            observed_err.or_else(|| {
+                                                Some("transaction reverted on chain".into())
+                                            }),
+                                        );
+                                    }
+                                }
+                            }
+                            return (arb_land::TransactionLifecycle::Confirmed, landed_slot, None);
+                        }
+                        arb_land::LandStatus::Failed => {
+                            return (
+                                arb_land::TransactionLifecycle::Failed,
+                                landed_slot,
+                                observed_err,
+                            );
+                        }
+                        arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
+                            if let Some(s) = tx_signature {
+                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                                    if sig_status.is_landed() {
+                                        return (
+                                            arb_land::TransactionLifecycle::Confirmed,
+                                            landed_slot,
+                                            None,
+                                        );
+                                    }
+                                }
+                            }
+                            let current_height = rpc.get_block_height().await.unwrap_or(0);
+                            let (lc, reason) = arb_land::evaluate_lifecycle_with_block_height(
+                                None,
+                                false,
+                                observed_err.as_deref(),
+                                current_height,
+                                last_valid_block_height,
+                            );
+                            return (lc, landed_slot, reason);
+                        }
+                        arb_land::LandStatus::Sent => {}
+                    }
+                }
+            }
+
+            // Track 2: Direct on-chain verification via RPC getSignatureStatuses
+            if let Some(s) = tx_signature {
+                if let Ok((sig_status, slot, err)) = rpc.get_signature_status_detailed(s).await {
+                    match sig_status {
+                        arb_ingest::SignatureStatus::Finalized => {
+                            return (
+                                arb_land::TransactionLifecycle::Finalized,
+                                slot.or(landed_slot),
+                                None,
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Confirmed => {
+                            return (
+                                arb_land::TransactionLifecycle::Confirmed,
+                                slot.or(landed_slot),
+                                None,
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Processed => {
+                            return (
+                                arb_land::TransactionLifecycle::Processed,
+                                slot.or(landed_slot),
+                                None,
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Failed => {
+                            return (
+                                arb_land::TransactionLifecycle::Failed,
+                                slot.or(landed_slot),
+                                err.or(Some("transaction failed on chain".into())),
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Pending => {}
+                    }
+                }
+            }
+        }
+
+        // Final check via RPC with history search
+        if let Some(s) = tx_signature {
+            if let Ok((sig_status, slot, _)) = rpc.get_signature_status_detailed(s).await {
+                if sig_status.is_landed() {
+                    return (
+                        arb_land::TransactionLifecycle::Confirmed,
+                        slot.or(landed_slot),
+                        None,
+                    );
+                }
+            }
+        }
+
+        // Verify current block height against lastValidBlockHeight
+        let current_height = rpc.get_block_height().await.unwrap_or(0);
+        let (lifecycle, reason) = arb_land::evaluate_lifecycle_with_block_height(
+            None,
+            false,
+            observed_err.as_deref(),
+            current_height,
+            last_valid_block_height,
+        );
+        (lifecycle, landed_slot, reason)
     }
 
     /// Run the background refreshers until the task is dropped.

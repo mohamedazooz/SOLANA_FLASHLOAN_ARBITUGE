@@ -41,7 +41,6 @@ use crate::{
     get_associated_token_address_with_program_id,
 };
 use solana_pubkey::Pubkey;
-use std::collections::BTreeMap;
 use std::str::FromStr;
 
 /// Errors raised while assembling the 3-leg flash-funded route.
@@ -631,85 +630,6 @@ pub fn build_flash_funded_three_pool_transaction(
         pool_2: params.leg_2.lb_pair,
         pool_3: params.leg_3.lb_pair,
     })
-}
-
-/// Estimated serialized size of a v0 transaction carrying `instructions`.
-pub fn estimate_v0_transaction_size_3leg(
-    instructions: &[CompiledInstruction],
-    lookup_tables: &[AddressLookupTable],
-) -> usize {
-    let mut in_table: std::collections::HashSet<Pubkey> = std::collections::HashSet::new();
-    for table in lookup_tables {
-        for addr in &table.addresses {
-            in_table.insert(*addr);
-        }
-    }
-
-    let mut account_map: BTreeMap<Pubkey, (bool, bool)> = BTreeMap::new();
-    for ix in instructions {
-        for acc in &ix.accounts {
-            let entry = account_map.entry(acc.pubkey).or_insert((false, false));
-            entry.0 |= acc.is_signer;
-            entry.1 |= acc.is_writable;
-        }
-        account_map.entry(ix.program_id).or_insert((false, false));
-    }
-
-    let static_len = account_map
-        .iter()
-        .filter(|(pk, (is_signer, _))| !*is_signer && !in_table.contains(*pk))
-        .count()
-        + account_map
-            .values()
-            .filter(|(is_signer, _)| *is_signer)
-            .count();
-
-    let mut size = 1usize; // signature count
-    size += 64; // one signature
-    size += 4; // version prefix + 3 header bytes
-    size += crate::dlmm_bin_discovery::compact_u16_len(static_len);
-    size += 32 * static_len;
-    size += 32; // recent blockhash
-    size += crate::dlmm_bin_discovery::compact_u16_len(instructions.len());
-
-    for ix in instructions {
-        size += 1; // program index
-        size += crate::dlmm_bin_discovery::compact_u16_len(ix.accounts.len());
-        size += ix.accounts.len();
-        size += crate::dlmm_bin_discovery::compact_u16_len(ix.data.len());
-        size += ix.data.len();
-    }
-
-    // Address table lookups section.
-    let mut used_tables: Vec<(usize, usize)> = Vec::new();
-    for table in lookup_tables {
-        let mut writable = 0usize;
-        let mut readonly = 0usize;
-        for addr in &table.addresses {
-            let Some((is_signer, is_writable)) = account_map.get(addr) else {
-                continue;
-            };
-            if *is_signer {
-                continue;
-            }
-            if *is_writable {
-                writable += 1;
-            } else {
-                readonly += 1;
-            }
-        }
-        if writable > 0 || readonly > 0 {
-            used_tables.push((writable, readonly));
-        }
-    }
-    size += crate::dlmm_bin_discovery::compact_u16_len(used_tables.len());
-    for (writable, readonly) in &used_tables {
-        size += 32; // table address
-        size += crate::dlmm_bin_discovery::compact_u16_len(*writable) + *writable;
-        size += crate::dlmm_bin_discovery::compact_u16_len(*readonly) + *readonly;
-    }
-
-    size
 }
 
 #[cfg(test)]

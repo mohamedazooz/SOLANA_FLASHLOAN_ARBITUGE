@@ -4,11 +4,6 @@
 //! provenance + freshness. The Jito cost input is the configured conservative tip
 //! ceiling. Any unverifiable account fails closed; no JSON-RPC fallback is used.
 
-// This module is included by several binary targets (main + bins) via `#[path]`;
-// each target uses a different subset of the public API, so unused-in-one-target
-// items are expected and not dead code.
-#![allow(dead_code)]
-
 use arb_ingest::AccountSnapshotStore;
 use arb_math::economic::EconomicConfig;
 use arb_types::{Lamports, MintId, Slot, TokenAmount};
@@ -114,6 +109,7 @@ pub fn derive_rational_rate(decimals: u8, sol_price_usd: Option<f64>) -> Option<
 /// Derive `10^decimals / 10^9` as an integer ratio, or `None` when the ratio is
 /// not integral (the lamport conversion would lose precision — fail closed).
 /// Kept for backward compatibility with tests expecting integer-only ratio.
+#[cfg(test)]
 pub fn lamports_per_base_raw(decimals: u8) -> Option<u128> {
     if decimals > 18 {
         return None;
@@ -146,24 +142,6 @@ pub fn decode_mint_decimals(account: &[u8]) -> Result<u8, String> {
         return Err(format!("implausible mint decimals: {decimals}"));
     }
     Ok(decimals)
-}
-
-/// Legacy API retained only to produce an explicit error for old diagnostic callers.
-/// It never opens a JSON-RPC connection.
-#[deprecated(note = "HTTP JSON-RPC reads are disabled; use build_verified_inputs_from_snapshots")]
-pub async fn build_verified_inputs(
-    _rpc_url: &str,
-    _base_mint: &MintId,
-    _reserve: &Pubkey,
-    _expected_reserve_mint: &Pubkey,
-    _tip_lamports: Lamports,
-    _current_slot: Slot,
-    _sol_price_usd: Option<f64>,
-) -> Result<VerifiedQuoteInputs, String> {
-    Err(
-        "HTTP JSON-RPC verified-input reads are disabled; Yellowstone snapshots are required"
-            .into(),
-    )
 }
 
 /// Build authoritative economic inputs only from the current Yellowstone account
@@ -258,15 +236,6 @@ pub fn wsol_mint() -> Pubkey {
 
 pub fn wsol_reserve() -> Pubkey {
     Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE).expect("valid WSOL reserve constant")
-}
-
-pub fn usdc_mint() -> Pubkey {
-    Pubkey::from_str(arb_constants::USDC_MINT).expect("valid USDC mint constant")
-}
-
-pub fn usdc_reserve() -> Pubkey {
-    Pubkey::from_str("D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25")
-        .expect("valid USDC reserve constant")
 }
 
 #[cfg(test)]

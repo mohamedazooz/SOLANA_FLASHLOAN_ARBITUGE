@@ -7,6 +7,7 @@
 pub mod bidder;
 pub mod leader;
 pub mod ledger;
+pub mod lifecycle;
 pub mod tip_oracle;
 
 pub use arb_constants::{
@@ -16,6 +17,7 @@ pub use arb_constants::{
 pub use bidder::{AdaptiveBidder, BidderConfig, MIN_JITO_TIP_LAMPORTS};
 pub use leader::{JitoValidatorSet, Landability, LeaderSchedule, landability};
 pub use ledger::{LEDGER_SCHEMA, LandingLedger};
+pub use lifecycle::*;
 pub use tip_oracle::{DEFAULT_MAX_AGE_MS, TIP_FLOOR_URL, TipOracle, now_ms, parse_tip_floor};
 
 use arb_math::pick_tip;

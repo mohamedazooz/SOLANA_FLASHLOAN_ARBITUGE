@@ -83,16 +83,6 @@ impl PumpFunBondingCurve {
         }
     }
 
-    pub fn from_state_with_fee_bps(
-        pool_id: PoolId,
-        base_mint: MintId,
-        quote_mint: MintId,
-        state: &arb_types::PumpFunState,
-        fee_bps: u16,
-    ) -> Result<Self> {
-        Self::from_state(pool_id, base_mint, quote_mint, state).with_fee_bps(fee_bps)
-    }
-
     pub fn with_fee_bps(mut self, fee_bps: u16) -> Result<Self> {
         if fee_bps > 10_000 {
             return Err(ArbError::InvalidInput("Pump.fun fee exceeds 100%".into()));

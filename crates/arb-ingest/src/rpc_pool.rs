@@ -1403,6 +1403,15 @@ impl RpcPool {
 
     /// Query a transaction signature. This is deliberately separate from Jito bundle IDs.
     pub async fn get_signature_status(&self, signature: &str) -> Result<SignatureStatus> {
+        let (status, _, _) = self.get_signature_status_detailed(signature).await?;
+        Ok(status)
+    }
+
+    /// Detailed signature status query with slot and failure error message.
+    pub async fn get_signature_status_detailed(
+        &self,
+        signature: &str,
+    ) -> Result<(SignatureStatus, Option<u64>, Option<String>)> {
         let res = self
             .call(
                 "getSignatureStatuses",
@@ -1417,20 +1426,56 @@ impl RpcPool {
             bail!("malformed getSignatureStatuses response");
         };
         if value.is_null() {
-            return Ok(SignatureStatus::Pending);
+            return Ok((SignatureStatus::Pending, None, None));
         }
-        if value.get("err").is_some_and(|err| !err.is_null()) {
-            return Ok(SignatureStatus::Failed);
+        let slot = value.get("slot").and_then(|s| s.as_u64());
+        let err_str = value
+            .get("err")
+            .filter(|e| !e.is_null())
+            .map(|e| e.to_string());
+        if err_str.is_some() {
+            return Ok((SignatureStatus::Failed, slot, err_str));
         }
-        match value
+        let status = match value
             .get("confirmationStatus")
             .and_then(|v| v.as_str())
             .unwrap_or("processed")
         {
-            "processed" => Ok(SignatureStatus::Processed),
-            "confirmed" => Ok(SignatureStatus::Confirmed),
-            "finalized" => Ok(SignatureStatus::Finalized),
-            _ => Ok(SignatureStatus::Pending),
+            "processed" => SignatureStatus::Processed,
+            "confirmed" => SignatureStatus::Confirmed,
+            "finalized" => SignatureStatus::Finalized,
+            _ => SignatureStatus::Pending,
+        };
+        Ok((status, slot, None))
+    }
+
+    /// Retrieve full on-chain transaction metadata (pre/post balances, CU consumed, logs, error).
+    pub async fn get_transaction_with_metadata(
+        &self,
+        signature: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let res = self
+            .call(
+                "getTransaction",
+                json!([
+                    signature,
+                    {
+                        "encoding": "jsonParsed",
+                        "maxSupportedTransactionVersion": 1,
+                        "commitment": "confirmed"
+                    }
+                ]),
+            )
+            .await;
+        match res {
+            Ok(val) => {
+                if val.is_null() {
+                    Ok(None)
+                } else {
+                    Ok(Some(val))
+                }
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -1450,6 +1495,31 @@ impl RpcPool {
             tokio::time::sleep(interval).await;
         }
         Ok(last)
+    }
+
+    /// Poll transaction signature tracking detailed status, slot, and error string.
+    pub async fn poll_signature_with_details(
+        &self,
+        signature: &str,
+        attempts: usize,
+        interval: Duration,
+    ) -> Result<(SignatureStatus, Option<u64>, Option<String>)> {
+        let mut last_status = SignatureStatus::Pending;
+        let mut last_slot = None;
+        let mut last_err = None;
+
+        for _ in 0..attempts {
+            let (status, slot, err) = self.get_signature_status_detailed(signature).await?;
+            last_status = status;
+            last_slot = slot;
+            last_err = err;
+            if status.is_terminal() {
+                break;
+            }
+            tokio::time::sleep(interval).await;
+        }
+
+        Ok((last_status, last_slot, last_err))
     }
 
     /// Broadcast signed transaction directly via RPC with processed commitment (SWQoS path).

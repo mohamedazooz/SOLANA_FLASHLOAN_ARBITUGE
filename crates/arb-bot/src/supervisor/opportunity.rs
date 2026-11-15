@@ -553,6 +553,7 @@ impl Supervisor {
 
             // Split routing is disabled until per-leg AMM quote, fee, slippage,
             // execution instruction and aggregate min-out equivalence are proven.
+            #[cfg(feature = "split-routing")]
             let split: Option<arb_engine::SplitAllocation> = None;
             let effective_price_impact_bps = opp.price_impact_bps.0 as u64;
 
@@ -691,6 +692,7 @@ impl Supervisor {
             let t_risk_us = t_risk_start.elapsed().as_micros() as u64;
             let t_assembly_start = std::time::Instant::now();
 
+            #[cfg(feature = "split-routing")]
             let ixs: Vec<arb_tx::CompiledInstruction> = if let Some(ref s) = split
                 && self.config.strategy.use_flash_loan
             {
@@ -823,6 +825,27 @@ impl Supervisor {
                         debug!("Native builder failed, skipping opportunity: {e}");
                         continue;
                     }
+                }
+            };
+
+            #[cfg(not(feature = "split-routing"))]
+            let ixs: Vec<arb_tx::CompiledInstruction> = match self
+                .assemble_native_ixs(
+                    payer,
+                    tip_account,
+                    tip,
+                    cu_limit,
+                    cu_price,
+                    &opp,
+                    kamino_params,
+                    verified.flash_loan_fee_sf.value,
+                )
+                .await
+            {
+                Ok(jixs) => jixs,
+                Err(e) => {
+                    debug!("Native builder failed, skipping opportunity: {e}");
+                    continue;
                 }
             };
             let t_assembly_us = t_assembly_start.elapsed().as_micros() as u64;

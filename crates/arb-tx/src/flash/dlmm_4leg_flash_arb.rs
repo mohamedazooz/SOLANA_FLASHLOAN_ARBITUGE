@@ -30,10 +30,9 @@
 use crate::atomic_integrity::{ExecutionMode, verify_atomic_integrity};
 use crate::meteora_dlmm::{DlmmSwapAccountSet, MEMO_PROGRAM_ID_STR, build_swap2_exact_in};
 use crate::{
-    AddressLookupTable, CompiledInstruction, KaminoFlashParams, KeypairSigner, TxBuilder,
-    build_compute_unit_limit, build_compute_unit_price, build_create_ata_idempotent_for_program,
-    build_kamino_flash_borrow, build_kamino_flash_repay_with_index,
-    get_associated_token_address_with_program_id,
+    CompiledInstruction, KaminoFlashParams, KeypairSigner, build_compute_unit_limit,
+    build_compute_unit_price, build_create_ata_idempotent_for_program, build_kamino_flash_borrow,
+    build_kamino_flash_repay_with_index, get_associated_token_address_with_program_id,
 };
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -597,91 +596,6 @@ pub fn build_flash_funded_four_pool_v1_transaction(
         return Err(FlashArb4LegError::TransactionTooLarge {
             size: wire_bytes.len(),
             limit: 4096,
-        });
-    }
-
-    Ok(FlashFourLegArbitrageTx {
-        wire_bytes: wire_bytes.clone(),
-        tx_size: wire_bytes.len(),
-        instructions: ixs,
-        borrow_instruction_index: borrow_idx,
-        repay_instruction_index: repay_idx,
-        borrow_amount: params.borrow_amount,
-        flash_fee: params.flash_fee,
-        repay_amount: params.repay_amount(),
-        min_leg_1_out: params.leg_1.min_amount_out,
-        min_leg_2_out: params.leg_2.min_amount_out,
-        min_leg_3_out: params.leg_3.min_amount_out,
-        min_leg_4_out: params.leg_4.min_amount_out,
-        settlement_account: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_1.token_in(),
-            &params.leg_1.token_in_program(),
-        ),
-        intermediate_account_a: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_1.token_out(),
-            &params.leg_1.token_out_program(),
-        ),
-        intermediate_account_b: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_2.token_out(),
-            &params.leg_2.token_out_program(),
-        ),
-        intermediate_account_c: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_3.token_out(),
-            &params.leg_3.token_out_program(),
-        ),
-        pool_1: params.leg_1.lb_pair,
-        pool_2: params.leg_2.lb_pair,
-        pool_3: params.leg_3.lb_pair,
-        pool_4: params.leg_4.lb_pair,
-    })
-}
-
-/// Assemble and sign the 4-leg flash-funded transaction as V0 with ALT.
-pub fn build_flash_funded_four_pool_v0_transaction(
-    params: &FlashArb4LegParams,
-    signer: &KeypairSigner,
-    lookup_tables: &[AddressLookupTable],
-) -> Result<FlashFourLegArbitrageTx, FlashArb4LegError> {
-    let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_four_pool(params)?;
-
-    // Atomicity self-check
-    let verification = verify_atomic_integrity(
-        ExecutionMode::SingleTransaction,
-        &ixs,
-        Some(borrow_idx),
-        Some(repay_idx),
-        params.borrow_amount,
-        params.repay_amount(),
-        params.flash_fee,
-    )
-    .map_err(|e| FlashArb4LegError::AltCompilation(e.to_string()))?;
-
-    if !verification.is_atomic {
-        return Err(FlashArb4LegError::AtomicityFailed(
-            verification
-                .rejection_reason
-                .unwrap_or_else(|| "unknown".to_string()),
-        ));
-    }
-
-    // V0 compilation with ALT
-    let wire_bytes = TxBuilder::compile_v0_message(
-        signer.pubkey(),
-        &ixs,
-        params.recent_blockhash,
-        lookup_tables,
-    )
-    .map_err(|e| FlashArb4LegError::AltCompilation(e.to_string()))?;
-
-    // Check size limit (1232 bytes for V0)
-    if wire_bytes.len() > 1232 {
-        return Err(FlashArb4LegError::TransactionTooLarge {
-            size: wire_bytes.len(),
-            limit: 1232,
         });
     }
 
