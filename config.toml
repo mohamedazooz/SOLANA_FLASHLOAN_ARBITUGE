@@ -81,27 +81,27 @@ discovery_min_tvl_usd = 10000.0     # $10,000 minimum TVL floor across all Solan
 [strategy.dlmm_cross_pool]
 min_spread_bps = 5                  # lower hurdle from 10 to 5 bps
 min_input = 20000000                # 0.02 SOL minimum borrow (tuned to match realistic DLMM pools)
-max_input = 2000000000              # 2.0 SOL maximum borrow
+max_input = 500000000000            # 500.0 SOL maximum borrow (dynamic sizing up to 500 SOL)
 coarse_samples = 12
 refine_samples = 8
 min_liquidity_bin_raw = 500000
 
 [strategy.dlmm_three_leg]
 input_size = 50000000          # 0.05 SOL base input size tuned for Meteora DLMM meme liquidity
-max_input = 2000000000         # 2.0 SOL candidate input ceiling
+max_input = 500000000000         # 500.0 SOL candidate input ceiling (dynamic sizing up to 500 SOL)
 slippage_bps = 15              # 15 bps (0.15%) per leg instead of 100 bps default
 min_profit_lamports = 20000    # 20,000 lamports floor
 size_ladder = 6                # evaluate 6 sizes across candidate ladder
 
 [risk]
-max_trade_size_usd = 25000.0        # $25,000 max borrow size cap for safety guardrails
-max_daily_loss_usd = 50.0
-max_hourly_loss_usd = 20.0
-max_consecutive_failures = 100
+max_trade_size_usd = 100000.0       # $100,000 max borrow size cap (accommodates 500 SOL dynamic sizing)
+max_daily_loss_usd = 500.0
+max_hourly_loss_usd = 200.0
+max_consecutive_failures = 1000
 min_landing_rate = 0.0              # Statistical check requires 20+ bundles; default 0 to prevent cold-start lock
-max_orders_per_hour = 1000          # High-frequency live throughput cap
-max_attempts_per_slot = 16
-cooldown_slots = 10                 # 10 slots breaker cooldown window
+max_orders_per_hour = 10000         # High-frequency live throughput cap
+max_attempts_per_slot = 32
+cooldown_slots = 2                  # 2 slots breaker cooldown window
 max_inflight_bundles = 32
 max_tip_spend_ratio = 0.98
 
