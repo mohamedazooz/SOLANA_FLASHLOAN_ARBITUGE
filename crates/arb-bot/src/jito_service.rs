@@ -332,24 +332,45 @@ impl JitoService {
         // method is called with no epoch argument. Asking for the epoch we just
         // read is still correct — but a null answer must fall back, not treat the
         // leader gate as broken forever.
-        let schedule_json = match rpc
+        let schedule = match rpc
             .call(
                 "getLeaderSchedule",
                 json!([epoch, { "commitment": "confirmed" }]),
             )
             .await
         {
-            Ok(v) if !v.is_null() => v,
-            Ok(_) => rpc
-                .call("getLeaderSchedule", json!([]))
-                .await
-                .context("getLeaderSchedule (current epoch fallback)")?,
+            Ok(v) if !v.is_null() => {
+                LeaderSchedule::from_rpc_json(&v, epoch, epoch_start_slot, slots_in_epoch)?
+            }
+            Ok(_) => match rpc.call("getLeaderSchedule", json!([])).await {
+                Ok(v) if !v.is_null() => {
+                    LeaderSchedule::from_rpc_json(&v, epoch, epoch_start_slot, slots_in_epoch)?
+                }
+                _ => {
+                    self.fetch_slot_leaders_fallback(
+                        rpc,
+                        absolute_slot,
+                        epoch,
+                        epoch_start_slot,
+                        slots_in_epoch,
+                    )
+                    .await?
+                }
+            },
             Err(e) => {
-                return Err(e).context("getLeaderSchedule");
+                warn!(
+                    "getLeaderSchedule rate-limited or failed ({e:#}); using lightweight getSlotLeaders fallback"
+                );
+                self.fetch_slot_leaders_fallback(
+                    rpc,
+                    absolute_slot,
+                    epoch,
+                    epoch_start_slot,
+                    slots_in_epoch,
+                )
+                .await?
             }
         };
-        let schedule =
-            LeaderSchedule::from_rpc_json(&schedule_json, epoch, epoch_start_slot, slots_in_epoch)?;
 
         let validators = self.fetch_validators().await?;
 
@@ -368,6 +389,36 @@ impl JitoService {
             "leader schedule refreshed"
         );
         Ok(())
+    }
+
+    /// Fallback when `getLeaderSchedule` fails or is rate-limited: queries the next 128 slot leaders via `getSlotLeaders`.
+    async fn fetch_slot_leaders_fallback(
+        &self,
+        rpc: &RpcPool,
+        start_slot: u64,
+        epoch: u64,
+        epoch_start_slot: u64,
+        slots_in_epoch: u64,
+    ) -> Result<LeaderSchedule> {
+        let resp = rpc
+            .call("getSlotLeaders", json!([start_slot, 128]))
+            .await
+            .context("getSlotLeaders fallback")?;
+        let arr = resp
+            .as_array()
+            .context("getSlotLeaders response is not an array")?;
+        let leader_strs: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        LeaderSchedule::from_slot_leaders_slice(
+            &leader_strs,
+            start_slot,
+            epoch,
+            epoch_start_slot,
+            slots_in_epoch,
+        )
+        .context("LeaderSchedule from getSlotLeaders")
     }
 
     /// Fetch the Jito validator registry.

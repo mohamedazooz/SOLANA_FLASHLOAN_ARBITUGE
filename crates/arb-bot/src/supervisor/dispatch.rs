@@ -82,6 +82,48 @@ impl Supervisor {
 
         let active_bins: Vec<Option<i32>> = opp.hops.iter().map(|h| h.active_bin_id).collect();
 
+        // GUARD-01: Revalidate critical state immediately before dispatch.
+        // Fail-closed: stream generation must match quoting generation, and every pool
+        // must remain fresh, un-invalidated, and without active bin shifts.
+        if self.ingest.stream_generation() != expected_stream_generation {
+            warn!("GUARD-01: Ingest stream reconnected during cycle; rejecting dispatch");
+            return;
+        }
+
+        let max_age_slots = self.config.strategy.max_state_age_slots;
+        for hop in &opp.hops {
+            let Some(live_pool) = self.ingest.cache().get_pool(&hop.pool_id) else {
+                warn!(
+                    "GUARD-01: Pool {} vanished from cache before dispatch; aborting",
+                    hop.pool_id.0
+                );
+                return;
+            };
+            if current_slot.0.saturating_sub(live_pool.last_update_slot) > max_age_slots {
+                warn!(
+                    "GUARD-01: Pool {} became stale before dispatch (last slot {}); aborting",
+                    hop.pool_id.0, live_pool.last_update_slot
+                );
+                return;
+            }
+            if self.ingest.slot_is_dead(live_pool.slot.0) {
+                warn!(
+                    "GUARD-01: Pool {} updated in dead slot {}; aborting dispatch",
+                    hop.pool_id.0, live_pool.slot.0
+                );
+                return;
+            }
+            if let Some(ref dlmm) = live_pool.dlmm {
+                if hop.active_bin_id.is_some() && hop.active_bin_id != Some(dlmm.active_bin_id) {
+                    warn!(
+                        "GUARD-01: DLMM pool {} active bin shifted from {:?} to {} before dispatch; aborting",
+                        hop.pool_id.0, hop.active_bin_id, dlmm.active_bin_id
+                    );
+                    return;
+                }
+            }
+        }
+
         // 6. Dispatch based on mode
         let leader_str = self
             .jito_service

@@ -60,6 +60,18 @@ pub mod pumpfun_discovery;
 pub use pumpfun_discovery::{PumpFunCoin, PumpFunDiscoveryClient};
 pub mod pumpdev_stream;
 pub use pumpdev_stream::{PumpDevEvent, PumpDevWebSocketClient};
+pub mod capability;
+pub use capability::{
+    AccountDataEncoding, CapabilityError, CommitmentLevel, ProviderCapabilities,
+    ProviderCapabilityRegistry, ProviderTransport, RateLimitPolicy, ReconnectPolicy,
+    SubscriptionMethod,
+};
+pub mod solami_blur;
+pub use solami_blur::{
+    SolamiBlurClient, SolamiBlurConfig, SolamiBlurEvent, SolamiBlurFilterMessage,
+};
+pub mod solami_mirage;
+pub use solami_mirage::{MirageUpdate, SolamiMirageClient, SolamiMirageConfig};
 #[cfg(feature = "extra-ingest")]
 pub mod solami_stream;
 #[cfg(feature = "extra-ingest")]
