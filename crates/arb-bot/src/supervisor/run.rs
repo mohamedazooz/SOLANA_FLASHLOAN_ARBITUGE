@@ -36,8 +36,9 @@ impl Supervisor {
     }
 
     /// Conservative flat network cost used by the 3-leg size search: base fee,
-    /// Jito tip ceiling, and priority-fee estimate at the adaptive price for
-    /// the 3-hop flash-funded route shape.
+    /// dynamic Jito tip floor (p50 from TipOracle or fallback to verified tip),
+    /// priority-fee estimate at the adaptive price for the 3-hop flash-funded route shape,
+    /// and rent for WSOL settlement ATA if uninitialized.
     /// Rent-exempt minimum for one SPL token account (165 bytes).
     const ATA_RENT_LAMPORTS: u64 = 2_039_280;
 
@@ -47,6 +48,15 @@ impl Supervisor {
         let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
         let cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
         let priority_fee = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
+
+        // Dynamic tip floor: query live p50 from tip_oracle if fresh, capped by tip_lamports ceiling
+        let dynamic_tip = self
+            .jito_service
+            .oracle()
+            .current(arb_land::now_ms())
+            .map(|f| f.p50.0.min(tip_lamports))
+            .unwrap_or(tip_lamports);
+
         // The WSOL settlement ATA is created when missing and never closed (it
         // holds the profit), so its rent is a real execution cost. Intermediate
         // meme ATAs are created AND closed inside the same transaction and
@@ -61,7 +71,7 @@ impl Supervisor {
             Self::ATA_RENT_LAMPORTS
         };
         BASE_FEE_LAMPORTS
-            .saturating_add(tip_lamports)
+            .saturating_add(dynamic_tip)
             .saturating_add(priority_fee)
             .saturating_add(ata_rent)
     }
@@ -195,8 +205,15 @@ impl Supervisor {
         };
 
         // Dynamic economics: the candidate-ranking cost model uses the SAME
-        // adaptive CU price and verified tip that the dispatch gate will
-        // charge, so ranking and gating cannot disagree.
+        // adaptive CU price and dynamic tip floor (p50 from tip_oracle) for discovery sizing
+        // so sizing hurdles match realistic execution costs.
+        let dynamic_tip_lamports = self
+            .jito_service
+            .oracle()
+            .current(arb_land::now_ms())
+            .map(|f| f.p50.0.min(verified_tip_lamports))
+            .unwrap_or(verified_tip_lamports);
+
         let params = arb_engine::ThreeLegMemeContextParams {
             snapshot_slot: current_slot.0,
             cu_limit: arb_tx::COMPUTE_BUDGET_LIMIT_3HOP,
@@ -204,7 +221,7 @@ impl Supervisor {
                 .tip_strategy
                 .adaptive_cu_price(&self.recent_landed_cu),
             jito_tip_account: self.jito_service.tip_account_for_slot(current_slot),
-            jito_tip_lamports: verified_tip_lamports,
+            jito_tip_lamports: dynamic_tip_lamports,
             recent_blockhash: [0u8; 32],
             // Fail-closed default. May ONLY be set to true after a successful
             // V1 transport canary (crates/arb-tx/examples/v1_canary_broadcast.rs)
@@ -226,7 +243,7 @@ impl Supervisor {
             ),
             flash_loan_fee_sf,
             network_cost_lamports: self
-                .three_leg_network_cost_lamports(verified_tip_lamports, payer),
+                .three_leg_network_cost_lamports(dynamic_tip_lamports, payer),
             kamino_available_liquidity,
             input_size: tuning.input_size.min(max_sizing).max(1),
             size_search_sizes,
@@ -555,6 +572,7 @@ impl Supervisor {
         }
         if live_sol_price_seed > 0.0 {
             *self.last_known_live_sol_price.write() = live_sol_price_seed;
+            self.telegram.update_sol_price(live_sol_price_seed);
         }
         let reported_seed_slot = self
             .ingest

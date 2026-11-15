@@ -150,7 +150,7 @@ impl HeliusWsClient {
                 }
             }
         }
-        if let Some(key) = lookup("HELIUS_API_KEY") {
+        if let Some(key) = lookup("HELIUS_API_KEY").or_else(|| lookup("HELIUS_API")) {
             let k = key.trim();
             if !k.is_empty() && !k.contains("REPLACE_ME") {
                 let clean_key = if let Some(p) = k.split("api-key=").nth(1) {
@@ -559,15 +559,21 @@ impl HeliusWsClient {
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
 
-                    // 1. WebSocket Dedicated Mode: Do NOT send `slotSubscribe`.
-                    // Many RPC providers (e.g. Helius free tier, RPCFast, Shyft) enforce
-                    // `Concurrent websocket subscription limit reached: 1`. Sending `slotSubscribe`
-                    // exhausts the single allowed subscription, causing subsequent `accountSubscribe`
-                    // calls to be rejected with errors and tearing down the stream.
-                    // Slots are advanced with zero RPC cost via HTTP getSlot/poll or incoming account update context slots.
-                    debug!(
-                        "WebSocket [{endpoint_num}/{total_endpoints}] connected; slotSubscribe omitted to reserve connection for pool accounts"
-                    );
+                    // 1. Subscribe to real-time slot notifications
+                    let slot_sub = json!({
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "slotSubscribe"
+                    });
+                    if let Err(e) = ws_stream.send(Message::Text(slot_sub.to_string())).await {
+                        warn!(
+                            "WebSocket [{endpoint_num}/{total_endpoints}] failed to send slotSubscribe: {e}"
+                        );
+                    } else {
+                        debug!(
+                            "WebSocket [{endpoint_num}/{total_endpoints}] subscribed to slotSubscribe"
+                        );
+                    }
 
                     // 2. Probe first priority account; queue the rest up to MAX_WS_ACCOUNT_SUBS
                     //    to avoid spamming error frames against single-sub peers (e.g. RPCFast).
@@ -1113,6 +1119,17 @@ mod tests {
                 "wss://mainnet.helius-rpc.com/?api-key=ghi",
                 "wss://solana-rpc.rpcfast.com/?api_key=abc",
             ]
+        );
+    }
+
+    #[test]
+    fn collect_ws_urls_resolves_helius_api_when_key_unset() {
+        let mut vars = HashMap::new();
+        vars.insert("HELIUS_API", "test-helius-key-123");
+        let urls = HeliusWsClient::collect_ws_urls(|k| vars.get(k).map(|v| v.to_string()));
+        assert_eq!(
+            urls,
+            vec!["wss://mainnet.helius-rpc.com/?api-key=test-helius-key-123"]
         );
     }
 

@@ -63,13 +63,11 @@ impl Supervisor {
         let quote_ingest_time = std::time::Instant::now();
         let market_snap = self.ingest.snapshot();
         let pools: Vec<PoolState> = market_snap.snapshot_pools();
-        // Reset every cycle: an absent fresh SOL/USDC pool must not reuse an old price.
-        *self.last_known_live_sol_price.write() = 0.0;
-
         // Track live SOL price from any active SOL-USDC pool (Raydium, Orca, Meteora).
         // Using all three venues improves price freshness and cross-checks accuracy.
         let wsol_str = arb_tx::WSOL_MINT;
         let usdc_str = arb_tx::USDC_MINT;
+        let mut onchain_sol_price = None;
         for p in &pools {
             if current_slot.0.saturating_sub(p.last_update_slot)
                 > self.config.strategy.max_state_age_slots
@@ -87,9 +85,21 @@ impl Supervisor {
                     (p.reserve_out as f64 / 1e9, p.reserve_in as f64 / 1e6)
                 };
                 if sol_res > 0.0 {
-                    *self.last_known_live_sol_price.write() = usdc_res / sol_res;
-                    break; // first live SOL/USDC price is sufficient
+                    let price = usdc_res / sol_res;
+                    if price > 0.0 && price.is_finite() {
+                        onchain_sol_price = Some(price);
+                        *self.last_known_live_sol_price.write() = price;
+                        self.telegram.update_sol_price(price);
+                        break; // first live SOL/USDC price is sufficient
+                    }
                 }
+            }
+        }
+        if onchain_sol_price.is_none() {
+            // Fall back to live market price tracked by TelegramNotifier (Binance/Coinbase live feed)
+            let mkt_price = self.telegram.sol_price();
+            if mkt_price > 0.0 && mkt_price.is_finite() {
+                *self.last_known_live_sol_price.write() = mkt_price;
             }
         }
 

@@ -86,6 +86,11 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Open SQLite database with mandated WAL pragmas and execute initial migration.
     pub fn open(path: &str) -> Result<Self> {
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
         let conn = Connection::open(path)
             .map_err(|e| ArbError::Internal(format!("Failed to open SQLite database: {e}")))?;
 

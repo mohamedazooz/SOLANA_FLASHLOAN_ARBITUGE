@@ -238,10 +238,9 @@ impl Supervisor {
                     });
                     return;
                 }
-                // No Jito bundle fallback in the V1-only profile. V1 is
-                // simulated over RPC; any future live transport requires a
-                // separately verified V1-capable direct sender.
-                let v1_transport_enabled = is_swqos_route
+                // Live V1 transport: direct SWQoS/RPC path or Jito bundle path
+                // according to their respective capability flags.
+                let direct_v1_enabled = is_swqos_route
                     && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
                         .map(|v| {
                             matches!(
@@ -250,12 +249,20 @@ impl Supervisor {
                             )
                         })
                         .unwrap_or(false);
+                let jito_v1_enabled = !is_swqos_route
+                    && std::env::var("SOLANA_TX_V1_JITO_ENABLED")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
+                        .unwrap_or(false);
+                let v1_transport_enabled =
+                    (is_swqos_route && direct_v1_enabled) || (!is_swqos_route && jito_v1_enabled);
                 let max_wire_size = arb_tx::SOLANA_PACKET_V1_MTU;
-                // Shadow/simulate mode only needs RPC simulation. Live direct
-                // transport remains disabled in this package and must not fall
-                // back to Jito, V0, or legacy when its capability flag is absent.
                 if self.mode() == BotMode::Live && !v1_transport_enabled {
-                    warn!("V1 direct transport not enabled; refusing dispatch");
+                    warn!("V1 transport (SWQoS/Jito) not enabled; refusing dispatch");
                     return;
                 }
                 if tx_bytes.len() > max_wire_size {
@@ -628,7 +635,14 @@ impl Supervisor {
                             )
                             .await;
                         self.telegram
-                            .alert_execution_sent(&bundle_id, route_label, profit_sol)
+                            .alert_execution_sent(
+                                &bundle_id,
+                                route_label,
+                                profit_sol,
+                                pools_count,
+                                loan_size_sol,
+                                &leader_str,
+                            )
                             .await;
                         // P0 #8: feed velocity tracking so the gate enforces its limit.
                         self.risk_gate.record_order();
@@ -659,6 +673,8 @@ impl Supervisor {
                         let slot_val = current_slot.0;
                         let route_label_task = route_label.to_string();
                         let loan_size_sol_val = opp.size_in.as_u64() as f64 / 1e9;
+                        let pools_count_task = pools_count;
+                        let leader_task = leader_str.clone();
                         let tokens_str_val = {
                             let mut parts = Vec::new();
                             for (i, h) in opp.hops.iter().enumerate() {
@@ -779,6 +795,12 @@ impl Supervisor {
                                     arb_metrics::add_net_profit(profit_sol_val);
                                     arb_metrics::set_breaker_state(0);
 
+                                    let effective_leader = js
+                                        .leader_for(Slot(effective_slot))
+                                        .map(|pk| pk.to_string())
+                                        .unwrap_or_else(|| leader_task.clone());
+                                    let landed_status_str = "Confirmed / Finalized (مؤكد في البلوك)";
+
                                     // Record landed trade in memory for 5-minute performance digest
                                     let summary = crate::telegram::TradeSummary {
                                         route: route_label_task.clone(),
@@ -791,25 +813,30 @@ impl Supervisor {
                                             .to_string(),
                                         venues: venues_str_val.clone(),
                                         slot: effective_slot,
+                                        pools_count: pools_count_task,
+                                        leader: effective_leader.clone(),
                                     };
                                     {
                                         let mut guard = recent_landed_task.lock();
                                         if guard.len() >= 50 {
-                                            guard.remove(0);
+                                             guard.remove(0);
                                         }
                                         guard.push(summary);
                                     }
 
                                     telegram
-                                        .alert_trade_landed(
+                                        .notify_trade_executed(
                                             tx_signature.as_deref(),
                                             &b_id,
                                             profit_sol_val,
                                             profit_usd_val,
                                             loan_size_sol_val,
+                                            pools_count_task,
                                             &tokens_str_val,
                                             &venues_str_val,
                                             effective_slot,
+                                            &effective_leader,
+                                            landed_status_str,
                                             &timings_str,
                                         )
                                         .await;

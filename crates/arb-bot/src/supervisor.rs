@@ -727,8 +727,13 @@ mod tests {
                     .as_nanos() as u64
         ));
         config.store.url = format!("sqlite://{}", db_path.display());
+        let prev_db_url = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::remove_var("DATABASE_URL") };
         let supervisor = Supervisor::new(BotMode::Simulate, config);
         assert_eq!(supervisor.mode(), BotMode::Simulate);
+        if let Some(prev) = prev_db_url {
+            unsafe { std::env::set_var("DATABASE_URL", prev) };
+        }
         let _ = std::fs::remove_file(&db_path);
     }
 
