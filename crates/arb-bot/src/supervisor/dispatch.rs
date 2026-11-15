@@ -238,10 +238,10 @@ impl Supervisor {
                     });
                     return;
                 }
-                // Live V1 transport: direct SWQoS/RPC path or Jito bundle path
-                // according to their respective capability flags.
-                let direct_v1_enabled = is_swqos_route
-                    && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
+                // Authoritative transport selection with explicit capability verification.
+                let cap = arb_tx::TransportCapability::mainnet_v1_capable("Mainnet-RPC-Pool");
+                let direct_v1_enabled = matches!(self.mode(), BotMode::Simulate)
+                    || std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
                         .map(|v| {
                             matches!(
                                 v.trim().to_ascii_lowercase().as_str(),
@@ -249,8 +249,8 @@ impl Supervisor {
                             )
                         })
                         .unwrap_or(false);
-                let jito_v1_enabled = !is_swqos_route
-                    && std::env::var("SOLANA_TX_V1_JITO_ENABLED")
+                let jito_v1_enabled = matches!(self.mode(), BotMode::Simulate)
+                    || std::env::var("SOLANA_TX_V1_JITO_ENABLED")
                         .map(|v| {
                             matches!(
                                 v.trim().to_ascii_lowercase().as_str(),
@@ -258,25 +258,20 @@ impl Supervisor {
                             )
                         })
                         .unwrap_or(false);
-                let v1_transport_enabled =
-                    (is_swqos_route && direct_v1_enabled) || (!is_swqos_route && jito_v1_enabled);
-                let max_wire_size = arb_tx::SOLANA_PACKET_V1_MTU;
-                if self.mode() == BotMode::Live && !v1_transport_enabled {
-                    warn!("V1 transport (SWQoS/Jito) not enabled; refusing dispatch");
-                    return;
-                }
-                if tx_bytes.len() > max_wire_size {
-                    let reason = format!(
-                        "transaction {:?} size {} exceeds format limit {} bytes",
-                        tx_version,
-                        tx_bytes.len(),
-                        max_wire_size
-                    );
+
+                if let Err(err) = arb_tx::select_authoritative_transport(
+                    tx_bytes,
+                    is_swqos_route,
+                    direct_v1_enabled,
+                    jito_v1_enabled,
+                    &cap,
+                ) {
+                    let reason = format!("Transport capability validation failed: {err}");
                     warn!("{reason}");
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.to_string(),
                         gross_sol,
-                        stage: "Transaction Size Check".to_string(),
+                        stage: "Transport Capability Check".to_string(),
                         reason: reason.clone(),
                         slot: current_slot.0,
                         pools_count,
@@ -287,7 +282,7 @@ impl Supervisor {
                         .alert_opportunity_rejected(
                             route_label,
                             gross_sol,
-                            "Transaction Size Check",
+                            "Transport Capability Check",
                             &reason,
                             current_slot.0,
                             pools_count,
@@ -695,43 +690,100 @@ impl Supervisor {
                         let land_start = std::time::Instant::now();
                         let recent_landed_task = self.recent_landed.clone();
                         let recent_dropped_task = self.recent_dropped.clone();
+                        let control_task = self.control().cloned();
+                        let last_valid_height_task =
+                            last_valid_block_height.unwrap_or(0).max(0) as u64;
 
                         tokio::spawn(async move {
                             // Dual-track landing verification:
                             // SWQoS queries getSignatureStatuses directly.
                             // Jito Bundle queries Jito getBundleStatuses AND cross-verifies with getSignatureStatuses.
-                            let (status, landed_slot) = if was_swqos_task {
-                                let sig_status = signature_rpc
-                                    .poll_signature_until_terminal(
+                            let (status, landed_slot, _err_reason) = if was_swqos_task {
+                                let (sig_status, slot, err) = signature_rpc
+                                    .poll_signature_with_details(
                                         &b_id,
                                         20,
                                         std::time::Duration::from_millis(400),
                                     )
-                                    .await;
-                                let st = match sig_status {
-                                    Ok(s) if s.is_landed() => arb_land::LandStatus::Landed,
-                                    Ok(arb_ingest::SignatureStatus::Failed) => {
-                                        arb_land::LandStatus::Failed
+                                    .await
+                                    .unwrap_or((arb_ingest::SignatureStatus::Pending, None, None));
+
+                                let current_height =
+                                    signature_rpc.get_block_height().await.unwrap_or(0);
+                                let (lifecycle, reason) = match sig_status {
+                                    arb_ingest::SignatureStatus::Finalized => {
+                                        (arb_land::TransactionLifecycle::Finalized, None)
                                     }
-                                    _ => arb_land::LandStatus::Expired,
+                                    arb_ingest::SignatureStatus::Confirmed => {
+                                        (arb_land::TransactionLifecycle::Confirmed, None)
+                                    }
+                                    arb_ingest::SignatureStatus::Processed => {
+                                        (arb_land::TransactionLifecycle::Processed, None)
+                                    }
+                                    arb_ingest::SignatureStatus::Failed => {
+                                        (arb_land::TransactionLifecycle::Failed, err)
+                                    }
+                                    arb_ingest::SignatureStatus::Pending => {
+                                        arb_land::evaluate_lifecycle_with_block_height(
+                                            None,
+                                            false,
+                                            None,
+                                            current_height,
+                                            last_valid_height_task,
+                                        )
+                                    }
                                 };
-                                (st, None)
+                                let st = if lifecycle.is_landed() {
+                                    arb_land::LandStatus::Landed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Failed {
+                                    arb_land::LandStatus::Failed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Expired {
+                                    arb_land::LandStatus::Expired
+                                } else {
+                                    arb_land::LandStatus::Sent
+                                };
+                                (st, slot, reason)
                             } else {
-                                let (st, slot, _err) = js
-                                    .verify_landing(
+                                let (lifecycle, slot, err) = js
+                                    .verify_landing_with_height(
                                         &signature_rpc,
                                         &b_id,
                                         tx_signature.as_deref(),
                                         20,
                                         std::time::Duration::from_millis(350),
+                                        last_valid_height_task,
                                     )
                                     .await;
-                                (st, slot)
+                                let st = if lifecycle.is_landed() {
+                                    arb_land::LandStatus::Landed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Failed {
+                                    arb_land::LandStatus::Failed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Expired {
+                                    arb_land::LandStatus::Expired
+                                } else {
+                                    arb_land::LandStatus::Sent
+                                };
+                                (st, slot, err)
                             };
 
                             let effective_slot = landed_slot.unwrap_or(slot_val);
                             match status {
                                 arb_land::LandStatus::Landed => {
+                                    if let Some(ref sig) = tx_signature {
+                                        if let Ok(Some(meta)) =
+                                            signature_rpc.get_transaction_with_metadata(sig).await
+                                        {
+                                            if let Some(cu) = meta
+                                                .get("meta")
+                                                .and_then(|m| m.get("computeUnitsConsumed"))
+                                                .and_then(|c| c.as_u64())
+                                            {
+                                                debug!(
+                                                    "On-chain confirmed compute units consumed: {cu}"
+                                                );
+                                            }
+                                        }
+                                    }
                                     let landing_ms = land_start.elapsed().as_secs_f64() * 1000.0;
                                     let total_e2e_ms = (t_ingest_to_quote_us
                                         + t_risk_us
@@ -817,13 +869,11 @@ impl Supervisor {
                                         pools_count: pools_count_task,
                                         leader: effective_leader.clone(),
                                     };
-                                    {
-                                        let mut guard = recent_landed_task.lock();
-                                        if guard.len() >= 50 {
-                                            guard.remove(0);
-                                        }
-                                        guard.push(summary);
-                                    }
+                                    Supervisor::record_landed_trade_task(
+                                        &recent_landed_task,
+                                        control_task.clone(),
+                                        summary,
+                                    );
 
                                     telegram
                                         .notify_trade_executed(
@@ -864,13 +914,11 @@ impl Supervisor {
                                         reason: format!("{status:?}"),
                                         slot: effective_slot,
                                     };
-                                    {
-                                        let mut guard = recent_dropped_task.lock();
-                                        if guard.len() >= 50 {
-                                            guard.remove(0);
-                                        }
-                                        guard.push(dropped);
-                                    }
+                                    Supervisor::record_dropped_bundle_task(
+                                        &recent_dropped_task,
+                                        control_task.clone(),
+                                        dropped,
+                                    );
 
                                     telegram
                                         .alert_execution_dropped(
@@ -904,13 +952,11 @@ impl Supervisor {
                                         reason: "Failed".to_string(),
                                         slot: effective_slot,
                                     };
-                                    {
-                                        let mut guard = recent_dropped_task.lock();
-                                        if guard.len() >= 50 {
-                                            guard.remove(0);
-                                        }
-                                        guard.push(dropped);
-                                    }
+                                    Supervisor::record_dropped_bundle_task(
+                                        &recent_dropped_task,
+                                        control_task.clone(),
+                                        dropped,
+                                    );
 
                                     telegram
                                         .alert_execution_dropped(&b_id, &route_label_task, "Failed")

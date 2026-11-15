@@ -41,7 +41,6 @@ use crate::{
     get_associated_token_address_with_program_id,
 };
 use solana_pubkey::Pubkey;
-use std::collections::BTreeMap;
 use std::str::FromStr;
 
 /// Errors raised while assembling the 3-leg flash-funded route.

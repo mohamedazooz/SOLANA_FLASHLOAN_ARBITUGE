@@ -500,9 +500,9 @@ impl Supervisor {
         let mut hw_client_opt: Option<Arc<arb_ingest::HeliusWsClient>> = None;
         let mut ws_slot_notify: Option<Arc<tokio::sync::Notify>> = None;
         if let Some(helius_ws) = arb_ingest::HeliusWsClient::from_env() {
-            let wsol_mint = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap();
+            let wsol_mint = crate::verified_config::wsol_mint();
             let usdc_mint = Pubkey::from_str(arb_tx::USDC_MINT).unwrap();
-            let kamino_reserve = Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE).unwrap();
+            let kamino_reserve = crate::verified_config::wsol_reserve();
             let kamino_supply_vault =
                 Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
             let kamino_owner = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID).unwrap();

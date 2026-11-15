@@ -11,11 +11,14 @@ use anyhow::{Context, Result};
 use arb_dex::orca_whirlpool::OrcaWhirlpool;
 use arb_dex::raydium_v4::RaydiumV4Pool;
 use arb_dex::traits::AmmPool;
+#[cfg(feature = "split-routing")]
 use arb_engine::{PoolDepth, RouteArchitectWorker};
 use arb_ingest::RpcPool;
 use arb_math::{Leg, optimal_two_pool};
 use arb_tx::{KeypairSigner, TxBuilder};
-use arb_types::{DexProtocol, MintId, PoolId};
+#[cfg(feature = "split-routing")]
+use arb_types::DexProtocol;
+use arb_types::{MintId, PoolId};
 use base64::prelude::*;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -266,32 +269,35 @@ async fn main() -> Result<()> {
         math_ns
     );
 
-    let p1 = PoolDepth {
-        pool_id: ray_pool.pool_id,
-        protocol: DexProtocol::RaydiumV4,
-        reserve_in: leg1.r_in,
-        reserve_out: leg1.r_out,
-        fee_bps: 25,
-    };
-    let p2 = PoolDepth {
-        pool_id: orca_pool.pool_id,
-        protocol: DexProtocol::OrcaWhirlpool,
-        reserve_in: leg2.r_out,
-        reserve_out: leg2.r_in,
-        fee_bps: 5,
-    };
-
-    let start_split = Instant::now();
-    for _ in 0..iter_count {
-        let _ = RouteArchitectWorker::calculate_optimal_split_two_pools(&p1, &p2, 50_000_000_000);
+    #[cfg(feature = "split-routing")]
+    {
+        let p1 = PoolDepth {
+            pool_id: ray_pool.pool_id,
+            protocol: DexProtocol::RaydiumV4,
+            reserve_in: leg1.r_in,
+            reserve_out: leg1.r_out,
+            fee_bps: 25,
+        };
+        let p2 = PoolDepth {
+            pool_id: orca_pool.pool_id,
+            protocol: DexProtocol::OrcaWhirlpool,
+            reserve_in: leg2.r_out,
+            reserve_out: leg2.r_in,
+            fee_bps: 5,
+        };
+        let start_split = Instant::now();
+        for _ in 0..iter_count {
+            let _ =
+                RouteArchitectWorker::calculate_optimal_split_two_pools(&p1, &p2, 50_000_000_000);
+        }
+        let total_split = start_split.elapsed();
+        let split_ns = total_split.as_nanos() as f64 / iter_count as f64;
+        println!(
+            "  • Equal Marginal Split Math    : {:>6.2} µs / op  ({:>6.0} ns)",
+            split_ns / 1000.0,
+            split_ns
+        );
     }
-    let total_split = start_split.elapsed();
-    let split_ns = total_split.as_nanos() as f64 / iter_count as f64;
-    println!(
-        "  • Equal Marginal Split Math    : {:>6.2} µs / op  ({:>6.0} ns)",
-        split_ns / 1000.0,
-        split_ns
-    );
 
     // -------------------------------------------------------------------------
     // 4. TRANSACTION BUILDING & ED25519 SIGNING WITH REAL KEYPAIR & REAL BLOCKHASH
