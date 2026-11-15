@@ -47,7 +47,9 @@ pub struct DlmmCrossPoolConfig {
     /// Minimum gross cycle spread in bps before economics are evaluated.
     pub min_spread_bps: u64,
     /// Skip candidate sizes below this raw base-unit input (dust guard).
-    pub min_liquidity_bin_raw: u128,
+    /// `u64` matches the deserializable bot-config field (`toml` cannot
+    /// deserialize `u128`) and raw Solana token amounts, which fit in `u64`.
+    pub min_liquidity_bin_raw: u64,
 }
 
 impl Default for DlmmCrossPoolConfig {
@@ -400,10 +402,7 @@ fn evaluate_direction(
     let cap1 = MarketGraph::edge_max_input_capacity(l);
     let cap2 = MarketGraph::edge_max_input_capacity(r);
     let global_cap = max_trade_size.min(cfg.max_input);
-    let lo = cfg
-        .min_input
-        .max(1)
-        .max(cfg.min_liquidity_bin_raw.min(u64::MAX as u128) as u64);
+    let lo = cfg.min_input.max(1).max(cfg.min_liquidity_bin_raw);
     let hi = match cap1 {
         Some(c) if c > 0 => global_cap.min(c),
         None => global_cap,

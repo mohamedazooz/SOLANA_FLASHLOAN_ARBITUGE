@@ -176,7 +176,9 @@ impl TelegramNotifier {
                         {
                             if resp.status().is_success() {
                                 if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                    if let Some(p_str) = json.pointer("/data/amount").and_then(|p| p.as_str()) {
+                                    if let Some(p_str) =
+                                        json.pointer("/data/amount").and_then(|p| p.as_str())
+                                    {
                                         if let Ok(p) = p_str.parse::<f64>() {
                                             if p > 0.0 && p.is_finite() {
                                                 fetched = Some(p);
@@ -228,11 +230,7 @@ impl TelegramNotifier {
 
     pub fn sol_price(&self) -> f64 {
         let p = *self.sol_price.read();
-        if p > 0.0 && p.is_finite() {
-            p
-        } else {
-            200.0
-        }
+        if p > 0.0 && p.is_finite() { p } else { 200.0 }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -500,9 +498,7 @@ impl TelegramNotifier {
         if profit_pct < self.min_rejected_alert_pct {
             debug!(
                 "Rejection alert suppressed: gross {:.6} SOL ({:.4}%) < percentage threshold {:.4}%",
-                gross_sol,
-                profit_pct,
-                self.min_rejected_alert_pct
+                gross_sol, profit_pct, self.min_rejected_alert_pct
             );
             return;
         }
@@ -1307,7 +1303,10 @@ mod tests {
             )
             .await;
 
-        let msg = rx.recv().await.expect("Expected telegram rejection message");
+        let msg = rx
+            .recv()
+            .await
+            .expect("Expected telegram rejection message");
         assert!(msg.contains("تنبيه استبعاد فرصة مراجحة (Opportunity Rejected Alert)"));
         assert!(msg.contains("سبب عدم التنفيذ والنزول في البلوك:"));
         assert!(msg.contains("Simulation reverted with custom error 0x1"));

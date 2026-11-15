@@ -799,7 +799,8 @@ impl Supervisor {
                                         .leader_for(Slot(effective_slot))
                                         .map(|pk| pk.to_string())
                                         .unwrap_or_else(|| leader_task.clone());
-                                    let landed_status_str = "Confirmed / Finalized (مؤكد في البلوك)";
+                                    let landed_status_str =
+                                        "Confirmed / Finalized (مؤكد في البلوك)";
 
                                     // Record landed trade in memory for 5-minute performance digest
                                     let summary = crate::telegram::TradeSummary {
@@ -819,7 +820,7 @@ impl Supervisor {
                                     {
                                         let mut guard = recent_landed_task.lock();
                                         if guard.len() >= 50 {
-                                             guard.remove(0);
+                                            guard.remove(0);
                                         }
                                         guard.push(summary);
                                     }
