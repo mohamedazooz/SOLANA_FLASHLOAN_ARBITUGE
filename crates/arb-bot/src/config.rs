@@ -203,8 +203,11 @@ pub struct DlmmCrossPoolTuning {
     #[serde(default = "dcp_default_spread")]
     pub min_spread_bps: u64,
     /// Dust guard on candidate input size (base-mint raw units). Default 1e6.
+    /// `u64`, not `u128`: the `toml` crate cannot deserialize into `u128`, so
+    /// a `u128` field here made every shipped `config.toml` with this key
+    /// fail to parse at startup (see deploy run 43741572901).
     #[serde(default = "dcp_default_min_liq")]
-    pub min_liquidity_bin_raw: u128,
+    pub min_liquidity_bin_raw: u64,
 }
 
 impl Default for DlmmCrossPoolTuning {
@@ -239,7 +242,7 @@ fn dcp_default_refine() -> usize {
 fn dcp_default_spread() -> u64 {
     10
 }
-fn dcp_default_min_liq() -> u128 {
+fn dcp_default_min_liq() -> u64 {
     1_000_000
 }
 
@@ -438,6 +441,27 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
 
 fn fmt_parse_error(path: &str) -> anyhow::Error {
     anyhow::anyhow!("Failed to parse TOML configuration from '{path}'")
+}
+
+#[cfg(test)]
+mod config_file_tests {
+    use super::Config;
+
+    /// Regression: `min_liquidity_bin_raw` was declared `u128`, which the
+    /// `toml` crate cannot deserialize, so the tracked root `config.toml`
+    /// failed to parse and the bot aborted at startup (deploy run
+    /// 43741572901). Every tracked config file must deserialize.
+    #[test]
+    fn tracked_config_files_deserialize() {
+        for path in ["../../config.toml", "../../config/config.example.toml"] {
+            let full = concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + path;
+            let contents = std::fs::read_to_string(&full)
+                .unwrap_or_else(|e| panic!("{full} must exist and be readable: {e}"));
+            let parsed: Config = toml::from_str(&contents)
+                .unwrap_or_else(|e| panic!("{full} must deserialize into Config: {e}"));
+            let _ = parsed;
+        }
+    }
 }
 
 #[cfg(test)]
