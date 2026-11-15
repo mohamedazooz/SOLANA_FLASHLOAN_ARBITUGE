@@ -139,11 +139,20 @@ impl Supervisor {
         ([0u8; 32], None)
     }
 
-    /// Latest live SOL/USD mid from the tracked SOL-USDC pools, or `None` when
-    /// no verified price is available. Never a guessed constant.
+    /// Latest live SOL/USD mid from the tracked SOL-USDC pools or live market feed,
+    /// or `None` when no verified price is available. Never a guessed constant.
     pub(super) fn live_sol_price(&self) -> Option<f64> {
         let p = *self.last_known_live_sol_price.read();
-        if p > 0.0 { Some(p) } else { None }
+        if p > 0.0 && p.is_finite() {
+            Some(p)
+        } else {
+            let tg_p = self.telegram.sol_price();
+            if tg_p > 0.0 && tg_p.is_finite() {
+                Some(tg_p)
+            } else {
+                None
+            }
+        }
     }
 
     /// Build verified on-chain economic inputs for one quoting cycle.

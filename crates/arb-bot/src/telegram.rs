@@ -14,8 +14,9 @@ pub struct TelegramNotifier {
     bot_token: Option<String>,
     chat_id: Option<String>,
     client: Client,
-    sol_price: f64,
+    sol_price: std::sync::Arc<parking_lot::RwLock<f64>>,
     min_rejected_alert_sol: f64,
+    min_rejected_alert_pct: f64,
     tx: Option<tokio::sync::mpsc::Sender<String>>,
     rejected_cooldown:
         std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>>,
@@ -48,14 +49,25 @@ impl TelegramNotifier {
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
             .unwrap_or(1.0);
-        let sol_price = std::env::var("SOL_USD_PRICE")
+        let initial_sol_price = std::env::var("SOL_USD_PRICE")
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|p| *p > 0.0)
             .unwrap_or(200.0);
+        let sol_price = std::sync::Arc::new(parking_lot::RwLock::new(initial_sol_price));
+
         let min_rejected_alert_sol = std::env::var("TELEGRAM_REJECTED_ALERT_MIN_SOL")
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
-            .unwrap_or(min_alert_usd / sol_price);
+            .unwrap_or(min_alert_usd / initial_sol_price);
+        // Minimum gross profit percentage relative to loan size to trigger rejection alert (default 0.01% = 1 bps)
+        let min_rejected_alert_pct = std::env::var("TELEGRAM_REJECTED_ALERT_MIN_PCT")
+            .ok()
+            .and_then(|v| {
+                let clean = v.trim().trim_end_matches('%');
+                clean.parse::<f64>().ok()
+            })
+            .unwrap_or(0.01);
 
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(15))
@@ -129,12 +141,70 @@ impl TelegramNotifier {
             debug!("Telegram credentials not fully configured — notifications disabled");
         }
 
+        // Spawn real-time live market price tracker for SOL/USD (Binance + Coinbase feed)
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let client_price = client.clone();
+            let sol_price_bg = sol_price.clone();
+            handle.spawn(async move {
+                loop {
+                    let mut fetched = None;
+                    if let Ok(resp) = client_price
+                        .get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT")
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send()
+                        .await
+                    {
+                        if resp.status().is_success() {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if let Some(p_str) = json.get("price").and_then(|p| p.as_str()) {
+                                    if let Ok(p) = p_str.parse::<f64>() {
+                                        if p > 0.0 && p.is_finite() {
+                                            fetched = Some(p);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if fetched.is_none() {
+                        if let Ok(resp) = client_price
+                            .get("https://api.coinbase.com/v2/prices/SOL-USD/spot")
+                            .timeout(std::time::Duration::from_secs(5))
+                            .send()
+                            .await
+                        {
+                            if resp.status().is_success() {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    if let Some(p_str) = json.pointer("/data/amount").and_then(|p| p.as_str()) {
+                                        if let Ok(p) = p_str.parse::<f64>() {
+                                            if p > 0.0 && p.is_finite() {
+                                                fetched = Some(p);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(p) = fetched {
+                        *sol_price_bg.write() = p;
+                        debug!("Live SOL/USD price updated from market feed: ${:.2}", p);
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                }
+            });
+        }
+
         Self {
             bot_token,
             chat_id,
             client,
             sol_price,
             min_rejected_alert_sol,
+            min_rejected_alert_pct,
             tx: tx_opt,
             rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
@@ -144,6 +214,25 @@ impl TelegramNotifier {
 
     pub fn min_rejected_alert_sol(&self) -> f64 {
         self.min_rejected_alert_sol
+    }
+
+    pub fn min_rejected_alert_pct(&self) -> f64 {
+        self.min_rejected_alert_pct
+    }
+
+    pub fn update_sol_price(&self, price: f64) {
+        if price > 0.0 && price.is_finite() {
+            *self.sol_price.write() = price;
+        }
+    }
+
+    pub fn sol_price(&self) -> f64 {
+        let p = *self.sol_price.read();
+        if p > 0.0 && p.is_finite() {
+            p
+        } else {
+            200.0
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -221,11 +310,17 @@ impl TelegramNotifier {
         pools_count: usize,
         loan_size_sol: f64,
     ) {
-        if net_sol < self.min_rejected_alert_sol && net_usd < 1.0 {
+        let live_sol_price = self.sol_price();
+        let computed_net_usd = if net_usd > 0.0 {
+            net_usd
+        } else {
+            net_sol * live_sol_price
+        };
+        if net_sol < self.min_rejected_alert_sol && computed_net_usd < 1.0 {
             return;
         }
-        let loan_usd = loan_size_sol * self.sol_price;
-        let gross_usd = gross_sol * self.sol_price;
+        let loan_usd = loan_size_sol * live_sol_price;
+        let gross_usd = gross_sol * live_sol_price;
         let pool_desc = if pools_count == 2 {
             "Two-Leg Cycle"
         } else if pools_count == 3 {
@@ -240,10 +335,11 @@ impl TelegramNotifier {
              🏦 <b>حجم قرض الفلاش (Flash Loan):</b> <code>{:.4} SOL (~${:.2} USD)</code>\n\
              🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
              📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> ${:.2} USD (سعر حي من السوق)\n\
              🧊 <b>السلوت (Slot):</b> <code>{}</code>\n\
              🛡️ <b>الحالة:</b> قيد الإرسال والتوجيه للبيلدر المعتمد",
             net_sol,
-            net_usd,
+            computed_net_usd,
             pools_count,
             pool_desc,
             loan_size_sol,
@@ -251,6 +347,7 @@ impl TelegramNotifier {
             esc(route),
             gross_sol,
             gross_usd,
+            live_sol_price,
             slot
         );
         let _ = self.send_message(&msg).await;
@@ -288,7 +385,13 @@ impl TelegramNotifier {
         {
             return;
         }
-        if net_sol < self.min_rejected_alert_sol && net_usd < 1.0 {
+        let live_sol_price = self.sol_price();
+        let computed_net_usd = if net_usd > 0.0 {
+            net_usd
+        } else {
+            net_sol * live_sol_price
+        };
+        if net_sol < self.min_rejected_alert_sol && computed_net_usd < 1.0 {
             return;
         }
         let bh_short = if blockhash.len() > 16 {
@@ -313,8 +416,8 @@ impl TelegramNotifier {
                 .collect::<Vec<_>>()
                 .join(" → ")
         };
-        let loan_usd = loan_size_sol * self.sol_price;
-        let gross_usd = gross_sol * self.sol_price;
+        let loan_usd = loan_size_sol * live_sol_price;
+        let gross_usd = gross_sol * live_sol_price;
         let pool_desc = if pools_count == 2 {
             "Two-Leg Cycle"
         } else if pools_count == 3 {
@@ -331,13 +434,14 @@ impl TelegramNotifier {
              📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
              📉 <b>أثر السعر (Price Impact):</b> {} bps\n\
              🎚️ <b>الأبناء النشطة (DLMM Bins):</b> <code>{}</code>\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> ${:.2} USD (سعر حي من السوق)\n\
              🧊 <b>السلوت (Slot):</b> <code>{}</code>\n\
              👑 <b>البيلدر / الليدر المستهدف (Target Builder/Leader):</b> <code>{}</code>\n\
              🔗 <b>Blockhash:</b> <code>{}...</code>\n\
              ⚡ <b>المعالجة:</b> <code>{} CU | Priority: {} µ-lamp</code>\n\
              🛡️ <b>الحالة:</b> جاهزة للتنفيذ الذري وموجهة للبيلدر الصحيح",
             net_sol,
-            net_usd,
+            computed_net_usd,
             pools_count,
             pool_desc,
             loan_size_sol,
@@ -347,6 +451,7 @@ impl TelegramNotifier {
             gross_usd,
             price_impact_bps,
             bins_display,
+            live_sol_price,
             slot,
             esc(leader_display),
             esc(bh_short),
@@ -357,7 +462,7 @@ impl TelegramNotifier {
     }
 
     /// Real-time alert explaining why a gross-profitable opportunity was rejected in final gates.
-    /// Alerts are suppressed if the gross profit is below `min_rejected_alert_sol` to prevent notification spam.
+    /// Alerts are strictly filtered by percentage yield relative to loan size (no fixed SOL threshold).
     pub async fn alert_opportunity_rejected(
         &self,
         route: &str,
@@ -383,10 +488,21 @@ impl TelegramNotifier {
         {
             return;
         }
-        if gross_sol < self.min_rejected_alert_sol {
+
+        // Percentage of gross profit relative to loan size
+        let profit_pct = if loan_size_sol > 0.0 {
+            (gross_sol / loan_size_sol) * 100.0
+        } else {
+            0.0
+        };
+
+        // Strictly percentage-based alert threshold (no fixed 0.01 SOL number)
+        if profit_pct < self.min_rejected_alert_pct {
             debug!(
-                "Rejection alert suppressed: gross {:.6} SOL < threshold {:.6} SOL",
-                gross_sol, self.min_rejected_alert_sol
+                "Rejection alert suppressed: gross {:.6} SOL ({:.4}%) < percentage threshold {:.4}%",
+                gross_sol,
+                profit_pct,
+                self.min_rejected_alert_pct
             );
             return;
         }
@@ -408,35 +524,50 @@ impl TelegramNotifier {
             cooldowns.insert(key, now);
         }
 
-        let gross_usd = gross_sol * self.sol_price;
-        let loan_usd = loan_size_sol * self.sol_price;
+        let live_sol_price = self.sol_price();
+        let gross_usd = gross_sol * live_sol_price;
+        let loan_usd = loan_size_sol * live_sol_price;
         let net_display = match net_sol {
             Some(n) => {
-                let n_usd = n * self.sol_price;
-                format!("{n:+.6} SOL (~${n_usd:.2})")
+                let n_usd = n * live_sol_price;
+                format!("{n:+.6} SOL (~${n_usd:.2} USD)")
             }
-            None => "غير محقق / تم الرفض قبل حساب الصافي النهائي".to_string(),
+            None => "غير محقق / تم الاستبعاد قبل استكمال صافي التنفيذ".to_string(),
+        };
+
+        let pool_desc = if pools_count == 2 {
+            "Two-Leg Cycle"
+        } else if pools_count == 3 {
+            "Triangular Cycle"
+        } else {
+            "Multi-Hop Cycle"
         };
 
         let msg = format!(
-            "🚫 <b>تم رفض فرصة مراجحة واعدة (Rejection Alert)</b>\n\n\
-             🛣️ <b>المسار:</b> <code>{}</code>\n\
-             🏊 <b>عدد الأحواض:</b> <code>{}</code>\n\
-             🏦 <b>حجم الاقتراض (قرض الفلاش):</b> <code>{:.4} SOL (~${:.2})</code>\n\
-             📈 <b>الربح الإجمالي المحتمل:</b> <code>{:.6} SOL (~${:.2})</code>\n\
+            "🚫 <b>تنبيه استبعاد فرصة مراجحة (Opportunity Rejected Alert)</b>\n\n\
+             🛑 <b>سبب عدم التنفيذ والنزول في البلوك:</b> <code>{}</code>\n\
+             🧩 <b>مرحلة الاستبعاد في الفحص (Pipeline Stage):</b> <code>{}</code>\n\
+             📈 <b>الربح الإجمالي المحتمل:</b> <code>{:.6} SOL (~${:.2} USD) | {:.4}% من حجم القرض</code>\n\
+             🎯 <b>حد التنبيه بالنسبة المئوية:</b> <code>{:.4}% من حجم القرض (نسبة مئوية ديناميكية)</code>\n\
+             🏦 <b>حجم قرض الفلاش (Flash Loan):</b> <code>{:.4} SOL (~${:.2} USD)</code>\n\
              💰 <b>صافي الربح التقديري:</b> <code>{}</code>\n\
-             🧩 <b>مرحلة الرفض (Pipeline Stage):</b> <code>{}</code>\n\
-             🛑 <b>سبب عدم التنفيذ على المايننت:</b> <code>{}</code>\n\
-             🧊 <b>السلوت:</b> <code>{}</code>",
-            esc(route),
-            pools_count,
-            loan_size_sol,
-            loan_usd,
+             🏊 <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
+             🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> <code>${:.2} USD (سعر حي من السوق)</code>\n\
+             🧊 <b>السلوت (Slot):</b> <code>{}</code>",
+            esc(reason),
+            esc(stage),
             gross_sol,
             gross_usd,
+            profit_pct,
+            self.min_rejected_alert_pct,
+            loan_size_sol,
+            loan_usd,
             esc(&net_display),
-            esc(stage),
-            esc(reason),
+            pools_count,
+            pool_desc,
+            esc(route),
+            live_sol_price,
             slot
         );
         let _ = self.send_message(&msg).await;
@@ -487,8 +618,9 @@ impl TelegramNotifier {
         loan_size_sol: f64,
         leader: &str,
     ) {
-        let net_usd = net_sol * self.sol_price;
-        let loan_usd = loan_size_sol * self.sol_price;
+        let live_sol_price = self.sol_price();
+        let net_usd = net_sol * live_sol_price;
+        let loan_usd = loan_size_sol * live_sol_price;
         let pool_desc = if pools_count == 2 {
             "Two-Leg Cycle"
         } else if pools_count == 3 {
@@ -507,6 +639,7 @@ impl TelegramNotifier {
              🏦 <b>حجم قرض الفلاش (Flash Loan):</b> <code>{:.4} SOL (~${:.2} USD)</code>\n\
              🏊 <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
              🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> <code>${:.2} USD (سعر حي من السوق)</code>\n\
              👑 <b>البيلدر / الليدر المستهدف (Target Builder):</b> <code>{}</code>\n\
              🆔 <b>معرف الحزمة (Bundle ID):</b> <code>{}</code>\n\
              ⏳ <b>الحالة:</b> تم التوجيه للبيلدر وبانتظار النزول في البلوك (In-Flight)",
@@ -517,6 +650,7 @@ impl TelegramNotifier {
             pools_count,
             pool_desc,
             esc(route),
+            live_sol_price,
             esc(leader_display),
             esc(bundle_id)
         );
@@ -536,7 +670,7 @@ impl TelegramNotifier {
         signature: Option<&str>,
         bundle_id: &str,
         profit_sol: f64,
-        profit_usd: f64,
+        passed_profit_usd: f64,
         loan_size_sol: f64,
         pools_count: usize,
         route_hops: &str,
@@ -549,7 +683,13 @@ impl TelegramNotifier {
         let sig_display = signature.unwrap_or(bundle_id);
         let solscan_link = format!("https://solscan.io/tx/{sig_display}");
         let solana_fm_link = format!("https://solana.fm/tx/{sig_display}");
-        let loan_usd = loan_size_sol * self.sol_price;
+        let live_sol_price = self.sol_price();
+        let profit_usd = if passed_profit_usd > 0.0 {
+            passed_profit_usd
+        } else {
+            profit_sol * live_sol_price
+        };
+        let loan_usd = loan_size_sol * live_sol_price;
 
         let leader_display = if leader.trim().is_empty() {
             "Jito Authorized Validator / Leader".to_string()
@@ -575,6 +715,7 @@ impl TelegramNotifier {
              • <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
              • <b>المسار والقفزات:</b> <code>{}</code>\n\
              • <b>المنصات (DEXes):</b> <code>{}</code>\n\n\
+             💵 <b>سعر SOL اللحظي المستخدم في الحساب:</b> <code>${:.2} USD (سعر السوق الحقيقي)</code>\n\n\
              🧱 <b>إثبات النزول في البلوك (Block Landing Proof):</b>\n\
              • <b>حالة الهبوط:</b> <code>{}</code> ✅\n\
              • <b>رقم السلوت (Block Slot):</b> <code>{}</code>\n\
@@ -594,6 +735,7 @@ impl TelegramNotifier {
             pool_desc,
             esc(route_hops),
             esc(venues),
+            live_sol_price,
             esc(landed_status),
             slot,
             esc(&leader_display),
@@ -981,8 +1123,9 @@ mod tests {
             bot_token: Some("fake_token".to_string()),
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
-            sol_price: 200.0,
+            sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
             min_rejected_alert_sol: 0.005,
+            min_rejected_alert_pct: 0.01,
             tx: Some(tx),
             rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
@@ -1043,8 +1186,9 @@ mod tests {
             bot_token: Some("fake_token".to_string()),
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
-            sol_price: 200.0,
+            sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
             min_rejected_alert_sol: 0.001,
+            min_rejected_alert_pct: 0.01,
             tx: Some(tx),
             rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
@@ -1087,8 +1231,9 @@ mod tests {
             bot_token: Some("fake_token".to_string()),
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
-            sol_price: 200.0,
+            sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
             min_rejected_alert_sol: 0.001,
+            min_rejected_alert_pct: 0.01,
             tx: Some(tx),
             rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
                 std::collections::HashMap::new(),
@@ -1114,5 +1259,70 @@ mod tests {
         assert!(msg.contains("عدد الأحواض"));
         assert!(msg.contains("JitoLeaderTest789"));
         assert!(msg.contains("bundle-test-456"));
+    }
+
+    #[tokio::test]
+    async fn alert_opportunity_rejected_percentage_threshold_and_reason_fields() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(10);
+        let notifier = TelegramNotifier {
+            bot_token: Some("fake_token".to_string()),
+            chat_id: Some("123456789".to_string()),
+            client: reqwest::Client::new(),
+            sol_price: std::sync::Arc::new(parking_lot::RwLock::new(215.50)),
+            min_rejected_alert_sol: 0.001,
+            // 0.02% (2 bps) percentage threshold
+            min_rejected_alert_pct: 0.02,
+            tx: Some(tx),
+            rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+        };
+
+        // 1. Below threshold: 0.00005 SOL on 1.0 SOL loan = 0.005% (< 0.02%) -> suppressed
+        notifier
+            .alert_opportunity_rejected(
+                "SOL ➔ USDC ➔ SOL",
+                0.00005,
+                "Profit Floor Protection",
+                "Gross profit below threshold",
+                312456790,
+                2,
+                1.0,
+                None,
+            )
+            .await;
+        assert!(rx.try_recv().is_err());
+
+        // 2. Above percentage threshold: 0.001 SOL on 2.0 SOL loan = 0.05% (>= 0.02%) -> sent!
+        notifier
+            .alert_opportunity_rejected(
+                "SOL ➔ USDC ➔ BONK ➔ SOL",
+                0.001,
+                "Pre-flight Simulation",
+                "Simulation reverted with custom error 0x1",
+                312456791,
+                3,
+                2.0,
+                Some(0.0004),
+            )
+            .await;
+
+        let msg = rx.recv().await.expect("Expected telegram rejection message");
+        assert!(msg.contains("تنبيه استبعاد فرصة مراجحة (Opportunity Rejected Alert)"));
+        assert!(msg.contains("سبب عدم التنفيذ والنزول في البلوك:"));
+        assert!(msg.contains("Simulation reverted with custom error 0x1"));
+        assert!(msg.contains("مرحلة الاستبعاد في الفحص (Pipeline Stage):"));
+        assert!(msg.contains("Pre-flight Simulation"));
+        assert!(msg.contains("حجم قرض الفلاش (Flash Loan):"));
+        assert!(msg.contains("2.0000 SOL (~$431.00 USD)"));
+        assert!(msg.contains("سعر SOL اللحظي المستخدم:"));
+        assert!(msg.contains("$215.50 USD (سعر حي من السوق)"));
+        assert!(msg.contains("حد التنبيه بالنسبة المئوية:"));
+        assert!(msg.contains("0.0200% من حجم القرض"));
+        assert!(msg.contains("3 أحواض (Triangular Cycle)"));
+
+        // 3. Test dynamic live price update:
+        notifier.update_sol_price(225.0);
+        assert_eq!(notifier.sol_price(), 225.0);
     }
 }

@@ -572,6 +572,7 @@ impl Supervisor {
         }
         if live_sol_price_seed > 0.0 {
             *self.last_known_live_sol_price.write() = live_sol_price_seed;
+            self.telegram.update_sol_price(live_sol_price_seed);
         }
         let reported_seed_slot = self
             .ingest
