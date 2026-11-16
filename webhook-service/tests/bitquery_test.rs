@@ -14,9 +14,10 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 async fn create_test_app() -> axum::Router {
-    let config = AppConfig::load_from_file("webhook-service/config.toml")
+    let mut config = AppConfig::load_from_file("webhook-service/config.toml")
         .or_else(|_| AppConfig::load_from_file("config.toml"))
         .expect("Failed to load config.toml");
+    config.server.auth_token = "test-only-webhook-token".to_string();
     let dedup = DeduplicationEngine::new("redis://127.0.0.1:6379", 2, 5000)
         .await
         .expect("DeduplicationEngine init failed");
@@ -44,6 +45,7 @@ async fn create_test_app() -> axum::Router {
 
 #[tokio::test]
 async fn test_bitquery_status_endpoint() {
+    std::env::set_var("BITQUERY_CLIENT_ID", "test-client-id");
     let app = create_test_app().await;
 
     let response = app

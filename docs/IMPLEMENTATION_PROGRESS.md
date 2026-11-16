@@ -114,6 +114,23 @@ No mismatches found; no code changes required.
 - Results appended to `docs/quality/PERFORMANCE_BENCHMARKS.md` with the
   sandbox-vs-campaign caveat.
 
+### Session 3 (2026-11-16) — defects found & fixed by the new gate
+
+The CI advisory gate immediately proved its value on first run:
+
+| ID | Severity | File | Root cause | Evidence | Fix | Test |
+|---|---|---|---|---|---|---|
+| DEF-1 | Medium (RUSTSEC-2026-0258, low severity upstream but internet-facing service) | `webhook-service/Cargo.lock` | `reqwest 0.11` → `hyper 0.14` → `h2 0.3.27` vulnerable to unbounded empty-DATA-frame queueing (DoS) | CI cargo-deny failure: "h2 unbounded empty DATA frames", patched in h2 0.4.16 | Upgraded `webhook-service` to `reqwest 0.12` (rustls-tls, matching main workspace), lockfile now `h2 0.4.20` | `cargo deny --manifest-path webhook-service/Cargo.toml check advisories bans sources` → `advisories ok, bans ok, sources ok`; `cargo test` in webhook-service → 11 passed, 0 failed |
+| DEF-2 | Low (test correctness) | `webhook-service/tests/{bitquery,solami_webhook,webhook}_tests.rs` | Auth-protection tests asserted 401 but relied on an uncommitted `auth_token` value; committed `config.toml` has `auth_token = ""` (auth disabled) → tests deterministically got 200 | Local run: 3 tests FAILED (`left: 200, right: 401`) | Tests now set `config.server.auth_token = "test-only-webhook-token"` explicitly after loading config; bitquery status test sets `BITQUERY_CLIENT_ID` env explicitly | `cargo test` in webhook-service → bitquery 3/3, solami 4/4, webhook_tests 4/4, 0 failed |
+
+Note: `webhook-service` is outside the cargo workspace and was previously
+tested by nothing in CI; its tests were failing silently before this pass.
+
+Also fixed: `cargo-deny-action` webhook-service step used `--manifest-path`
+inside `arguments`, colliding with the action's own default manifest path
+("cannot be used multiple times"). Moved to the action's dedicated
+`manifest-path` input.
+
 ### Unresolved blockers / limitations
 
 1. `cargo-audit` not installable in this sandbox within session budget —
