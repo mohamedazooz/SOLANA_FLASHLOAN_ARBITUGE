@@ -68,7 +68,7 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans sources
-          arguments: --manifest-path webhook-service/Cargo.toml
+          manifest-path: webhook-service/Cargo.toml
 
   web:
     name: Web app build (React + Vite)
