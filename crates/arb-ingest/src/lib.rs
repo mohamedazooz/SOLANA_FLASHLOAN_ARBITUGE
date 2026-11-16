@@ -58,6 +58,8 @@ pub use pump_state::{
 };
 pub mod pumpfun_discovery;
 pub use pumpfun_discovery::{PumpFunCoin, PumpFunDiscoveryClient};
+pub mod oxylabs;
+pub use oxylabs::{OxylabsClient, OxylabsConfig, OxylabsError, ScrapeResult, SearchResult};
 pub mod pumpdev_stream;
 pub use pumpdev_stream::{PumpDevEvent, PumpDevWebSocketClient};
 pub mod capability;

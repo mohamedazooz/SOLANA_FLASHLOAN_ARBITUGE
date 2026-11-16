@@ -1,0 +1,73 @@
+# Sentinel Arbitrage Protocol Configuration
+# Classification: Protocol support matrix — which protocols are enabled,
+# their execution capability requirements, and associated parameters.
+
+[protocols]
+# Raydium V4 (AMM v4) — always enabled if liquidity exists
+[protocols.raydium_v4]
+enabled = true
+execution_capability = "fee_valid + reserves_gt_0"
+min_reserves = 1              # minimum reserve units to consider pool active
+
+# Raydium CPMM (CPMMoo8...)
+[protocols.raydium_cpmm]
+enabled = true
+execution_capability = "fee_valid + reserves_gt_0"
+min_reserves = 1
+
+# Raydium CLMM (concentrated liquidity)
+[protocols.raydium_clmm]
+enabled = false                 # Set true only when CLMM state is decoded from chain
+execution_capability = "clmm_state_decoded"
+clmm_requirements = "tick_arrays present + active tick coverage"
+# If enabled, requires pool.clmm.is_some() in PoolState
+
+# Orca Whirlpool
+[protocols.orca_whirlpool]
+enabled = false                 # Set true only when CLMM state is decoded from chain
+execution_capability = "clmm_state_decoded"
+clmm_requirements = "tick_arrays present + active tick coverage"
+
+# Meteora DLMM (lb_clmm)
+[protocols.meteora_dlmm]
+enabled = true
+execution_capability = "dlmm_state_full"
+dlmm_requirements = "bins ingested + fee params ingested + active_bin_id valid"
+# Critical: METEORA_BINS_PER_BIN_ARRAY = 70 must match on-chain program
+# Failure to match silently targets wrong BinArrays.
+
+# Pump.fun bonding curve
+[protocols.pump_fun]
+enabled = false                 # quote-only until on-chain accounts verified
+execution_capability = "quote_only"
+# DO NOT enable for live execution until:
+#   - On-chain instruction accounts verified
+#   - Per-mint TransferFeeConfig validated
+#   - Bonding curve limits checked (graduation at 85M lamports)
+#   - Mayhem/cashback/mode_flags_present checks implemented
+
+# PumpSwap post-graduation AMM
+[protocols.pumpswap]
+enabled = false                 # quote-only until pool+vault+global config verified
+execution_capability = "quote_only"
+# DO NOT enable for live execution until:
+#   - Dedicated adapter with live PPM fee components
+#   - Effective quote reserves from Jupiter or on-chain decode
+#   - Global config PDA derivation verified
+
+# --- Protocol-level constraints ---
+
+# [protocols.constants]
+# METEORA_BINS_PER_BIN_ARRAY = 70  # Verified against on-chain deployment on 2026-11-04
+# DO NOT change without re-verifying against deployed program.
+# Wrong value silently targets incorrect BinArrays.
+
+# [protocols.kamino]
+# Flash loan fee read from on-chain ReserveConfig.fees.flash_loan_fee_sf (Q64.64).
+# Never hardcode 0 or 5 bps; fee varies by reserve and must be read from chain.
+# Verified main-market values on 2026-11-04: both WSOL and USDC reserves carry sf = 11_529_215_046_068
+
+# [protocols.fee_validation]
+# Pool fee validation: fee_denominator must be != 0. Pools with fee_denominator == 0
+# are rejected at the adapter level (adapters.rs::quote_hop). Do not silently price
+# pools with invalid fees using w.unrap_or(10_000).

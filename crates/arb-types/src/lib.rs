@@ -123,6 +123,47 @@ impl Slot {
     }
 }
 
+/// Duration in milliseconds. Distinct from seconds to avoid unit confusion
+/// in timeouts, poll intervals, and freshness windows.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
+pub struct Milliseconds(pub u64);
+
+impl Milliseconds {
+    pub const ZERO: Self = Self(0);
+
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).map(Self)
+    }
+
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self(self.0.saturating_sub(rhs.0))
+    }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Duration in seconds. Distinct from milliseconds to avoid unit confusion.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
+pub struct Seconds(pub u64);
+
+impl Seconds {
+    pub const ZERO: Self = Self(0);
+
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).map(Self)
+    }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// Compute units consumed/requested by a transaction. Distinct from Lamports.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
@@ -980,24 +1021,33 @@ pub struct PoolState {
 }
 
 impl PoolState {
+    /// Maximum representable fee rate in basis points (100%). Any computed fee
+    /// above this is invalid and must be rejected, never silently capped.
+    pub const FEE_BPS_MAX: u16 = 10_000;
+
     /// Total swap fee in basis points, derived from the stored numerator/denom.
     ///
-    /// Returns `None` when `fee_denominator == 0` (invalid fee). Callers MUST handle
-    /// the `None` case and reject the pool rather than price it with a guessed fee.
+    /// Returns `None` when the fee is invalid: `fee_denominator == 0`, the
+    /// computed value overflows `u16`, or the result exceeds `FEE_BPS_MAX`
+    /// (100%). Invalid fee data is never silently converted to 100% — callers
+    /// MUST handle the `None` case and reject the pool rather than price it
+    /// with a guessed fee.
     pub fn fee_bps(&self) -> Option<u16> {
         if self.fee_denominator == 0 {
             return None;
         }
-        Some(
-            u16::try_from((self.fee_numerator as u128 * 10_000) / self.fee_denominator as u128)
-                .unwrap_or(10_000),
-        )
+        let value = (self.fee_numerator as u128 * 10_000u128) / self.fee_denominator as u128;
+        let fee = u16::try_from(value).ok()?;
+        if fee > Self::FEE_BPS_MAX {
+            return None;
+        }
+        Some(fee)
     }
 
     /// True when the pool carries a usable fee numerator/denominator pair.
     /// A pool with an invalid fee must never be priced or discovered.
     pub fn is_fee_valid(&self) -> bool {
-        self.fee_denominator != 0
+        self.fee_bps().is_some()
     }
 }
 
