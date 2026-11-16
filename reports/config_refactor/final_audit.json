@@ -1,0 +1,135 @@
+{
+  "report": "config_refactor/final_audit",
+  "generated_at_utc": "2026-11-16T03:07:22Z",
+  "repository": "mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE",
+  "branch": "feature/production-hardening",
+  "head_commit": "4096f14d89bccfc9459fa4e334b9f29d70be8654",
+  "pr": "https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/36",
+  "scope": "Complete hardcoded-values, configuration and security refactor (directive 4)",
+  "address_conflicts": {
+    "C-01_usdc_reserve": {
+      "conflict": "verified_config D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25 vs arb-constants D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
+      "resolution": "arb-constants canonical; verified_config uses arb_constants::KAMINO_USDC_RESERVE",
+      "on_chain_evidence": "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59 EXISTS (owner KLend); D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25 DOES NOT EXIST",
+      "status": "RESOLVED",
+      "tests": "crates/arb-tx/tests/address_regression_guards.rs"
+    },
+    "C-02_raydium_vault": {
+      "conflict": "arb-types (dead duplicate RaydiumV4Accounts) DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz vs arb-constants DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
+      "resolution": "dead duplicate struct+impl deleted from arb-types; arb-constants single source of truth; live path arb_tx::protocols::raydium_v4",
+      "on_chain_evidence": "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz EXISTS (SPL Token owner, ~110K SOL); DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz DOES NOT EXIST",
+      "status": "RESOLVED",
+      "tests": "crates/arb-tx/tests/address_regression_guards.rs (3/3)"
+    }
+  },
+  "risk_config_contradictions": {
+    "C-04_max_velocity": {
+      "conflict": "MAX_VELOCITY_ORDERS_PER_HOUR=10 (dead) vs RiskLimits::max_orders_per_hour=120",
+      "resolution": "dead const deleted; 120 authoritative",
+      "status": "RESOLVED"
+    }
+  },
+  "dlmm_92_percent_factor": {
+    "location": "crates/arb-math/src/dlmm.rs:418 (scale_dlmm_three_hop_input)",
+    "previous_claim": "removed (FABRICATED - factor still present, unit test dlmm.rs:1672 asserts it)",
+    "independent_analysis": "conservative sizing haircut, not a quote: scales probe input to min of 3 hop active-bin capacities and wallet cap, x92/100; can only shrink input; final output always recomputed with exact pool-specific quotes (quote_pool -> quote_dlmm_multi_bin) and re-clamped by edge_max_input_capacity; cannot mask missing bin coverage",
+    "disposition": "DOCUMENTED_RETAINED",
+    "follow_up_required": "differential parity vs official Meteora SDK on real mainnet bin snapshots before live-sizing trust"
+  },
+  "security_findings": [
+    {
+      "id": "SEC-01",
+      "severity": "Critical",
+      "finding": "CorsLayer::permissive() in webhook-service",
+      "fix": "build_cors_layer from server.cors_allowed_origins allowlist; empty = no CORS headers",
+      "status": "FIXED"
+    },
+    {
+      "id": "SEC-02",
+      "severity": "High",
+      "finding": "bearer-token comparisons used == (timing side channel) at 4 sites",
+      "fix": "constant_time_eq + verify_webhook_token + bearer_or_raw_token_valid in lib.rs",
+      "status": "FIXED"
+    },
+    {
+      "id": "SEC-03",
+      "severity": "High",
+      "finding": "unbounded request body size",
+      "fix": "DefaultBodyLimit::max(server.max_body_bytes), default 1 MiB, configurable",
+      "status": "FIXED"
+    },
+    {
+      "id": "SEC-12",
+      "severity": "High",
+      "finding": "no rate limiting on webhook-service routes",
+      "fix": "fixed-window per-client RateLimiter (rate_limit.rs) wired as axum middleware; server.rate_limit_requests_per_minute (default 600, 0=disabled, validated >=10)",
+      "status": "FIXED"
+    },
+    {
+      "id": "SEC-13",
+      "severity": "Medium",
+      "finding": "no replay protection",
+      "fix": "event_age_allowed guard (max_event_age_secs; rejects stale, far-future >300s skew, missing timestamps fail-closed) applied to Helius handler; transaction-signature dedup already present (DeduplicationEngine)",
+      "status": "FIXED"
+    },
+    {
+      "id": "SEC-14",
+      "severity": "Medium",
+      "finding": "secrets loadable from config literals; Debug could leak auth_token",
+      "fix": "auth_token_env (env-var NAME, fail-closed resolution at load); manual ServerConfig Debug redaction; Secret type with redacted Debug/Display",
+      "status": "FIXED"
+    },
+    {
+      "id": "SEC-15",
+      "severity": "Info",
+      "finding": "HMAC body-signature verification absent",
+      "evidence": "research 2026-11-16: Helius webhooks do NOT sign bodies (authHeader sent verbatim as Authorization header; Hookdeck Helius guide); Bitquery/Solami likewise use static headers",
+      "fix": "generic verify_hmac_signature (HMAC-SHA256, hex, optional sha256= prefix, constant-time) implemented + tested; ready for any signing provider without inventing protocol capabilities",
+      "status": "UTILITY_PROVIDED_NOT_WIRED_NO_SIGNING_PROVIDER_EXISTS"
+    },
+    {
+      "id": "SEC-11",
+      "severity": "Critical",
+      "finding": "fabricated addresses in source (previous report falsely claimed doc-only)",
+      "fix": "see address_conflicts; regression guards added",
+      "status": "FIXED"
+    }
+  ],
+  "previous_agent_fabricated_claims_corrected": [
+    "conflicts.md C-02: 'arb-types fixed to canonical value' - false until session 4",
+    "conflicts.md C-05: '92% factor removed, test updated' - false (factor present, test asserts it)",
+    "security_findings.md SEC-07: 'FIXED removed' - false; reclassified DOCUMENTED_RETAINED",
+    "security_findings.md SEC-11: 'typo values exist only in audit document' - false; fabricated vault was in arb-types source"
+  ],
+  "verification": {
+    "cargo_fmt": "exit 0",
+    "cargo_clippy": "cargo clippy --workspace --all-targets -- -D warnings: exit 0",
+    "cargo_test_workspace": "1020 passed / 0 failed / 2 ignored (intentional live-RPC)",
+    "cargo_test_webhook_service": "28 passed / 0 failed (11 unit incl. 6 new, 3 bitquery, 6 security_hardening, 4 solami, 4 webhook)",
+    "cargo_deny_workspace": "advisories ok, bans ok, licenses ok, sources ok",
+    "cargo_deny_webhook_service": "advisories ok, bans ok, licenses ok, sources ok",
+    "secrets_committed": "none"
+  },
+  "acceptance_criteria": {
+    "every_hardcoded_value_classified": "PASS (inventory + session-4 refresh; classes A-G)",
+    "findings_have_disposition": "PASS",
+    "address_contradictions_resolved_and_tested": "PASS (on-chain verified + regression guards)",
+    "single_configuration_loading_architecture": "PASS (arb-config for workspace; AppConfig for webhook-service; env-var-name secret pattern)",
+    "operational_parameters_typed_and_documented": "PASS",
+    "dynamic_market_values_freshness_checks": "PARTIAL (tip floor/CU/SOL price freshness present in arb-config; Meteora SDK differential parity pending)",
+    "secrets_separated": "PASS",
+    "binaries_respect_execution_authorization": "PASS (dual-gate live mode unchanged; no gate weakened)",
+    "no_invalid_fallback_authorizes_trade": "PASS (zero-blockhash None path unchanged)",
+    "no_safety_guard_weakened": "PASS",
+    "tests_pass": "PASS",
+    "security_checks_accurately_reported": "PASS",
+    "documentation_complete": "PASS (updated IMPLEMENTATION_PROGRESS, conflicts, security_findings, hardcoded_inventory, final_report)",
+    "no_user_changes_lost": "PASS"
+  },
+  "remaining_blockers": [
+    "Meteora SDK differential parity harness (blocks live-sizing trust)",
+    "full AST-aware inventory is sample-audited for base58 literals (155 occurrences), not exhaustively itemized",
+    "live trading DISABLED (Gate G) - operator decision only",
+    "cargo-audit runs in CI only (not installable in sandbox)"
+  ]
+}

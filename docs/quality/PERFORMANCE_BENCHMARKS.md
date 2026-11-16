@@ -33,6 +33,31 @@ Server placement near Frankfurt/Amsterdam shaves ~650 ms of Jito RTT.
 - Jito block-engine: Amsterdam 41 ms, Frankfurt 60 ms, NY 282 ms, Tokyo 747 ms.
 - Helius RPC RTT (earlier campaign): avg 18.4 ms (min 12.4 / max 29.9).
 
+## Criterion re-measurement (sandbox, 2026-11-16)
+
+Tool: `cargo bench` (release profile, criterion 0.5). Commands and raw output
+recorded in `docs/IMPLEMENTATION_PROGRESS.md`. This is a different (weaker)
+sandbox than the 2026-11-13 campaign above — numbers are for regression
+tracking, not absolute comparison across machines.
+
+| Benchmark | Mean |
+|---|---|
+| `cpmm/cpmm_out` (quote) | 13.914 ns [13.792, 14.074] |
+| `cpmm/optimal_two_pool` (borrow sizing) | 233.13 ns [231.84, 234.66] |
+
+Dual-ingest harness (`cargo bench -p arb-ingest --bench dual_ingest_bench
+--features extra-ingest`, in-process mock, no network):
+
+| Accounts | HTTP (ms) | Stream (ms) |
+|---|---|---|
+| 10 | 0.001 | 0.013 |
+| 100 | 0.009 | 0.049 |
+| 500 | 0.076 | 0.571 |
+
+Caveat: this harness measures the in-process ingest/write path only, not
+network RTT; HTTP-polling remains source-of-truth until streaming consistency
+is proven (unchanged conclusion from the harness itself).
+
 ## Operational resilience observation (shadow smoke, 2026-11-13)
 
 Under Helius HTTP 429 (rate limit), the stack exhibited: provider cooldown +

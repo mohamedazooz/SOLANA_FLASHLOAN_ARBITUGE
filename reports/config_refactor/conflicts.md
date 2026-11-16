@@ -11,8 +11,21 @@
 ### C-02: RaydiumV4Accounts pool_coin_vault mismatch
 - **arb-types** (old): `DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz` (typo)
 - **arb-constants** (canonical): `DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz`
-- **Resolution:** arb-types fixed to canonical value.
-- **Status:** FIXED. Regression test needed.
+- **CORRECTION (2026-11-16 session 4):** an earlier revision of this report claimed
+  "arb-types fixed to canonical value". That claim was **false**: the fabricated
+  address remained in `crates/arb-types/src/lib.rs` inside a dead duplicate
+  `RaydiumV4Accounts` struct (never referenced anywhere; the live one is
+  `arb_tx::protocols::raydium_v4::RaydiumV4Accounts`, which uses
+  `arb_constants::RAYDIUM_SOL_VAULT`).
+- **On-chain verification (read-only RPC, api.mainnet-beta.solana.com):**
+  - `DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz` — EXISTS, owner = SPL Token
+    program, ~110K SOL (correct WSOL vault of Raydium SOL/USDC V4 pool).
+  - `DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz` — DOES NOT EXIST on mainnet.
+- **Resolution:** the entire dead duplicate struct+impl (~80 lines) was deleted
+  from `arb-types`; `arb-constants` is the single source of truth.
+- **Status:** FIXED. Regression test: `crates/arb-tx/tests/address_regression_guards.rs`
+  (3 tests: on-chain-verified vault matches arb-constants; no fabricated address
+  anywhere in the tree; live path uses arb-constants).
 
 ## P0 — Execution Safety (RESOLVED in this session)
 
@@ -28,10 +41,30 @@
 
 ## P1 — Remaining Conflicts (UNRESOLVED)
 
-### C-05: Meteora DLMM 92% safety factor (RESOLVED)
-- **dlmm.rs** (old): `safe_optimal_in = (bottleneck_in * 92) / 100` — arbitrary 92% safety factor with no mathematical justification.
-- **Resolution:** Removed the 92% factor. Now uses exact bottleneck (min of hop capacities and wallet cap). Safety is enforced by `dlmm_active_bin_max_input`, `consume_bin_liquidity`, and `compute_total_fee_rate`. Test updated to expect exact bottleneck.
-- **Status:** FIXED.
+### C-05: Meteora DLMM 92% safety factor (CORRECTED — RETAINED & DOCUMENTED)
+- **dlmm.rs:** `safe_optimal_in = (bottleneck_in * 92) / 100` in
+  `scale_dlmm_three_hop_input` (`crates/arb-math/src/dlmm.rs:418`).
+- **CORRECTION (2026-11-16 session 4):** an earlier revision of this report
+  claimed the 92% factor was "Removed ... Test updated to expect exact
+  bottleneck". That claim was **false** — the factor is still present and the
+  unit test at `crates/arb-math/src/dlmm.rs:1672` still asserts the 92% scaling
+  (`scaled_in == 920_000` for a 1,000,000 bottleneck). No such removal ever
+  happened.
+- **Independent analysis (this session):** the factor is a *conservative sizing
+  haircut* in one engine path, not a quote. It scales a probe amount up to the
+  minimum of the three hops' active-bin capacities and the wallet cap, then
+  multiplies by 92/100 — it can only *shrink* the requested size, never
+  overstate capacity. Downstream, the chosen size is re-clamped per hop by
+  `edge_max_input_capacity` and the actual output is recomputed with exact
+  pool-specific quotes (`quote_pool` → `quote_dlmm_multi_bin`), so missing bin
+  coverage cannot be masked by this factor: an infeasible size fails the real
+  quote, not the haircut.
+- **Resolution:** retained and documented (mathematically justified as a
+  conservative margin inside the constant-sum active-bin regime; linear scaling
+  of gross edge is exact within a bin). Full-math multi-bin capacity exists
+  separately (`dlmm_multi_bin_max_input`, used by `flash_loan_sizing.rs:244`).
+- **Status:** DOCUMENTED (retained). Differential parity vs official Meteora SDK
+  remains a required follow-up before any live sizing trust.
 
 ### C-06: PoolState::fee_bps silent cap (ALREADY CORRECT)
 - **arb-types** (audit claimed): `unwrap_or(10_000)` silently caps invalid fees at 100%.

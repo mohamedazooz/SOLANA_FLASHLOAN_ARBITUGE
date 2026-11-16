@@ -56,10 +56,12 @@ pub async fn handle_helius_pumpfun_webhook(
             .get("Authorization")
             .and_then(|h| h.to_str().ok())
             .map(|val| {
-                val == state.config.server.auth_token
+                crate::verify_webhook_token(Some(val), &state.config.server.auth_token)
                     || val
                         .strip_prefix("Bearer ")
-                        .map(|t| t == state.config.server.auth_token)
+                        .map(|t| {
+                            crate::verify_webhook_token(Some(t), &state.config.server.auth_token)
+                        })
                         .unwrap_or(false)
             })
             .unwrap_or(false);
@@ -85,6 +87,10 @@ pub async fn handle_helius_pumpfun_webhook(
 
     let mut accepted_count = 0usize;
     let mut deduplicated_count = 0usize;
+    let mut replayed_count = 0usize;
+
+    let max_event_age_secs = state.config.server.max_event_age_secs;
+    let now_secs = chrono_utc_now_secs();
 
     for tx in txs {
         let signature = tx
@@ -93,19 +99,33 @@ pub async fn handle_helius_pumpfun_webhook(
             .unwrap_or_default()
             .to_string();
 
+        // Replay protection: when enabled, reject stale, far-future, or
+        // timestamp-less events (fail-closed).
+        let event_timestamp = tx.get("timestamp").and_then(|t| t.as_i64());
+        if !crate::event_age_allowed(max_event_age_secs, event_timestamp, now_secs) {
+            replayed_count += 1;
+            warn!(
+                target: "helius_pumpfun",
+                sig = %signature,
+                "Event rejected by replay-age guard (stale, far-future, or missing timestamp)"
+            );
+            continue;
+        }
+
         if !signature.is_empty() {
             // Check deduplication
-            let is_duplicate = state.dedup.is_duplicate_and_set(&signature).await.unwrap_or(false);
+            let is_duplicate = state
+                .dedup
+                .is_duplicate_and_set(&signature)
+                .await
+                .unwrap_or(false);
             if is_duplicate {
                 deduplicated_count += 1;
                 continue;
             }
         }
 
-        let tx_type = tx
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("UNKNOWN");
+        let tx_type = tx.get("type").and_then(|t| t.as_str()).unwrap_or("UNKNOWN");
         let source = tx
             .get("source")
             .and_then(|s| s.as_str())
@@ -128,6 +148,7 @@ pub async fn handle_helius_pumpfun_webhook(
         target: "helius_pumpfun",
         accepted = accepted_count,
         deduped = deduplicated_count,
+        replayed = replayed_count,
         duration_us = elapsed.as_micros(),
         "Processed Helius Pump.fun webhook batch"
     );
@@ -138,9 +159,19 @@ pub async fn handle_helius_pumpfun_webhook(
             "status": "success",
             "accepted": accepted_count,
             "deduplicated": deduplicated_count,
+            "replayed": replayed_count,
             "duration_micros": elapsed.as_micros()
         })),
     )
+}
+
+/// Current UNIX time in seconds; 0 fallback keeps the age guard conservative
+/// only in the impossible case of a clock before 1970.
+fn chrono_utc_now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// GET `/webhooks/helius/pumpfun` health probe.

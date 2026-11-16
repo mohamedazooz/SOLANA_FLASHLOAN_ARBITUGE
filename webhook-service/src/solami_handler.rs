@@ -28,10 +28,12 @@ pub async fn handle_solami_webhook(
             .get("Authorization")
             .and_then(|h| h.to_str().ok())
             .map(|val| {
-                val == state.config.server.auth_token
+                crate::verify_webhook_token(Some(val), &state.config.server.auth_token)
                     || val
                         .strip_prefix("Bearer ")
-                        .map(|t| t == state.config.server.auth_token)
+                        .map(|t| {
+                            crate::verify_webhook_token(Some(t), &state.config.server.auth_token)
+                        })
                         .unwrap_or(false)
             })
             .or_else(|| {
@@ -39,7 +41,9 @@ pub async fn handle_solami_webhook(
                 headers
                     .get("x-api-key")
                     .and_then(|h| h.to_str().ok())
-                    .map(|val| val == state.config.server.auth_token)
+                    .map(|val| {
+                        crate::verify_webhook_token(Some(val), &state.config.server.auth_token)
+                    })
             })
             .unwrap_or(false);
 
