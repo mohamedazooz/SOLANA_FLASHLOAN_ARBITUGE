@@ -146,6 +146,16 @@ fn validate_jito(cfg: &JitoConfig) -> ConfigResult<()> {
             "jito.leader_refresh_secs must be positive".to_string(),
         ));
     }
+    if cfg.swqos_fallback_hurdle_lamports.0 == 0 {
+        return Err(ConfigError::Validation(
+            "jito.swqos_fallback_hurdle_lamports must be positive".to_string(),
+        ));
+    }
+    if cfg.swqos_fallback_priority_fee_lamports.0 == 0 {
+        return Err(ConfigError::Validation(
+            "jito.swqos_fallback_priority_fee_lamports must be positive".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -304,6 +314,11 @@ fn validate_risk(cfg: &RiskConfig) -> ConfigResult<()> {
     if cfg.cooldown_slots.0 == 0 {
         return Err(ConfigError::Validation(
             "risk.cooldown_slots must be positive".to_string(),
+        ));
+    }
+    if cfg.max_implausible_roi_bps.0 == 0 {
+        return Err(ConfigError::Validation(
+            "risk.max_implausible_roi_bps must be positive".to_string(),
         ));
     }
     Ok(())
@@ -585,5 +600,28 @@ mod tests {
         cfg.jito.max_tip_lamports = Lamports(1_000);
         cfg.jito.min_keep_lamports = Lamports(0);
         assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn operational_dehardcoded_params_validated() {
+        let mut cfg = base_valid();
+        assert_eq!(cfg.strategy.contingency_buffer_lamports.0, 10_000);
+        assert_eq!(cfg.risk.max_implausible_roi_bps.0, 1_500);
+        assert_eq!(cfg.jito.swqos_fallback_hurdle_lamports.0, 8_000);
+        assert_eq!(cfg.jito.swqos_fallback_priority_fee_lamports.0, 2_000);
+
+        cfg.jito.swqos_fallback_hurdle_lamports = Lamports(0);
+        assert!(validate(&cfg).is_err());
+        cfg.jito.swqos_fallback_hurdle_lamports = Lamports(8_000);
+
+        cfg.jito.swqos_fallback_priority_fee_lamports = Lamports(0);
+        assert!(validate(&cfg).is_err());
+        cfg.jito.swqos_fallback_priority_fee_lamports = Lamports(2_000);
+
+        cfg.risk.max_implausible_roi_bps = Bps(0);
+        assert!(validate(&cfg).is_err());
+        cfg.risk.max_implausible_roi_bps = Bps(1_500);
+
+        assert!(validate(&cfg).is_ok());
     }
 }

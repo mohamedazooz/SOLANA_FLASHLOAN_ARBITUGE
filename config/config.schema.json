@@ -138,6 +138,16 @@
           "type": "integer",
           "minimum": 1,
           "default": 60
+        },
+        "swqos_fallback_hurdle_lamports": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8000
+        },
+        "swqos_fallback_priority_fee_lamports": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2000
         }
       }
     },
@@ -228,6 +238,11 @@
         "discovery_min_tvl_usd": {
           "type": ["number", "null"],
           "minimum": 0
+        },
+        "contingency_buffer_lamports": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 10000
         }
       }
     },
@@ -282,6 +297,11 @@
         "cooldown_slots": {
           "type": "integer",
           "minimum": 1
+        },
+        "max_implausible_roi_bps": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1500
         }
       }
     },

@@ -451,6 +451,7 @@ dependencies = [
 name = "arb-math"
 version = "0.1.0"
 dependencies = [
+ "arb-constants",
  "arb-types",
  "criterion",
  "orca_whirlpools_core",
