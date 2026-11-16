@@ -42,7 +42,9 @@ fn real_pool_bytes_decode_to_verified_vaults() {
 
 #[test]
 fn real_amm_config_bytes_decode_to_verified_fee() {
-    let data = BASE64_STANDARD.decode(AMM_CONFIG_B64).expect("valid base64");
+    let data = BASE64_STANDARD
+        .decode(AMM_CONFIG_B64)
+        .expect("valid base64");
     assert_eq!(data.len(), 236);
     let pool = BASE64_STANDARD.decode(POOL_B64).unwrap();
     let cfg_key = arb_ingest::raydium_cpmm_amm_config_key(&pool).expect("amm_config key");

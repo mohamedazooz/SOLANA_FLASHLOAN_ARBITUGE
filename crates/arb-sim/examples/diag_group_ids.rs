@@ -6,7 +6,6 @@ use arb_types::DexProtocol;
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
 
-const WSOL: &str = "So11111111111111111111111111111111111111112";
 const ANCHOR_MINTS: [&str; 3] = [
     "So11111111111111111111111111111111111111112",
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -22,14 +21,19 @@ fn is_anchor(mint: &Pubkey) -> bool {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    let mut cfg = DiscoveryConfig::default();
-    cfg.min_tvl_usd = 1_000.0;
-    cfg.max_pools = 500;
-    cfg.max_per_venue = 100;
+    let cfg = DiscoveryConfig {
+        min_tvl_usd: 1_000.0,
+        max_pools: 500,
+        max_per_venue: 100,
+        ..Default::default()
+    };
     let pools = PoolDiscovery::new(RpcPool::from_env()).discover(&cfg).await;
 
     let mut groups: HashMap<String, Vec<&DiscoveredPoolState>> = HashMap::new();
-    for p in pools.iter().filter(|p| p.protocol == DexProtocol::MeteoraDlmm) {
+    for p in pools
+        .iter()
+        .filter(|p| p.protocol == DexProtocol::MeteoraDlmm)
+    {
         let (a, b) = (p.base_mint.0, p.quote_mint.0);
         let (meme, quote) = if is_anchor(&a) && !is_anchor(&b) {
             (b, a)

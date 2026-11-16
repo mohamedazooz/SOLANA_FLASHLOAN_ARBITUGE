@@ -832,7 +832,11 @@ impl HeliusWsClient {
                     let Some(d) = decode_dlmm_state(pool_bytes) else {
                         continue;
                     };
-                    let mut keys = crate::registry::dlmm_bin_array_pdas(&pool_id.0, d.active_bin_id, d.bin_step_bps);
+                    let mut keys = crate::registry::dlmm_bin_array_pdas(
+                        &pool_id.0,
+                        d.active_bin_id,
+                        d.bin_step_bps,
+                    );
                     let ext = crate::registry::bitmap_extension_pda(&pool_id.0);
                     keys.push(ext);
                     let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
@@ -847,11 +851,15 @@ impl HeliusWsClient {
                     let mut bins = Vec::new();
                     for (acc, key) in accounts.into_iter().zip(keys.iter()) {
                         let Some(acc) = acc else { continue };
-                        let Some(raw) = acc.get("data").and_then(|d| d.get(0)).and_then(|s| s.as_str())
+                        let Some(raw) = acc
+                            .get("data")
+                            .and_then(|d| d.get(0))
+                            .and_then(|s| s.as_str())
                         else {
                             continue;
                         };
-                        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) else {
+                        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
+                        else {
                             continue;
                         };
                         if *key == ext {
@@ -862,10 +870,8 @@ impl HeliusWsClient {
                     if bins.is_empty() {
                         continue;
                     }
-                    let covered = crate::registry::dlmm_bin_array_indices(
-                        d.active_bin_id,
-                        d.bin_step_bps,
-                    );
+                    let covered =
+                        crate::registry::dlmm_bin_array_indices(d.active_bin_id, d.bin_step_bps);
                     self.derived_covered
                         .lock()
                         .insert(pool_id, (covered, Instant::now()));
@@ -897,8 +903,7 @@ impl HeliusWsClient {
                                 let _ = yellowstone.apply_pool_update(state);
                                 debug!(
                                     "hydration: DLMM {} rehydrated bins at slot {}",
-                                    pool_id.0,
-                                    slot
+                                    pool_id.0, slot
                                 );
                             }
                         }
@@ -914,7 +919,11 @@ impl HeliusWsClient {
                         continue;
                     };
                     let (keys, starts) = if reg.protocol == DexProtocol::OrcaWhirlpool {
-                        crate::registry::clmm_tick_array_pdas(&pool_id, c.tick_current, c.tick_spacing)
+                        crate::registry::clmm_tick_array_pdas(
+                            &pool_id,
+                            c.tick_current,
+                            c.tick_spacing,
+                        )
                     } else {
                         crate::registry::raydium_clmm_tick_array_pdas(
                             &pool_id,
@@ -934,11 +943,15 @@ impl HeliusWsClient {
                     let mut arrays = Vec::new();
                     for (acc, start_tick) in accounts.into_iter().zip(starts.iter()) {
                         let Some(acc) = acc else { continue };
-                        let Some(raw) = acc.get("data").and_then(|d| d.get(0)).and_then(|s| s.as_str())
+                        let Some(raw) = acc
+                            .get("data")
+                            .and_then(|d| d.get(0))
+                            .and_then(|s| s.as_str())
                         else {
                             continue;
                         };
-                        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) else {
+                        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
+                        else {
                             continue;
                         };
                         let parsed = if reg.protocol == DexProtocol::OrcaWhirlpool {
@@ -970,9 +983,13 @@ impl HeliusWsClient {
                     if arrays.is_empty() {
                         continue;
                     }
-                    self.derived_covered
-                        .lock()
-                        .insert(pool_id, (starts.iter().map(|v| i64::from(*v)).collect(), Instant::now()));
+                    self.derived_covered.lock().insert(
+                        pool_id,
+                        (
+                            starts.iter().map(|v| i64::from(*v)).collect(),
+                            Instant::now(),
+                        ),
+                    );
                     if let Some(mut state) = yellowstone.cache().get_pool(&pool_id)
                         && slot >= state.last_update_slot
                         && let Some(clmm) = state.clmm.as_mut()

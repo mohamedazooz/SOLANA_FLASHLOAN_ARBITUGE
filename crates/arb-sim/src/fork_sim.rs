@@ -150,7 +150,10 @@ pub struct ForkSimulator {
 impl std::fmt::Debug for ForkSimulator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ForkSimulator")
-            .field("rpc_url", &self.rpc_url.as_ref().map(|u| RpcPool::redact_url(u)))
+            .field(
+                "rpc_url",
+                &self.rpc_url.as_ref().map(|u| RpcPool::redact_url(u)),
+            )
             .field(
                 "rpc_pool",
                 &self.rpc_pool.as_ref().map(|p| p.endpoints_count()),
@@ -279,12 +282,12 @@ impl ForkSimulator {
             }
         ]);
 
-        let result: Value = if let Some(pool) = self.rpc_pool.as_ref().filter(|p| p.endpoints_count() > 0) {
+        let result: Value = if let Some(pool) =
+            self.rpc_pool.as_ref().filter(|p| p.endpoints_count() > 0)
+        {
             pool.call_simulation_priority("simulateTransaction", params)
                 .await
-                .map_err(|e| {
-                    ArbError::Internal(format!("fork simulation pool call error: {e}"))
-                })?
+                .map_err(|e| ArbError::Internal(format!("fork simulation pool call error: {e}")))?
         } else {
             let rpc_url = self.rpc_url.as_ref().ok_or_else(|| {
                 ArbError::Internal(
@@ -309,10 +312,9 @@ impl ForkSimulator {
                     ArbError::Internal(format!("fork simulation RPC connection error: {e}"))
                 })?;
 
-            let val: Value = resp
-                .json()
-                .await
-                .map_err(|e| ArbError::Internal(format!("fork simulation JSON parse error: {e}")))?;
+            let val: Value = resp.json().await.map_err(|e| {
+                ArbError::Internal(format!("fork simulation JSON parse error: {e}"))
+            })?;
 
             if let Some(err) = val.get("error") {
                 return Err(ArbError::SimulationFailed(format!(

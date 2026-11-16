@@ -15,19 +15,19 @@
 
 use arb_engine::{
     DlmmFlashArbConfig, DlmmFlashArbEvaluator, DlmmFlashArbPool, DlmmPoolAllowlist,
-    build_three_leg_meme_pipeline, enumerate_routes, ThreeLegMemeContextParams,
+    ThreeLegMemeContextParams, build_three_leg_meme_pipeline, enumerate_routes,
 };
 use arb_ingest::{DiscoveredPoolState, DiscoveryConfig, PoolDiscovery, RpcPool};
 use arb_sim::{
     MeteoraDlmmFreshStatePipeline, MeteoraDlmmMainnetSimulationHarness, MeteoraFreshPipelineConfig,
 };
-use arb_types::{DexProtocol, MintId, PoolExecutionAccounts, PoolState};
+use arb_tx::KeypairSigner;
 use arb_tx::{
     AdaptiveTxCompiler, ExecutionMode, FlashArbParams, FlashArbPoolLeg, FormatSelectionReason,
     KaminoFlashParams, V1ConfigParams, assemble_flash_funded_two_pool, plan_bin_arrays,
     verify_atomic_integrity,
 };
-use arb_tx::KeypairSigner;
+use arb_types::{DexProtocol, MintId, PoolExecutionAccounts, PoolState};
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ use std::sync::Arc;
 const WSOL: &str = "So11111111111111111111111111111111111111112";
 const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const ANCHOR_MINTS: [&str; 3] = [
-    "So11111111111111111111111111111111111111112", // WSOL
+    "So11111111111111111111111111111111111111112",  // WSOL
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
 ];
@@ -89,17 +89,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let usdc: Pubkey = USDC.parse().unwrap();
 
     // ── 1. Live meme-universe discovery (read-only) ──────────────────────────
-    let mut cfg = DiscoveryConfig::default();
-    cfg.min_tvl_usd = 1_000.0;
-    cfg.max_pools = 500;
-    cfg.max_per_venue = 100;
+    let cfg = DiscoveryConfig {
+        min_tvl_usd: 1_000.0,
+        max_pools: 500,
+        max_per_venue: 100,
+        ..Default::default()
+    };
 
     let discovery = PoolDiscovery::new(RpcPool::from_env());
     let pools = discovery.discover(&cfg).await;
     println!(
         "[1] discovery: {} pools registered ({} MeteoraDlmm)",
         pools.len(),
-        pools.iter().filter(|p| p.protocol == DexProtocol::MeteoraDlmm).count()
+        pools
+            .iter()
+            .filter(|p| p.protocol == DexProtocol::MeteoraDlmm)
+            .count()
     );
 
     // ── 2. Candidate meme/SOL DLMM pairs + meme/meme 3-leg bridge pools ──────
@@ -113,15 +118,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for p in &dlmm {
         let (a, b) = (p.base_mint.0, p.quote_mint.0);
         if is_wsol(&a) && !is_anchor(&b) {
-            by_meme.entry((b.to_string(), a.to_string())).or_default().push(p);
+            by_meme
+                .entry((b.to_string(), a.to_string()))
+                .or_default()
+                .push(p);
         } else if is_wsol(&b) && !is_anchor(&a) {
-            by_meme.entry((a.to_string(), b.to_string())).or_default().push(p);
+            by_meme
+                .entry((a.to_string(), b.to_string()))
+                .or_default()
+                .push(p);
         } else if is_anchor(&a) && !is_anchor(&b) {
             // meme/USDC (or meme/USDT) pool — the shared anchor side is a
             // valid flash-loan denomination.
-            by_meme.entry((b.to_string(), a.to_string())).or_default().push(p);
+            by_meme
+                .entry((b.to_string(), a.to_string()))
+                .or_default()
+                .push(p);
         } else if is_anchor(&b) && !is_anchor(&a) {
-            by_meme.entry((a.to_string(), b.to_string())).or_default().push(p);
+            by_meme
+                .entry((a.to_string(), b.to_string()))
+                .or_default()
+                .push(p);
         } else if !is_anchor(&a) && !is_anchor(&b) && a != b {
             // meme/meme pool: potential middle leg A→B of a 3-leg cycle.
             bridges.push(p);
@@ -138,10 +155,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(4);
     let bridges: Vec<&DiscoveredPoolState> = bridges.into_iter().take(bridge_cap).collect();
 
-    let mut candidates: Vec<(&(String, String), &Vec<&DiscoveredPoolState>)> = by_meme
-        .iter()
-        .filter(|(_, v)| v.len() >= 2)
-        .collect();
+    let mut candidates: Vec<(&(String, String), &Vec<&DiscoveredPoolState>)> =
+        by_meme.iter().filter(|(_, v)| v.len() >= 2).collect();
     candidates.sort_by(|(_, va), (_, vb)| {
         let ka = va.iter().map(|p| p.liquidity_usd).fold(0.0_f64, f64::max);
         let kb = vb.iter().map(|p| p.liquidity_usd).fold(0.0_f64, f64::max);
@@ -160,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ── 2b. TOP-30 DLMM pools by liquidity (live watch record) ───────────────
-    let mut top30: Vec<&DiscoveredPoolState> = dlmm.iter().copied().collect();
+    let mut top30: Vec<&DiscoveredPoolState> = dlmm.to_vec();
     top30.sort_by(|x, y| {
         y.liquidity_usd
             .partial_cmp(&x.liquidity_usd)
@@ -298,9 +313,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ) else {
                 continue;
             };
-            let holds = |p: &DlmmFlashArbPool, m: &Pubkey| {
-                p.token_x_mint.0 == *m || p.token_y_mint.0 == *m
-            };
+            let holds =
+                |p: &DlmmFlashArbPool, m: &Pubkey| p.token_x_mint.0 == *m || p.token_y_mint.0 == *m;
             let mut flash_mints: Vec<(Pubkey, u8)> = Vec::new();
             if holds(&fp_a, &wsol) && holds(&fp_b, &wsol) {
                 flash_mints.push((wsol, 9));
@@ -309,7 +323,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 flash_mints.push((usdc, 6));
             }
             for (fm, dec) in flash_mints {
-                let tag = if fm == wsol { "2pool-wsol" } else { "2pool-usdc" };
+                let tag = if fm == wsol {
+                    "2pool-wsol"
+                } else {
+                    "2pool-usdc"
+                };
                 let pair_flash_cfg = DlmmFlashArbConfig {
                     allowlist: DlmmPoolAllowlist::new(vec![pool_a, pool_b]),
                     flash_mint: MintId(fm),
@@ -336,7 +354,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             },
                         ) = e.rejection.as_ref()
                         {
-                            let cand = (*net, pool_a, pool_b, meme_label.to_string(), MintId(fm), dec);
+                            let cand = (
+                                *net,
+                                pool_a,
+                                pool_b,
+                                meme_label.to_string(),
+                                MintId(fm),
+                                dec,
+                            );
                             if best_infeasible
                                 .as_ref()
                                 .map(|(n, _, _, _, _, _)| *net > *n)
@@ -378,9 +403,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|e| e.feasible)
                     .max_by_key(|e| e.net_profit)
                 {
-                    best_entry = Some(
-                        ((pool_a, pool_b), meme_label.to_string(), MintId(fm), found),
-                    );
+                    best_entry =
+                        Some(((pool_a, pool_b), meme_label.to_string(), MintId(fm), found));
                     break;
                 }
             }
@@ -450,7 +474,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 loops
             );
             let Some((net, pa, pb, label, fm, dec)) = best_infeasible else {
-                println!("[5b] no below-floor pair with a complete quote either -- nothing to dry-run.");
+                println!(
+                    "[5b] no below-floor pair with a complete quote either -- nothing to dry-run."
+                );
                 return Ok(());
             };
             println!(
@@ -512,9 +538,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // ── 6. Re-fetch fresh states and assemble the flash transaction ──────────
-    let (state_a, state_b, fresh_slot, _, _) = pipeline
-        .fetch_fresh_pool_pair(pool_a, pool_b, None)
-        .await?;
+    let (state_a, state_b, fresh_slot, _, _) =
+        pipeline.fetch_fresh_pool_pair(pool_a, pool_b, None).await?;
     let fp_a = to_flash_pool(&state_a).ok_or("missing execution accounts A")?;
     let fp_b = to_flash_pool(&state_b).ok_or("missing execution accounts B")?;
     let allowlist = DlmmPoolAllowlist::new(vec![pool_a, pool_b]);
@@ -536,8 +561,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|d| d.active_bin_id)
             .ok_or("missing dlmm state")?;
-        let plan = plan_bin_arrays(&pool.pool_id, active_bin_id, swap_for_y, bins_traversed.max(1))
-            .map_err(|e| format!("bin-array plan failed: {e:?}"))?;
+        let plan = plan_bin_arrays(
+            &pool.pool_id,
+            active_bin_id,
+            swap_for_y,
+            bins_traversed.max(1),
+        )
+        .map_err(|e| format!("bin-array plan failed: {e:?}"))?;
         Ok(FlashArbPoolLeg {
             lb_pair: pool.pool_id,
             reserve_x: pool.reserve_x,

@@ -5,8 +5,8 @@
 //! Usage: DIAG_POOL_A=<id> DIAG_POOL_B=<id> cargo run -p arb-sim --example quote_failure_probe
 
 use arb_ingest::RpcPool;
-use arb_sim::meteora_fresh_pipeline::MeteoraDlmmFreshStatePipeline;
 use arb_sim::MeteoraFreshPipelineConfig;
+use arb_sim::meteora_fresh_pipeline::MeteoraDlmmFreshStatePipeline;
 use arb_types::MintId;
 use solana_pubkey::Pubkey;
 use std::sync::Arc;
@@ -17,12 +17,8 @@ const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
-    let pool_a: Pubkey = std::env::var("DIAG_POOL_A")
-        .expect("DIAG_POOL_A")
-        .parse()?;
-    let pool_b: Pubkey = std::env::var("DIAG_POOL_B")
-        .expect("DIAG_POOL_B")
-        .parse()?;
+    let pool_a: Pubkey = std::env::var("DIAG_POOL_A").expect("DIAG_POOL_A").parse()?;
+    let pool_b: Pubkey = std::env::var("DIAG_POOL_B").expect("DIAG_POOL_B").parse()?;
 
     let cfg = MeteoraFreshPipelineConfig {
         max_retries: 2,
@@ -39,10 +35,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         two_pool_v1: true,
     };
     let pipeline = MeteoraDlmmFreshStatePipeline::new(Arc::new(RpcPool::from_env()), cfg);
-    let (sa, sb, slot, ba_a, ba_b) = pipeline
-        .fetch_fresh_pool_pair(pool_a, pool_b, None)
-        .await?;
-    println!("slot={slot} arrays_a={} arrays_b={}", ba_a.len(), ba_b.len());
+    let (sa, sb, slot, ba_a, ba_b) = pipeline.fetch_fresh_pool_pair(pool_a, pool_b, None).await?;
+    println!(
+        "slot={slot} arrays_a={} arrays_b={}",
+        ba_a.len(),
+        ba_b.len()
+    );
 
     for (label, s) in [("A", &sa), ("B", &sb)] {
         let Some(d) = s.dlmm.as_ref() else {
@@ -84,8 +82,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for b in near {
             println!(
                 "  bin {}: x={} y={} open_order={} processed_rem={} ask={}",
-                b.bin_id, b.amount_x, b.amount_y, b.open_order_amount,
-                b.processed_order_remaining_amount, b.limit_order_ask_side
+                b.bin_id,
+                b.amount_x,
+                b.amount_y,
+                b.open_order_amount,
+                b.processed_order_remaining_amount,
+                b.limit_order_ask_side
             );
         }
     }

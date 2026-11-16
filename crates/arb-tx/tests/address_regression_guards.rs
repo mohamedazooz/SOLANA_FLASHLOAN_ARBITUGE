@@ -74,8 +74,14 @@ fn arb_constants_match_onchain_verified_addresses() {
 
 #[test]
 fn raydium_cpmm_constants_use_onchain_verified_addresses() {
-    assert_eq!(arb_constants::RAYDIUM_CPMM_SOL_USDC_POOL, VERIFIED_CPMM_POOL);
-    assert_eq!(arb_constants::RAYDIUM_CPMM_SOL_VAULT, VERIFIED_CPMM_SOL_VAULT);
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_SOL_USDC_POOL,
+        VERIFIED_CPMM_POOL
+    );
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_SOL_VAULT,
+        VERIFIED_CPMM_SOL_VAULT
+    );
     assert_eq!(
         arb_constants::RAYDIUM_CPMM_USDC_VAULT,
         VERIFIED_CPMM_USDC_VAULT

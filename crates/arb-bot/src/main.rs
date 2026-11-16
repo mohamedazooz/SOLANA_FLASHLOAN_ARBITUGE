@@ -5,8 +5,8 @@
 use anyhow::{Context, Result};
 use std::fs::OpenOptions;
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
 use std::time::Duration;
+use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -173,7 +173,9 @@ fn spawn_log_retention(path: std::path::PathBuf, writer: FileMakeWriter) {
                         continue;
                     }
                     let Ok(md) = entry.metadata() else { continue };
-                    let Ok(modified) = md.modified() else { continue };
+                    let Ok(modified) = md.modified() else {
+                        continue;
+                    };
                     if modified < cutoff {
                         let _ = std::fs::remove_file(entry.path());
                     }
@@ -232,7 +234,10 @@ fn init_event_logger() {
                 file: Arc::new(Mutex::new(file)),
                 path: Arc::new(std::path::PathBuf::from(&log_file_path)),
             };
-            spawn_log_retention(std::path::PathBuf::from(&log_file_path), file_writer.clone());
+            spawn_log_retention(
+                std::path::PathBuf::from(&log_file_path),
+                file_writer.clone(),
+            );
             let file_layer = fmt::layer()
                 .with_target(true)
                 .with_ansi(false)
