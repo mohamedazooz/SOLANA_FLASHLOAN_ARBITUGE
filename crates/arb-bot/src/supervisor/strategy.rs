@@ -47,12 +47,11 @@ impl Supervisor {
                 return Ok(());
             }
         };
-        let economic_config = verified
-            .clone()
-            .into_economic_config(TokenAmount(self.config.strategy.min_net_profit_abs));
+        let economic_config =
+            verified.to_economic_config(TokenAmount(self.config.strategy.min_net_profit_abs));
         {
             let mut graph = self.graph.lock();
-            graph.set_economic_config(economic_config.clone());
+            graph.set_economic_config(economic_config);
         }
 
         // HTTP catalog/trending discovery is disabled. Pool candidates must arrive
@@ -250,7 +249,7 @@ impl Supervisor {
             // existed — even when the longer route was more profitable.
             let bf_opps = {
                 let bf_engine = arb_engine::BellmanFordEngine::from_pools(&fresh_pools)
-                    .with_economic_config(economic_config.clone());
+                    .with_economic_config(economic_config);
                 let found = bf_engine.find_negative_cycles(current_slot, max_sizing);
                 if !found.is_empty() {
                     info!(

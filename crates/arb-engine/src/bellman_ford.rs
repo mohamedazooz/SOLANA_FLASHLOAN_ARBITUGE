@@ -161,8 +161,9 @@ impl BellmanFordEngine {
     /// Build the exchange-rate graph from live pool states.
     /// Each pool creates TWO edges (forward: base→quote, reverse: quote→base).
     pub fn from_pools(pools: &[arb_types::PoolState]) -> Self {
-        let mut graph: HashMap<MintId, Vec<BfEdge>> = HashMap::new();
-        let mut node_set = std::collections::HashSet::new();
+        let est_capacity = pools.len().saturating_mul(2);
+        let mut graph: HashMap<MintId, Vec<BfEdge>> = HashMap::with_capacity(est_capacity);
+        let mut node_set = std::collections::HashSet::with_capacity(est_capacity);
 
         for p in pools {
             if !p.is_active || p.reserve_in == 0 || p.reserve_out == 0 || p.has_risky_token {
