@@ -176,6 +176,15 @@ pub struct StrategyConfig {
     /// resolve a fully executable chain.
     #[serde(default)]
     pub dlmm_three_leg: Option<DlmmThreeLegTuning>,
+    /// Maximum hops per arbitrage route (2..=4, default 3). Each extra hop
+    /// stacks another DEX fee plus another failure point; routes longer than
+    /// 4 hops are economically dominated by cumulative fees.
+    #[serde(default = "default_max_route_hops")]
+    pub max_route_hops: usize,
+}
+
+fn default_max_route_hops() -> usize {
+    3
 }
 
 /// Tunable envelope for the cross-pool DLMM strategy. Every field carries
@@ -417,6 +426,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             discovery_min_tvl_usd: arb.strategy.discovery_min_tvl_usd.map(usd),
             dlmm_cross_pool: None,
             dlmm_three_leg: None,
+            max_route_hops: arb.strategy.max_route_hops,
         },
         risk: RiskConfig {
             max_trade_size_usd: usd(arb.risk.max_trade_size_usd),

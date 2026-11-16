@@ -91,6 +91,9 @@ impl PacedAccountFetcher {
             }
         }
         if endpoints.is_empty() {
+            tracing::warn!(
+                "no RPC endpoints configured via env; falling back to the shared public endpoint https://api.mainnet-beta.solana.com — heavily rate-limited (HTTP 429 expected); NOT production-grade: configure ALCHEMY_RPC_URL / HELIUS_RPC_URL / SOLANA_RPC_*"
+            );
             endpoints.push("https://api.mainnet-beta.solana.com".to_string());
         }
 

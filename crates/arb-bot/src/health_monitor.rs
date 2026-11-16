@@ -48,6 +48,7 @@ pub struct HealthMonitor {
     telegram: crate::telegram::TelegramNotifier,
     rpc: arb_ingest::RpcPool,
     checks: Arc<Mutex<HashMap<&'static str, CheckState>>>,
+    last_fail_summary: Arc<Mutex<Option<String>>>,
 }
 
 impl HealthMonitor {
@@ -63,6 +64,7 @@ impl HealthMonitor {
             telegram,
             rpc,
             checks: Arc::new(Mutex::new(HashMap::new())),
+            last_fail_summary: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -94,14 +96,25 @@ impl HealthMonitor {
             self.record(name, status, &reason, slot).await;
         }
 
+        let summary = summary_parts.join(" ");
+        let mut last_fail = self.last_fail_summary.lock().await;
         if any_fail {
-            let summary = summary_parts.join(" ");
-            error!("health sweep: {summary}");
+            if last_fail.as_deref() == Some(summary.as_str()) {
+                debug!("health sweep (unchanged): {summary}");
+            } else {
+                error!("health sweep: {summary}");
+                *last_fail = Some(summary.clone());
+            }
         } else {
-            debug!("health sweep: all checks ok ({})", summary_parts.join(" "));
+            if last_fail.is_some() {
+                info!("health sweep: recovered — all checks ok ({summary})");
+                *last_fail = None;
+            } else {
+                debug!("health sweep: all checks ok ({summary})");
+            }
         }
 
-        summary_parts.join(" ")
+        summary
     }
 
     /// Record observation of processing latency; alerts if a spike occurs,

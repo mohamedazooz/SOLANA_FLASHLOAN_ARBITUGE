@@ -238,6 +238,12 @@ fn validate_strategy(cfg: &StrategyConfig) -> ConfigResult<()> {
             ));
         }
     }
+    if !(2..=4).contains(&cfg.max_route_hops) {
+        return Err(ConfigError::Validation(format!(
+            "strategy.max_route_hops ({}) must be within 2..=4: each extra hop stacks another DEX fee plus another failure point, and routes longer than 4 hops are economically dominated by cumulative fees",
+            cfg.max_route_hops
+        )));
+    }
     Ok(())
 }
 
@@ -451,6 +457,38 @@ mod tests {
         let mut cfg = base_valid();
         cfg.strategy.max_price_impact_bps = Bps(20_000);
         assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn max_route_hops_default_is_three() {
+        let cfg = base_valid();
+        assert_eq!(cfg.strategy.max_route_hops, 3);
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn max_route_hops_beyond_four_rejected() {
+        let mut cfg = base_valid();
+        cfg.strategy.max_route_hops = 5;
+        let err = validate(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("max_route_hops"),
+            "error must name the key: {err}"
+        );
+    }
+
+    #[test]
+    fn max_route_hops_below_two_rejected() {
+        let mut cfg = base_valid();
+        cfg.strategy.max_route_hops = 1;
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn max_route_hops_four_accepted() {
+        let mut cfg = base_valid();
+        cfg.strategy.max_route_hops = 4;
+        assert!(validate(&cfg).is_ok());
     }
 
     #[test]

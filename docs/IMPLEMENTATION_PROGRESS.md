@@ -419,3 +419,49 @@ record_resync/run_comparison_loop`, `rpc_reconcile::fetch_and_publish`.
 | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
 | `cargo test --workspace` | **1032 passed / 0 failed** |
 | Report | `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md` + `cleanup_summary.json` |
+
+## Session 8 — Live run, fail-closed warning remediation, hop-limit enforcement
+
+### Live run (simulate/paper mode, real mainnet HTTP discovery)
+- `arb-bot` ran 100s in simulate mode with the public RPC fallback: SQLite DB
+  created (attempts/outcomes/fills/dispatch_intents, WAL), heartbeat writer
+  active, Prometheus metrics on :9100, discovery registered **123 real pools**
+  (Orca 33, Meteora DLMM 29, Raydium CLMM 28, RaydiumV4 7, RaydiumCpmm 5,
+  PumpFun 21).
+- Strategy ticks correctly skip (fail-closed) with `0 verified live pools`
+  because no WebSocket stream credentials exist in this environment — no stale
+  or synthetic state ever enters the graph.
+
+### Warnings diagnosed & fixed
+| Warning | Root cause | Fix |
+|---|---|---|
+| `health sweep: rpc=FAIL …` repeated every 10s | error-level log on every sweep regardless of state change | transition-based logging: error only on state change/reason change, info on recovery, debug when unchanged (health_monitor.rs) |
+| silent fallback to `api.mainnet-beta.solana.com` | registry pushed the public endpoint without announcing it | explicit loud WARN naming the fallback, its 429 expectation, and the exact env vars to configure (registry.rs) |
+| `max_route_hops = 3` in execution.toml read by nobody | dead config key; DFS hardcoded 5 hops | wired: `StrategyConfig.max_route_hops` (arb-config + arb-bot), validated 2..=4, consumed by `find_multi_hop_cycles` (strategy.rs); Bellman-Ford already capped 2..=4 |
+| Admin API / Web API disabled | missing `SENTINEL_ADMIN_KEY` / `WEB_ADMIN_PASSWORD` | correct fail-closed behavior — audited: constant-time compare, placeholder rejection, CORS never permissive; requires operator provisioning, NOT a defect |
+| Pump.fun 403 / public RPC 429 | external rate limiting/blocking | handled gracefully (cooldown + rotate + skip); environment-driven |
+
+### Dynamic ratios (authoritative inventory)
+| Ratio | Default | Source |
+|---|---|---|
+| `tip_share_bps` | 5500 | config [jito] |
+| `max_tip_share_bps` | 7000 | config [jito] (hard ceiling 8500 in arb-constants) |
+| `keep_share` | 0.60 | config [jito] |
+| `ladder_growth` | 1.6 | config [jito] |
+| `tip_floor_percentile` | p50 | config [jito] |
+| `max_tip_spend_ratio` | 0.7 | config [risk] |
+| `min_net_profit_bps` | 5 | config [strategy] |
+| `max_price_impact_bps` | 40 | config [strategy] |
+| `hop_slippage_bps` | 10 (max 1000) | arb-constants DEFAULT_HOP_SLIPPAGE_BPS |
+| `min_landing_rate` | 0.02 | config [risk] |
+| `decay_lambda_per_sec` | 3.0 | config [chronos] |
+| `min_ev_usd` | 0.05 | config [chronos] |
+| `failed_attempt_cost_lamports` | 10000 | config [chronos] |
+| `beta_risk_factor` | 0.0005 | config [chronos] |
+| `CU_BUFFER_PCT` | 15% | arb-constants (protocol-adjacent, not operator-editable) |
+| `BASE_PRIORITY_FEE_MICRO_LAMPORTS` | 1000 | arb-constants floor |
+
+### Verification (session 8)
+- `cargo clippy --workspace --all-targets -- -D warnings` — exit 0
+- `cargo test --workspace` — **1036 passed / 0 failed** (4 new config validation tests)
+- Live run re-check: 8 health sweeps → 1 error line (transition) + explicit fallback warning

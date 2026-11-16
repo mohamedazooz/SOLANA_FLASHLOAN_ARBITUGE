@@ -260,7 +260,11 @@ impl Supervisor {
                 }
                 found
             };
-            let multi_opps = graph.find_multi_hop_cycles(current_slot, max_sizing, 5);
+            let multi_opps = graph.find_multi_hop_cycles(
+                current_slot,
+                max_sizing,
+                self.config.strategy.max_route_hops,
+            );
             if !multi_opps.is_empty() {
                 info!("🔁 Multi-hop DFS detected {} route(s)", multi_opps.len());
             }
