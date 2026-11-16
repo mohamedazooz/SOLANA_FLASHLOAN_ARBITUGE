@@ -219,6 +219,22 @@ pub struct StrategyConfig {
     /// Minimum TVL (USD) for a discovered pool.
     #[serde(default)]
     pub discovery_min_tvl_usd: Option<UsdMicros>,
+    /// Maximum hops per arbitrage route. Every extra hop stacks another DEX
+    /// trade fee plus another failure point, so routes longer than 4 hops are
+    /// economically dominated (cumulative fees exceed realistic cycle
+    /// spreads). Validated to 2..=4; default 3.
+    #[serde(default = "default_max_route_hops")]
+    pub max_route_hops: usize,
+    /// HTTP-based pool catalog discovery (Orca/Raydium/Meteora/Dexscreener/
+    /// Pump.fun REST APIs). Defaults to **false** (disabled): pool candidates
+    /// must arrive through the configured WebSocket account-update stream and
+    /// pass account validation. Operators may re-enable explicitly.
+    #[serde(default)]
+    pub http_discovery_enabled: bool,
+}
+
+fn default_max_route_hops() -> usize {
+    3
 }
 
 /// Authoritative risk limits. These are the single source of truth for safety
@@ -398,6 +414,8 @@ impl AppConfig {
                 max_pools: Some(1000),
                 discovery_refresh_secs: Some(Seconds(15)),
                 discovery_min_tvl_usd: Some(UsdMicros(25_000_000_000)), // $25,000
+                max_route_hops: 3,
+                http_discovery_enabled: false,
             },
             risk: RiskConfig {
                 max_trade_size_usd: UsdMicros(10_000_000_000), // $10,000

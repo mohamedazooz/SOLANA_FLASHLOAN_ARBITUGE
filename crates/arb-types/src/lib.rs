@@ -101,10 +101,6 @@ pub struct Bps(pub u16);
 impl Bps {
     pub const ZERO: Self = Self(0);
     pub const MAX: Self = Self(10_000);
-
-    pub fn as_fraction(self) -> f64 {
-        self.0 as f64 / 10_000.0
-    }
 }
 
 /// Slot number on the Solana blockchain.
@@ -176,10 +172,6 @@ impl ComputeUnits {
 
     pub fn checked_add(self, rhs: Self) -> Option<Self> {
         self.0.checked_add(rhs.0).map(Self)
-    }
-
-    pub fn as_u32(self) -> u32 {
-        self.0
     }
 }
 
@@ -565,10 +557,6 @@ impl UsdMicros {
 
     pub fn as_f64(self) -> f64 {
         self.0 as f64 / 1_000_000.0
-    }
-
-    pub fn is_positive(self) -> bool {
-        self.0 > 0
     }
 
     pub fn saturating_add(self, rhs: Self) -> Self {
@@ -970,18 +958,6 @@ impl PumpFunState {
             && self.virtual_sol_reserves > 0
             && self.virtual_token_reserves > 0
     }
-
-    /// Progress towards Raydium migration in basis points (10_000 = 100% complete at 85 SOL).
-    pub fn graduation_progress_bps(&self) -> u16 {
-        let bps = (self.real_sol_reserves as u128 * 10_000)
-            / (arb_constants::PUMP_FUN_GRADUATION_LAMPORTS as u128);
-        bps.min(10_000) as u16
-    }
-
-    /// Remaining SOL in lamports required to complete graduation.
-    pub fn remaining_sol_to_graduate(&self) -> u64 {
-        arb_constants::PUMP_FUN_GRADUATION_LAMPORTS.saturating_sub(self.real_sol_reserves)
-    }
 }
 
 /// Canonical pool state across all DEX protocols.
@@ -1091,17 +1067,7 @@ pub struct SwapHop {
     pub execution_accounts: Option<PoolExecutionAccounts>,
 }
 
-impl SwapHop {
-    /// True when this hop executes against the Pump.fun bonding curve.
-    pub fn is_pump_fun(&self) -> bool {
-        self.protocol == DexProtocol::PumpFun
-    }
-
-    /// True when this leg interacts directly with Native SOL rather than SPL WSOL (e.g. Pump.fun).
-    pub fn is_native_sol(&self) -> bool {
-        self.protocol == DexProtocol::PumpFun
-    }
-}
+impl SwapHop {}
 
 /// Quotation result for a swap.
 #[derive(Debug, Clone, Serialize, Deserialize)]

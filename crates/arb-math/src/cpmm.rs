@@ -112,28 +112,6 @@ pub fn quote_cpmm(amount_in: u64, reserve_in: u64, reserve_out: u64, fee_bps: u6
     u64::try_from(out).ok()
 }
 
-/// Quote CPMM output along with price impact.
-/// Returns `None` on overflow or invalid inputs (fail-closed).
-pub fn quote_cpmm_full(
-    amount_in: u64,
-    reserve_in: u64,
-    reserve_out: u64,
-    fee_bps: u64,
-) -> Option<CpmmQuote> {
-    let out = quote_cpmm(amount_in, reserve_in, reserve_out, fee_bps)?;
-    let gamma = u128::from(BASIS_POINTS_DIVISOR).saturating_sub(u128::from(fee_bps));
-    let impact = cpmm_price_impact_bps(
-        u128::from(amount_in),
-        u128::from(reserve_in),
-        u128::from(reserve_out),
-        gamma,
-    );
-    Some(CpmmQuote {
-        amount_out: TokenAmount(out),
-        price_impact_bps: impact,
-    })
-}
-
 /// Calculate price impact in Basis Points (bps).
 /// Returns `Bps(10000)` (100% impact) on invalid inputs (fail-closed).
 pub fn cpmm_price_impact_bps(dx: u128, x: u128, y: u128, gamma: u128) -> Bps {

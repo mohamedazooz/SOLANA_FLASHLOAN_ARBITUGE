@@ -48,6 +48,8 @@ pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const TOKEN_2022_NATIVE_MINT: &str = "9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP";
 /// USDC mint address on Solana.
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/// USDT mint (SPL Token) on Mainnet.
+pub const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 // ============================================================================
 // Jito Tip Accounts (Mainnet)
@@ -147,6 +149,8 @@ pub fn jitodontfront_marker() -> Pubkey {
 pub const RAYDIUM_V4_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 /// Raydium AMM v4 Authority PDA.
 pub const RAYDIUM_V4_AUTHORITY: &str = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+/// OpenBook (Serum v3 successor) DEX Program ID.
+pub const OPENBOOK_PROGRAM_ID: &str = "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX";
 /// Raydium CP-Swap (CPMM) Program ID.
 pub const RAYDIUM_CPMM_PROGRAM_ID: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
 /// Raydium CLMM Program ID.
@@ -188,6 +192,27 @@ pub const RAYDIUM_SOL_USDC_POOL: &str = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMih
 pub const RAYDIUM_SOL_VAULT: &str = "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz";
 /// Raydium USDC vault address.
 pub const RAYDIUM_USDC_VAULT: &str = "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz";
+/// Raydium SOL-USDC OpenBook market address (verified: openserum.io / Solana StackExchange / Raydium SDK).
+pub const RAYDIUM_SOL_USDC_OPENBOOK_MARKET: &str = "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6";
+/// Raydium SOL-USDC OpenBook amm open-orders account.
+pub const RAYDIUM_SOL_USDC_OPEN_ORDERS: &str = "HmiHHzq4Fym9e1D4qzLS6LDDM3tNsCTBPDWHTLZ763jY";
+/// Raydium SOL-USDC OpenBook target-orders account.
+pub const RAYDIUM_SOL_USDC_TARGET_ORDERS: &str = "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR";
+/// Raydium SOL-USDC OpenBook bids account.
+pub const RAYDIUM_SOL_USDC_SERUM_BIDS: &str = "5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh";
+/// Raydium SOL-USDC OpenBook asks account.
+pub const RAYDIUM_SOL_USDC_SERUM_ASKS: &str = "EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCLNBEDXDn1d5";
+/// Raydium SOL-USDC OpenBook event queue.
+pub const RAYDIUM_SOL_USDC_SERUM_EVENT_QUEUE: &str = "8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa";
+/// Raydium SOL-USDC OpenBook base (SOL) vault.
+pub const RAYDIUM_SOL_USDC_SERUM_COIN_VAULT: &str = "CKxTHwM9fPMRRvZmFnFoqKNd9pQR21c5Aq9bh5h9oghX";
+/// Raydium SOL-USDC OpenBook quote (USDC) vault.
+pub const RAYDIUM_SOL_USDC_SERUM_PC_VAULT: &str = "6A5NHCj1yF6urc9wZNe6Bcjj4LVszQNj5DwAWG97yzMu";
+/// Raydium SOL-USDC OpenBook vault signer PDA.
+pub const RAYDIUM_SOL_USDC_SERUM_VAULT_SIGNER: &str =
+    "CTz5UMLQm2SRWHzQnU62Pi4yJqbNGjgRBHqqp6oDHfF7";
+/// Raydium CPMM SOL-USDC pool AmmConfig account (0.25% fee tier; fee tiers are on-chain accounts — read rates from the account, never assume this tier).
+pub const RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG: &str = "D4A2sqNAqqDy1bMT7BpTNNYTubbmMcETcpKEqZiiNtSZ";
 
 // ============================================================================
 // Orca Whirlpool — SOL-USDC Pool & Vaults (Mainnet)

@@ -129,11 +129,6 @@ impl TipOracle {
         }
     }
 
-    /// Most recent snapshot regardless of age, for reporting only.
-    pub fn last_seen(&self) -> Option<TipFloor> {
-        *self.snapshot.read()
-    }
-
     /// Subscribe to real-time tip updates via WebSocket broadcast channel.
     ///
     /// Call [`Self::run_ws`] separately to start the background reader that feeds

@@ -27,26 +27,19 @@ impl RaydiumV4Accounts {
         Self {
             token_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
             amm_pool: Pubkey::from_str(RAYDIUM_SOL_USDC_POOL).unwrap(),
-            amm_authority: Pubkey::from_str("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")
-                .unwrap(),
-            amm_open_orders: Pubkey::from_str("HmiHHzq4Fym9e1D4qzLS6LDDM3tNsCTBPDWHTLZ763jY")
-                .unwrap(),
-            amm_target_orders: Pubkey::from_str("CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR")
-                .unwrap(),
+            amm_authority: Pubkey::from_str(RAYDIUM_V4_AUTHORITY).unwrap(),
+            amm_open_orders: Pubkey::from_str(RAYDIUM_SOL_USDC_OPEN_ORDERS).unwrap(),
+            amm_target_orders: Pubkey::from_str(RAYDIUM_SOL_USDC_TARGET_ORDERS).unwrap(),
             pool_coin_vault: Pubkey::from_str(RAYDIUM_SOL_VAULT).unwrap(),
             pool_pc_vault: Pubkey::from_str(RAYDIUM_USDC_VAULT).unwrap(),
-            serum_program: Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap(),
-            serum_market: Pubkey::from_str("8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6").unwrap(),
-            serum_bids: Pubkey::from_str("5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh").unwrap(),
-            serum_asks: Pubkey::from_str("EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCLNBEDXDn1d5").unwrap(),
-            serum_event_queue: Pubkey::from_str("8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa")
-                .unwrap(),
-            serum_coin_vault: Pubkey::from_str("CKxTHwM9fPMRRvZmFnFoqKNd9pQR21c5Aq9bh5h9oghX")
-                .unwrap(),
-            serum_pc_vault: Pubkey::from_str("6A5NHCj1yF6urc9wZNe6Bcjj4LVszQNj5DwAWG97yzMu")
-                .unwrap(),
-            serum_vault_signer: Pubkey::from_str("CTz5UMLQm2SRWHzQnU62Pi4yJqbNGjgRBHqqp6oDHfF7")
-                .unwrap(),
+            serum_program: Pubkey::from_str(OPENBOOK_PROGRAM_ID).unwrap(),
+            serum_market: Pubkey::from_str(RAYDIUM_SOL_USDC_OPENBOOK_MARKET).unwrap(),
+            serum_bids: Pubkey::from_str(RAYDIUM_SOL_USDC_SERUM_BIDS).unwrap(),
+            serum_asks: Pubkey::from_str(RAYDIUM_SOL_USDC_SERUM_ASKS).unwrap(),
+            serum_event_queue: Pubkey::from_str(RAYDIUM_SOL_USDC_SERUM_EVENT_QUEUE).unwrap(),
+            serum_coin_vault: Pubkey::from_str(RAYDIUM_SOL_USDC_SERUM_COIN_VAULT).unwrap(),
+            serum_pc_vault: Pubkey::from_str(RAYDIUM_SOL_USDC_SERUM_PC_VAULT).unwrap(),
+            serum_vault_signer: Pubkey::from_str(RAYDIUM_SOL_USDC_SERUM_VAULT_SIGNER).unwrap(),
         }
     }
 

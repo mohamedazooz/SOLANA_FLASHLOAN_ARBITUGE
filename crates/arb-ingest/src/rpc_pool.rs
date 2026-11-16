@@ -104,15 +104,7 @@ pub struct MethodMetrics {
     pub total_latency_ms: u64,
 }
 
-impl MethodMetrics {
-    pub fn avg_latency_ms(&self) -> f64 {
-        if self.call_count == 0 {
-            0.0
-        } else {
-            self.total_latency_ms as f64 / self.call_count as f64
-        }
-    }
-}
+impl MethodMetrics {}
 
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -482,10 +474,43 @@ impl RpcPool {
 
     /// Initialize multi-RPC pool from environment with per-provider rate limits
     /// and round-robin switching (load balancing across healthy providers).
+    /// Builds a pool from operator-configured URLs merged with the
+    /// environment endpoints (config first, env appended, deduped). When both
+    /// sources are empty, falls back to the shared public endpoint with a
+    /// loud warning so non-market-critical workers (e.g. Jito leader
+    /// refresh, health checks) still function in degraded mode.
+    pub fn from_config_and_env(config_urls: Vec<String>) -> Self {
+        dotenvy::dotenv().ok();
+        let mut seen = std::collections::HashSet::new();
+        let mut endpoints: Vec<String> = Vec::new();
+        for u in config_urls
+            .into_iter()
+            .chain(Self::collect_rpc_urls(|k| std::env::var(k).ok()))
+        {
+            let u = u.trim().to_string();
+            let usable = !u.is_empty()
+                && !u.contains("REPLACE_ME")
+                && (u.starts_with("https://") || u.starts_with("http://"));
+            if usable && seen.insert(u.clone()) {
+                endpoints.push(u);
+            }
+        }
+        if endpoints.is_empty() {
+            tracing::warn!(
+                "no RPC endpoints configured via TOML [rpc] url/failover_url or env; falling back to the shared public endpoint https://api.mainnet-beta.solana.com — heavily rate-limited (HTTP 429 expected, 100 req/10s per IP per official docs); NOT production-grade: configure [rpc].url in config TOML or ALCHEMY_RPC_URL / HELIUS_RPC_URL / SOLANA_RPC_*"
+            );
+            endpoints.push("https://api.mainnet-beta.solana.com".to_string());
+        }
+        Self::finish_from_env(endpoints)
+    }
+
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
         let endpoints = Self::collect_rpc_urls(|k| std::env::var(k).ok());
+        Self::finish_from_env(endpoints)
+    }
 
+    fn finish_from_env(endpoints: Vec<String>) -> Self {
         let sender_endpoint = std::env::var("HELIUS_SENDER_REGIONAL")
             .ok()
             .or_else(|| std::env::var("HELIUS_SENDER_URL").ok())
@@ -554,45 +579,6 @@ impl RpcPool {
 
     pub fn endpoints(&self) -> &[String] {
         &self.endpoints
-    }
-
-    pub fn provider_labels(&self) -> Vec<String> {
-        self.telemetry
-            .iter()
-            .map(|t| {
-                format!(
-                    "{}[{:.0}rps/b{}]",
-                    t.config.label, t.config.rps_limit, t.config.max_batch_size
-                )
-            })
-            .collect()
-    }
-
-    /// Return ordered endpoints suitable for transaction simulation:
-    /// healthy batch-100 / sim-capable providers first, then other non-exhausted providers.
-    pub fn healthy_endpoints_for_sim(&self) -> Vec<String> {
-        let now = Instant::now();
-        let backoffs = self.backoffs.read();
-        let mut active = Vec::new();
-        let mut fallback = Vec::new();
-        for (idx, url) in self.endpoints.iter().enumerate() {
-            let exhausted = self.telemetry[idx].quota_exhausted.load(Ordering::Acquire);
-            if exhausted {
-                continue;
-            }
-            let in_cooldown = backoffs.get(&idx).is_some_and(|until| now < *until);
-            if !in_cooldown {
-                active.push(url.clone());
-            } else {
-                fallback.push(url.clone());
-            }
-        }
-        active.extend(fallback);
-        if active.is_empty() {
-            self.endpoints.clone()
-        } else {
-            active
-        }
     }
 
     pub fn health_snapshot(&self) -> RpcPoolHealth {
@@ -803,20 +789,6 @@ impl RpcPool {
     /// Dispatch JSON-RPC request with automated rate-limiting, 429 detection & round-robin failover.
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         self.call_filtered_idx(method, params, |_, _| true).await
-    }
-
-    /// Dispatch JSON-RPC request across endpoints matching `allow_endpoint` URL predicate.
-    pub async fn call_filtered<F>(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-        allow_endpoint: F,
-    ) -> Result<serde_json::Value>
-    where
-        F: Fn(&str) -> bool,
-    {
-        self.call_filtered_idx(method, params, |_, url| allow_endpoint(url))
-            .await
     }
 
     async fn call_filtered_idx<F>(
@@ -1250,61 +1222,6 @@ impl RpcPool {
         Ok(accounts)
     }
 
-    /// Actively probe all endpoints with `getSlot` to establish baseline latency and readiness.
-    /// Unprobed endpoints are strictly classified as `Configured` and never labeled active.
-    pub async fn probe_all_endpoints(&self) -> Vec<(String, EndpointStatus, u32)> {
-        let mut results = Vec::with_capacity(self.endpoints.len());
-        for (idx, url) in self.endpoints.iter().enumerate() {
-            let label = self
-                .telemetry
-                .get(idx)
-                .map(|t| t.config.label.clone())
-                .unwrap_or_default();
-            let start = Instant::now();
-            let body = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getSlot",
-                "params": [{"commitment": "processed"}],
-            });
-            let resp_res = self.client.post(url).json(&body).send().await;
-            let elapsed_ms = start.elapsed().as_millis() as u32;
-
-            if let Some(tel) = self.telemetry.get(idx) {
-                tel.is_probed.store(true, Ordering::Release);
-                match resp_res {
-                    Ok(resp) if resp.status().is_success() => {
-                        tel.record_call("getSlot", elapsed_ms, true, false, false);
-                        tel.requests_ok.fetch_add(1, Ordering::Relaxed);
-                        let status = if elapsed_ms > 350 {
-                            EndpointStatus::Degraded
-                        } else {
-                            EndpointStatus::Healthy
-                        };
-                        *tel.status.write() = status;
-                        results.push((label, status, elapsed_ms));
-                    }
-                    Ok(resp) if resp.status().as_u16() == 429 => {
-                        tel.record_call("getSlot", elapsed_ms, false, true, false);
-                        *tel.status.write() = EndpointStatus::QuotaExhausted;
-                        results.push((label, EndpointStatus::QuotaExhausted, elapsed_ms));
-                    }
-                    Ok(_) => {
-                        tel.record_call("getSlot", elapsed_ms, false, false, false);
-                        *tel.status.write() = EndpointStatus::Degraded;
-                        results.push((label, EndpointStatus::Degraded, elapsed_ms));
-                    }
-                    Err(e) => {
-                        tel.record_call("getSlot", elapsed_ms, false, false, e.is_timeout());
-                        *tel.status.write() = EndpointStatus::Degraded;
-                        results.push((label, EndpointStatus::Degraded, elapsed_ms));
-                    }
-                }
-            }
-        }
-        results
-    }
-
     /// Dispatch simulation requests prioritizing healthy endpoints with lowest P50 latency.
     pub async fn call_simulation_priority(
         &self,
@@ -1649,6 +1566,48 @@ mod tests {
             RpcPool::classify_provider(4, "https://rpc.solami.dev/sol?api_key=q88_5678");
         assert_eq!(solami_lower.rps_limit, 3.0);
         assert_eq!(solami_lower.max_batch_size, 100);
+    }
+
+    #[test]
+    fn from_config_and_env_config_first_then_env_deduped() {
+        let pool = RpcPool::from_config_and_env(vec![
+            "https://rpc.example-private.com".to_string(),
+            "https://api.mainnet-beta.solana.com".to_string(),
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ]);
+        assert_eq!(pool.endpoints()[0], "https://rpc.example-private.com");
+        let public = pool
+            .endpoints()
+            .iter()
+            .filter(|u| u.contains("api.mainnet-beta"))
+            .count();
+        assert_eq!(public, 1, "duplicate URLs must be deduped");
+    }
+
+    #[test]
+    fn from_config_and_env_empty_config_still_yields_public_fallback() {
+        let pool = RpcPool::from_config_and_env(Vec::new());
+        assert!(
+            !pool.endpoints().is_empty(),
+            "empty pool must not starve leader refresh / health checks"
+        );
+        assert!(pool.endpoints().iter().all(|u| u.starts_with("https://")));
+    }
+
+    #[test]
+    fn from_config_and_env_filters_placeholder_entries() {
+        let pool = RpcPool::from_config_and_env(vec![
+            "".to_string(),
+            "REPLACE_ME_RPC_URL".to_string(),
+            "ftp://not-a-rpc.example.com".to_string(),
+        ]);
+        assert!(
+            pool.endpoints()
+                .iter()
+                .all(|u| !u.contains("REPLACE_ME") && !u.starts_with("ftp://")),
+            "placeholders and non-http schemes must be dropped: {:?}",
+            pool.endpoints()
+        );
     }
 
     #[test]

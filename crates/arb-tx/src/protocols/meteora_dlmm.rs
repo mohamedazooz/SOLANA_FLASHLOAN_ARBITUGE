@@ -162,11 +162,6 @@ impl DlmmSwapAccountSet {
         }
         metas
     }
-
-    /// Returns true if an optional-account sentinel is in use (host fee absent).
-    pub fn uses_optional_sentinel(&self) -> bool {
-        self.host_fee_in.is_none()
-    }
 }
 
 /// Resolved token programs for a DLMM leg, one per mint.

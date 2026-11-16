@@ -86,6 +86,8 @@ impl Default for ChronosConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RpcConfig {
     pub url: String,
+    #[serde(default)]
+    pub failover_url: Option<String>,
     pub commitment: String,
 }
 
@@ -176,6 +178,20 @@ pub struct StrategyConfig {
     /// resolve a fully executable chain.
     #[serde(default)]
     pub dlmm_three_leg: Option<DlmmThreeLegTuning>,
+    /// Maximum hops per arbitrage route (2..=4, default 3). Each extra hop
+    /// stacks another DEX fee plus another failure point; routes longer than
+    /// 4 hops are economically dominated by cumulative fees.
+    #[serde(default = "default_max_route_hops")]
+    pub max_route_hops: usize,
+    /// HTTP-based pool catalog discovery (REST APIs). Defaults to **false**
+    /// (disabled): pool candidates must arrive via the WebSocket
+    /// account-update stream. Operators may re-enable explicitly.
+    #[serde(default)]
+    pub http_discovery_enabled: bool,
+}
+
+fn default_max_route_hops() -> usize {
+    3
 }
 
 /// Tunable envelope for the cross-pool DLMM strategy. Every field carries
@@ -379,6 +395,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
         },
         rpc: RpcConfig {
             url: arb.provider.primary_url.clone(),
+            failover_url: arb.provider.failover_url.clone(),
             commitment: arb.provider.commitment.clone(),
         },
         jito: JitoConfig {
@@ -417,6 +434,8 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             discovery_min_tvl_usd: arb.strategy.discovery_min_tvl_usd.map(usd),
             dlmm_cross_pool: None,
             dlmm_three_leg: None,
+            max_route_hops: arb.strategy.max_route_hops,
+            http_discovery_enabled: arb.strategy.http_discovery_enabled,
         },
         risk: RiskConfig {
             max_trade_size_usd: usd(arb.risk.max_trade_size_usd),

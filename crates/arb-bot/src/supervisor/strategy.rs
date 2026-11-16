@@ -54,8 +54,10 @@ impl Supervisor {
             graph.set_economic_config(economic_config);
         }
 
-        // HTTP catalog/trending discovery is disabled. Pool candidates must arrive
-        // through the configured WebSocket account-update stream and pass account validation.
+        // HTTP catalog discovery is config-gated (strategy.http_discovery_enabled,
+        // default false). When disabled, pool candidates arrive only through the
+        // configured WebSocket account-update stream and must pass account
+        // validation before entering the registry.
 
         // 1. Ingest: take one pool snapshot per strategy cycle; account updates mutate one key.
         //    Raw stream updates are promoted only after protocol-specific decoding.
@@ -259,7 +261,11 @@ impl Supervisor {
                 }
                 found
             };
-            let multi_opps = graph.find_multi_hop_cycles(current_slot, max_sizing, 5);
+            let multi_opps = graph.find_multi_hop_cycles(
+                current_slot,
+                max_sizing,
+                self.config.strategy.max_route_hops,
+            );
             if !multi_opps.is_empty() {
                 info!("🔁 Multi-hop DFS detected {} route(s)", multi_opps.len());
             }

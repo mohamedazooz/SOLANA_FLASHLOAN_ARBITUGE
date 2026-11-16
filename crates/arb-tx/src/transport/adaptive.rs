@@ -74,14 +74,6 @@ impl TransactionVersion {
             Self::V1 => Some(1),
         }
     }
-
-    /// Maximum wire format size in bytes.
-    pub fn max_mtu(&self) -> usize {
-        match self {
-            Self::Legacy | Self::V0 => SOLANA_PACKET_LEGACY_MTU,
-            Self::V1 => SOLANA_PACKET_V1_MTU,
-        }
-    }
 }
 
 /// Compilation capabilities and constraints supported by the target RPC, validator, or private relay.

@@ -310,7 +310,24 @@ impl Supervisor {
 
         // Legacy JSON-RPC pool is disabled in runtime configuration; retained only for
         // unmigrated APIs and isolated tests. Market state comes from the WebSocket + RPC ingestion path. gRPC transport removed.
-        let rpc_pool = arb_ingest::RpcPool::from_env();
+        // Endpoints merge TOML [rpc] url/failover_url (operator config) with the
+        // env-sourced pool; placeholders and empty values are filtered.
+        let is_usable_rpc = |u: &str| {
+            let t = u.trim();
+            !t.is_empty()
+                && !t.contains("REPLACE_ME")
+                && (t.starts_with("https://") || t.starts_with("http://"))
+        };
+        let mut config_rpc_urls = Vec::new();
+        if is_usable_rpc(&config.rpc.url) {
+            config_rpc_urls.push(config.rpc.url.trim().to_string());
+        }
+        if let Some(f) = config.rpc.failover_url.as_deref() {
+            if is_usable_rpc(f) {
+                config_rpc_urls.push(f.trim().to_string());
+            }
+        }
+        let rpc_pool = arb_ingest::RpcPool::from_config_and_env(config_rpc_urls);
 
         let sim_url = rpc_pool
             .endpoints()

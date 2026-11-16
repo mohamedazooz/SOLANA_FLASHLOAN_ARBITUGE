@@ -372,3 +372,140 @@ Also fixed: `[profile.release] overflow-checks = true` (defense-in-depth with th
 1. Hardcoded-value inventory refresh + classification table regeneration.
 2. Secret provider rotation tooling.
 3. Live trading remains DISABLED (Gate G) — explicit operator decision only.
+
+## Session 7 — Dead-code removal, hardcoded-value unification, docs organization
+
+### Dead code (68 pub fns + 2 private cascades, ~1,725 lines, 36 files)
+
+Method: reference-count call graph over all workspace `.rs` → zero-reference
+candidates double-verified with `rg -w` across the whole repo (excluding definition
+line, trait methods, `#[test]` fns) → brace-matching removal including docs and
+attributes → fixpoint iteration. Evidence of death: workspace test count unchanged
+(1030 → 1030). Commit `a317a29`.
+
+KEEP set (built-but-unwired, flagged for operator decision, NOT deleted):
+`arb-risk::activate_from_signal/reset_losses`, `jito_service::verify_landing/
+poll_until_terminal/ledger_json`, `capability::validate_execution_prerequisites`,
+`dependency_manifest::from_registered_pool`, `dual_ingest::record_decode_error/
+record_resync/run_comparison_loop`, `rpc_reconcile::fetch_and_publish`.
+
+### Hardcoded values
+
+- **HC-1 (P0) resolved**: OpenBook SOL/USDC market conflict — `primitives/builder.rs`
+  carried a fabricated address (`8BnEgHoWFysVcuFFX7QBpDmvu3xei5qGE9KitUfqWQH9`);
+  verified value `8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6` (openserum.io,
+  Solana StackExchange) now sourced from `arb-constants`.
+- Unlinked constants centralized into `arb-constants`: `USDT_MINT`, `OPENBOOK_PROGRAM_ID`,
+  `RAYDIUM_V4_AUTHORITY` (existed but wasn't imported at 4 sites), the 9 pool-scoped
+  Raydium SOL/USDC OpenBook accounts, `RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG`.
+- New regression tests in `address_regression_guards.rs` (5 total now, all pass).
+- Inventory scan (non-test code): 109 address literals, 53 URLs, 32 Duration kinds,
+  7 denominator kinds — classified A–F in `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md`.
+
+### Docs organization
+
+- Deleted `audit_extract/` (28 tracked files) and `audit_work/` (10 untracked files):
+  byte-identical duplicates of `docs/archive/audit_reports/` + `docs/archive/audit_work/`.
+- `dashboard/` kept (referenced by `Dockerfile:22`).
+- Doc-authority statement added to `docs/README.md` (PROJECT_STATE.md +
+  PRODUCTION_READINESS_2026-11-13.md are authoritative; PR7/PR8-era audits are historical).
+- Stale-reference scan: zero live docs reference the 68 deleted functions.
+
+### Verification (session 7)
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| `cargo test --workspace` | **1032 passed / 0 failed** |
+| Report | `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md` + `cleanup_summary.json` |
+
+## Session 8 — Live run, fail-closed warning remediation, hop-limit enforcement
+
+### Live run (simulate/paper mode, real mainnet HTTP discovery)
+- `arb-bot` ran 100s in simulate mode with the public RPC fallback: SQLite DB
+  created (attempts/outcomes/fills/dispatch_intents, WAL), heartbeat writer
+  active, Prometheus metrics on :9100, discovery registered **123 real pools**
+  (Orca 33, Meteora DLMM 29, Raydium CLMM 28, RaydiumV4 7, RaydiumCpmm 5,
+  PumpFun 21).
+- Strategy ticks correctly skip (fail-closed) with `0 verified live pools`
+  because no WebSocket stream credentials exist in this environment — no stale
+  or synthetic state ever enters the graph.
+
+### Warnings diagnosed & fixed
+| Warning | Root cause | Fix |
+|---|---|---|
+| `health sweep: rpc=FAIL …` repeated every 10s | error-level log on every sweep regardless of state change | transition-based logging: error only on state change/reason change, info on recovery, debug when unchanged (health_monitor.rs) |
+| silent fallback to `api.mainnet-beta.solana.com` | registry pushed the public endpoint without announcing it | explicit loud WARN naming the fallback, its 429 expectation, and the exact env vars to configure (registry.rs) |
+| `max_route_hops = 3` in execution.toml read by nobody | dead config key; DFS hardcoded 5 hops | wired: `StrategyConfig.max_route_hops` (arb-config + arb-bot), validated 2..=4, consumed by `find_multi_hop_cycles` (strategy.rs); Bellman-Ford already capped 2..=4 |
+| Admin API / Web API disabled | missing `SENTINEL_ADMIN_KEY` / `WEB_ADMIN_PASSWORD` | correct fail-closed behavior — audited: constant-time compare, placeholder rejection, CORS never permissive; requires operator provisioning, NOT a defect |
+| Pump.fun 403 / public RPC 429 | external rate limiting/blocking | handled gracefully (cooldown + rotate + skip); environment-driven |
+
+### Dynamic ratios (authoritative inventory)
+| Ratio | Default | Source |
+|---|---|---|
+| `tip_share_bps` | 5500 | config [jito] |
+| `max_tip_share_bps` | 7000 | config [jito] (hard ceiling 8500 in arb-constants) |
+| `keep_share` | 0.60 | config [jito] |
+| `ladder_growth` | 1.6 | config [jito] |
+| `tip_floor_percentile` | p50 | config [jito] |
+| `max_tip_spend_ratio` | 0.7 | config [risk] |
+| `min_net_profit_bps` | 5 | config [strategy] |
+| `max_price_impact_bps` | 40 | config [strategy] |
+| `hop_slippage_bps` | 10 (max 1000) | arb-constants DEFAULT_HOP_SLIPPAGE_BPS |
+| `min_landing_rate` | 0.02 | config [risk] |
+| `decay_lambda_per_sec` | 3.0 | config [chronos] |
+| `min_ev_usd` | 0.05 | config [chronos] |
+| `failed_attempt_cost_lamports` | 10000 | config [chronos] |
+| `beta_risk_factor` | 0.0005 | config [chronos] |
+| `CU_BUFFER_PCT` | 15% | arb-constants (protocol-adjacent, not operator-editable) |
+| `BASE_PRIORITY_FEE_MICRO_LAMPORTS` | 1000 | arb-constants floor |
+
+### Verification (session 8)
+- `cargo clippy --workspace --all-targets -- -D warnings` — exit 0
+- `cargo test --workspace` — **1036 passed / 0 failed** (4 new config validation tests)
+- Live run re-check: 8 health sweeps → 1 error line (transition) + explicit fallback warning
+
+
+---
+
+## Session 9 — HTTP discovery shutdown, RPC pool config wiring, public WS/RPC trial
+
+### HTTP catalog discovery kill switch (operator decision: default OFF)
+- `arb-config::StrategyConfig.http_discovery_enabled: bool` — serde default → **false** (fail-closed).
+- `arb-bot::config::StrategyConfig` mirrored + wired via `from_arb_config`.
+- `run.rs`: initial `PoolDiscovery::discover()` call AND the periodic refresh worker are both gated; when off, startup logs the disabled line and pools arrive via WebSocket account updates only.
+- `strategy.rs` stale comment ("HTTP catalog discovery is disabled") corrected to describe the config-gated reality.
+- `config/config.example.toml` + `config/base.toml`: `http_discovery_enabled = false` documented.
+- Effect: Pump.fun 403 / Dexscreener / catalog HTTP noise eliminated by default; `register_discovered` retained for explicit operator re-enable.
+
+### RPC pool root-cause fix (was: env-only)
+- Root cause of `leader refresh failed: getEpochInfo: No RPC endpoints configured in pool`: `Supervisor` built `RpcPool::from_env()` and ignored TOML `[rpc] url`.
+- New `RpcPool::from_config_and_env(config_urls)`: config URLs first, env URLs appended, deduped, placeholder/non-http entries dropped (defense-in-depth filter inside the pool constructor too).
+- Empty pool now falls back to the shared public endpoint with a loud warning naming the exact config keys to set — leader refresh, health checks and seeding no longer starve on an empty pool.
+- `arb-bot::config::RpcConfig.failover_url` added (wired from `arb-config::ProviderConfig.failover_url`).
+- Research basis: Solana docs — public endpoint caps ≈100 req/10s per IP, 40 req/10s per method; subscribe-don't-poll, batch, backoff-with-jitter, respect Retry-After (already implemented: token buckets, 429 → cooldown + rotate).
+
+### Secrets provisioning (admin/web fail-closed gates)
+- `scripts/generate_secrets.sh`: generates `SENTINEL_ADMIN_KEY` (openssl rand -hex 32) and `WEB_ADMIN_PASSWORD` into gitignored `.env` (chmod 600), replaces placeholders only, `--force` rotates. Operator keys are read at startup only.
+
+### Public WS + public RPC trial (measured, run3, 100s, simulate mode)
+| Component | Result |
+|---|---|
+| Public WS wss endpoint | Connected after one 429 connect retry; slotSubscribe streaming live (real slots 470017976→470018003); `stream_ingest=ok` |
+| Public RPC endpoint | 429/cooldown under seeding load; `seed_initial_accounts: 0/15` → 0 pools registered (fail-closed: no routes on unverified state) |
+| Leader refresh | 1 failure (429 cooldown) vs previous every-60s failures — TOML wiring works |
+| HTTP discovery | Off by default; zero Pump.fun/catalog noise |
+| Store | SQLite WAL `./data/warm/sentinel_state.db` + Redis connected |
+| Telegram | `telegram=ok` (operator token from `.env`) |
+| Health sweep | Transition-based alerting: 7 error lines total over 100s (was 17 warnings per sweep-cycle in run #2) |
+
+**Conclusion (evidence-based):** public WS is viable as a degraded slot-clock/stream source; public RPC cannot sustain account seeding on a shared IP (documented 100 req/10s ceiling) — production scanning requires operator RPC credentials. The pipeline is correct end-to-end: the bot refused to fabricate routes on unseeded state.
+
+### WS provider answer (operator question)
+Any mainnet WSS endpoint supporting `slotSubscribe` + `accountSubscribe` works — the client is provider-agnostic with per-endpoint capability detection (`-32601` accountSubscribe unsupported → fatal for that endpoint only). Known: Alchemy standard tiers lack `accountSubscribe`; Helius/QuickNode/Triton/RPCfast/Solami support it. Helius "enhanced" WS APIs are not required.
+
+### Verification (session 9)
+- `cargo test -p arb-config` — 22 passed (incl. 3 new `http_discovery_*` tests)
+- `cargo test -p arb-ingest from_config_and_env` — 3 passed (dedup, fallback, placeholder filtering)
+- Full workspace gates: see commit message.

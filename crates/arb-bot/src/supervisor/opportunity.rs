@@ -561,8 +561,7 @@ impl Supervisor {
             let base_mint = opp.hops.first().map(|hop| hop.mint_in.0);
             let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default();
             let usdc = Pubkey::from_str(arb_tx::USDC_MINT).unwrap_or_default();
-            let usdt = Pubkey::from_str("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")
-                .unwrap_or_default();
+            let usdt = Pubkey::from_str(arb_constants::USDT_MINT).unwrap_or_default();
             let base_price_usd = match base_mint {
                 Some(mint) if mint == wsol => Some(sol_price),
                 Some(mint) if mint == usdc || mint == usdt => Some(1.0),

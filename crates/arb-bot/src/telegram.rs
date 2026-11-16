@@ -297,60 +297,6 @@ impl TelegramNotifier {
         Ok(())
     }
 
-    /// The bot is firing on an opportunity: route, expected net, and slot.
-    pub async fn alert_opportunity(
-        &self,
-        route: &str,
-        gross_sol: f64,
-        net_sol: f64,
-        net_usd: f64,
-        slot: u64,
-        pools_count: usize,
-        loan_size_sol: f64,
-    ) {
-        let live_sol_price = self.sol_price();
-        let computed_net_usd = if net_usd > 0.0 {
-            net_usd
-        } else {
-            net_sol * live_sol_price
-        };
-        if net_sol < self.min_rejected_alert_sol && computed_net_usd < 1.0 {
-            return;
-        }
-        let loan_usd = loan_size_sol * live_sol_price;
-        let gross_usd = gross_sol * live_sol_price;
-        let pool_desc = if pools_count == 2 {
-            "Two-Leg Cycle"
-        } else if pools_count == 3 {
-            "Triangular Cycle"
-        } else {
-            "Multi-Hop Cycle"
-        };
-        let msg = format!(
-            "🎯 <b>فرصة مراجحة مقتنصة (> $1.00)</b>\n\n\
-             💰 <b>الربح الصافي الحقيقي (Net Profit):</b> <b>+{:.6} SOL</b> (~${:.2} USD)\n\
-             🏊 <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
-             🏦 <b>حجم قرض الفلاش (Flash Loan):</b> <code>{:.4} SOL (~${:.2} USD)</code>\n\
-             🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
-             📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
-             💵 <b>سعر SOL اللحظي المستخدم:</b> ${:.2} USD (سعر حي من السوق)\n\
-             🧊 <b>السلوت (Slot):</b> <code>{}</code>\n\
-             🛡️ <b>الحالة:</b> قيد الإرسال والتوجيه للبيلدر المعتمد",
-            net_sol,
-            computed_net_usd,
-            pools_count,
-            pool_desc,
-            loan_size_sol,
-            loan_usd,
-            esc(route),
-            gross_sol,
-            gross_usd,
-            live_sol_price,
-            slot
-        );
-        let _ = self.send_message(&msg).await;
-    }
-
     /// Full telemetry alert for an opportunity with blockchain context and simulation data.
     #[allow(clippy::too_many_arguments)]
     pub async fn alert_opportunity_with_telemetry(
@@ -744,41 +690,6 @@ impl TelegramNotifier {
         let _ = self.send_message(&msg).await;
     }
 
-    /// Confirmed fill with full financial breakdown, blockchain verification, and stage latency.
-    /// Convenience alias forwarding directly to `notify_trade_executed`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn alert_trade_landed(
-        &self,
-        signature: Option<&str>,
-        bundle_id: &str,
-        profit_sol: f64,
-        profit_usd: f64,
-        loan_size_sol: f64,
-        pools_count: usize,
-        tokens: &str,
-        venues: &str,
-        slot: u64,
-        leader: &str,
-        landed_status: &str,
-        timings: &str,
-    ) {
-        self.notify_trade_executed(
-            signature,
-            bundle_id,
-            profit_sol,
-            profit_usd,
-            loan_size_sol,
-            pools_count,
-            tokens,
-            venues,
-            slot,
-            leader,
-            landed_status,
-            timings,
-        )
-        .await;
-    }
-
     /// Bundle was rejected, dropped, or expired after dispatch.
     pub async fn alert_execution_dropped(&self, bundle_id: &str, route: &str, status: &str) {
         let msg = format!(
@@ -804,25 +715,6 @@ impl TelegramNotifier {
             esc(stage),
             esc(route),
             esc(reason)
-        );
-        let _ = self.send_message(&msg).await;
-    }
-
-    /// Opportunity confirmed by the simulator but not sent (shadow/simulate).
-    pub async fn alert_simulation_opportunity(
-        &self,
-        route_name: &str,
-        profit_sol: f64,
-        profit_usd: f64,
-    ) {
-        let msg = format!(
-            "🧪 <b>فرصة (محاكاة فقط)</b>\n\n\
-             💎 <b>الربح الصافي المتوقع:</b> +{:.6} SOL (~${:.2})\n\
-             🛣️ <b>المسار:</b> <code>{}</code>\n\
-             🛡️ <b>الحالة:</b> اجتازت المحاكاة، لم تُرسل",
-            profit_sol,
-            profit_usd,
-            esc(route_name)
         );
         let _ = self.send_message(&msg).await;
     }

@@ -60,8 +60,7 @@ impl RaydiumV4Pool {
             quote_vault_balance: 0,
             open_orders,
             target_orders: Pubkey::default(),
-            market_program: Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")
-                .unwrap(),
+            market_program: Pubkey::from_str(arb_constants::OPENBOOK_PROGRAM_ID).unwrap(),
             serum_market: Pubkey::default(),
             serum_bids: Pubkey::default(),
             serum_asks: Pubkey::default(),
@@ -113,14 +112,6 @@ impl RaydiumV4Pool {
     /// Calculate maximum tradable amount for arbitrage.
     pub fn max_arbitrage_amount(&self) -> u64 {
         std::cmp::min(
-            self.base_reserve.try_into().unwrap_or(u64::MAX),
-            self.quote_reserve.try_into().unwrap_or(u64::MAX),
-        )
-    }
-
-    /// Get reserves as u64 for compatibility.
-    pub fn reserves_u64(&self) -> (u64, u64) {
-        (
             self.base_reserve.try_into().unwrap_or(u64::MAX),
             self.quote_reserve.try_into().unwrap_or(u64::MAX),
         )

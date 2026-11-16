@@ -160,3 +160,19 @@ All historical `arb_tx::<module>::Item` paths still resolve: each group
 `lib.rs` glob-re-exports the groups. `flash/mod.rs` uses a CURATED list for
 `kamino` (not a glob) because `kamino.rs` and `kamino_flash.rs` both define
 `build_kamino_flash_borrow/repay` — see AGENTS.md "Known traps".
+
+---
+
+## Session 7 cleanup addendum (2026-11-17)
+
+- 68 provably-dead `pub fn`s + 2 orphaned private helpers removed (~1,725 lines,
+  36 files) — verified by reference-count call graph + `rg -w` double check;
+  workspace tests unchanged (1030→1030) confirming zero coverage of deleted fns.
+- Top-level `audit_extract/` and `audit_work/` removed: byte-identical duplicates
+  of `docs/archive/audit_reports/` + `docs/archive/audit_work/` (content preserved).
+- All inline duplicate address constants (USDT mint, OpenBook program, Raydium
+  authority, SOL/USDC OpenBook market + pool-scoped OpenBook accounts, CPMM
+  AmmConfig) unified into `arb-constants` as the single authoritative source.
+  A fabricated OpenBook market address in `primitives/builder.rs` was corrected;
+  regression guards in `arb-tx/tests/address_regression_guards.rs` now cover it.
+- Full report: `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md`.

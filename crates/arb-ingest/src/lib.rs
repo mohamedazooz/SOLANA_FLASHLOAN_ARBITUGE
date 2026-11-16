@@ -89,8 +89,7 @@ pub use bitquery::{
 pub mod helius_ws;
 pub use helius_ws::HeliusWsClient;
 
-use arb_dex::traits::AmmPool;
-use arb_types::{AccountUpdate, ArbError, PoolId, PoolState, Result, Slot};
+use arb_types::{ArbError, PoolId, PoolState, Result, Slot};
 use parking_lot::RwLock;
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
@@ -98,7 +97,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::debug;
 
 pub const DEDUPE_WINDOW_SLOTS: u64 = 32;
 
@@ -515,17 +513,6 @@ impl IngestClient {
         }
     }
 
-    /// Replace the explicitly tracked account set. Yellowstone requests are full-state
-    /// replacements, so the gRPC worker always resends owner + address + slot filters together.
-    /// Synchronize Yellowstone's explicit address filter from the dependency manifest.
-    /// This does not subscribe to every account owned by a DEX program.
-    pub fn sync_manifest_subscriptions(
-        &self,
-        manifests: &DependencyManifestRegistry,
-    ) -> Result<()> {
-        self.set_tracked_accounts(&manifests.tracked_accounts())
-    }
-
     pub fn set_tracked_accounts(&self, accounts: &[Pubkey]) -> Result<()> {
         const MAX_TRACKED_ACCOUNTS: usize = 4_096;
         let mut values = accounts.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -693,67 +680,6 @@ impl IngestClient {
         self.latest_slot.load(Ordering::Relaxed)
     }
 
-    /// Decode a previously validated account update via an AMM pool adapter and apply.
-    ///
-    /// Pool state is decoded per-protocol: `kind`, `clmm`/`dlmm`, and mint
-    /// decimals come from the pool implementation. `decimals_a`/`decimals_b`
-    /// default to 0 (unknown) here because mint account data is not available
-    /// in the stream update; the registry's `fetch_live_pool_states` resolves
-    /// them from verified mint accounts. Pools with decimals == 0 are rejected
-    /// by the economic engine (fail closed).
-    pub fn apply_raw_account(
-        &self,
-        update: &AccountUpdate,
-        pool: &mut dyn AmmPool,
-    ) -> Result<bool> {
-        pool.update_from_account(&update.data)?;
-        let (r_in, r_out) = pool.reserves();
-        let (decimals_a, decimals_b) = pool.decimals();
-
-        let clmm = match pool.kind() {
-            arb_types::PoolKind::Clmm => pool.clmm_state(),
-            _ => None,
-        };
-        let dlmm = match pool.kind() {
-            arb_types::PoolKind::Dlmm => pool.dlmm_state(),
-            _ => None,
-        };
-
-        let state = PoolState {
-            pool_id: pool.pool_id(),
-            protocol: pool.protocol(),
-            slot: update.slot,
-            write_version: update.write_version,
-            base_mint: pool.base_mint(),
-            quote_mint: pool.quote_mint(),
-            decimals_a,
-            decimals_b,
-            reserve_in: r_in,
-            reserve_out: r_out,
-            fee_numerator: pool.fee_bps().unwrap_or(0) as u64,
-            fee_denominator: if pool.fee_bps().is_some() { 10_000 } else { 0 },
-            is_active: r_in > 0 && r_out > 0 && pool.fee_bps().is_some(),
-            has_risky_token: pool.has_risky_token(),
-            transfer_fee_bps: 0,
-            last_update_slot: update.slot.0,
-            last_update_ms: u64::try_from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0),
-            )
-            .unwrap_or(u64::MAX),
-            kind: pool.kind(),
-            clmm,
-            dlmm,
-            pump_fun: pool.pump_fun_state(),
-            token_programs: Default::default(),
-            execution_accounts: None,
-        };
-
-        self.apply_pool_update(state)
-    }
-
     /// Build a quote dependency set while holding the slot-integrity read guard.
     /// Call again immediately before transaction construction/submission.
     pub fn quote_dependencies(
@@ -833,12 +759,6 @@ impl IngestClient {
             .route_requirements(pool_ids)
             .map_err(|_| QuoteReadinessError::InvalidDependencyManifest)?;
         self.quote_dependencies(&required, &owners, quote_slot, max_age_slots, max_slot_skew)
-    }
-
-    /// Handle keepalive ping/pong.
-    pub async fn handle_ping(&self) -> Result<()> {
-        debug!("Ping/Pong keepalive exchanged (WebSocket/RPC ingestion)");
-        Ok(())
     }
 
     /// Reconnect loop after stream disconnection.

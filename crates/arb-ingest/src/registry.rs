@@ -91,6 +91,9 @@ impl PacedAccountFetcher {
             }
         }
         if endpoints.is_empty() {
+            tracing::warn!(
+                "no RPC endpoints configured via env; falling back to the shared public endpoint https://api.mainnet-beta.solana.com — heavily rate-limited (HTTP 429 expected); NOT production-grade: configure ALCHEMY_RPC_URL / HELIUS_RPC_URL / SOLANA_RPC_*"
+            );
             endpoints.push("https://api.mainnet-beta.solana.com".to_string());
         }
 
@@ -304,132 +307,6 @@ impl PacedAccountFetcher {
         } else {
             Ok((slot, decoded_bytes))
         }
-    }
-
-    /// Batch fetch multiple accounts via JSON-RPC `getMultipleAccounts`.
-    pub async fn fetch_multiple_accounts(
-        &self,
-        pubkeys: &[Pubkey],
-    ) -> Result<std::collections::HashMap<Pubkey, (u64, Vec<u8>)>> {
-        if pubkeys.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let now = Instant::now();
-        let wait_dur = {
-            let mut guard = self.last_call.lock();
-            let elapsed = now.duration_since(*guard);
-            if elapsed < self.min_interval {
-                let wait = self.min_interval - elapsed;
-                *guard = now + wait;
-                Some(wait)
-            } else {
-                *guard = now;
-                None
-            }
-        };
-        if let Some(w) = wait_dur {
-            sleep(w).await;
-        }
-
-        let total_endpoints = self.endpoints.len();
-        let max_attempts = total_endpoints.saturating_mul(2).max(1);
-        let mut last_err = anyhow::anyhow!("no endpoints available");
-
-        let keys_str: Vec<String> = pubkeys.iter().map(|p| p.to_string()).collect();
-
-        for _ in 0..max_attempts {
-            let idx = {
-                let mut guard = self.endpoint_cooldowns.lock();
-                let now = Instant::now();
-                let mut chosen = None;
-                for offset in 0..total_endpoints {
-                    let candidate = (self.current_idx.fetch_add(1, Ordering::Relaxed) + offset)
-                        % total_endpoints;
-                    if let Some(cooldown_end) = guard.get(&candidate) {
-                        if now < *cooldown_end {
-                            continue; // skip endpoint during cooldown
-                        } else {
-                            guard.remove(&candidate);
-                        }
-                    }
-                    chosen = Some(candidate);
-                    break;
-                }
-                chosen.unwrap_or_else(|| self.current_idx.load(Ordering::Relaxed) % total_endpoints)
-            };
-            let url = &self.endpoints[idx];
-
-            let req_body = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getMultipleAccounts",
-                "params": [
-                    keys_str,
-                    {
-                        "encoding": "base64",
-                        "commitment": "processed"
-                    }
-                ]
-            });
-
-            let resp_res = self.client.post(url).json(&req_body).send().await;
-            match resp_res {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.as_u16() == 429 || status.is_server_error() {
-                        self.cooldown_and_warn(
-                            idx,
-                            url,
-                            Duration::from_secs(60),
-                            format!("HTTP {status}"),
-                        );
-                        continue;
-                    }
-                    if let Ok(json_val) = resp.json::<serde_json::Value>().await {
-                        if let Some(err_obj) = json_val.get("error") {
-                            debug!("RPC returned error {:?} on getMultipleAccounts", err_obj);
-                            self.current_idx.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
-
-                        let slot = json_val
-                            .pointer("/result/context/slot")
-                            .and_then(|s| s.as_u64())
-                            .unwrap_or(0);
-
-                        let mut results = std::collections::HashMap::new();
-                        if let Some(arr) =
-                            json_val.pointer("/result/value").and_then(|v| v.as_array())
-                        {
-                            for (pk, acc_val) in pubkeys.iter().zip(arr.iter()) {
-                                if acc_val.is_null() {
-                                    continue;
-                                }
-                                if let Some(raw_b64) =
-                                    acc_val.pointer("/data/0").and_then(|s| s.as_str())
-                                {
-                                    if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
-                                        results.insert(*pk, (slot, bytes));
-                                    }
-                                }
-                            }
-                        }
-                        return Ok(results);
-                    }
-                }
-                Err(e) => {
-                    last_err = anyhow::anyhow!("request to {} failed: {e}", url);
-                    self.current_idx.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        }
-        Err(last_err)
     }
 }
 
@@ -1226,7 +1103,7 @@ impl MultiDexRegistry {
                     let market_program = if d.len() >= 592 {
                         Pubkey::new_from_array(d[560..592].try_into().unwrap())
                     } else {
-                        Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap()
+                        Pubkey::from_str(arb_constants::OPENBOOK_PROGRAM_ID).unwrap()
                     };
                     let prog =
                         Pubkey::from_str(arb_constants::RAYDIUM_V4_PROGRAM_ID).unwrap_or_default();
@@ -1619,7 +1496,7 @@ pub async fn resolve_mints_decimals(
         let mint_str = mint.0.to_string();
         let is_hub = mint_str == arb_constants::WSOL_MINT
             || mint_str == arb_constants::USDC_MINT
-            || mint_str == "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+            || mint_str == arb_constants::USDT_MINT;
         if !is_hub {
             let mint_auth_tag = u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([1, 0, 0, 0]));
             let freeze_auth_tag =

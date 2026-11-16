@@ -964,9 +964,9 @@ impl TxBuilder {
             Pubkey::from_str(RAYDIUM_SOL_USDC_POOL).unwrap(),
             Pubkey::from_str(RAYDIUM_SOL_VAULT).unwrap(),
             Pubkey::from_str(RAYDIUM_USDC_VAULT).unwrap(),
-            Pubkey::from_str("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1").unwrap(), // Raydium Authority
-            Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap(), // OpenBook / Serum Program
-            Pubkey::from_str("8BnEgHoWFysVcuFFX7QBpDmvu3xei5qGE9KitUfqWQH9").unwrap(), // SOL-USDC Serum Market
+            Pubkey::from_str(RAYDIUM_V4_AUTHORITY).unwrap(),
+            Pubkey::from_str(OPENBOOK_PROGRAM_ID).unwrap(),
+            Pubkey::from_str(RAYDIUM_SOL_USDC_OPENBOOK_MARKET).unwrap(),
             Pubkey::from_str(ORCA_WHIRLPOOL_PROGRAM_ID).unwrap(),
             Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap(),
             Pubkey::from_str(ORCA_SOL_VAULT).unwrap(),
@@ -976,20 +976,6 @@ impl TxBuilder {
             Pubkey::from_str(METEORA_DLMM_PROGRAM_ID).unwrap(),
         ];
         AddressLookupTable::new(alt_key, addresses)
-    }
-
-    /// Sign a pre-compiled versioned (v0) transaction (e.g. from Jupiter v6 API).
-    pub fn sign_versioned_transaction(
-        signer: &KeypairSigner,
-        mut tx_bytes: Vec<u8>,
-    ) -> Result<Vec<u8>> {
-        if tx_bytes.len() < 66 {
-            bail!("Transaction bytes too short for versioned transaction");
-        }
-        let msg_bytes = &tx_bytes[65..];
-        let signature = signer.sign(msg_bytes);
-        tx_bytes[1..65].copy_from_slice(&signature);
-        Ok(tx_bytes)
     }
 
     /// Encode instructions into a serialized byte representation for simulation or broadcast.
