@@ -31,10 +31,29 @@ arb-ingest (WS/gRPC streams + RPC reconcile, fail-closed freshness)
 
 ## Protocol matrix (all verified against official IDLs/SDKs)
 
-Raydium V4 / CPMM / CLMM / LaunchLab, Orca Whirlpool, Meteora DLMM / DAMM v2,
+Raydium V4 / CPMM / CLMM / LaunchLab, Orca Whirlpool, Meteora DLMM / DAMM v2 / DBC / DLMM Pro,
 Pump.fun, PumpSwap. Dynamic account resolution everywhere; zero hardcoded
 pools; fail-closed `TxError::MissingExecutionAccounts`. See
 [`architecture/PROTOCOL_COMPATIBILITY.md`](architecture/PROTOCOL_COMPATIBILITY.md).
+
+## Meteora Modernization Upgrade (2026-11-16)
+
+- Scraped all 300 pages (~3.3 MB Markdown) of official Meteora docs (`docs/meteora_docs_complete.md`).
+- Authored comprehensive Modernization Upgrade Plan (`docs/METEORA_MODERNIZATION_UPGRADE_PLAN.md`).
+- **Phase 1: Mainnet Critical Fixes**:
+  - DAMM v2 `swap2` canonical 14-account layout with sysvar instruction remaining account validation.
+  - Corrected `CollectFeeMode` definitions (0=BothToken, 1=OnlyB, 2=Compounding) and unlocked Compounding pools.
+  - Expanded DLMM bin array limit from 2 to 4 (280 bins, 2.8% price movement) within Solana V1 account budget.
+- **Phase 2: Hosted Data APIs & Full-Mesh Discovery**:
+  - Integrated `dlmm.datapi.meteora.ag` & `cp-amm.datapi.meteora.ag` pool discovery and 24h volume ranking.
+  - Implemented `CrossProtocolPairDiscovery` pairing Meteora pools across Raydium and Pump.fun.
+- **Phase 3: Dynamic Bonding Curve (DBC)**:
+  - 16-point piecewise bonding curve math (`DbcCurve`) with deterministic Q64.64 / U256 integer math.
+  - Graduation threshold detection for automated DAMM v2 migration arbitrage.
+  - DBC `swap2` instruction builder and live engine quote adapter.
+- **Phase 4: DLMM Pro Continuous Ticks & Limit Orders**:
+  - Continuous tick CLMM ($P = 1.0001^{\text{tick}}$) with resting limit-order taker matching.
+  - Dedicated `MeteoraDlmmProPool` and transaction builder.
 
 ## Verification status (last full campaign: 2026-11-13, branch `vibe/store-fail-closed-9d81d9`, PR #11)
 

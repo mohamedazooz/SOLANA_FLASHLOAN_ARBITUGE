@@ -86,6 +86,8 @@ pub const fn cu_estimate(protocol: DexProtocol) -> u64 {
         DexProtocol::OrcaWhirlpool => 50_000,
         DexProtocol::MeteoraDlmm => 60_000,
         DexProtocol::MeteoraDammV2 => 70_000,
+        DexProtocol::MeteoraDbc => 55_000,
+        DexProtocol::MeteoraDlmmPro => 65_000,
         DexProtocol::RaydiumLaunchLab => 60_000,
         DexProtocol::PumpFun => 40_000,
         DexProtocol::PumpSwap => 48_000,
@@ -101,6 +103,8 @@ pub const fn accounts_required(protocol: DexProtocol) -> u8 {
         DexProtocol::OrcaWhirlpool => 11,
         DexProtocol::MeteoraDlmm => 15,
         DexProtocol::MeteoraDammV2 => 13,
+        DexProtocol::MeteoraDbc => 14,
+        DexProtocol::MeteoraDlmmPro => 16,
         DexProtocol::RaydiumLaunchLab => 14,
         DexProtocol::PumpFun => 16,
         DexProtocol::PumpSwap => 16,
@@ -129,9 +133,27 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Raydium CPMM missing on-chain fee or reserves")
             }
         }
-        DexProtocol::MeteoraDammV2 => Err(
-            "Meteora DAMM v2 remains quote-only until its dedicated fee/curve adapter is accepted",
-        ),
+        DexProtocol::MeteoraDammV2 => {
+            if pool.is_fee_valid() && pool.reserve_in > 0 && pool.reserve_out > 0 {
+                Ok(())
+            } else {
+                Err("Meteora DAMM v2 missing on-chain fee or reserves")
+            }
+        }
+        DexProtocol::MeteoraDbc => {
+            if pool.is_fee_valid() && pool.reserve_in > 0 && pool.reserve_out > 0 {
+                Ok(())
+            } else {
+                Err("Meteora DBC missing on-chain fee or reserves")
+            }
+        }
+        DexProtocol::MeteoraDlmmPro => {
+            if pool.clmm.is_some() {
+                Ok(())
+            } else {
+                Err("Meteora DLMM Pro missing decoded tick array state")
+            }
+        }
         DexProtocol::RaydiumLaunchLab => {
             Err("Raydium LaunchLab remains quote-only until its dedicated fee adapter is accepted")
         }
@@ -233,8 +255,11 @@ macro_rules! clmm_adapter {
 
 cpmm_adapter!(RaydiumV4QuoteAdapter, DexProtocol::RaydiumV4);
 cpmm_adapter!(RaydiumCpmmQuoteAdapter, DexProtocol::RaydiumCpmm);
+cpmm_adapter!(MeteoraDammQuoteAdapter, DexProtocol::MeteoraDammV2);
+cpmm_adapter!(MeteoraDbcQuoteAdapter, DexProtocol::MeteoraDbc);
 clmm_adapter!(RaydiumClmmQuoteAdapter, DexProtocol::RaydiumClmm);
 clmm_adapter!(OrcaWhirlpoolQuoteAdapter, DexProtocol::OrcaWhirlpool);
+clmm_adapter!(MeteoraDlmmProQuoteAdapter, DexProtocol::MeteoraDlmmPro);
 
 pub struct MeteoraDlmmQuoteAdapter;
 impl ProtocolQuoteAdapter for MeteoraDlmmQuoteAdapter {
@@ -296,11 +321,10 @@ static RAYDIUM_CPMM_ADAPTER: RaydiumCpmmQuoteAdapter = RaydiumCpmmQuoteAdapter;
 static RAYDIUM_CLMM_ADAPTER: RaydiumClmmQuoteAdapter = RaydiumClmmQuoteAdapter;
 static ORCA_ADAPTER: OrcaWhirlpoolQuoteAdapter = OrcaWhirlpoolQuoteAdapter;
 static METEORA_DLMM_ADAPTER: MeteoraDlmmQuoteAdapter = MeteoraDlmmQuoteAdapter;
+static METEORA_DAMM_ADAPTER: MeteoraDammQuoteAdapter = MeteoraDammQuoteAdapter;
+static METEORA_DBC_ADAPTER: MeteoraDbcQuoteAdapter = MeteoraDbcQuoteAdapter;
+static METEORA_DLMM_PRO_ADAPTER: MeteoraDlmmProQuoteAdapter = MeteoraDlmmProQuoteAdapter;
 static PUMP_FUN_ADAPTER: PumpFunQuoteAdapter = PumpFunQuoteAdapter;
-static METEORA_DAMM_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
-    venue: DexProtocol::MeteoraDammV2,
-    reason: "Meteora DAMM v2 requires its own layout-version, liquidity-handler, and compounding-fee state adapter",
-};
 static RAYDIUM_LAUNCHLAB_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::RaydiumLaunchLab,
     reason: "Raydium LaunchLab requires its own platform/global config and bonding-curve state adapter",
@@ -318,6 +342,8 @@ pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuo
         DexProtocol::OrcaWhirlpool => &ORCA_ADAPTER,
         DexProtocol::MeteoraDlmm => &METEORA_DLMM_ADAPTER,
         DexProtocol::MeteoraDammV2 => &METEORA_DAMM_ADAPTER,
+        DexProtocol::MeteoraDbc => &METEORA_DBC_ADAPTER,
+        DexProtocol::MeteoraDlmmPro => &METEORA_DLMM_PRO_ADAPTER,
         DexProtocol::RaydiumLaunchLab => &RAYDIUM_LAUNCHLAB_ADAPTER,
         DexProtocol::PumpFun => &PUMP_FUN_ADAPTER,
         DexProtocol::PumpSwap => &PUMP_SWAP_ADAPTER,

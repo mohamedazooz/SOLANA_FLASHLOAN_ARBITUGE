@@ -541,7 +541,10 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::MeteoraDlmm
+                | DexProtocol::MeteoraDammV2
+                | DexProtocol::MeteoraDbc
+                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
                 DexProtocol::PumpFun => pump_count += 1,
                 DexProtocol::PumpSwap => pumpswap_count += 1,
             }
@@ -671,7 +674,10 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::MeteoraDlmm
+                | DexProtocol::MeteoraDammV2
+                | DexProtocol::MeteoraDbc
+                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
                 DexProtocol::PumpFun | DexProtocol::PumpSwap => pump_count += 1,
             }
         }

@@ -509,6 +509,7 @@ impl TxBuilder {
         }
 
         // 5. Kamino Flash Repay (amount == principal; fee collected on top)
+        let repay_idx = ixs.len();
         ixs.push(build_kamino_flash_repay_with_index(
             &resolved_params,
             payer,
@@ -536,6 +537,26 @@ impl TxBuilder {
                 tip_account,
                 tip_amount,
             ));
+        }
+
+        // Deterministic atomic integrity verification (borrow-swaps-repay atomicity,
+        // borrow amount == repay principal, signer and ATA integrity, transaction limits).
+        let verification = crate::atomic_integrity::verify_atomic_integrity(
+            crate::atomic_integrity::ExecutionMode::SingleTransaction,
+            &ixs,
+            Some(borrow_idx),
+            Some(repay_idx),
+            borrow_amount,
+            repay_principal,
+            fee,
+        )?;
+        if !verification.is_atomic {
+            return Err(TxError::InstructionError(
+                verification
+                    .rejection_reason
+                    .unwrap_or_else(|| "atomic integrity check failed".to_string()),
+            )
+            .into());
         }
 
         Ok(ixs)

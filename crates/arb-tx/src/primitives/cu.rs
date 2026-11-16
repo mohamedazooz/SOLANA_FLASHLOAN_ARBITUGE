@@ -37,8 +37,10 @@ pub fn per_hop_cu(protocol: arb_types::DexProtocol) -> u32 {
         PumpFun => 42_000,
         PumpSwap => 48_000,
         RaydiumLaunchLab => 50_000,
+        MeteoraDbc => 55_000,
         MeteoraDammV2 => 65_000,
         OrcaWhirlpool | RaydiumClmm => 85_000,
+        MeteoraDlmmPro => 90_000,
         MeteoraDlmm => 120_000,
     }
 }
