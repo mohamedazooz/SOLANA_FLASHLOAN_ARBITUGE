@@ -20,11 +20,13 @@
 //! Phase 4 (the full profitability gate) builds on this type; this module alone
 //! does not close Phase 4.
 
+use arb_ingest::RpcPool;
 use arb_types::{ArbError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 /// Default timeout for a single non-broadcast simulation round trip.
@@ -133,11 +135,29 @@ impl ForkSimResult {
 }
 
 /// Non-broadcast simulator backed by a Solana JSON-RPC endpoint.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ForkSimulator {
     rpc_url: Option<String>,
     client: reqwest::Client,
     state: ForkState,
+    /// Rotating, cooldown-aware RPC pool. When present it takes precedence
+    /// over the pinned `rpc_url` so a single rate-limited endpoint cannot
+    /// stall simulation (a 429 HTML body previously surfaced as a JSON parse
+    /// error instead of a rotation).
+    rpc_pool: Option<Arc<RpcPool>>,
+}
+
+impl std::fmt::Debug for ForkSimulator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForkSimulator")
+            .field("rpc_url", &self.rpc_url.as_ref().map(|u| RpcPool::redact_url(u)))
+            .field(
+                "rpc_pool",
+                &self.rpc_pool.as_ref().map(|p| p.endpoints_count()),
+            )
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 impl ForkSimulator {
@@ -159,6 +179,26 @@ impl ForkSimulator {
             rpc_url: rpc_url.filter(|u| !u.trim().is_empty()),
             client,
             state,
+            rpc_pool: None,
+        }
+    }
+
+    /// Construct backed by the shared rotating RPC pool (preferred).
+    pub fn with_rpc_pool(pool: Arc<RpcPool>) -> Self {
+        Self {
+            rpc_url: None,
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(
+                    std::env::var("ARB_SIM_TIMEOUT_MS")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .filter(|v| *v > 0)
+                        .unwrap_or(DEFAULT_FORK_SIM_TIMEOUT_MS),
+                ))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            state: ForkState::default(),
+            rpc_pool: Some(pool),
         }
     }
 
@@ -184,7 +224,9 @@ impl ForkSimulator {
                     .ok()
                     .filter(|v| !v.trim().is_empty())
             });
-        Self::new(ForkState::default(), url)
+        let mut sim = Self::new(ForkState::default(), url);
+        sim.rpc_pool = Some(Arc::new(RpcPool::from_env()));
+        sim
     }
 
     pub fn with_rpc_url(url: String) -> Self {
@@ -213,11 +255,6 @@ impl ForkSimulator {
         watch_accounts: &[Pubkey],
         expected_net_lamports: u64,
     ) -> Result<ForkSimResult> {
-        let rpc_url = self.rpc_url.as_ref().ok_or_else(|| {
-            ArbError::Internal(
-                "fork simulation requested but no RPC endpoint is configured (fail closed)".into(),
-            )
-        })?;
         if tx_bytes.is_empty() {
             return Err(ArbError::InvalidInput(
                 "fork simulation received an empty transaction".into(),
@@ -226,50 +263,68 @@ impl ForkSimulator {
 
         let b64 = base64_encode(tx_bytes);
         let addresses: Vec<String> = watch_accounts.iter().map(ToString::to_string).collect();
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "simulateTransaction",
-            "params": [
-                b64,
-                {
+        let params = json!([
+            b64,
+            {
+                "encoding": "base64",
+                "commitment": "processed",
+                "replaceRecentBlockhash": true,
+                "sigVerify": false,
+                "innerInstructions": true,
+                "maxSupportedTransactionVersion": 1,
+                "accounts": {
                     "encoding": "base64",
-                    "commitment": "processed",
-                    "replaceRecentBlockhash": true,
-                    "sigVerify": false,
-                    "innerInstructions": true,
-                    "accounts": {
-                        "encoding": "base64",
-                        "addresses": addresses
-                    }
+                    "addresses": addresses
                 }
-            ]
-        });
+            }
+        ]);
 
-        let resp = self
-            .client
-            .post(rpc_url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                ArbError::Internal(format!("fork simulation RPC connection error: {e}"))
+        let result: Value = if let Some(pool) = self.rpc_pool.as_ref().filter(|p| p.endpoints_count() > 0) {
+            pool.call_simulation_priority("simulateTransaction", params)
+                .await
+                .map_err(|e| {
+                    ArbError::Internal(format!("fork simulation pool call error: {e}"))
+                })?
+        } else {
+            let rpc_url = self.rpc_url.as_ref().ok_or_else(|| {
+                ArbError::Internal(
+                    "fork simulation requested but no RPC endpoint is configured (fail closed)"
+                        .into(),
+                )
             })?;
+            let body = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "simulateTransaction",
+                "params": params,
+            });
 
-        let val: Value = resp
-            .json()
-            .await
-            .map_err(|e| ArbError::Internal(format!("fork simulation JSON parse error: {e}")))?;
+            let resp = self
+                .client
+                .post(rpc_url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| {
+                    ArbError::Internal(format!("fork simulation RPC connection error: {e}"))
+                })?;
 
-        if let Some(err) = val.get("error") {
-            return Err(ArbError::SimulationFailed(format!(
-                "RPC rejected simulateTransaction: {err}"
-            )));
-        }
+            let val: Value = resp
+                .json()
+                .await
+                .map_err(|e| ArbError::Internal(format!("fork simulation JSON parse error: {e}")))?;
 
-        let result = val
-            .get("result")
-            .ok_or_else(|| ArbError::SimulationFailed("missing result".into()))?;
+            if let Some(err) = val.get("error") {
+                return Err(ArbError::SimulationFailed(format!(
+                    "RPC rejected simulateTransaction: {err}"
+                )));
+            }
+
+            val.get("result")
+                .cloned()
+                .ok_or_else(|| ArbError::SimulationFailed("missing result".into()))?
+        };
+
         let value = result
             .get("value")
             .ok_or_else(|| ArbError::SimulationFailed("missing result.value".into()))?;

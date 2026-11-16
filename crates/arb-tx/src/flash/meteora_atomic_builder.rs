@@ -46,9 +46,11 @@ use std::str::FromStr;
 pub const METEORA_TWO_POOL_V1_DEFAULT_CU_LIMIT: u32 = 260_000;
 
 /// Loaded-accounts data ceiling used by the v1 route when the caller does not override
-/// it. 256 KiB comfortably covers two pools, their bin arrays, mints, vaults and oracles,
-/// while still failing closed on a pathological traversal.
-pub const METEORA_TWO_POOL_V1_DEFAULT_LOADED_DATA_LIMIT: u32 = 262_144;
+/// it. 1 MiB covers the deployed program account, two pools, multi-array bin traversals,
+/// mints, vaults and oracles (256 KiB and 1 MiB failed on mainnet with
+/// `MaxLoadedAccountsDataSizeExceeded`), while still failing closed on a pathological
+/// traversal.
+pub const METEORA_TWO_POOL_V1_DEFAULT_LOADED_DATA_LIMIT: u32 = 8_388_608;
 
 /// Hard ceiling accepted for [`MeteoraTwoPoolV1Config::compute_unit_limit`]. Mirrors the
 /// V1 runtime limit so a nonsensical limit is rejected before signing.
