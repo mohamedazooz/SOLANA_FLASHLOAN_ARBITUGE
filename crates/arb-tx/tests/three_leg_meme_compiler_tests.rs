@@ -431,18 +431,18 @@ fn test_all_directional_bin_arrays_valid() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: Two-Array ceiling rejection
+// Test: Four-Array ceiling rejection
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_two_array_ceiling_rejection() {
+fn test_four_array_ceiling_rejection() {
     let pair = pool_1().0;
-    // 141 bins traversed => 3 arrays needed => rejected
-    let err = derive_directional_bin_arrays(&pair, 100, SwapDirection::XtoY, 141).unwrap_err();
+    // 281 bins traversed => 5 arrays needed => rejected
+    let err = derive_directional_bin_arrays(&pair, 100, SwapDirection::XtoY, 281).unwrap_err();
     match err {
         arb_tx::meteora_dlmm::DlmmError::TooManyBinArrays { needed, max } => {
-            assert_eq!(needed, 3);
-            assert_eq!(max, 2);
+            assert_eq!(needed, 5);
+            assert_eq!(max, 4);
         }
         other => panic!("Expected TooManyBinArrays, got {other:?}"),
     }

@@ -25,7 +25,7 @@ pub struct DammV2FeeParams {
     pub dynamic_fee_initialized: bool,
     pub variable_fee_control: u32,
     pub volatility_accumulator: u128,
-    /// Collection mode: 0 = both tokens (input), 1 = token B only, 2 = token A only.
+    /// Collection mode: 0 = BothToken (fee on output), 1 = OnlyB (fee on token B), 2 = Compounding (fee retained in vault to grow LP).
     pub collect_fee_mode: u8,
 }
 
