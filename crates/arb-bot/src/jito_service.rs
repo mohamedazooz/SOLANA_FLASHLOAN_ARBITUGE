@@ -20,7 +20,9 @@ use arb_land::{
     AdaptiveBidder, BidderConfig, JitoLander, JitoValidatorSet, Landability, LandingLedger,
     LeaderSchedule, MIN_JITO_TIP_LAMPORTS, TipOracle, landability, now_ms,
 };
-use arb_types::{InflightStatus, Lamports, Percentile, RefuseReason, Slot, TipDecision, TipPlan};
+use arb_types::{
+    InflightStatus, Lamports, Percentile, RefuseReason, Slot, TipDecision, TipFloor, TipPlan,
+};
 use parking_lot::RwLock;
 use serde_json::json;
 use solana_pubkey::Pubkey;
@@ -33,6 +35,11 @@ use tracing::{info, warn};
 pub const KOBE_VALIDATORS_URL: &str = "https://kobe.mainnet.jito.network/api/v1/validators";
 
 /// Where a signed transaction should be submitted.
+/// Default priority fee in lamports for SWQoS direct submission.
+pub const SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS: u64 = 2_000;
+/// Minimum edge required to qualify for SWQoS direct execution (5k base fee + 2k priority fee + 1k profit floor).
+pub const SWQOS_MIN_EDGE_HURDLE_LAMPORTS: u64 = 8_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionRoute {
     /// The slot's leader runs Jito-Solana: a bundle can be won.
@@ -236,18 +243,18 @@ impl JitoService {
         let route = if self.bids_for(slot) {
             if tip.is_bid() {
                 ExecutionRoute::Bundle
-            } else if !is_hot_write_lock && edge.0 >= 8_000 {
+            } else if !is_hot_write_lock && edge.0 >= SWQOS_MIN_EDGE_HURDLE_LAMPORTS {
                 // Hybrid SWQoS fallback: if trade is calm and profitable (covers 5k base + 2k priority + profit),
                 // route directly to SWQoS!
                 ExecutionRoute::SwqosDirect {
-                    priority_fee_lamports: 2_000,
+                    priority_fee_lamports: SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS,
                 }
             } else {
                 ExecutionRoute::Bundle
             }
-        } else if !is_hot_write_lock && edge.0 >= 8_000 {
+        } else if !is_hot_write_lock && edge.0 >= SWQOS_MIN_EDGE_HURDLE_LAMPORTS {
             ExecutionRoute::SwqosDirect {
-                priority_fee_lamports: 2_000,
+                priority_fee_lamports: SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS,
             }
         } else {
             ExecutionRoute::PlainRpc
@@ -272,6 +279,12 @@ impl JitoService {
         }
 
         ExecutionPlan { route, tip }
+    }
+
+    /// Calibrated inclusion probability for a given tip amount.
+    pub fn calibrated_inclusion_probability(&self, tip: Lamports, floor: &TipFloor) -> f64 {
+        let ledger = self.ledger.read();
+        arb_land::AdaptiveBidder::calibrated_inclusion_probability(tip, floor, &ledger)
     }
 
     /// Fold an observed bundle status into the landing ledger.
