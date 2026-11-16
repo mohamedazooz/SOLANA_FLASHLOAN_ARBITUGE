@@ -1150,6 +1150,47 @@ pub struct ExecutionOpportunity {
     pub hop_slippage_bps: u64,
 }
 
+/// Canonical representation of a single swap leg within a multi-hop execution plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HopExecutionLeg {
+    /// Exact input amount for this hop.
+    pub amount_in: u64,
+    /// Conservative minimum output guaranteed by this hop (slippage deducted exactly once).
+    pub min_amount_out: u64,
+}
+
+/// Canonical multi-hop execution plan enforcing that each hop's input amount is strictly
+/// bounded by the previous hop's conservative minimum output (`previous_hop.min_amount_out >= next_hop.amount_in`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HopExecutionPlan {
+    pub legs: Vec<HopExecutionLeg>,
+}
+
+impl HopExecutionPlan {
+    /// Construct a new execution plan from explicit legs and validate the sequential solvency invariant.
+    pub fn new(legs: Vec<HopExecutionLeg>) -> Result<Self> {
+        let plan = Self { legs };
+        if !plan.validate_sequential_solvency() {
+            return Err(ArbError::InvalidInput(
+                "Sequential solvency violated: previous hop min_amount_out < next hop amount_in"
+                    .into(),
+            ));
+        }
+        Ok(plan)
+    }
+
+    /// Returns true if and only if every hop's input is less than or equal to the preceding hop's
+    /// guaranteed minimum output, preventing pre-existing inventory subsidy or slippage underflow.
+    pub fn validate_sequential_solvency(&self) -> bool {
+        for window in self.legs.windows(2) {
+            if window[0].min_amount_out < window[1].amount_in {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 fn default_hop_slippage_bps() -> u64 {
     arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
 }
