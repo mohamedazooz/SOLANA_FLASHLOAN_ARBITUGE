@@ -16,7 +16,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 #[derive(Debug, Clone, Serialize)]
 pub enum SolamiWebhookPayload {
     Batch(Vec<SolamiEvent>),
-    Single(SolamiEvent),
+    Single(Box<SolamiEvent>),
 }
 
 impl<'de> Deserialize<'de> for SolamiWebhookPayload {
@@ -38,7 +38,7 @@ impl<'de> Deserialize<'de> for SolamiWebhookPayload {
             Ok(SolamiWebhookPayload::Batch(list))
         } else {
             let item = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-            Ok(SolamiWebhookPayload::Single(item))
+            Ok(SolamiWebhookPayload::Single(Box::new(item)))
         }
     }
 }
@@ -48,7 +48,7 @@ impl SolamiWebhookPayload {
     pub fn into_events(self) -> Vec<SolamiEvent> {
         match self {
             Self::Batch(list) => list,
-            Self::Single(ev) => vec![ev],
+            Self::Single(ev) => vec![*ev],
         }
     }
 }
@@ -154,9 +154,17 @@ impl SolamiEvent {
         let slot = self.slot.unwrap_or(0);
         let timestamp = self.timestamp.unwrap_or(0);
         let trader = self.trader.clone().unwrap_or_default();
-        let source = self.dex.clone().unwrap_or_else(|| "SOLAMI".to_string()).to_uppercase();
+        let source = self
+            .dex
+            .clone()
+            .unwrap_or_else(|| "SOLAMI".to_string())
+            .to_uppercase();
 
-        let primary_mint = self.address.clone().or_else(|| self.mint.clone()).unwrap_or_default();
+        let primary_mint = self
+            .address
+            .clone()
+            .or_else(|| self.mint.clone())
+            .unwrap_or_default();
         let mut account_data = Vec::new();
 
         // Include pool address in account data for AMM routing

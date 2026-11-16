@@ -35,6 +35,7 @@ async fn create_test_app() -> axum::Router {
         router,
         evaluator,
         worker,
+        rate_limiter: Arc::new(solana_webhook_service::rate_limit::RateLimiter::disabled()),
     };
 
     axum::Router::new()
@@ -101,7 +102,13 @@ async fn test_solami_webhook_auth_protection() {
 async fn test_solami_webhook_authorized_processing_and_dedup() {
     let app = create_test_app().await;
     let auth_token = "test-only-webhook-token";
-    let test_sig = format!("solami_test_swap_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let test_sig = format!(
+        "solami_test_swap_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
 
     let payload = json!({
         "type": "swap",
@@ -158,7 +165,10 @@ async fn test_solami_webhook_authorized_processing_and_dedup() {
 async fn test_solami_webhook_batch_processing() {
     let app = create_test_app().await;
     let auth_token = "test-only-webhook-token";
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
 
     let batch_payload = json!([
         {

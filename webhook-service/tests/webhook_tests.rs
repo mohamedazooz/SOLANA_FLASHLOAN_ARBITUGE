@@ -34,6 +34,7 @@ async fn create_test_app() -> axum::Router {
         router,
         evaluator,
         worker,
+        rate_limiter: Arc::new(solana_webhook_service::rate_limit::RateLimiter::disabled()),
     };
 
     axum::Router::new()
@@ -112,7 +113,10 @@ async fn test_amm_router_resolution() {
 
     let resolved = router.resolve_modified_pools(&payload);
     assert_eq!(resolved.len(), 1);
-    assert_eq!(resolved[0].pool_id, "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2");
+    assert_eq!(
+        resolved[0].pool_id,
+        "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2"
+    );
     assert_eq!(resolved[0].amm_type, "raydium_v4");
 }
 

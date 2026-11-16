@@ -65,9 +65,9 @@ pub mod string_or_u64 {
             where
                 E: serde::de::Error,
             {
-                value
-                    .parse::<u64>()
-                    .map_err(|e| E::custom(format!("failed to parse u64 from string '{value}': {e}")))
+                value.parse::<u64>().map_err(|e| {
+                    E::custom(format!("failed to parse u64 from string '{value}': {e}"))
+                })
             }
         }
 
@@ -180,9 +180,9 @@ pub mod string_or_u128 {
             where
                 E: serde::de::Error,
             {
-                value
-                    .parse::<u128>()
-                    .map_err(|e| E::custom(format!("failed to parse u128 from string '{value}': {e}")))
+                value.parse::<u128>().map_err(|e| {
+                    E::custom(format!("failed to parse u128 from string '{value}': {e}"))
+                })
             }
         }
 
@@ -203,7 +203,7 @@ pub mod string_or_u128 {
 #[serde(untagged)]
 pub enum WebhookPayload {
     Batch(Vec<SolanaTransactionPayload>),
-    Single(SolanaTransactionPayload),
+    Single(Box<SolanaTransactionPayload>),
 }
 
 impl WebhookPayload {
@@ -211,7 +211,7 @@ impl WebhookPayload {
     pub fn into_transactions(self) -> Vec<SolanaTransactionPayload> {
         match self {
             Self::Batch(list) => list,
-            Self::Single(item) => vec![item],
+            Self::Single(item) => vec![*item],
         }
     }
 }
@@ -447,4 +447,3 @@ pub struct ResolvedPoolEvent {
     pub modified_accounts: Vec<String>,
     pub token_transfers: Vec<TokenTransfer>,
 }
-

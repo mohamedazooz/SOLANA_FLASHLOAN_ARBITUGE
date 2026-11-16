@@ -3,19 +3,22 @@
 use solana_webhook_service::config::AppConfig;
 use solana_webhook_service::dedup::DeduplicationEngine;
 use solana_webhook_service::engine::{DefaultTelemetryListener, ExpressionEvaluator, WorkerEngine};
+use solana_webhook_service::rate_limit::RateLimiter;
 use solana_webhook_service::router::AmmRouter;
 use solana_webhook_service::{
     handle_bitquery_query, handle_bitquery_status, handle_helius_pumpfun_get,
     handle_helius_pumpfun_webhook, handle_solami_webhook, handle_solami_webhook_get,
-    handle_webhook, health_check, topology_snapshot, ws_topology_handler, AppState,
+    handle_webhook, health_check, rate_limit_middleware, topology_snapshot, ws_topology_handler,
+    AppState,
 };
 
+use axum::http::HeaderValue;
 use axum::{
     extract::DefaultBodyLimit,
+    middleware,
     routing::{get, post},
     Router,
 };
-use axum::http::HeaderValue;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -92,20 +95,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // Build shared state
+    let rate_limiter = Arc::new(RateLimiter::new(
+        config.server.rate_limit_requests_per_minute,
+    ));
     let state = AppState {
         config: config_arc.clone(),
         dedup,
         router,
         evaluator,
         worker,
+        rate_limiter,
     };
 
     // Define Axum application routes
     let app = Router::new()
         .route("/v1/webhook", post(handle_webhook))
         .route("/health", get(health_check))
-        .route("/webhooks/SOLAMI", post(handle_solami_webhook).get(handle_solami_webhook_get))
-        .route("/webhooks/solami", post(handle_solami_webhook).get(handle_solami_webhook_get))
+        .route(
+            "/webhooks/SOLAMI",
+            post(handle_solami_webhook).get(handle_solami_webhook_get),
+        )
+        .route(
+            "/webhooks/solami",
+            post(handle_solami_webhook).get(handle_solami_webhook_get),
+        )
         .route(
             "/webhooks/helius/pumpfun",
             post(handle_helius_pumpfun_webhook).get(handle_helius_pumpfun_get),
@@ -117,6 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .layer(TraceLayer::new_for_http())
         .layer(build_cors_layer(&config.server.cors_allowed_origins))
         .layer(DefaultBodyLimit::max(config.server.max_body_bytes))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
@@ -126,9 +143,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(target: "main", %addr, "Webhook HTTP server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!(target: "main", "Webhook service shutdown complete");
     Ok(())

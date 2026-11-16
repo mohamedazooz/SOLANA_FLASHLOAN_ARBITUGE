@@ -25,11 +25,7 @@ pub struct DeduplicationEngine {
 
 impl DeduplicationEngine {
     /// Initializes the deduplication engine and connects to Redis if available.
-    pub async fn new(
-        redis_url: &str,
-        local_ttl_secs: u64,
-        redis_ttl_ms: u64,
-    ) -> Result<Self> {
+    pub async fn new(redis_url: &str, local_ttl_secs: u64, redis_ttl_ms: u64) -> Result<Self> {
         let local_cache = Arc::new(DashMap::new());
         let local_ttl = Duration::from_secs(local_ttl_secs);
 

@@ -7,9 +7,7 @@ use solana_webhook_service::config::AppConfig;
 use solana_webhook_service::dedup::DeduplicationEngine;
 use solana_webhook_service::engine::{DefaultTelemetryListener, ExpressionEvaluator, WorkerEngine};
 use solana_webhook_service::router::AmmRouter;
-use solana_webhook_service::{
-    handle_bitquery_query, handle_bitquery_status, AppState,
-};
+use solana_webhook_service::{handle_bitquery_query, handle_bitquery_status, AppState};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -35,11 +33,18 @@ async fn create_test_app() -> axum::Router {
         router,
         evaluator,
         worker,
+        rate_limiter: Arc::new(solana_webhook_service::rate_limit::RateLimiter::disabled()),
     };
 
     axum::Router::new()
-        .route("/v1/bitquery/query", axum::routing::post(handle_bitquery_query))
-        .route("/v1/bitquery/status", axum::routing::get(handle_bitquery_status))
+        .route(
+            "/v1/bitquery/query",
+            axum::routing::post(handle_bitquery_query),
+        )
+        .route(
+            "/v1/bitquery/status",
+            axum::routing::get(handle_bitquery_status),
+        )
         .with_state(state)
 }
 
@@ -66,9 +71,19 @@ async fn test_bitquery_status_endpoint() {
         .unwrap();
     let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
-    assert_eq!(body_json.get("status").and_then(|s| s.as_str()), Some("active"));
-    assert_eq!(body_json.get("provider").and_then(|s| s.as_str()), Some("bitquery"));
-    assert!(body_json.get("has_client_id").unwrap().as_bool().unwrap_or(false));
+    assert_eq!(
+        body_json.get("status").and_then(|s| s.as_str()),
+        Some("active")
+    );
+    assert_eq!(
+        body_json.get("provider").and_then(|s| s.as_str()),
+        Some("bitquery")
+    );
+    assert!(body_json
+        .get("has_client_id")
+        .unwrap()
+        .as_bool()
+        .unwrap_or(false));
 }
 
 #[tokio::test]
@@ -111,5 +126,8 @@ async fn test_bitquery_query_empty_body_validation() {
         .await
         .unwrap();
     let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(body_json.get("error").and_then(|s| s.as_str()), Some("GraphQL query string cannot be empty"));
+    assert_eq!(
+        body_json.get("error").and_then(|s| s.as_str()),
+        Some("GraphQL query string cannot be empty")
+    );
 }

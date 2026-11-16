@@ -6,7 +6,9 @@ pub mod dedup;
 pub mod engine;
 pub mod helius_pumpfun_handler;
 pub mod models;
+pub mod rate_limit;
 pub mod router;
+pub mod secrets;
 pub mod solami_handler;
 pub mod solami_models;
 
@@ -22,14 +24,22 @@ use crate::models::WebhookPayload;
 use crate::router::AmmRouter;
 
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        ConnectInfo, State,
+    },
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Response},
 };
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::json;
+use sha2::Sha256;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, trace, warn};
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Shared Application State passed into Axum routes.
 #[derive(Clone)]
@@ -39,6 +49,7 @@ pub struct AppState {
     pub router: AmmRouter,
     pub evaluator: ExpressionEvaluator,
     pub worker: Arc<WorkerEngine>,
+    pub rate_limiter: Arc<rate_limit::RateLimiter>,
 }
 
 /// Constant-time byte equality. Per the OWASP Webhook Security Cheat Sheet,
@@ -66,6 +77,91 @@ fn bearer_or_raw_token_valid(val: &str, expected: &str) -> bool {
         || val
             .strip_prefix("Bearer ")
             .is_some_and(|t| verify_webhook_token(Some(t), expected))
+}
+
+/// Verify an HMAC-SHA256 request signature over the raw body bytes.
+///
+/// Accepts lowercase/uppercase hex and an optional `sha256=` prefix
+/// (GitHub / Standard-Webhooks convention). Comparison is constant-time.
+/// Returns `false` when the header is missing, malformed, or mismatched.
+pub fn verify_hmac_signature(secret: &str, raw_body: &[u8], provided: Option<&str>) -> bool {
+    let Some(provided) = provided else {
+        return false;
+    };
+    let provided = provided.trim();
+    let provided = provided.strip_prefix("sha256=").unwrap_or(provided);
+    let Ok(provided_bytes) = hex::decode(provided) else {
+        return false;
+    };
+    let Ok(mut mac) = HmacSha256::new_from_slice(secret.as_bytes()) else {
+        return false;
+    };
+    mac.update(raw_body);
+    let tag = mac.finalize().into_bytes();
+    constant_time_eq(&tag[..], &provided_bytes)
+}
+
+/// Replay-protection guard based on the event timestamp.
+///
+/// `max_age_secs == 0` disables the guard (returns `true` unconditionally).
+/// When enabled: events older than `max_age_secs` are rejected, timestamps
+/// more than 5 minutes in the future are rejected (clock skew beyond that is
+/// a replay/forgery signal), and events with no timestamp are rejected
+/// (fail-closed) because their age cannot be established.
+pub fn event_age_allowed(max_age_secs: u64, event_timestamp: Option<i64>, now_secs: i64) -> bool {
+    if max_age_secs == 0 {
+        return true;
+    }
+    match event_timestamp {
+        None => false,
+        Some(ts) => {
+            const FUTURE_SKEW_ALLOWANCE_SECS: i64 = 300;
+            now_secs - ts <= max_age_secs as i64 && ts - now_secs <= FUTURE_SKEW_ALLOWANCE_SECS
+        }
+    }
+}
+
+/// Extract the client identity used for rate limiting: the direct peer address
+/// when available, else the first `X-Forwarded-For` hop (reverse-proxy
+/// deployments), else a shared global bucket.
+fn client_key(req: &axum::extract::Request) -> String {
+    if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+        return addr.ip().to_string();
+    }
+    if let Some(xff) = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(first) = xff.split(',').next() {
+            let first = first.trim();
+            if !first.is_empty() {
+                return first.to_string();
+            }
+        }
+    }
+    "global".to_string()
+}
+
+/// Axum middleware enforcing the configured per-client rate limit.
+pub async fn rate_limit_middleware(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.rate_limiter.is_enabled() {
+        return next.run(req).await;
+    }
+    let key = client_key(&req);
+    if !state.rate_limiter.check(&key) {
+        warn!(target: "security", client = %key, "Rate limit exceeded, rejecting request");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error": "rate limit exceeded"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// High-throughput POST `/v1/webhook` handler.

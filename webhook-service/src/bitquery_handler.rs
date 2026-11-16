@@ -30,9 +30,7 @@ pub async fn handle_bitquery_query(
         let is_auth_valid = headers
             .get("x-webhook-auth")
             .and_then(|h| h.to_str().ok())
-            .map(|val| {
-                crate::verify_webhook_token(Some(val), &state.config.server.auth_token)
-            })
+            .map(|val| crate::verify_webhook_token(Some(val), &state.config.server.auth_token))
             .unwrap_or(false)
             || headers
                 .get("Authorization")
@@ -42,7 +40,10 @@ pub async fn handle_bitquery_query(
                         || val
                             .strip_prefix("Bearer ")
                             .map(|t| {
-                                crate::verify_webhook_token(Some(t), &state.config.server.auth_token)
+                                crate::verify_webhook_token(
+                                    Some(t),
+                                    &state.config.server.auth_token,
+                                )
                             })
                             .unwrap_or(false)
                 })
@@ -136,9 +137,7 @@ pub async fn handle_bitquery_status(
         let is_auth_valid = headers
             .get("x-webhook-auth")
             .and_then(|h| h.to_str().ok())
-            .map(|val| {
-                crate::verify_webhook_token(Some(val), &state.config.server.auth_token)
-            })
+            .map(|val| crate::verify_webhook_token(Some(val), &state.config.server.auth_token))
             .unwrap_or(false)
             || headers
                 .get("Authorization")
@@ -148,7 +147,10 @@ pub async fn handle_bitquery_status(
                         || val
                             .strip_prefix("Bearer ")
                             .map(|t| {
-                                crate::verify_webhook_token(Some(t), &state.config.server.auth_token)
+                                crate::verify_webhook_token(
+                                    Some(t),
+                                    &state.config.server.auth_token,
+                                )
                             })
                             .unwrap_or(false)
                 })

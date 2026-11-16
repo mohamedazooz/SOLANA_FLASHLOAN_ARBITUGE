@@ -100,7 +100,9 @@ impl AmmRouter {
                 modified_accounts_set.insert(acc.clone());
                 if let Some(pools) = self.account_to_pools.get(acc) {
                     for p in pools {
-                        matched_pools.entry(p.pool_id.clone()).or_insert_with(|| Arc::clone(p));
+                        matched_pools
+                            .entry(p.pool_id.clone())
+                            .or_insert_with(|| Arc::clone(p));
                     }
                 }
             }
@@ -113,7 +115,9 @@ impl AmmRouter {
                     modified_accounts_set.insert(acc.clone());
                     if let Some(pools) = self.account_to_pools.get(acc) {
                         for p in pools {
-                            matched_pools.entry(p.pool_id.clone()).or_insert_with(|| Arc::clone(p));
+                            matched_pools
+                                .entry(p.pool_id.clone())
+                                .or_insert_with(|| Arc::clone(p));
                         }
                     }
                 }
@@ -125,7 +129,9 @@ impl AmmRouter {
             modified_accounts_set.insert(acc_data.account.clone());
             if let Some(pools) = self.account_to_pools.get(&acc_data.account) {
                 for p in pools {
-                    matched_pools.entry(p.pool_id.clone()).or_insert_with(|| Arc::clone(p));
+                    matched_pools
+                        .entry(p.pool_id.clone())
+                        .or_insert_with(|| Arc::clone(p));
                 }
             }
         }
@@ -136,7 +142,9 @@ impl AmmRouter {
                 modified_accounts_set.insert(from_acc.clone());
                 if let Some(pools) = self.account_to_pools.get(from_acc) {
                     for p in pools {
-                        matched_pools.entry(p.pool_id.clone()).or_insert_with(|| Arc::clone(p));
+                        matched_pools
+                            .entry(p.pool_id.clone())
+                            .or_insert_with(|| Arc::clone(p));
                     }
                 }
             }
@@ -144,7 +152,9 @@ impl AmmRouter {
                 modified_accounts_set.insert(to_acc.clone());
                 if let Some(pools) = self.account_to_pools.get(to_acc) {
                     for p in pools {
-                        matched_pools.entry(p.pool_id.clone()).or_insert_with(|| Arc::clone(p));
+                        matched_pools
+                            .entry(p.pool_id.clone())
+                            .or_insert_with(|| Arc::clone(p));
                     }
                 }
             }

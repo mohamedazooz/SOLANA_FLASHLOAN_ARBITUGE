@@ -5,12 +5,21 @@
 host = "0.0.0.0"
 port = 8085
 # Optional bearer token for provider authentication. Empty string disables requirement.
+# Production: set auth_token_env to the NAME of an env var holding the token
+# (e.g. "WEBHOOK_AUTH_TOKEN"); the env value overrides auth_token and MUST be
+# present at startup (fail-closed). Never commit the token itself.
 auth_token = "" # Set WEBHOOK_AUTH_TOKEN in the process environment
+auth_token_env = ""
 # Explicit CORS origin allowlist. Empty list = no CORS headers emitted
 # (browser cross-origin access denied). Never permissive.
 cors_allowed_origins = []
 # Maximum accepted request body size in bytes.
 max_body_bytes = 1048576
+# Per-client requests allowed per 60-second window. 0 = disabled.
+rate_limit_requests_per_minute = 600
+# Replay protection: reject events older than this many seconds (and
+# far-future or missing timestamps). 0 = disabled.
+max_event_age_secs = 0
 channel_buffer_size = 65536
 worker_threads = 4
 
