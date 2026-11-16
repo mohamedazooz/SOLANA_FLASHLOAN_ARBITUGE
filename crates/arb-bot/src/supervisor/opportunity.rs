@@ -44,6 +44,31 @@ impl Supervisor {
         let quote_ingest_time =
             std::time::Instant::now() - Duration::from_micros(t_ingest_to_quote_us);
         for opp in opportunities {
+            // Invariant check: when flash funding is enabled, candidate trade size must not exceed
+            // verified available supply-vault liquidity.
+            if self.config.strategy.use_flash_loan {
+                let available_vault_liquidity = match self
+                    .kamino_available_flash_liquidity(current_slot)
+                {
+                    Some(liq) => liq,
+                    None => {
+                        debug!(
+                            "Opportunity rejected: Kamino supply-vault liquidity unverifiable at slot {}",
+                            current_slot.0
+                        );
+                        continue;
+                    }
+                };
+                if opp.size_in.as_u64() > available_vault_liquidity {
+                    debug!(
+                        "Opportunity rejected: size_in ({}) exceeds available vault liquidity ({})",
+                        opp.size_in.as_u64(),
+                        available_vault_liquidity
+                    );
+                    continue;
+                }
+            }
+
             // Config is the single source of truth for the per-hop min-out
             // floor: stamp it onto every candidate before any builder reads
             // it. Builders further clamp to HOP_SLIPPAGE_MAX_BPS.

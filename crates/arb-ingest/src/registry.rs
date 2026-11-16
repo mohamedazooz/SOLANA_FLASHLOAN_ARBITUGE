@@ -1126,6 +1126,118 @@ impl MultiDexRegistry {
                         swap_version: arb_types::RaydiumV4SwapVersion::V2,
                     })
                 }
+                (DexProtocol::MeteoraDammV2, Some(d)) if d.len() >= 485 => {
+                    let vault_a = Pubkey::new_from_array(d[232..264].try_into().unwrap());
+                    let vault_b = Pubkey::new_from_array(d[264..296].try_into().unwrap());
+                    let config = Pubkey::new_from_array(d[296..328].try_into().unwrap());
+                    let prog = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let authority = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_POOL_AUTHORITY)
+                        .unwrap_or_default();
+                    let (event_authority, _) =
+                        Pubkey::find_program_address(&[b"__event_authority"], &prog);
+                    Some(arb_types::PoolExecutionAccounts::MeteoraDammV2 {
+                        config,
+                        authority,
+                        vault_a,
+                        vault_b,
+                        event_authority,
+                    })
+                }
+                (DexProtocol::MeteoraDbc, Some(d)) if d.len() >= 256 => {
+                    let config = Pubkey::new_from_array(d[8..40].try_into().unwrap());
+                    let vault_base = Pubkey::new_from_array(d[104..136].try_into().unwrap());
+                    let vault_quote = Pubkey::new_from_array(d[136..168].try_into().unwrap());
+                    let prog =
+                        Pubkey::from_str(arb_constants::METEORA_DBC_PROGRAM_ID).unwrap_or_default();
+                    let (authority, _) = Pubkey::find_program_address(
+                        &[b"pool_authority", p.pool_id.0.as_ref()],
+                        &prog,
+                    );
+                    let (event_authority, _) =
+                        Pubkey::find_program_address(&[b"__event_authority"], &prog);
+                    Some(arb_types::PoolExecutionAccounts::MeteoraDbc {
+                        config,
+                        authority,
+                        vault_base,
+                        vault_quote,
+                        event_authority,
+                    })
+                }
+                (DexProtocol::MeteoraDlmmPro, Some(d)) if d.len() >= 256 => {
+                    let vault_x = Pubkey::new_from_array(d[72..104].try_into().unwrap());
+                    let vault_y = Pubkey::new_from_array(d[104..136].try_into().unwrap());
+                    let oracle = Pubkey::new_from_array(d[136..168].try_into().unwrap());
+                    let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PRO_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let (pool_authority, _) = Pubkey::find_program_address(
+                        &[b"pool_authority", p.pool_id.0.as_ref()],
+                        &prog,
+                    );
+                    let (event_authority, _) =
+                        Pubkey::find_program_address(&[b"__event_authority"], &prog);
+                    Some(arb_types::PoolExecutionAccounts::MeteoraDlmmPro {
+                        pool_authority,
+                        vault_x,
+                        vault_y,
+                        tick_arrays: vec![],
+                        oracle,
+                        event_authority,
+                    })
+                }
+                (DexProtocol::RaydiumLaunchLab, Some(d)) if d.len() >= 366 => {
+                    let global_config = Pubkey::new_from_array(d[141..173].try_into().unwrap());
+                    let platform_config = Pubkey::new_from_array(d[173..205].try_into().unwrap());
+                    let base_vault = Pubkey::new_from_array(d[269..301].try_into().unwrap());
+                    let quote_vault = Pubkey::new_from_array(d[301..333].try_into().unwrap());
+                    let prog = Pubkey::from_str(arb_constants::RAYDIUM_LAUNCHLAB_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let (authority, _) = Pubkey::find_program_address(&[b"vault_auth_seed"], &prog);
+                    let (event_authority, _) =
+                        Pubkey::find_program_address(&[b"__event_authority"], &prog);
+                    Some(arb_types::PoolExecutionAccounts::RaydiumLaunchLab {
+                        authority,
+                        global_config,
+                        platform_config,
+                        base_vault,
+                        quote_vault,
+                        event_authority,
+                    })
+                }
+                (DexProtocol::PumpSwap, Some(d)) if d.len() >= 245 => {
+                    (|| -> Option<arb_types::PoolExecutionAccounts> {
+                        let header = arb_dex::PumpSwapPoolHeader::decode(d).ok()?;
+                        let global_config =
+                            Pubkey::from_str(arb_constants::PUMP_SWAP_GLOBAL_CONFIG).ok()?;
+                        let pump_swap_program =
+                            Pubkey::from_str(arb_constants::PUMP_SWAP_PROGRAM_ID).ok()?;
+                        let pump_fees_program =
+                            Pubkey::from_str(arb_constants::PUMP_FEES_PROGRAM_ID).ok()?;
+                        let (fee_config, _) = Pubkey::find_program_address(
+                            &[b"fee_config", pump_swap_program.as_ref()],
+                            &pump_fees_program,
+                        );
+                        let protocol_fee_recipient =
+                            Pubkey::from_str(arb_constants::PUMP_FUN_FEE_RECIPIENT)
+                                .unwrap_or_default();
+                        let pool_version = if header.is_cashback_coin {
+                            arb_types::PumpSwapPoolVersion::V1Legacy
+                        } else {
+                            arb_types::PumpSwapPoolVersion::V2
+                        };
+                        Some(arb_types::PoolExecutionAccounts::PumpSwap {
+                            global_config,
+                            pool_base_vault: header.base_vault,
+                            pool_quote_vault: header.quote_vault,
+                            protocol_fee_recipient,
+                            protocol_fee_recipient_ata: Pubkey::default(),
+                            coin_creator_vault_authority: header.coin_creator,
+                            coin_creator_vault_ata: Pubkey::default(),
+                            fee_config,
+                            pool_version,
+                        })
+                    })()
+                }
                 _ => None,
             };
 
