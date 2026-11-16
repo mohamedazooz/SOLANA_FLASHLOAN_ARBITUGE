@@ -86,14 +86,6 @@ impl GmgnClient {
         }
     }
 
-    /// Read currently cached snapshot in memory without triggering network requests or rate limits.
-    pub fn get_cached_snapshot(&self) -> Option<Vec<TrendingToken>> {
-        self.snapshot
-            .read()
-            .as_ref()
-            .map(|(_, tokens)| tokens.clone())
-    }
-
     /// Fetch trending Solana tokens with snapshot caching and automated fallback.
     /// Re-uses local snapshot if within TTL (60s) to completely prevent 429/403 rate limits.
     pub async fn fetch_trending_tokens(&self, limit: usize) -> Result<Vec<TrendingToken>> {

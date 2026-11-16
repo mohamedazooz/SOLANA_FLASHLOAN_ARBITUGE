@@ -167,7 +167,7 @@ use arb_constants::{
     METEORA_DLMM_PROGRAM_ID, ORCA_WHIRLPOOL_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID,
     RAYDIUM_CLMM_PROGRAM_ID, RAYDIUM_CPMM_PROGRAM_ID, RAYDIUM_V4_PROGRAM_ID,
 };
-use arb_types::{DexProtocol, MintId, PoolId};
+use arb_types::DexProtocol;
 use solana_pubkey::Pubkey;
 
 /// Map a program ID (account owner) to its DEX protocol, if known.
@@ -182,68 +182,6 @@ pub fn program_id_to_protocol(program_id: &Pubkey) -> Option<DexProtocol> {
         PUMP_FUN_PROGRAM_ID => Some(DexProtocol::PumpFun),
         PUMP_SWAP_PROGRAM_ID => Some(DexProtocol::PumpSwap),
         _ => None,
-    }
-}
-
-/// Decode raw account bytes into an `AmmPool` instance for a given protocol and pool address.
-pub fn decode_amm_pool(
-    protocol: DexProtocol,
-    pool_id: PoolId,
-    data: &[u8],
-) -> Option<Box<dyn AmmPool>> {
-    let mut pool: Box<dyn AmmPool> = match protocol {
-        DexProtocol::RaydiumV4 => Box::new(RaydiumV4Pool::new(
-            pool_id,
-            MintId::default(),
-            MintId::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-        )),
-        DexProtocol::RaydiumCpmm => {
-            if data.len() < raydium_cpmm::RAYDIUM_CPMM_POOL_MIN_SIZE {
-                return None;
-            }
-            Box::new(RaydiumCpmmPool::from_account(pool_id, data).ok()?)
-        }
-        DexProtocol::RaydiumClmm => {
-            if data.len() < raydium_clmm::RAYDIUM_CLMM_POOL_MIN_SIZE {
-                return None;
-            }
-            Box::new(RaydiumClmmPool::from_account(pool_id, data).ok()?)
-        }
-        DexProtocol::OrcaWhirlpool => Box::new(OrcaWhirlpool::new(
-            pool_id,
-            MintId::default(),
-            MintId::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            64,
-            3000,
-        )),
-        DexProtocol::MeteoraDlmm => {
-            if data.len() < meteora_dlmm::METEORA_LB_PAIR_MIN_SIZE {
-                return None;
-            }
-            Box::new(MeteoraDlmmPool::from_account(pool_id, data).ok()?)
-        }
-        DexProtocol::PumpFun => {
-            if data.len() < pump_fun::PUMP_FUN_BONDING_CURVE_SIZE {
-                return None;
-            }
-            Box::new(PumpFunBondingCurve::new(
-                pool_id,
-                MintId::default(),
-                MintId::default(),
-            ))
-        }
-        _ => return None,
-    };
-
-    if pool.update_from_account(data).is_ok() {
-        Some(pool)
-    } else {
-        None
     }
 }
 

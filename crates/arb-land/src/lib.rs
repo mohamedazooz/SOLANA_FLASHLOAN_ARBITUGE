@@ -508,84 +508,9 @@ impl JitoLander {
         Ok(parse_inflight_statuses(&value))
     }
 
-    pub async fn get_tip_accounts(&self) -> ArbResult<Vec<String>> {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getTipAccounts",
-            "params": []
-        });
-        let url = self.primary_endpoint();
-        let r = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ArbError::Internal(e.to_string()))?;
-        let v: Value = r
-            .json()
-            .await
-            .map_err(|e| ArbError::Internal(e.to_string()))?;
-        let mut out = Vec::new();
-        if let Some(arr) = v.get("result").and_then(|x| x.as_array()) {
-            for item in arr {
-                if let Some(s) = item.as_str() {
-                    out.push(s.to_string());
-                }
-            }
-        }
-        Ok(out)
-    }
-
     pub async fn check_status(&self, bundle_id: &str) -> ArbResult<LandStatus> {
         let statuses = self.get_bundle_statuses(bundle_id).await?;
         Ok(statuses.into_iter().next().unwrap_or(LandStatus::Sent))
-    }
-
-    /// Asynchronously poll bundle landing status until terminal state or timeout.
-    pub async fn poll_bundle_until_terminal(
-        &self,
-        bundle_id: &str,
-        max_attempts: usize,
-        poll_interval: std::time::Duration,
-    ) -> LandStatus {
-        let details = self
-            .poll_bundle_detailed_until_terminal(bundle_id, max_attempts, poll_interval)
-            .await;
-        details.status
-    }
-
-    /// Asynchronously poll bundle landing detailed status until terminal state or timeout.
-    pub async fn poll_bundle_detailed_until_terminal(
-        &self,
-        bundle_id: &str,
-        max_attempts: usize,
-        poll_interval: std::time::Duration,
-    ) -> BundleStatusDetails {
-        for _ in 0..max_attempts {
-            tokio::time::sleep(poll_interval).await;
-            if let Ok(records) = self.get_bundle_statuses_detailed(bundle_id).await {
-                if let Some(record) = records.into_iter().next() {
-                    if matches!(
-                        record.status,
-                        LandStatus::Landed
-                            | LandStatus::Failed
-                            | LandStatus::Dropped
-                            | LandStatus::Expired
-                    ) {
-                        return record;
-                    }
-                }
-            }
-        }
-        BundleStatusDetails {
-            bundle_id: bundle_id.to_string(),
-            status: LandStatus::Sent,
-            slot: None,
-            transactions: Vec::new(),
-            err: None,
-        }
     }
 }
 

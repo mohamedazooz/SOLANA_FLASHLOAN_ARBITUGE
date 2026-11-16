@@ -5,7 +5,7 @@
 //! `real_sol_reserves`, and the `complete` (graduation) flag.
 
 use crate::traits::AmmPool;
-use arb_constants::{PUMP_FUN_BONDING_CURVE_DISCRIMINATOR, PUMP_FUN_GRADUATION_LAMPORTS};
+use arb_constants::PUMP_FUN_BONDING_CURVE_DISCRIMINATOR;
 use arb_math::cpmm_out_fee;
 use arb_types::{ArbError, DexProtocol, MintId, PoolId, Result};
 use solana_pubkey::Pubkey;
@@ -167,19 +167,6 @@ impl PumpFunBondingCurve {
         })
     }
 
-    /// Bonding curve progress towards graduation in basis points [0..10_000].
-    pub fn progress_bps(&self) -> u16 {
-        if self.complete {
-            return 10_000;
-        }
-        if self.real_sol_reserves == 0 {
-            return 0;
-        }
-        let bps =
-            (self.real_sol_reserves as u128 * 10_000) / (PUMP_FUN_GRADUATION_LAMPORTS as u128);
-        bps.min(10_000) as u16
-    }
-
     /// Exact-in quote using a fee rate supplied by the current on-chain Pump Fees
     /// configuration. A missing fee rate is a hard error; no static 1.25% fallback.
     /// Fees are denominated in the quote asset.
@@ -299,11 +286,6 @@ impl PumpFunBondingCurve {
             reserve: self.virtual_sol_reserves as u128,
             supply: self.virtual_token_reserves as u128,
         }
-    }
-
-    /// Get real reserves (for liquidity constraints).
-    pub fn real_reserves(&self) -> (u64, u64) {
-        (self.real_sol_reserves, self.real_token_reserves)
     }
 
     /// Check if this pool is suitable for cross-venue arbitrage.

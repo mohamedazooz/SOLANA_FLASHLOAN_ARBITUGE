@@ -244,14 +244,6 @@ impl StaticMasterAlt {
         self.alt_address.is_some() && !self.addresses.is_empty()
     }
 
-    /// Returns true if the ALT has been activated on-chain (last_extended_slot >= activation_slot).
-    pub fn is_activated(&self) -> bool {
-        match (self.last_extended_slot, self.activation_slot) {
-            (Some(actual), Some(required)) => actual >= required,
-            _ => false,
-        }
-    }
-
     /// Number of addresses currently cached in the ALT.
     pub fn len(&self) -> usize {
         self.addresses.len()

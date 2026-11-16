@@ -143,37 +143,7 @@ pub struct MeteoraProfitabilityReport {
     pub dimensional_report: DimensionalProfitabilityReport,
 }
 
-impl MeteoraProfitabilityReport {
-    /// Backwards compatibility: gross spread in raw quote units
-    pub fn gross_spread_lamports(&self) -> i64 {
-        self.gross_spread_quote_raw
-    }
-
-    /// Backwards compatibility: net expected profit in raw quote units
-    pub fn net_expected_profit_lamports(&self) -> i64 {
-        self.net_expected_profit_quote_raw
-    }
-
-    /// Backwards compatibility: total execution costs in raw quote units
-    pub fn total_execution_costs(&self) -> u64 {
-        self.total_execution_cost_quote_raw
-    }
-
-    /// Backwards compatibility: hop 1 fee
-    pub fn dex_fees_hop1_lamports(&self) -> u64 {
-        self.dex_fees_hop1_raw
-    }
-
-    /// Backwards compatibility: hop 2 fee
-    pub fn dex_fees_hop2_lamports(&self) -> u64 {
-        self.dex_fees_hop2_raw
-    }
-
-    /// Backwards compatibility: total dex fees
-    pub fn total_dex_fees_lamports(&self) -> u64 {
-        self.total_dex_fees_raw
-    }
-}
+impl MeteoraProfitabilityReport {}
 
 pub struct MeteoraDlmmFreshStatePipeline {
     rpc: Arc<RpcPool>,

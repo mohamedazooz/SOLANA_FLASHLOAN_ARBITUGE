@@ -152,20 +152,6 @@ impl AltManager {
         (alt, ixs)
     }
 
-    /// Extend an existing ALT with `addresses`. Returns `ExtendLookupTable` instructions chunked by max size.
-    pub async fn extend_alt(
-        &self,
-        alt: Pubkey,
-        payer: Pubkey,
-        addresses: &[Pubkey],
-    ) -> Vec<CompiledInstruction> {
-        let mut ixs = Vec::new();
-        for chunk in addresses.chunks(MAX_ALT_EXTEND_ADDRESSES) {
-            ixs.push(extend_lookup_table(alt, payer, Some(payer), chunk));
-        }
-        ixs
-    }
-
     /// Look up a cached ALT pubkey by key.
     pub fn get_alt(&self, key: &str) -> Option<Pubkey> {
         self.cache.read().ok()?.get(key).copied()

@@ -27,21 +27,6 @@ pub fn calculate_dynamic_cu_price(profit_lamports: u64, base_priority_fee: u64) 
     base_priority_fee.saturating_add(dynamic_elevation)
 }
 
-/// Calculate fee-deduplicated compute unit price.
-/// In bundle-only mode (`bundle_only = true`), returns 0 to eliminate priority fee duplication
-/// and concentrate 100% of priority budget into dynamic JitoTip.
-pub fn calculate_fee_deduplicated_cu_price(
-    profit_lamports: u64,
-    base_priority_fee: u64,
-    bundle_only: bool,
-) -> u64 {
-    if bundle_only {
-        0
-    } else {
-        calculate_dynamic_cu_price(profit_lamports, base_priority_fee)
-    }
-}
-
 /// Per-hop compute units by protocol. A CLMM crosses ticks and a DLMM walks
 /// bins, so they cost materially more than a constant-product swap. Used to size
 /// the CU limit from the REAL route instead of a flat per-hop guess.

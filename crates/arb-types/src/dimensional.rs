@@ -119,14 +119,6 @@ impl ProfitAmount {
         }
     }
 
-    pub fn is_positive(self) -> bool {
-        self.raw > 0
-    }
-
-    pub fn is_negative(self) -> bool {
-        self.raw < 0
-    }
-
     pub fn is_zero(self) -> bool {
         self.raw == 0
     }

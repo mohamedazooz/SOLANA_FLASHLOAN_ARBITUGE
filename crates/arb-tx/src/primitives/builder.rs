@@ -978,20 +978,6 @@ impl TxBuilder {
         AddressLookupTable::new(alt_key, addresses)
     }
 
-    /// Sign a pre-compiled versioned (v0) transaction (e.g. from Jupiter v6 API).
-    pub fn sign_versioned_transaction(
-        signer: &KeypairSigner,
-        mut tx_bytes: Vec<u8>,
-    ) -> Result<Vec<u8>> {
-        if tx_bytes.len() < 66 {
-            bail!("Transaction bytes too short for versioned transaction");
-        }
-        let msg_bytes = &tx_bytes[65..];
-        let signature = signer.sign(msg_bytes);
-        tx_bytes[1..65].copy_from_slice(&signature);
-        Ok(tx_bytes)
-    }
-
     /// Encode instructions into a serialized byte representation for simulation or broadcast.
     pub fn serialize_instructions(instructions: &[CompiledInstruction]) -> Vec<u8> {
         let mut bytes = Vec::new();

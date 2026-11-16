@@ -63,19 +63,6 @@ impl PreWarmedTxTemplate {
         }
     }
 
-    /// Attach swap instruction offsets after template construction.
-    /// Useful when templates are created from pre-compiled bytes where swap
-    /// instruction offsets were resolved externally.
-    pub fn with_swap_offsets(
-        mut self,
-        swap_amount_in_offset: usize,
-        swap_min_amount_out_offset: usize,
-    ) -> Self {
-        self.swap_amount_in_offset = Some(swap_amount_in_offset);
-        self.swap_min_amount_out_offset = Some(swap_min_amount_out_offset);
-        self
-    }
-
     /// Locate byte offsets within a pre-compiled signed transaction wire buffer.
     pub fn locate_offsets(
         raw_tx_bytes: &[u8],

@@ -339,23 +339,6 @@ impl BitqueryClient {
         Ok(data.solana.dex_trades)
     }
 
-    /// Queries the latest Solana slot block from Bitquery.
-    pub async fn fetch_latest_block(&self) -> Result<Option<BitqueryBlock>> {
-        let query = r#"query {
-            Solana {
-                Blocks(limit: { count: 1 }) {
-                    Block {
-                        Slot
-                        Time
-                    }
-                }
-            }
-        }"#;
-
-        let data: SolanaDataContainer = self.execute_query(query).await?;
-        Ok(data.solana.blocks.into_iter().next().map(|b| b.block))
-    }
-
     /// Creates a WebSocket subscription client configured with the current Bitquery credentials.
     pub fn create_ws_client(&self) -> BitqueryWsClient {
         BitqueryWsClient::new(self.config.clone())

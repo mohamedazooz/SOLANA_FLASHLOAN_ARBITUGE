@@ -118,14 +118,6 @@ impl RaydiumV4Pool {
         )
     }
 
-    /// Get reserves as u64 for compatibility.
-    pub fn reserves_u64(&self) -> (u64, u64) {
-        (
-            self.base_reserve.try_into().unwrap_or(u64::MAX),
-            self.quote_reserve.try_into().unwrap_or(u64::MAX),
-        )
-    }
-
     /// Raydium authority PDA: [b"amm authority"] under Raydium V4 program.
     pub fn amm_authority() -> Pubkey {
         Pubkey::from_str(RAYDIUM_V4_AUTHORITY).unwrap_or_else(|_| {

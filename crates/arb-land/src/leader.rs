@@ -272,17 +272,7 @@ pub enum Landability {
     Unknown,
 }
 
-impl Landability {
-    /// True only when a tip reaches a validator that can include it.
-    pub fn is_jito(self) -> bool {
-        matches!(self, Self::Jito)
-    }
-
-    /// True when the answer is known.
-    pub fn is_known(self) -> bool {
-        !matches!(self, Self::Unknown)
-    }
-}
+impl Landability {}
 
 /// Classify a slot from the currently held schedule and validator set.
 pub fn landability(

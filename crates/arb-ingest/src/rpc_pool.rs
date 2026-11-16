@@ -104,15 +104,7 @@ pub struct MethodMetrics {
     pub total_latency_ms: u64,
 }
 
-impl MethodMetrics {
-    pub fn avg_latency_ms(&self) -> f64 {
-        if self.call_count == 0 {
-            0.0
-        } else {
-            self.total_latency_ms as f64 / self.call_count as f64
-        }
-    }
-}
+impl MethodMetrics {}
 
 #[derive(Debug, Clone)]
 pub struct ProviderConfig {
@@ -556,45 +548,6 @@ impl RpcPool {
         &self.endpoints
     }
 
-    pub fn provider_labels(&self) -> Vec<String> {
-        self.telemetry
-            .iter()
-            .map(|t| {
-                format!(
-                    "{}[{:.0}rps/b{}]",
-                    t.config.label, t.config.rps_limit, t.config.max_batch_size
-                )
-            })
-            .collect()
-    }
-
-    /// Return ordered endpoints suitable for transaction simulation:
-    /// healthy batch-100 / sim-capable providers first, then other non-exhausted providers.
-    pub fn healthy_endpoints_for_sim(&self) -> Vec<String> {
-        let now = Instant::now();
-        let backoffs = self.backoffs.read();
-        let mut active = Vec::new();
-        let mut fallback = Vec::new();
-        for (idx, url) in self.endpoints.iter().enumerate() {
-            let exhausted = self.telemetry[idx].quota_exhausted.load(Ordering::Acquire);
-            if exhausted {
-                continue;
-            }
-            let in_cooldown = backoffs.get(&idx).is_some_and(|until| now < *until);
-            if !in_cooldown {
-                active.push(url.clone());
-            } else {
-                fallback.push(url.clone());
-            }
-        }
-        active.extend(fallback);
-        if active.is_empty() {
-            self.endpoints.clone()
-        } else {
-            active
-        }
-    }
-
     pub fn health_snapshot(&self) -> RpcPoolHealth {
         let now = Instant::now();
         let backoffs = self.backoffs.read();
@@ -803,20 +756,6 @@ impl RpcPool {
     /// Dispatch JSON-RPC request with automated rate-limiting, 429 detection & round-robin failover.
     pub async fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
         self.call_filtered_idx(method, params, |_, _| true).await
-    }
-
-    /// Dispatch JSON-RPC request across endpoints matching `allow_endpoint` URL predicate.
-    pub async fn call_filtered<F>(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-        allow_endpoint: F,
-    ) -> Result<serde_json::Value>
-    where
-        F: Fn(&str) -> bool,
-    {
-        self.call_filtered_idx(method, params, |_, url| allow_endpoint(url))
-            .await
     }
 
     async fn call_filtered_idx<F>(
@@ -1248,61 +1187,6 @@ impl RpcPool {
     ) -> Result<Vec<Option<serde_json::Value>>> {
         let (accounts, _slot) = self.get_multiple_accounts_with_slot(pubkeys).await?;
         Ok(accounts)
-    }
-
-    /// Actively probe all endpoints with `getSlot` to establish baseline latency and readiness.
-    /// Unprobed endpoints are strictly classified as `Configured` and never labeled active.
-    pub async fn probe_all_endpoints(&self) -> Vec<(String, EndpointStatus, u32)> {
-        let mut results = Vec::with_capacity(self.endpoints.len());
-        for (idx, url) in self.endpoints.iter().enumerate() {
-            let label = self
-                .telemetry
-                .get(idx)
-                .map(|t| t.config.label.clone())
-                .unwrap_or_default();
-            let start = Instant::now();
-            let body = json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getSlot",
-                "params": [{"commitment": "processed"}],
-            });
-            let resp_res = self.client.post(url).json(&body).send().await;
-            let elapsed_ms = start.elapsed().as_millis() as u32;
-
-            if let Some(tel) = self.telemetry.get(idx) {
-                tel.is_probed.store(true, Ordering::Release);
-                match resp_res {
-                    Ok(resp) if resp.status().is_success() => {
-                        tel.record_call("getSlot", elapsed_ms, true, false, false);
-                        tel.requests_ok.fetch_add(1, Ordering::Relaxed);
-                        let status = if elapsed_ms > 350 {
-                            EndpointStatus::Degraded
-                        } else {
-                            EndpointStatus::Healthy
-                        };
-                        *tel.status.write() = status;
-                        results.push((label, status, elapsed_ms));
-                    }
-                    Ok(resp) if resp.status().as_u16() == 429 => {
-                        tel.record_call("getSlot", elapsed_ms, false, true, false);
-                        *tel.status.write() = EndpointStatus::QuotaExhausted;
-                        results.push((label, EndpointStatus::QuotaExhausted, elapsed_ms));
-                    }
-                    Ok(_) => {
-                        tel.record_call("getSlot", elapsed_ms, false, false, false);
-                        *tel.status.write() = EndpointStatus::Degraded;
-                        results.push((label, EndpointStatus::Degraded, elapsed_ms));
-                    }
-                    Err(e) => {
-                        tel.record_call("getSlot", elapsed_ms, false, false, e.is_timeout());
-                        *tel.status.write() = EndpointStatus::Degraded;
-                        results.push((label, EndpointStatus::Degraded, elapsed_ms));
-                    }
-                }
-            }
-        }
-        results
     }
 
     /// Dispatch simulation requests prioritizing healthy endpoints with lowest P50 latency.

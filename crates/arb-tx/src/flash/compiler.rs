@@ -338,11 +338,6 @@ impl ThreeLegMemeArbitrageContext {
         Ok(())
     }
 
-    /// Returns true if the route uses Token-2022 for any intermediate mint.
-    pub fn uses_token_2022_intermediate(&self) -> bool {
-        self.meme_a_is_token_2022 || self.meme_b_is_token_2022
-    }
-
     /// Returns the WSOL ATA for the bot (derived from payer + WSOL mint + token program).
     pub fn bot_wsol_ata(&self) -> Pubkey {
         crate::get_associated_token_address_with_program_id(
