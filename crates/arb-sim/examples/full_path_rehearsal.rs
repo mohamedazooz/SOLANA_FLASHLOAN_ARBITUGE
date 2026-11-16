@@ -132,7 +132,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .partial_cmp(&x.liquidity_usd)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let bridges: Vec<&DiscoveredPoolState> = bridges.into_iter().take(4).collect();
+    let bridge_cap: usize = std::env::var("REHEARSAL_BRIDGE_CAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    let bridges: Vec<&DiscoveredPoolState> = bridges.into_iter().take(bridge_cap).collect();
 
     let mut candidates: Vec<(&(String, String), &Vec<&DiscoveredPoolState>)> = by_meme
         .iter()
@@ -143,7 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let kb = vb.iter().map(|p| p.liquidity_usd).fold(0.0_f64, f64::max);
         kb.partial_cmp(&ka).unwrap_or(std::cmp::Ordering::Equal)
     });
-    let candidates: Vec<_> = candidates.into_iter().take(8).collect();
+    let scan_cap: usize = std::env::var("REHEARSAL_SCAN_CAP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+    let candidates: Vec<_> = candidates.into_iter().take(scan_cap).collect();
     println!(
         "[2] meme DLMM groups with ≥2 pools sharing a quote mint: {} (scanning up to {}); meme/meme bridge pools: {}",
         by_meme.iter().filter(|(_, v)| v.len() >= 2).count(),
@@ -221,6 +229,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         MintId,
         arb_engine::DlmmFlashArbEvaluation,
     )> = None;
+    // Best below-floor pair (net, pool_a, pool_b, label, flash_mint, decimals):
+    // used for the forced flash dry-run when nothing is feasible.
+    let mut best_infeasible: Option<(i64, Pubkey, Pubkey, String, MintId, u8)> = None;
     for iteration in 0..loops {
         if iteration > 0 {
             println!(
@@ -317,6 +328,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 if let Some(r) = routes.first() {
                     let e = evaluator.evaluate(r, pair_flash_cfg.min_borrow);
+                    if !e.feasible {
+                        if let Some(
+                            arb_engine::dlmm_flash_arbitrage::FlashArbRejection::ProfitBelowFloor {
+                                net,
+                                ..
+                            },
+                        ) = e.rejection.as_ref()
+                        {
+                            let cand = (*net, pool_a, pool_b, meme_label.to_string(), MintId(fm), dec);
+                            if best_infeasible
+                                .as_ref()
+                                .map(|(n, _, _, _, _, _)| *net > *n)
+                                .unwrap_or(true)
+                            {
+                                best_infeasible = Some(cand);
+                            }
+                        }
+                    }
                     println!(
                         "    sweep {:<10} {tag}: feasible={} net={} rejection={:?}",
                         meme_label,
@@ -326,6 +355,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     if let Some(rej) = e.rejection.as_ref() {
                         println!("      detail: {rej:?}");
+                    }
+                    // Size-ladder diagnostic: is ANY size close to feasible?
+                    let mut ladder_best: Option<(u64, i64)> = None;
+                    for size in [
+                        pair_flash_cfg.min_borrow,
+                        pair_flash_cfg.min_borrow.saturating_mul(5),
+                        pair_flash_cfg.max_borrow,
+                    ] {
+                        let ev = evaluator.evaluate(r, size);
+                        if ladder_best.map(|(_, n)| ev.net_profit > n).unwrap_or(true) {
+                            ladder_best = Some((size, ev.net_profit));
+                        }
+                    }
+                    if let Some((size, net)) = ladder_best {
+                        println!("      ladder-best: net={net} at borrow={size}");
                     }
                 }
                 if let Some(found) = routes
@@ -383,7 +427,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 Err(e) => {
-                    println!("    sweep 3leg: no cycle ({e})");
+                    println!(
+                        "    sweep 3leg: no cycle ({e}) | {}",
+                        arb_engine::diagnose_missing_cycles(&all_states)
+                    );
                 }
             }
         }
@@ -394,13 +441,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // ▲▲▲ END LIVE SWEEP LOOP ▲▲▲
 
-    let Some(((pool_a, pool_b), meme, flash_mint, best)) = best_entry else {
-        println!(
-            "[5] NO feasible flash route across all {} scanned pairs in {} sweeps -- markets are efficient at this instant (fail-closed, nothing built, nothing broadcast).",
-            candidates.len(),
-            loops
-        );
-        return Ok(());
+    let ((pool_a, pool_b), meme, flash_mint, best) = match best_entry {
+        Some(v) => v,
+        None => {
+            println!(
+                "[5] NO feasible flash route across all {} scanned pairs in {} sweeps -- markets are efficient at this instant (fail-closed, nothing built, nothing broadcast).",
+                candidates.len(),
+                loops
+            );
+            let Some((net, pa, pb, label, fm, dec)) = best_infeasible else {
+                println!("[5b] no below-floor pair with a complete quote either -- nothing to dry-run.");
+                return Ok(());
+            };
+            println!(
+                "[5b] FORCED FLASH DRY-RUN on {label} (best net {net} raw, below floor): build + fork simulation only, never broadcast."
+            );
+            // Fresh states + fresh evaluation so the built transaction matches
+            // the chain at simulation time, not at sweep time.
+            let Ok((state_a, state_b, _, _, _)) =
+                pipeline.fetch_fresh_pool_pair(pa, pb, None).await
+            else {
+                return Err("dry-run refetch failed".into());
+            };
+            let fp_a = to_flash_pool(&state_a).ok_or("missing execution accounts A")?;
+            let fp_b = to_flash_pool(&state_b).ok_or("missing execution accounts B")?;
+            let pair_cfg = DlmmFlashArbConfig {
+                allowlist: DlmmPoolAllowlist::new(vec![pa, pb]),
+                flash_mint: fm,
+                flash_mint_decimals: dec,
+                min_borrow: 10_000_000,
+                max_borrow: 100_000_000,
+                ..flash_cfg.clone()
+            };
+            let routes = enumerate_routes(&[fp_a, fp_b], &pair_cfg.allowlist, fm);
+            let route = routes
+                .iter()
+                .find(|r| r.flash_mint == fm)
+                .ok_or("dry-run route vanished on refetch")?;
+            let evaluator = DlmmFlashArbEvaluator { config: &pair_cfg };
+            let e = evaluator.evaluate(route, pair_cfg.min_borrow);
+            if !e.feasible && e.hop_a_min_out == 0 {
+                println!(
+                    "[5b] dry-run aborted: fresh evaluation has no complete quote context ({:?})",
+                    e.rejection.as_ref().map(|x| x.as_str())
+                );
+                return Ok(());
+            }
+            let repay = e.borrow_amount.saturating_add(e.flash_fee);
+            if e.hop_b_min_out < repay {
+                println!(
+                    "[5b] dry-run verdict: the builder gate refuses this transaction -- conservative final output {} < repayment {} raw. The flash loan cannot be repaid at the slippage floor: the route is economically negative at the quote level itself. Fail-closed confirmed at the last line of defense; nothing built, nothing broadcast.",
+                    e.hop_b_min_out, repay
+                );
+                return Ok(());
+            }
+            ((pa, pb), label, fm, e)
+        }
     };
     println!(
         "[5] best flash route: meme={} pools {}+{} borrow={} raw net_profit={} raw ({} bps) flash_fee={} bins_a={} bins_b={}",

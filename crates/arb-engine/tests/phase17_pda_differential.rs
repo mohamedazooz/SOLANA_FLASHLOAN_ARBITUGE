@@ -139,7 +139,7 @@ fn precise_plan_is_never_under_provisioned_versus_the_legacy_helper() {
     for pool in pools() {
         for active in [-6_168i32, -2_468, -100, -1, 0, 69, 70, 1_000] {
             for swap_for_y in [true, false] {
-                for depth in [1u32, 2, 35, 70, 71, 140, 141, 280] {
+                for depth in [1u32, 2, 35, 70, 71, 140, 141, 260] {
                     let plan = plan_bin_arrays(&pool, active, swap_for_y, depth).expect("plan");
                     let legacy = arb_tx::meteora_bin_array_indices(active, swap_for_y, depth);
                     assert!(
@@ -156,6 +156,23 @@ fn precise_plan_is_never_under_provisioned_versus_the_legacy_helper() {
                         "the traversal must end on the same array"
                     );
                 }
+            }
+        }
+    }
+
+    // lb_clmm 0.12.0 reduced the per-swap bin limit 280 -> 260: any depth
+    // above it must fail closed, never plan a swap the chain would abort.
+    for depth in [261u32, 280, 500] {
+        for swap_for_y in [true, false] {
+            match plan_bin_arrays(&pk(POOL_A), 0, swap_for_y, depth) {
+                Err(arb_tx::flash::dlmm_bin_discovery::BinArrayPlanError::DepthAboveSwapLimit {
+                    bins,
+                    limit,
+                }) => {
+                    assert_eq!(bins, depth);
+                    assert_eq!(limit, arb_constants::METEORA_MAX_BINS_PER_SWAP);
+                }
+                other => panic!("depth {depth} must fail closed, got {other:?}"),
             }
         }
     }

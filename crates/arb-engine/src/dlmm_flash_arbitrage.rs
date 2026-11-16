@@ -787,33 +787,13 @@ impl DlmmFlashArbEvaluator<'_> {
         let total_cost = flash_fee.saturating_add(cfg.execution_cost());
         let gross_profit = (quote_b.amount_out as i64) - (borrow as i64);
         let net_profit = gross_profit - (total_cost as i64);
-        if net_profit < 0 || (net_profit as u64) < cfg.min_profit_raw {
-            return DlmmFlashArbEvaluation::reject(
-                borrow,
-                FlashArbRejection::ProfitBelowFloor {
-                    net: net_profit,
-                    floor: cfg.min_profit_raw,
-                },
-            );
-        }
-        // The executed chain must be able to fund the repayment.
-        if quote_b.amount_out < repay {
-            return DlmmFlashArbEvaluation::reject(
-                borrow,
-                FlashArbRejection::ProfitBelowFloor {
-                    net: net_profit,
-                    floor: cfg.min_profit_raw,
-                },
-            );
-        }
-
         let net_profit_bps = if borrow > 0 {
             (net_profit * 10_000) / (borrow as i64)
         } else {
             0
         };
 
-        DlmmFlashArbEvaluation {
+        let eval = DlmmFlashArbEvaluation {
             borrow_amount: borrow,
             flash_fee,
             hop_a_out: quote_a.amount_out,
@@ -832,7 +812,25 @@ impl DlmmFlashArbEvaluator<'_> {
             estimated_tx_bytes,
             feasible: true,
             rejection: None,
+        };
+
+        // Floor gates LAST, so a below-floor rejection keeps the full quote
+        // context (hop sizes, bins, costs) for diagnostics and dry-run
+        // builders. `feasible` stays false; execution paths filter on it.
+        let below_floor = net_profit < 0
+            || (net_profit as u64) < cfg.min_profit_raw
+            || quote_b.amount_out < repay;
+        if below_floor {
+            return DlmmFlashArbEvaluation {
+                feasible: false,
+                rejection: Some(FlashArbRejection::ProfitBelowFloor {
+                    net: net_profit,
+                    floor: cfg.min_profit_raw,
+                }),
+                ..eval
+            };
         }
+        eval
     }
 
     /// Assemble the real instruction list and measure its v0 size.
