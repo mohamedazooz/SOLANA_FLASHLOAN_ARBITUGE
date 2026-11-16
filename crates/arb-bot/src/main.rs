@@ -3,7 +3,7 @@
 //! M0 — Foundation & Bootstrap: CLI configuration, logging, safety checks.
 
 use anyhow::{Context, Result};
-use arb_config::{loader as arb_config_loader, AppConfig as ArbAppConfig};
+use arb_config::{loader as arb_config_loader, AppConfig as ArbAppConfig, Mode as ArbMode};
 use std::fs::OpenOptions;
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
@@ -441,21 +441,21 @@ pub mod config {
         anyhow::anyhow!("Failed to parse TOML configuration from '{path}'")
     }
 
-    /// Convert the strongly-typed [`arb_config::AppConfig`] into the legacy
-    /// flat [`config::Config`] consumed by [`Supervisor::new`].
+    /// Convert the strongly-typed [`crate::ArbAppConfig`] into the legacy
+    /// flat [`Config`] consumed by [`Supervisor::new`].
     ///
     /// This is the Phase 3 adaptation layer: `arb-config` is now the single
     /// validated loading authority, and the legacy struct is a thin adapter
     /// kept so the supervisor's internal types and behavior are unchanged.
-    /// All validation has already run in [`arb_config::loader::load`].
-    pub(super) fn from_arb_config(arb: ArbAppConfig) -> config::Config {
+    /// All validation has already run in [`crate::arb_config_loader::load`].
+    pub(super) fn from_arb_config(arb: crate::ArbAppConfig) -> Config {
         let usd = |micros: arb_types::UsdMicros| micros.0 as f64 / 1_000_000.0;
-        config::Config {
-            bot: config::BotConfig {
+        Config {
+            bot: BotConfig {
                 mode: arb.mode.mode.to_string(),
-                canary: matches!(arb.mode.mode, arb_config::Mode::Canary),
+                canary: matches!(arb.mode.mode, crate::ArbMode::Canary),
             },
-            grpc: config::GrpcConfig {
+            grpc: GrpcConfig {
                 primary_url: arb.provider.primary_url,
                 primary_token_env: arb.provider.primary_token_env,
                 failover_url: arb.provider.failover_url,
@@ -463,16 +463,16 @@ pub mod config {
                 commitment: arb.provider.commitment,
                 ping_reply: arb.provider.ping_reply,
             },
-            rpc: config::RpcConfig {
+            rpc: RpcConfig {
                 url: arb.provider.primary_url.clone(),
                 commitment: arb.provider.commitment.clone(),
             },
-            jito: config::JitoConfig {
+            jito: JitoConfig {
                 regions: arb.jito.regions,
                 tip_floor_percentile: arb.jito.tip_floor_percentile,
-                tip_share_bps: arb.jito.tip_share_bps.0,
+                tip_share_bps: arb.jito.tip_share_bps.0 as u64,
                 max_tip_lamports: arb.jito.max_tip_lamports.0,
-                max_tip_share_bps: arb.jito.max_tip_share_bps.0,
+                max_tip_share_bps: arb.jito.max_tip_share_bps.0 as u64,
                 min_keep_lamports: arb.jito.min_keep_lamports.0,
                 keep_share: arb.jito.keep_share,
                 ladder_growth: arb.jito.ladder_growth,
@@ -483,38 +483,29 @@ pub mod config {
                 ledger_path: arb.jito.ledger_path,
                 leader_refresh_secs: arb.jito.leader_refresh_secs.0,
             },
-            jupiter: config::JupiterConfig {
+            jupiter: JupiterConfig {
                 base_url: arb.jupiter.base_url,
                 api_key_env: arb.jupiter.api_key_env,
                 timeout_ms: arb.jupiter.timeout_ms.0,
             },
-            wallet: config::WalletConfig {
+            wallet: WalletConfig {
                 keypair_path: arb.wallet.keypair_path,
                 cold_wallet_pubkey: arb.wallet.cold_wallet_pubkey,
                 min_sol_balance_lamports: arb.wallet.min_sol_balance_lamports.0,
             },
-            strategy: config::StrategyConfig {
+            strategy: StrategyConfig {
                 base_tokens: arb.strategy.base_tokens,
                 min_net_profit_abs: arb.strategy.min_net_profit_abs.0,
                 min_net_profit_bps: arb.strategy.min_net_profit_bps.0,
                 max_price_impact_bps: arb.strategy.max_price_impact_bps.0,
                 max_state_age_slots: arb.strategy.max_state_age_slots.0,
-                graph_max_age_slots: arb
-                    .strategy
-                    .graph_max_age_slots
-                    .map(|s| s.0),
+                graph_max_age_slots: arb.strategy.graph_max_age_slots.map(|s| s.0),
                 use_flash_loan: arb.strategy.use_flash_loan,
                 max_pools: arb.strategy.max_pools,
-                discovery_refresh_secs: arb
-                    .strategy
-                    .discovery_refresh_secs
-                    .map(|s| s.0),
-                discovery_min_tvl_usd: arb
-                    .strategy
-                    .discovery_min_tvl_usd
-                    .map(usd),
+                discovery_refresh_secs: arb.strategy.discovery_refresh_secs.map(|s| s.0),
+                discovery_min_tvl_usd: arb.strategy.discovery_min_tvl_usd.map(usd),
             },
-            risk: config::RiskConfig {
+            risk: RiskConfig {
                 max_trade_size_usd: usd(arb.risk.max_trade_size_usd),
                 max_daily_loss_usd: usd(arb.risk.max_daily_loss_usd),
                 max_hourly_loss_usd: usd(arb.risk.max_hourly_loss_usd),
@@ -526,25 +517,22 @@ pub mod config {
                 max_orders_per_hour: arb.risk.max_orders_per_hour,
                 cooldown_slots: arb.risk.cooldown_slots.0,
             },
-            store: config::StoreConfig {
+            store: StoreConfig {
                 url: arb.store.url,
             },
-            metrics: config::MetricsConfig {
+            metrics: MetricsConfig {
                 listen: arb.metrics.listen.to_string(),
             },
-            admin: config::AdminConfig {
+            admin: AdminConfig {
                 listen: arb.admin.listen.to_string(),
                 token_env: arb.admin.token_env,
             },
-            chronos: config::ChronosConfig {
+            chronos: ChronosConfig {
                 enabled: arb.chronos.enabled,
                 decay_lambda_per_sec: arb.chronos.decay_lambda_per_sec,
                 max_age_ms: arb.chronos.max_age_ms.0,
                 min_ev_usd: usd(arb.chronos.min_ev_usd),
-                failed_attempt_cost_lamports: arb
-                    .chronos
-                    .failed_attempt_cost_lamports
-                    .0,
+                failed_attempt_cost_lamports: arb.chronos.failed_attempt_cost_lamports.0,
                 beta_risk_factor: arb.chronos.beta_risk_factor,
             },
         }
@@ -685,8 +673,14 @@ async fn main() -> Result<()> {
 
     info!("Starting arb-bot in mode: {}", args.mode);
 
-    let config = config::load(&args.config_path)
+    // Phase 3: `arb-config` is the single validated loading authority. It parses
+    // the TOML, applies auditable environment overrides, runs the full validation
+    // suite, and rejects placeholder secrets — all before the supervisor sees the
+    // config. The result is adapted to the legacy `config::Config` consumed by
+    // `Supervisor::new` so internal behavior is unchanged.
+    let arb = arb_config_loader::load(&args.config_path)
         .with_context(|| format!("Failed to load configuration from '{}'", args.config_path))?;
+    let config = config::from_arb_config(arb);
 
     info!("Configuration loaded — gRPC: {}", config.grpc.primary_url);
     info!("Max trade size: {} USD", config.risk.max_trade_size_usd);

@@ -167,6 +167,7 @@ name = "arb-bot"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arb-config",
  "arb-constants",
  "arb-dex",
  "arb-engine",
