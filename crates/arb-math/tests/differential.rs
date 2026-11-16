@@ -134,6 +134,7 @@ mod dlmm_tests {
             amount_x: 1_000_000,
             amount_y: 1_000_000,
             price_q64: 0,
+            ..Default::default()
         };
 
         let before_x = bin.amount_x;
@@ -148,6 +149,7 @@ mod dlmm_tests {
             10_000_000,
             0,
             true,
+            false,
         )
         .expect("consume");
 
@@ -204,12 +206,14 @@ mod dlmm_tests {
                 index_reference: 0,
                 last_update_timestamp: 0,
             },
+            ..Default::default()
         };
         let mut bins = vec![DlmmBin {
             id: 0,
             amount_x: 1_000_000,
             amount_y: 1_000_000,
             price_q64: 0,
+            ..Default::default()
         }];
 
         let result = arb_math::dlmm::quote_dlmm_multi_bin(&state, &mut bins, 0, true, None);

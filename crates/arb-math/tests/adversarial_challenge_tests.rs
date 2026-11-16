@@ -462,30 +462,35 @@ fn challenge_dlmm_extreme_bin_steps_and_active_bin_crossing() {
                 amount_x: 0,
                 amount_y: 500_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: -1,
                 amount_x: 0,
                 amount_y: 500_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 0,
                 amount_x: 0,
                 amount_y: 500_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 1,
                 amount_x: 500_000,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 2,
                 amount_x: 500_000,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
         ];
 
@@ -511,6 +516,7 @@ fn challenge_dlmm_extreme_bin_steps_and_active_bin_crossing() {
                 index_reference: 0,
                 last_update_timestamp: 1_000_000,
             },
+            ..Default::default()
         };
 
         // Swap X -> Y: drains bin 0, bin -1, and partially bin -2
@@ -668,18 +674,21 @@ fn challenge_dlmm_zero_liquidity_bins_and_empty_bin_traversal() {
             amount_x: 0,
             amount_y: 2_000_000,
             price_q64: 0,
+            ..Default::default()
         },
         DlmmBin {
             id: -1,
             amount_x: 0,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         }, // EMPTY
         DlmmBin {
             id: 0,
             amount_x: 0,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         }, // EMPTY
     ];
 
@@ -705,6 +714,7 @@ fn challenge_dlmm_zero_liquidity_bins_and_empty_bin_traversal() {
             index_reference: 0,
             last_update_timestamp: 1_000_000,
         },
+        ..Default::default()
     };
 
     // Swap X for Y starting at empty bin 0
@@ -725,12 +735,14 @@ fn challenge_dlmm_zero_liquidity_bins_and_empty_bin_traversal() {
             amount_x: 0,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
         DlmmBin {
             id: 0,
             amount_x: 0,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
     ];
     let empty_quote = quote_dlmm_view(&pool, &all_empty_bins, 100_000, true, None);

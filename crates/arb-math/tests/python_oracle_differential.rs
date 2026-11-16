@@ -87,6 +87,7 @@ fn dlmm_single_bin_matches_python_oracle() {
                 amount_x: v["bin_x"].as_u64().unwrap(),
                 amount_y: v["bin_y"].as_u64().unwrap(),
                 price_q64,
+                ..Default::default()
             };
             let expected_in = v["amount_in"].as_u64().unwrap();
             let step = arb_math::dlmm::consume_bin_liquidity(
@@ -97,6 +98,7 @@ fn dlmm_single_bin_matches_python_oracle() {
                 fee_rate,
                 share,
                 mode == "fee_on_input",
+                false,
             )
             .expect("oracle fixtures are valid states");
 

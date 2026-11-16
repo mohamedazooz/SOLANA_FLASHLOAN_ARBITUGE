@@ -910,6 +910,11 @@ pub struct DlmmState {
     pub index_reference: i32,
     #[serde(default)]
     pub last_update_timestamp: i64,
+    /// Whether the pool supports the limit-order liquidity layer
+    /// (`LbPair::is_support_limit_order` in the official SDK). When `false`,
+    /// quotes use MM reserves only (underquote, fail-safe).
+    #[serde(default)]
+    pub support_limit_order: bool,
 }
 
 /// Single bin in a DLMM ladder.
@@ -921,6 +926,17 @@ pub struct DlmmBin {
     pub amount_x: u128,
     #[serde(default)]
     pub amount_y: u128,
+    /// Limit-order layer: open (unprocessed) order liquidity, denominated in
+    /// the order's committed output token (on-chain `Bin.open_order_amount`).
+    #[serde(default)]
+    pub open_order_amount: u64,
+    /// Limit-order layer: remaining fillable amount of already-processed
+    /// orders (on-chain `Bin.processed_order_remaining_amount`).
+    #[serde(default)]
+    pub processed_order_remaining_amount: u64,
+    /// Limit-order side flag (on-chain `Bin.limit_order_ask_side`).
+    #[serde(default)]
+    pub limit_order_ask_side: bool,
 }
 
 /// Pump.fun bonding curve on-chain state for pricing and capacity clamping.

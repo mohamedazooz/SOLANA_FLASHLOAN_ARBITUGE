@@ -165,6 +165,7 @@ mod quote_forensics {
                 index_reference: d.index_reference,
                 last_update_timestamp: d.last_update_timestamp,
             },
+            ..Default::default()
         };
         let bins: Vec<ArbDlmmBin> = d
             .bins
@@ -175,6 +176,7 @@ mod quote_forensics {
                     amount_x: u64::try_from(b.amount_x).ok()?,
                     amount_y: u64::try_from(b.amount_y).ok()?,
                     price_q64: 0,
+                    ..Default::default()
                 })
             })
             .collect();

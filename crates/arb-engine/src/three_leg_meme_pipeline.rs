@@ -1020,6 +1020,7 @@ mod tests {
             volatility_reference: 0,
             index_reference: out_of_range_active,
             last_update_timestamp: 1_700_000_000,
+            ..Default::default()
         });
         let p2 = pool_without_dlmm_state(2, a, b);
         let p3 = pool_without_dlmm_state(3, b, wsol);
@@ -1057,6 +1058,7 @@ mod tests {
                 volatility_reference: 0,
                 index_reference: active,
                 last_update_timestamp: 1_700_000_000,
+                ..Default::default()
             });
         }
         if let Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {

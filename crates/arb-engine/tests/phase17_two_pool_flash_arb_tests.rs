@@ -62,6 +62,7 @@ fn make_pool(
                 bin_id: *id,
                 amount_x: u128::from(*ax),
                 amount_y: u128::from(*ay),
+                ..Default::default()
             })
             .collect(),
         params: Some(DlmmFeeParams {
@@ -80,6 +81,7 @@ fn make_pool(
         volatility_reference: 0,
         index_reference: active_id,
         last_update_timestamp: 1_700_000_000,
+        support_limit_order: false,
     };
 
     let state = PoolState {

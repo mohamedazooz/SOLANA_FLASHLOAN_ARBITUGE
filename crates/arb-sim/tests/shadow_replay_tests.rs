@@ -19,6 +19,7 @@ fn mock_pool(id: &str, active_id: i32, x_reserve: u128, y_reserve: u128) -> Pool
             bin_id: active_id,
             amount_x: x_reserve,
             amount_y: y_reserve,
+            ..Default::default()
         }],
         params: Some(arb_types::DlmmFeeParams {
             base_factor: 100,
@@ -36,6 +37,7 @@ fn mock_pool(id: &str, active_id: i32, x_reserve: u128, y_reserve: u128) -> Pool
         volatility_reference: 0,
         index_reference: active_id,
         last_update_timestamp: 1700000000,
+        support_limit_order: false,
     };
 
     PoolState {
