@@ -1,4 +1,9 @@
 //! Compute-unit estimation and dynamic priority-fee calculation.
+//!
+//! One authoritative priority-fee path: [`cap_cu_price_by_profit`] caps the
+//! per-CU price against a share of the edge, and [`priority_fee_lamports`]
+//! converts that same price to lamports with ceiling rounding. Callers must
+//! encode the capped price verbatim and must not add a second elevation.
 
 use crate::*;
 
@@ -21,10 +26,64 @@ pub fn calculate_dynamic_cu_limit(base_required_units: u32) -> u32 {
     total.min(MAX_COMPUTE_UNIT_LIMIT)
 }
 
-/// Calculate dynamic compute unit price in micro-lamports, dynamically elevated based on profit.
-pub fn calculate_dynamic_cu_price(profit_lamports: u64, base_priority_fee: u64) -> u64 {
-    let dynamic_elevation = (profit_lamports / 25_000).min(500_000);
-    base_priority_fee.saturating_add(dynamic_elevation)
+/// Apply the authoritative profit cap to a desired compute-unit price.
+///
+/// The supervisor has already decided what share of the edge this route may
+/// spend on priority. This function clamps the desired price to that ceiling and
+/// is the ONLY place the cap is applied — callers must encode its result
+/// verbatim.
+///
+/// It deliberately does NOT add anything. The previous implementation added a
+/// second profit-scaled elevation on top of the caller's already-capped price,
+/// which meant the transaction could pay more than the profitability gate had
+/// approved, and could resurrect a non-zero price from a cap that had correctly
+/// rounded down to zero.
+///
+/// Rounding: the cap must satisfy the exact integer invariant
+/// `price * cu_limit <= budget * 1e6`, where `budget` is the whole-lamport
+/// amount `ceil(profit * share_bps / 10_000)`. Taking `floor` of the division
+/// guarantees that invariant; rounding up would let the capped price's own
+/// lamport cost exceed the very budget it was derived from (e.g. profit 1 with a
+/// 3-CU limit would cost 2 lamports against a 1-lamport budget).
+///
+/// The budget itself rounds UP (away from zero) so an infinitesimal share of a
+/// real profit is never truncated to "free priority". Saturating arithmetic
+/// throughout; a zero `cu_limit` or `max_share_bps` yields `0` (no budget, no
+/// bid).
+pub fn cap_cu_price_by_profit(
+    profit_lamports: u64,
+    cu_limit: u32,
+    desired_cu_price: u64,
+    max_share_bps: u64,
+) -> u64 {
+    if cu_limit == 0 || max_share_bps == 0 {
+        return 0;
+    }
+    // Whole-lamport priority budget: `ceil(profit * share_bps / 10_000)`.
+    let budget = profit_lamports
+        .saturating_mul(max_share_bps)
+        .div_ceil(10_000);
+    // Largest per-CU price whose total cost stays within `budget`.
+    let max_price = budget
+        .saturating_mul(1_000_000)
+        / u64::from(cu_limit);
+    desired_cu_price.min(max_price)
+}
+
+/// Convert an authoritative per-CU price into the total lamport priority fee.
+///
+/// Ceiling division: the priority fee is a **non-refundable** cost, so
+/// truncating would understate it and overstate net profit. Kept next to
+/// [`cap_cu_price_by_profit`] so the profitability gate and the encoded
+/// instruction cannot drift apart.
+///
+/// Returns `u64::MAX` on overflow so a caller comparing against available funds
+/// rejects rather than silently clamping a cost downward.
+#[must_use]
+pub fn priority_fee_lamports(cu_price_micro_lamports: u64, cu_limit: u32) -> u64 {
+    cu_price_micro_lamports
+        .saturating_mul(u64::from(cu_limit))
+        .div_ceil(1_000_000)
 }
 
 /// Per-hop compute units by protocol. A CLMM crosses ticks and a DLMM walks
@@ -61,24 +120,4 @@ pub fn estimate_route_cu(
         .saturating_add(flash_overhead)
         .saturating_add(swaps)
         .saturating_add(atas)
-}
-
-/// Cap a compute-unit price so the total priority fee stays within
-/// `max_share_bps` of `profit_lamports`.
-///
-/// The priority fee in lamports is `cu_price (µlamports/CU) * cu_limit / 1e6`.
-/// Bounding it by a share of the edge stops a runaway priority bid from eating
-/// the profit it was meant to capture.
-pub fn cap_cu_price_by_profit(
-    profit_lamports: u64,
-    cu_limit: u32,
-    desired_cu_price: u64,
-    max_share_bps: u64,
-) -> u64 {
-    if cu_limit == 0 || max_share_bps == 0 {
-        return 0;
-    }
-    let budget = profit_lamports.saturating_mul(max_share_bps) / 10_000;
-    let max_price = budget.saturating_mul(1_000_000) / u64::from(cu_limit);
-    desired_cu_price.min(max_price)
 }

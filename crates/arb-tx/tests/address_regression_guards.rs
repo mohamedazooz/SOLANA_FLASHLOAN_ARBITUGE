@@ -114,6 +114,41 @@ fn raydium_v4_mainnet_sol_usdc_uses_verified_openbook_market() {
 }
 
 #[test]
+fn strip_test_modules_masks_test_guards_but_never_production_code() {
+    // 1. A `#[cfg(test)]` block containing a fabricated address is masked.
+    let with_guard = "const KEEP: &str = \"real\";\n#[cfg(test)]\nmod t {\n    // DqyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz\n    #[test]\n    fn x() { assert!(true); }\n}\n";
+    let stripped = strip_test_modules(with_guard);
+    assert!(
+        !stripped.contains("DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz"),
+        "test-module literal must be masked"
+    );
+    assert!(
+        stripped.contains("const KEEP: &str = \"real\";"),
+        "production code outside the test module must survive"
+    );
+
+    // 2. The same address in PRODUCTION code must NOT be masked — the stripper
+    //    cannot become a way to hide a real reintroduction.
+    let in_prod = "const TYPO: &str = \"DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz\";\n";
+    assert!(
+        strip_test_modules(in_prod).contains("DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz"),
+        "production hits must survive stripping"
+    );
+
+    // 3. `mod name;` without a body is a declaration, not a test module.
+    let decl = "#[cfg(test)]\nmod external_tests;\nconst X: u8 = 1;\n";
+    let stripped = strip_test_modules(decl);
+    assert!(
+        stripped.contains("const X: u8 = 1;"),
+        "a bodyless mod declaration must not mask following items"
+    );
+
+    // 4. Idempotent on already-clean input.
+    let clean = "fn main() {}\n";
+    assert_eq!(strip_test_modules(clean), clean);
+}
+
+#[test]
 fn fabricated_openbook_market_absent_from_all_workspace_sources() {
     let crates_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
     let self_path = std::fs::canonicalize(concat!(
@@ -128,6 +163,7 @@ fn fabricated_openbook_market_absent_from_all_workspace_sources() {
             continue;
         }
         if let Ok(src) = std::fs::read_to_string(&entry) {
+            let src = strip_test_modules(&src);
             if src.contains(FABRICATED_OPENBOOK_MARKET) {
                 offenders.push(format!("{}: fabricated OpenBook market", entry));
             }
@@ -155,6 +191,7 @@ fn fabricated_addresses_absent_from_all_workspace_sources() {
             continue;
         }
         if let Ok(src) = std::fs::read_to_string(&entry) {
+            let src = strip_test_modules(&src);
             if src.contains(FABRICATED_RAYDIUM_VAULT) {
                 offenders.push(format!("{}: fabricated Raydium vault", entry));
             }
@@ -180,6 +217,72 @@ fn fabricated_addresses_absent_from_all_workspace_sources() {
         "fabricated mainnet addresses re-introduced into source:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Strip `#[cfg(test)] mod ... { ... }` blocks from a Rust source file so the
+/// fabricated-address scan inspects production code only.
+///
+/// A regression test that asserts `pool_coin_vault != TYPO` necessarily contains
+/// the typo as a string literal. Scanning test modules as production code
+/// therefore reports every such guard as a reintroduction — the guard and the
+/// thing it guards against become indistinguishable. Masking those bytes makes
+/// the scan mean what it claims: "no fabricated address in shipped code".
+///
+/// The stripper is brace-depth aware and handles the `mod name;` (no body) form.
+/// It is deliberately conservative: on unbalanced input it returns the source
+/// unchanged, so a parsing surprise can never hide a real production hit.
+fn strip_test_modules(src: &str) -> String {
+    const MARKER: &str = "#[cfg(test)]";
+    let mut out = String::with_capacity(src.len());
+    let mut search_from = 0usize;
+    let mut masked_until = 0usize;
+
+    while let Some(rel) = src[search_from..].find(MARKER) {
+        let marker_at = search_from + rel;
+        search_from = marker_at + MARKER.len();
+        if marker_at < masked_until {
+            continue;
+        }
+        // Only strip when the marker is followed by a `mod` item with a body.
+        let Some(rest) = src.get(search_from..) else { continue };
+        let Some(mod_at) = rest.find("mod ") else { continue };
+        // Reject anything that is not whitespace between the attribute and `mod`
+        // (e.g. a doc comment or a second attribute): those are not test modules.
+        if !rest[..mod_at].trim().is_empty() {
+            continue;
+        }
+        let body_open = search_from + mod_at + 4;
+        // `mod name;` (declaration without body) has no block to strip.
+        let Some(semi_or_brace) = src[body_open..].find(['{', ';']) else {
+            continue;
+        };
+        let brace_at = body_open + semi_or_brace;
+        if src.as_bytes().get(brace_at) != Some(&b'{') {
+            continue;
+        }
+        // Walk to the matching closing brace, tracking depth from the opener.
+        let mut depth = 0usize;
+        let mut end = None;
+        for (i, b) in src.as_bytes()[brace_at..].iter().enumerate() {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(brace_at + i + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { continue };
+        out.push_str(&src[masked_until..marker_at]);
+        masked_until = end;
+        search_from = end;
+    }
+    out.push_str(&src[masked_until..]);
+    out
 }
 
 /// Minimal recursive `.rs` file walker (avoids adding a walkdir dependency).

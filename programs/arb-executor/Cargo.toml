@@ -1,0 +1,29 @@
+[package]
+name = "arb-executor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anchor-lang = "0.31.0"
+anchor-spl = "0.31.0"
+solana-program = "2.1.14"
+
+soluma-deps = { version = "0.1.0", features = ["cpi"] }
+
+[features]
+default = ["cpi"]
+cpi = []  # Enable if this crate is used via CPI
+
+[profile.release]
+overflow-checks = true
+call-conv = "tail"
+strip = "debuginfo"
+max-args = 255
+max-basic-blocks = 10000
+max-funcs = 10000
+max-instructions = 100000
+max-mem = "2GB"
+max-stack = "1MB"

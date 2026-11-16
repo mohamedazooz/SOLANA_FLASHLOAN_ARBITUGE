@@ -1,0 +1,51 @@
+# Anchor.toml for the arb-executor program
+[toolchain]
+anchor_version = "0.31.0"
+solana_version = "2.1.14"
+
+[programs]
+arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+
+[programs.devnet]
+arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+
+[programs.testnet]
+arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+
+[registry]
+url = "https://registry.anchor-lang.com"
+
+[workspace]
+exclude = [
+    "target",
+    ".anchor",
+    ".vscode",
+    ".idea",
+    "*.pem",
+    "*.key",
+]
+
+[test]
+path = "tests/"
+
+[scripts]
+pre-init = "scripts/pre_init.sh"
+post-init = "scripts/post_init.sh"
+
+deploy = "scripts/deploy.sh"
+test = "scripts/test.sh"
+format = "scripts/format.sh"
+lint = "scripts/lint.sh"
+
+[logging]
+level = "info"
+color = true
+
+[builder]
+path = "~/.cargo/bin/anchor`
+
+[programs.localnet]
+arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+
+[programs.mainnet-beta]
+arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"

@@ -104,6 +104,148 @@ mod tests {
         );
     }
 
+    /// §6.3 regression: the capped price's own lamport cost must NEVER exceed the
+    /// profit-share budget it was derived from. The old implementation truncated
+    /// both divisions, which understated a non-refundable cost; an earlier fix of
+    /// mine over-corrected by rounding the price up, which let a 1-lamport budget
+    /// produce a 2-lamport fee.
+    #[test]
+    fn priority_fee_cap_never_understates_the_lamport_budget() {
+        for &(profit, cu_limit, share_bps) in &[
+            (1_000_000u64, 200_000u32, 2_000u64), // 0.2% of 1 SOL
+            (123_456_789, 360_000, 1_500),        // awkward numbers
+            (1, 3, 1),                            // the case that caught the round-up bug
+            (1, 1_400_000, 10_000),               // 100% share, 1 lamport
+            (999_999, 48_000, 3_333),             // prime-ish
+            (7, 13, 9_999),                       // tiny + tight
+        ] {
+            let price = cap_cu_price_by_profit(profit, cu_limit, u64::MAX, share_bps);
+            let cost = priority_fee_lamports(price, cu_limit);
+            let budget = profit.saturating_mul(share_bps).div_ceil(10_000);
+            assert!(
+                cost <= budget,
+                "cap breached: price {price} x {cu_limit} CU = {cost} lamports > budget {budget} \
+                 (profit {profit}, share {share_bps} bps)"
+            );
+        }
+    }
+
+    /// §6.3 regression: the cap must not be needlessly conservative either — it
+    /// must use the largest price that still fits the budget, so the cap does not
+    /// silently bid zero on a route that could afford priority.
+    #[test]
+    fn cap_uses_the_largest_price_that_fits_the_budget() {
+        for &(profit, cu_limit, share_bps) in &[
+            (1_000_000u64, 200_000u32, 2_000u64),
+            (123_456_789, 360_000, 1_500),
+            (999_999, 48_000, 3_333),
+        ] {
+            let price = cap_cu_price_by_profit(profit, cu_limit, u64::MAX, share_bps);
+            let budget = profit.saturating_mul(share_bps).div_ceil(10_000);
+            // One more micro-lamport per CU must NOT fit — proves maximality.
+            let one_more = price.saturating_add(1);
+            let cost_one_more = priority_fee_lamports(one_more, cu_limit);
+            assert!(
+                cost_one_more > budget,
+                "cap is not maximal: price {} costs {cost_one_more} <= budget {budget}",
+                price + 1
+            );
+        }
+    }
+
+    /// §6.3 regression: a cap that legitimately rounds to zero must STAY zero.
+    /// The removed `calculate_dynamic_cu_price` added `profit/25_000` on top,
+    /// so it resurrected a non-zero price from a cap that had correctly zeroed
+    /// it — the wire then paid priority the gate had costed as free.
+    #[test]
+    fn cap_that_rounds_to_zero_stays_zero() {
+        // Tiny profit spread over a huge CU limit: the budget is one lamport but
+        // no whole micro-lamport price can be spread across 1.4M CU within it.
+        let price = cap_cu_price_by_profit(1, 1_400_000, 50_000, 100);
+        assert_eq!(price, 0, "cap must not resurrect a zeroed price");
+        assert_eq!(
+            priority_fee_lamports(price, 1_400_000),
+            0,
+            "a zeroed price must cost zero lamports"
+        );
+    }
+
+    /// §6.3 regression: `priority_fee_lamports` must round UP (ceiling) so the
+    /// non-refundable fee is never understated.
+    #[test]
+    fn priority_fee_lamports_rounds_up() {
+        // 1 µlamport/CU x 1 CU = 0.000001 lamports -> 1 lamport (never 0).
+        assert_eq!(priority_fee_lamports(1, 1), 1);
+        // Exactly divisible is exact.
+        assert_eq!(priority_fee_lamports(1_000_000, 1_000_000), 1_000_000);
+        // 1_000_001 µlamports/CU x 1_000_000 CU = 1_000_001 lamports exactly.
+        assert_eq!(priority_fee_lamports(1_000_001, 1_000_000), 1_000_001);
+        // One micro-lamport over a whole lamport rounds up to the next lamport.
+        assert_eq!(priority_fee_lamports(1, 1_000_001), 2);
+        // Zero price costs nothing.
+        assert_eq!(priority_fee_lamports(0, 400_000), 0);
+    }
+
+    /// §6.3 regression: the builder must encode the caller's authoritative price
+    /// verbatim and must never add its own profit-based elevation. This is the
+    /// invariant that stopped the wire from out-paying the profitability gate.
+    #[test]
+    fn builder_encodes_authoritative_cu_price_verbatim() {
+        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
+        let opp = ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            route_id: RouteId(1),
+            slot: Slot(100),
+            size_in: TokenAmount(1_000_000_000),
+            expected_out: TokenAmount(1_050_000_000),
+            hop_inputs: vec![1_000_000_000, 1_050_000_000],
+            gross_profit: Lamports(50_000_000),
+            net_profit: Lamports(45_000_000),
+            base_decimals: 9,
+            price_impact_bps: Bps(10),
+            hops: vec![SwapHop {
+                pool_id: PoolId::new([10; 32]),
+                protocol: DexProtocol::RaydiumV4,
+                mint_in: MintId(wsol),
+                mint_out: MintId(usdc),
+                fee_bps: 25,
+                active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
+            }],
+            expected_min_final_output: 0,
+        };
+
+        // An arbitrary, deliberately non-default authoritative price.
+        let authored = 7_777u64;
+        let ixs = TxBuilder::assemble_flash_arbitrage(
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Lamports(5_000),
+            400_000,
+            authored,
+            &opp,
+            &KaminoFlashParams::default(),
+            0,
+            TokenAmount(0),
+            &[],
+        )
+        .expect("assembly succeeds");
+
+        let price_ix = ixs
+            .iter()
+            .find(|ix| ix.data.first() == Some(&3))
+            .expect("SetComputeUnitPrice must be present");
+        assert_eq!(
+            u64::from_le_bytes(price_ix.data[1..9].try_into().unwrap()),
+            authored,
+            "the encoded CU price must equal the authoritative price exactly; \
+             any re-elevation here means the wire pays more than the gate approved"
+        );
+    }
+
     #[test]
     fn compute_budget_instructions() {
         let ix1 = build_compute_unit_limit(180_000);

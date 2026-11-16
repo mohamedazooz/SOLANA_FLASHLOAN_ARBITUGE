@@ -185,14 +185,15 @@ impl TxBuilder {
             }
         }
 
-        // 1. Compute Budget (Dynamically bounded <= 200,000 CU with 15% buffer, elevated priority fee)
+        // 1. Compute Budget. `priority_fee_micro_lamports` is the AUTHORITATIVE
+        //    final per-CU price decided by the profitability gate. It is encoded
+        //    verbatim: the builder must never recompute or elevate it, or the
+        //    transaction would pay a priority fee the gate never approved.
+        //    Both branches share `calculate_dynamic_cu_limit`, so the encoded
+        //    CU limit equals the one the gate costed against.
         let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        let dynamic_cu_price = calculate_dynamic_cu_price(
-            opportunity.gross_profit.as_u64(),
-            priority_fee_micro_lamports,
-        );
         ixs.push(build_compute_unit_limit(effective_cu));
-        ixs.push(build_compute_unit_price(dynamic_cu_price));
+        ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
@@ -369,14 +370,12 @@ impl TxBuilder {
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
 
-        // 1. Compute Budget Limit & Dynamic Priority Fee (Injected BEFORE Swaps & Borrow)
+        // 1. Compute Budget Limit & Price. `priority_fee_micro_lamports` is the
+        //    AUTHORITATIVE final per-CU price from the profitability gate and is
+        //    encoded verbatim (no re-elevation) so the wire matches the gate.
         let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        let dynamic_cu_price = calculate_dynamic_cu_price(
-            opportunity.gross_profit.as_u64(),
-            priority_fee_micro_lamports,
-        );
         ixs.push(build_compute_unit_limit(effective_cu));
-        ixs.push(build_compute_unit_price(dynamic_cu_price));
+        ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
