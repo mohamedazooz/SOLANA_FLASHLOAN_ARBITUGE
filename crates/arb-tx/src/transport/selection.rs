@@ -141,34 +141,24 @@ pub fn parse_transaction_wire_header(
     // SIMD-0385 Transaction V1 wire format begins with discriminator 0x81.
     // Legacy / V0 format: first byte is number of signatures (compact-u16).
     if tx_bytes[0] == 0x81 {
-        // V1 Format Header parsing
+        // V1 Format Header parsing (SIMD-0385):
         // [0]: 0x81 discriminator
-        // [1]: num_signatures
-        // [2..]: message header
-        if tx_bytes.len() < 4 {
-            return Err(TransportSelectionError::InvalidWireFormat(
-                "truncated V1 envelope header".into(),
-            ));
-        }
-        let num_sigs = tx_bytes[1] as usize;
-        let sig_offset = 2 + num_sigs * 64;
-        if tx_bytes.len() < sig_offset + 3 {
+        // [1]: num_required_signatures
+        // [2]: num_readonly_signed_accounts
+        // [3]: num_readonly_unsigned_accounts
+        // [4..8]: TransactionConfigMask (4 bytes LE)
+        // [8..40]: LifetimeSpecifier (32 bytes recent blockhash)
+        // [40]: NumInstructions (u8)
+        // [41]: NumAddresses (u8) -> inline accounts count
+        // [42..]: Inline Addresses array (NumAddresses * 32 bytes)
+        // ... ConfigValues, InstructionHeaders, InstructionPayloads
+        // ... Trailing signatures (num_required_signatures * 64 bytes)
+        if tx_bytes.len() < 42 {
             return Err(TransportSelectionError::InvalidWireFormat(
                 "truncated V1 envelope before message accounts count".into(),
             ));
         }
-        // In V1 message format (0x81):
-        // Offset sig_offset + 0: num_required_signatures
-        // Offset sig_offset + 1: num_readonly_signed
-        // Offset sig_offset + 2: num_readonly_unsigned
-        // Offset sig_offset + 3: compact-u16 count of account keys
-        let accounts_count = if tx_bytes.len() > sig_offset + 3 {
-            // Read account count byte (compact-u16, typically 1 byte for < 128 accounts)
-            let raw_cnt = tx_bytes[sig_offset + 3] as usize;
-            raw_cnt & 0x7f
-        } else {
-            0
-        };
+        let accounts_count = tx_bytes[41] as usize;
 
         Ok((TransactionVersion::V1, accounts_count))
     } else {
@@ -353,13 +343,13 @@ mod tests {
     fn dummy_v1_header(num_accounts: u8, total_len: usize) -> Vec<u8> {
         let mut bytes = vec![0u8; total_len.max(70)];
         bytes[0] = 0x81; // V1 discriminator
-        bytes[1] = 1; // 1 signature
-        // Signature occupies bytes 2..66
-        let sig_end = 66;
-        bytes[sig_end] = 1; // num_required_signatures
-        bytes[sig_end + 1] = 0; // num_readonly_signed
-        bytes[sig_end + 2] = 0; // num_readonly_unsigned
-        bytes[sig_end + 3] = num_accounts; // accounts count
+        bytes[1] = 1; // num_required_signatures
+        bytes[2] = 0; // num_readonly_signed
+        bytes[3] = 0; // num_readonly_unsigned
+        // bytes[4..8]: config_mask
+        // bytes[8..40]: recent_blockhash
+        bytes[40] = 1; // num_instructions
+        bytes[41] = num_accounts; // num_addresses (inline accounts count)
         bytes
     }
 
@@ -463,5 +453,54 @@ mod tests {
         let cap = TransportCapability::mainnet_v1_capable("Helius");
         let err = select_authoritative_transport(&[], true, true, true, &cap).unwrap_err();
         assert_eq!(err, TransportSelectionError::EmptyPayload);
+    }
+
+    #[test]
+    fn test_parse_real_compiled_v1_wire_header_regression() {
+        use crate::{
+            AccountMeta, AdaptiveTxCompiler, CompiledInstruction, KeypairSigner, V1ConfigParams,
+        };
+        use solana_pubkey::Pubkey;
+
+        let signer = KeypairSigner::new_random();
+        let target_pubkey = Pubkey::new_unique();
+        let program_id = Pubkey::new_unique();
+
+        let ix = CompiledInstruction {
+            program_id,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(target_pubkey, false),
+            ],
+            data: vec![1, 2, 3, 4],
+        };
+
+        let config = V1ConfigParams {
+            priority_fee_lamports: Some(5_000),
+            compute_unit_limit: Some(250_000),
+            loaded_accounts_data_size_limit: Some(67_108_864),
+            heap_size: None,
+        };
+
+        let compiled = AdaptiveTxCompiler::compile_v1_only(&signer, &[ix], [9u8; 32], config)
+            .expect("compiling valid V1 transaction must succeed");
+
+        let (version, count) = parse_transaction_wire_header(&compiled.wire_bytes)
+            .expect("must successfully parse wire header of real V1 transaction");
+
+        assert_eq!(version, TransactionVersion::V1);
+        // signer + target + program = 3 unique accounts
+        assert_eq!(count, 3);
+
+        let cap = TransportCapability::mainnet_v1_capable("Helius-Sender");
+        let selected =
+            select_authoritative_transport(&compiled.wire_bytes, true, true, false, &cap)
+                .expect("selection must succeed for real compiled V1 transaction");
+
+        assert_eq!(selected.kind, TransportKind::SwqosDirect);
+        assert_eq!(selected.tx_version, TransactionVersion::V1);
+        assert_eq!(selected.packet_bytes, compiled.wire_bytes.len());
+        assert_eq!(selected.wire_mtu_limit, 4096);
+        assert!(selected.is_v1);
     }
 }
