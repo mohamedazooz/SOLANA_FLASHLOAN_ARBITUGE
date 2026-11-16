@@ -260,8 +260,7 @@ fn validate_risk(cfg: &RiskConfig) -> ConfigResult<()> {
     // Hourly loss limit must not exceed daily loss limit.
     if cfg.max_hourly_loss_usd.0 > cfg.max_daily_loss_usd.0 {
         return Err(ConfigError::Validation(
-            "risk.max_hourly_loss_usd must not exceed risk.max_daily_loss_usd"
-                .to_string(),
+            "risk.max_hourly_loss_usd must not exceed risk.max_daily_loss_usd".to_string(),
         ));
     }
     if cfg.max_consecutive_failures == 0 {
@@ -346,14 +345,12 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
     if config.mode.mode == Mode::Live {
         if !config.mode.live_enabled {
             return Err(ConfigError::Validation(
-                "mode live requires execution.live_enabled == true (ARB_LIVE=1)"
-                    .to_string(),
+                "mode live requires execution.live_enabled == true (ARB_LIVE=1)".to_string(),
             ));
         }
         if config.security.webhook_signature_required == false {
             return Err(ConfigError::Validation(
-                "live mode requires security.webhook_signature_required == true"
-                    .to_string(),
+                "live mode requires security.webhook_signature_required == true".to_string(),
             ));
         }
         // Admin token env must be declared.
@@ -365,8 +362,7 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
         // CORS must not be permissive in live mode: require explicit origins.
         if config.security.cors_allow_origins.is_empty() {
             return Err(ConfigError::Validation(
-                "live mode requires security.cors_allow_origins to be non-empty"
-                    .to_string(),
+                "live mode requires security.cors_allow_origins to be non-empty".to_string(),
             ));
         }
         // A real RPC endpoint is required to trade live.
@@ -390,7 +386,12 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
 /// declared and not obviously placeholders.
 pub fn check_no_placeholder_secret_env_names(config: &AppConfig) -> ConfigResult<()> {
     let placeholders = [
-        "changeme", "change-me", "placeholder", "your_token_here", "token", "",
+        "changeme",
+        "change-me",
+        "placeholder",
+        "your_token_here",
+        "token",
+        "",
     ];
     for env_name in [
         &config.provider.primary_token_env,

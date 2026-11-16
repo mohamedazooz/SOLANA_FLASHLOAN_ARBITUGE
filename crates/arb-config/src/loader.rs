@@ -22,10 +22,9 @@ use std::fs;
 /// document is parsed, then runs the full validation suite.
 pub fn load(path: &str) -> ConfigResult<AppConfig> {
     let contents =
-        fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(path.to_string(), e))?;
-    let mut config: AppConfig = toml::from_str(&contents)
-        .map_err(|e| ConfigError::TomlParse(path.to_string(), e))?;
+        fs::read_to_string(path).map_err(|e| ConfigError::IoError(path.to_string(), e))?;
+    let mut config: AppConfig =
+        toml::from_str(&contents).map_err(|e| ConfigError::TomlParse(path.to_string(), e))?;
 
     apply_env_overrides(&mut config)?;
 
@@ -65,8 +64,7 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
             ));
         }
         // UsdMicros = USD * 1e6.
-        config.risk.max_trade_size_usd =
-            usd_micros_from_f64(value);
+        config.risk.max_trade_size_usd = usd_micros_from_f64(value);
     }
 
     // Chronos overrides.
@@ -83,16 +81,15 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
         config.chronos.decay_lambda_per_sec = value;
     }
     if let Ok(raw) = std::env::var("CHRONOS_MAX_AGE_MS") {
-        let value: u64 = raw.parse().map_err(|_| {
-            ConfigError::InvalidEnv("CHRONOS_MAX_AGE_MS".to_string(), raw.clone())
-        })?;
-        config.chronos.max_age_ms =
-            Milliseconds(value);
+        let value: u64 = raw
+            .parse()
+            .map_err(|_| ConfigError::InvalidEnv("CHRONOS_MAX_AGE_MS".to_string(), raw.clone()))?;
+        config.chronos.max_age_ms = Milliseconds(value);
     }
     if let Ok(raw) = std::env::var("CHRONOS_MIN_EV_USD") {
-        let value: f64 = raw.parse().map_err(|_| {
-            ConfigError::InvalidEnv("CHRONOS_MIN_EV_USD".to_string(), raw.clone())
-        })?;
+        let value: f64 = raw
+            .parse()
+            .map_err(|_| ConfigError::InvalidEnv("CHRONOS_MIN_EV_USD".to_string(), raw.clone()))?;
         if !value.is_finite() || value < 0.0 {
             return Err(ConfigError::InvalidEnv(
                 "CHRONOS_MIN_EV_USD".to_string(),
@@ -115,8 +112,7 @@ fn usd_micros_from_f64(usd: f64) -> crate::UsdMicros {
 /// Deserialize a raw TOML document into a map so unknown top-level keys can be
 /// inspected before conversion to `AppConfig`. Used by strict-loading callers.
 pub fn parse_raw_toml(contents: &str) -> ConfigResult<HashMap<String, IgnoredAny>> {
-    toml::from_str(contents)
-        .map_err(|e| ConfigError::TomlParse("<inline>".to_string(), e))
+    toml::from_str(contents).map_err(|e| ConfigError::TomlParse("<inline>".to_string(), e))
 }
 
 #[cfg(test)]

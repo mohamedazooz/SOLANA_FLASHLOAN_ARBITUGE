@@ -413,14 +413,8 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             use_flash_loan: arb.strategy.use_flash_loan,
             max_pools: arb.strategy.max_pools,
             max_per_venue: None,
-            discovery_refresh_secs: arb
-                .strategy
-                .discovery_refresh_secs
-                .map(|s| s.0),
-            discovery_min_tvl_usd: arb
-                .strategy
-                .discovery_min_tvl_usd
-                .map(usd),
+            discovery_refresh_secs: arb.strategy.discovery_refresh_secs.map(|s| s.0),
+            discovery_min_tvl_usd: arb.strategy.discovery_min_tvl_usd.map(usd),
             dlmm_cross_pool: None,
             dlmm_three_leg: None,
         },
@@ -436,9 +430,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             max_orders_per_hour: arb.risk.max_orders_per_hour,
             cooldown_slots: arb.risk.cooldown_slots.0,
         },
-        store: StoreConfig {
-            url: arb.store.url,
-        },
+        store: StoreConfig { url: arb.store.url },
         metrics: MetricsConfig {
             listen: arb.metrics.listen.to_string(),
         },
@@ -451,10 +443,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             decay_lambda_per_sec: arb.chronos.decay_lambda_per_sec,
             max_age_ms: arb.chronos.max_age_ms.0,
             min_ev_usd: usd(arb.chronos.min_ev_usd),
-            failed_attempt_cost_lamports: arb
-                .chronos
-                .failed_attempt_cost_lamports
-                .0,
+            failed_attempt_cost_lamports: arb.chronos.failed_attempt_cost_lamports.0,
             beta_risk_factor: arb.chronos.beta_risk_factor,
         },
     }

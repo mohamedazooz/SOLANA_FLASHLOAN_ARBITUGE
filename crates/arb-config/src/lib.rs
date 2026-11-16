@@ -17,9 +17,7 @@
 //! (Lamports, TokenAmount, Bps, Slot, ComputeUnits, UsdMicros, Milliseconds,
 //! Seconds) and reused here so units are never ambiguous.
 
-use arb_types::{
-    Bps, Lamports, Milliseconds, Seconds, Slot, UsdMicros,
-};
+use arb_types::{Bps, Lamports, Milliseconds, Seconds, Slot, UsdMicros};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use thiserror::Error;
@@ -403,8 +401,8 @@ impl AppConfig {
             },
             risk: RiskConfig {
                 max_trade_size_usd: UsdMicros(10_000_000_000), // $10,000
-                max_daily_loss_usd: UsdMicros(5_000_000),       // $5.00
-                max_hourly_loss_usd: UsdMicros(2_000_000),      // $2.00
+                max_daily_loss_usd: UsdMicros(5_000_000),      // $5.00
+                max_hourly_loss_usd: UsdMicros(2_000_000),     // $2.00
                 max_consecutive_failures: 8,
                 min_landing_rate: 0.02,
                 max_attempts_per_slot: 3,
@@ -425,7 +423,9 @@ impl AppConfig {
                 url: "sqlite://arb_sentinel.db".to_string(),
             },
             metrics: ObservabilityConfig {
-                listen: "127.0.0.1:9100".parse().expect("valid default metrics addr"),
+                listen: "127.0.0.1:9100"
+                    .parse()
+                    .expect("valid default metrics addr"),
             },
             admin: AdminConfig {
                 listen: "127.0.0.1:9101".parse().expect("valid default admin addr"),
