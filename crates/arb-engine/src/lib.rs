@@ -147,7 +147,7 @@ pub fn quote_pool(
             if let Some(e) = edge {
                 if let Some(d) = &e.dlmm {
                     if let Some(params) = &d.params {
-                        if d.status != 0 || params.function_type != 0 || params.collect_fee_mode > 1
+                        if d.status != 0 || params.function_type > 2 || params.collect_fee_mode > 1
                         {
                             return 0;
                         }
@@ -174,6 +174,7 @@ pub fn quote_pool(
                                     index_reference: d.index_reference,
                                     last_update_timestamp: d.last_update_timestamp,
                                 },
+                                support_limit_order: d.support_limit_order,
                             };
                             let bins: Option<Vec<ArbDlmmBin>> = d
                                 .bins
@@ -184,6 +185,10 @@ pub fn quote_pool(
                                         amount_x: u64::try_from(b.amount_x).ok()?,
                                         amount_y: u64::try_from(b.amount_y).ok()?,
                                         price_q64: 0,
+                                        open_order_amount: b.open_order_amount,
+                                        processed_order_remaining_amount: b
+                                            .processed_order_remaining_amount,
+                                        limit_order_ask_side: b.limit_order_ask_side,
                                     })
                                 })
                                 .collect();
@@ -596,6 +601,9 @@ impl MarketGraph {
                         amount_x: b.amount_x.min(u64::MAX as u128) as u64,
                         amount_y: b.amount_y.min(u64::MAX as u128) as u64,
                         price_q64: 0,
+                        open_order_amount: b.open_order_amount,
+                        processed_order_remaining_amount: b.processed_order_remaining_amount,
+                        limit_order_ask_side: b.limit_order_ask_side,
                     })
                     .collect();
                 arb_math::dlmm::dlmm_multi_bin_max_input(

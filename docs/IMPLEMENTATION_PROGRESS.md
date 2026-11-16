@@ -233,3 +233,74 @@ differential parity vs the official Meteora SDK (`ts` SDK or Rust
    providers support them.
 4. Meteora SDK differential parity harness (blocks live-sizing trust).
 5. Live trading remains DISABLED (Gate G) — operator decision only.
+
+---
+
+## Session 5 — Limit-order parity completed: root cause found, full SDK parity achieved
+
+### Outcome
+
+The last unexplained Meteora DLMM differential gap (y_to_x deep quotes vs the
+official TS SDK `pool.swapQuote`) is **root-caused and closed**. The Rust engine
+was correct; the differential **fixture capture** was corrupted.
+
+### Root cause (measured, not assumed)
+
+`scripts/differential-harness/capture_mainnet_snapshot.js` serialized the
+per-bin limit-order side flag as `bin.limitOrderAskSide === true`. The SDK
+(v1.9.14) decodes `limitOrderAskSide` as a **number** (0/1), and in JavaScript
+`1 === true` is `false` — so every ask-side bin was written into the snapshot
+as bid-side. Instrumenting the SDK's internal `swapExactInQuoteAtBin` and
+`getLimitOrderAmountsBySwapDirection` proved:
+
+- the SDK's own direction filter is correct and matches the Rust rule
+  `(swap_for_y && !ask_side) || (!swap_for_y && ask_side)`;
+- with the raw flag = 1 (ask side), a y_to_x swap correctly fills
+  `amountX + openOrderAmount` (measured exact match, e.g. bin −6545:
+  out 27,768,961,917 = amountX 27,043,435,395 + openOrderAmount 725,526,522);
+- the Rust engine, reading the corrupted snapshot flag (`false`), correctly
+  excluded the orders — producing the apparent "underquote".
+
+Correlation evidence: 63 of 64 divergent per-bin rows had `openOrderAmount > 0`;
+**zero** non-divergent rows did. x_to_y parity was unaffected because the
+x_to_y traversal never reaches the above-active ask-side order bins.
+
+### Fixes
+
+1. `capture_mainnet_snapshot.js`: flag serialization now uses
+   `Boolean(bin.limitOrderAskSide)` (correct for numeric 0/1 and boolean).
+2. Fixtures regenerated read-only from fresh mainnet state
+   (slot 469998027, SDK 1.9.14, pool `5rCf…HAS6`).
+3. `arb-math/src/dlmm.rs` `swap_exact_out_at_bin`: the exact-out rounding-dust
+   delta (SDK assigns output-side dust > 1 unit to the protocol fee) is now
+   also added to `fee_amount`, keeping the invariant
+   `fee_amount = LP fee + protocol fee` (previously the total fee understated
+   by the dust, e.g. 919,661 vs 919,671 — fail-open direction).
+4. `arb-math/src/dlmm.rs` fill layering: `drained_bin` now tracks true bin
+   exhaustion (every liquidity layer that received flow was exhausted),
+   restoring the oracle/spec semantics lost in the layering rewrite
+   (full-fill with `amount_left == 0` was reported not-drained). Multi-bin
+   traversal itself remains leftover-based, identical to the SDK loop.
+
+### Verification (session 5)
+
+| Check | Command | Result |
+|---|---|---|
+| SDK differential (16 quote cases, 145 field comparisons, both directions, exact-in + exact-out, small + deep) | `cargo test -p arb-engine --test meteora_mainnet_sdk_differential --release` | **all pass, max abs diff = 0 raw units** |
+| Python-oracle differential | `cargo test -p arb-math` | 117 + all suites pass (incl. previously failing `dlmm_single_bin_matches_python_oracle` v4) |
+| fmt / clippy / check | `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo check --workspace --all-targets` | exit 0 |
+| workspace tests | `cargo test --workspace` | **1026 passed / 0 failed** |
+| SDK dist integrity | grep for instrumentation markers | pristine (backup restored, throwaway patches removed) |
+
+Throwaway diagnostics (ladder/y2x trace tests, Node trace harnesses,
+instrumented-dist patches) were removed after the investigation; the durable
+artifacts are the fixed capture harness, the regenerated fixtures, and this
+log. The `sdk_differential_manifest.json` now records `all_diffs_zero: true`
+with PDA checks 17/17.
+
+### Remaining work (unchanged)
+
+1. Hardcoded-value inventory refresh + classification table regeneration.
+2. Secret provider abstraction follow-ups (webhook replay protection done in
+   session 4; rotation tooling pending).
+3. Live trading remains DISABLED (Gate G) — explicit operator decision only.

@@ -167,6 +167,7 @@ fn test_official_sdk_exact_in_quote_differential() {
         status: 0,
         parameters: math_params,
         v_parameters: v_params,
+        ..Default::default()
     };
 
     let bins = vec![MathDlmmBin {
@@ -174,6 +175,7 @@ fn test_official_sdk_exact_in_quote_differential() {
         amount_x: 100_000_000,
         amount_y: 100_000_000,
         price_q64: get_price_from_id(0, bin_step).unwrap(),
+        ..Default::default()
     }];
 
     let input_amount = 1_000_000u64;
@@ -293,6 +295,7 @@ fn test_official_sdk_exact_out_quote_differential() {
             index_reference: 0,
             last_update_timestamp: 1_700_000_000,
         },
+        ..Default::default()
     };
 
     let bins = vec![MathDlmmBin {
@@ -300,6 +303,7 @@ fn test_official_sdk_exact_out_quote_differential() {
         amount_x: 100_000_000,
         amount_y: 100_000_000,
         price_q64: get_price_from_id(0, bin_step).unwrap(),
+        ..Default::default()
     }];
 
     let desired_out = 950_000u64;

@@ -34,6 +34,7 @@ fn make_test_pool(
             bin_id: active_bin_id + offset,
             amount_x: liquidity_x as u128,
             amount_y: liquidity_y as u128,
+            ..Default::default()
         });
     }
 
@@ -60,6 +61,7 @@ fn make_test_pool(
         volatility_reference: 0,
         index_reference: active_bin_id,
         last_update_timestamp: 1_700_000_000,
+        support_limit_order: false,
     };
 
     let exec = PoolExecutionAccounts::MeteoraDlmm {

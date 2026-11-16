@@ -237,6 +237,9 @@ fn get_leg_capacity_with_limit(pool: &PoolState, swap_for_y: bool, max_bins: u32
                 amount_x: u64::try_from(b.amount_x).unwrap_or(0),
                 amount_y: u64::try_from(b.amount_y).unwrap_or(0),
                 price_q64: 0,
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
             })
             .collect();
 
@@ -573,11 +576,13 @@ mod tests {
                     bin_id: 0,
                     amount_x: 5_000_000,
                     amount_y: 0, // 0 Y in active bin
+                    ..Default::default()
                 },
                 TypeDlmmBin {
                     bin_id: -1,
                     amount_x: 0,
                     amount_y: 10_000_000, // neighbouring bin has Y
+                    ..Default::default()
                 },
             ],
             params: None,
@@ -585,6 +590,7 @@ mod tests {
             volatility_reference: 0,
             index_reference: 0,
             last_update_timestamp: 0,
+            ..Default::default()
         };
 
         let pool = PoolState {

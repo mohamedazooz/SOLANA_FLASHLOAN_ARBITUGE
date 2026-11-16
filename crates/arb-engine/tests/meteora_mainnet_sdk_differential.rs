@@ -59,6 +59,8 @@ struct Params {
     base_fee_power_factor: u8,
     #[serde(rename = "collectFeeMode")]
     collect_fee_mode: u8,
+    #[serde(rename = "functionType", default)]
+    function_type: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +144,12 @@ struct RawBin {
     amount_x: String,
     #[serde(rename = "amountY")]
     amount_y: String,
+    #[serde(rename = "openOrderAmount", default)]
+    open_order_amount: String,
+    #[serde(rename = "processedOrderRemainingAmount", default)]
+    processed_order_remaining_amount: String,
+    #[serde(rename = "limitOrderAskSide", default)]
+    limit_order_ask_side: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,6 +218,12 @@ fn load_bins() -> Vec<DlmmBin> {
                 amount_y: b.amount_y.parse().expect("amount_y"),
                 // 0 => the engine must derive the price itself.
                 price_q64: 0,
+                open_order_amount: b.open_order_amount.parse().unwrap_or(0),
+                processed_order_remaining_amount: b
+                    .processed_order_remaining_amount
+                    .parse()
+                    .unwrap_or(0),
+                limit_order_ask_side: b.limit_order_ask_side,
             });
         }
     }
@@ -245,6 +259,7 @@ fn pool_for(f: &SdkFixture, collect_fee_mode: u8) -> DlmmPoolState {
                 .parse()
                 .expect("timestamp"),
         },
+        support_limit_order: f.parameters.function_type == 0 || f.parameters.function_type == 2,
     }
 }
 

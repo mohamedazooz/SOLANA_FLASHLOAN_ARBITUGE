@@ -56,7 +56,7 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
         // The local math implementation currently models the Spot function type.
         // Unknown/future function types must not be priced with the wrong curve.
         if dlmm.status != 0
-            || fp.function_type != 0
+            || fp.function_type > 2
             || fp.collect_fee_mode > 1
             || pool.has_risky_token
             || pool.transfer_fee_bps != 0
@@ -86,6 +86,7 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
                 index_reference: dlmm.index_reference,
                 last_update_timestamp: dlmm.last_update_timestamp,
             },
+            support_limit_order: dlmm.support_limit_order,
         };
 
         let bins: Option<Vec<ArbDlmmBin>> = dlmm
@@ -97,6 +98,9 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
                     amount_x: u64::try_from(b.amount_x).ok()?,
                     amount_y: u64::try_from(b.amount_y).ok()?,
                     price_q64: 0,
+                    open_order_amount: b.open_order_amount,
+                    processed_order_remaining_amount: b.processed_order_remaining_amount,
+                    limit_order_ask_side: b.limit_order_ask_side,
                 })
             })
             .collect();

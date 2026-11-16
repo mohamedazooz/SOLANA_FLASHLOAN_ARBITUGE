@@ -32,8 +32,12 @@ pub struct MeteoraDlmmPool {
     pub bin_step: u16,
     /// Pair status byte (0 = Enabled; non-zero = disabled/tombstoned).
     pub status: u8,
-    /// StaticParameters.function_type (ConcreteFunctionType; 0 = Spot).
+    /// StaticParameters.function_type (0 = Undetermined, 1 = LiquidityMining,
+    /// 2 = LimitOrder; per official `commons/src/conversions/function_type.rs`).
     pub function_type: u8,
+    /// Whether the pool supports the limit-order liquidity layer
+    /// (`LbPair::is_support_limit_order` in the official SDK).
+    pub support_limit_order: bool,
     /// StaticParameters.collect_fee_mode (CollectFeeMode).
     pub collect_fee_mode: u8,
     pub fee_params: Option<DlmmFeeParams>,
@@ -66,6 +70,7 @@ impl MeteoraDlmmPool {
             bin_step: 1,
             status: 0,
             function_type: 0,
+            support_limit_order: false,
             collect_fee_mode: 0,
             fee_params: None,
             volatility_accumulator: 0,
@@ -147,10 +152,9 @@ impl MeteoraDlmmPool {
     ///  141..144  _padding
     /// ```
     ///
-    /// Limit-order liquidity is executable by the swap, so it is folded into
-    /// `amount_x`/`amount_y` here (ask side => X, bid side => Y). The protocol
-    /// fee attribution for that liquidity is therefore approximated as curve
-    /// liquidity; that approximation is documented in the ADR.
+    /// Limit-order liquidity is passed through natively in its own layers so
+    /// the quote engine can fill MM reserves first, then processed orders,
+    /// then open orders, with the official `split_fee` attribution.
     pub fn parse_bin_array_account(data: &[u8]) -> Result<Vec<DlmmBin>> {
         let n = METEORA_BINS_PER_BIN_ARRAY as usize;
         let expected_min = METEORA_BIN_ARRAY_HEADER_SIZE + n * METEORA_BIN_SIZE;
@@ -174,20 +178,21 @@ impl MeteoraDlmmPool {
             let processed_order_remaining_amount =
                 u64::from_le_bytes(data[base + 128..base + 136].try_into().unwrap());
             let ask_side = data[base + 140] != 0;
-            let limit_order_amount =
-                open_order_amount.saturating_add(processed_order_remaining_amount);
-            let (amount_x, amount_y) = if ask_side {
-                (curve_x.saturating_add(limit_order_amount), curve_y)
-            } else {
-                (curve_x, curve_y.saturating_add(limit_order_amount))
-            };
-            if amount_x > 0 || amount_y > 0 {
-                out.push(DlmmBin {
-                    bin_id: start_bin_id.saturating_add(i as i32),
-                    amount_x: u128::from(amount_x),
-                    amount_y: u128::from(amount_y),
-                });
+            if curve_x == 0
+                && curve_y == 0
+                && open_order_amount == 0
+                && processed_order_remaining_amount == 0
+            {
+                continue;
             }
+            out.push(DlmmBin {
+                bin_id: start_bin_id.saturating_add(i as i32),
+                amount_x: u128::from(curve_x),
+                amount_y: u128::from(curve_y),
+                open_order_amount,
+                processed_order_remaining_amount,
+                limit_order_ask_side: ask_side,
+            });
         }
         Ok(out)
     }
@@ -250,6 +255,7 @@ impl AmmPool for MeteoraDlmmPool {
             volatility_reference: self.volatility_reference,
             index_reference: self.index_reference,
             last_update_timestamp: self.last_update_timestamp,
+            support_limit_order: self.support_limit_order,
         })
     }
 
@@ -403,6 +409,17 @@ impl AmmPool for MeteoraDlmmPool {
         self.active_id = i32::from_le_bytes(data[76..80].try_into().unwrap());
         self.bin_step = u16::from_le_bytes(data[80..82].try_into().unwrap()).max(1);
         self.status = data[82];
+        // `is_support_limit_order` (official SDK): LimitOrder (2) => true;
+        // LiquidityMining (1) => false; Undetermined (0) => true only when every
+        // reward mint is the default pubkey; any other value fails closed to false.
+        let reward_mints_default =
+            data[264..296].iter().all(|&b| b == 0) && data[408..440].iter().all(|&b| b == 0);
+        self.support_limit_order = match function_type {
+            2 => true,
+            1 => false,
+            0 => reward_mints_default,
+            _ => false,
+        };
         self.token_x_mint = MintId(read_pk(88)?);
         self.token_y_mint = MintId(read_pk(120)?);
         self.reserve_x = read_pk(152)?;
@@ -425,7 +442,7 @@ impl AmmPool for MeteoraDlmmPool {
             .fee_params
             .as_ref()
             .ok_or_else(|| ArbError::InvalidInput("Meteora DLMM missing fee params".into()))?;
-        if params.function_type != 0 || params.collect_fee_mode > 1 {
+        if params.function_type > 2 || params.collect_fee_mode > 1 {
             return Err(ArbError::InvalidInput(
                 "Meteora DLMM function/fee mode is not supported by the accepted quote adapter"
                     .into(),
@@ -451,6 +468,9 @@ impl AmmPool for MeteoraDlmmPool {
                 amount_x: u64::try_from(b.amount_x).unwrap_or(u64::MAX),
                 amount_y: u64::try_from(b.amount_y).unwrap_or(u64::MAX),
                 price_q64: get_price_from_id(b.bin_id, self.bin_step).unwrap_or(0),
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
             })
             .collect();
         let pool_state = arb_math::dlmm::DlmmPoolState {
@@ -475,6 +495,7 @@ impl AmmPool for MeteoraDlmmPool {
                 index_reference: self.index_reference,
                 last_update_timestamp: self.last_update_timestamp,
             },
+            support_limit_order: self.support_limit_order,
         };
         let q = quote_dlmm_multi_bin(
             &pool_state,

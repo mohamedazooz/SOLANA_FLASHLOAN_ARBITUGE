@@ -10,6 +10,7 @@ pub mod litesvm_sim;
 pub mod meteora_fresh_pipeline;
 pub mod meteora_simulation_harness;
 pub mod opportunity_recorder;
+pub mod paper_trading_report;
 pub mod profitability_gate;
 pub use fork_sim::{
     DEFAULT_FORK_SIM_TIMEOUT_MS, ForkSimResult, ForkSimulator, ForkState, SimAccountSnapshot,

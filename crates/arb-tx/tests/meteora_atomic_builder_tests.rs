@@ -36,6 +36,7 @@ fn make_test_dlmm_pool(
         bin_id: active_bin_id,
         amount_x: 50_000_000_000,
         amount_y: 50_000_000_000,
+        ..Default::default()
     }];
 
     let fee_params = DlmmFeeParams {
@@ -61,6 +62,7 @@ fn make_test_dlmm_pool(
         volatility_reference: 0,
         index_reference: active_bin_id,
         last_update_timestamp: 1_700_000_000,
+        support_limit_order: false,
     };
 
     let exec = PoolExecutionAccounts::MeteoraDlmm {

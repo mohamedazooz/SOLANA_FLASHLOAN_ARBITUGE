@@ -712,7 +712,7 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     let params = d0.params.clone().ok_or(ArbError::InvalidInput(
         "DLMM fee config not ingested".into(),
     ))?;
-    if params.function_type != 0 {
+    if params.function_type > 2 {
         return Err(ArbError::InvalidInput(
             "unsupported Meteora DLMM function type; spot-only quote engine cannot price it".into(),
         ));
@@ -747,6 +747,7 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
             index_reference: d0.index_reference,
             last_update_timestamp: d0.last_update_timestamp,
         },
+        support_limit_order: d0.support_limit_order,
     };
     let mut bins: Vec<DlmmBin> = d0
         .bins
@@ -761,6 +762,9 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
                     ArbError::InvalidInput("DLMM Y reserve exceeds u64 domain".into())
                 })?,
                 price_q64: 0,
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -777,6 +781,9 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
                 bin_id: b.id,
                 amount_x: b.amount_x as u128,
                 amount_y: b.amount_y as u128,
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
             })
             .collect();
     }
@@ -999,12 +1006,14 @@ mod tests {
                     bin_id: 0,
                     amount_x: 1_000_000,
                     amount_y: 1_000_000,
+                    ..Default::default()
                 }],
                 params: None,
                 volatility_accumulator: 0,
                 volatility_reference: 0,
                 index_reference: 0,
                 last_update_timestamp: 0,
+                ..Default::default()
             }),
             pump_fun: None,
             transfer_fee_bps: 0,
@@ -1056,6 +1065,7 @@ mod tests {
                     bin_id: 2,
                     amount_x: 10u128.pow(12),
                     amount_y: 4 * 10u128.pow(12),
+                    ..Default::default()
                 }],
                 params: Some(arb_types::DlmmFeeParams {
                     base_factor: 100,
@@ -1073,6 +1083,7 @@ mod tests {
                 volatility_reference: 0,
                 index_reference: 2,
                 last_update_timestamp: 0,
+                ..Default::default()
             }),
             pump_fun: None,
             transfer_fee_bps: 0,

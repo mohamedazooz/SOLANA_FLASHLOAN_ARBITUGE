@@ -63,16 +63,19 @@ fn make_dlmm_pool(
             bin_id: active_bin_id - 1,
             amount_x: liquidity * 2,
             amount_y: 0,
+            ..Default::default()
         },
         DlmmBin {
             bin_id: active_bin_id,
             amount_x: liquidity,
             amount_y: liquidity,
+            ..Default::default()
         },
         DlmmBin {
             bin_id: active_bin_id + 1,
             amount_x: 0,
             amount_y: liquidity * 2,
+            ..Default::default()
         },
     ];
 
@@ -99,6 +102,7 @@ fn make_dlmm_pool(
         volatility_reference: 0,
         index_reference: active_bin_id,
         last_update_timestamp: 1_700_000_000,
+        support_limit_order: false,
     };
 
     let exec = PoolExecutionAccounts::MeteoraDlmm {

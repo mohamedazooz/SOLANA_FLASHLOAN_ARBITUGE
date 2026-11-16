@@ -2002,6 +2002,20 @@ pub fn decode_dlmm_state(data: &[u8]) -> Option<arb_types::DlmmState> {
         return None; // pool disabled / invalid
     }
 
+    let function_type = if data.len() > 35 { data[35] } else { 0 };
+    // `is_support_limit_order` (official SDK): LimitOrder (2) => true;
+    // LiquidityMining (1) => false; Undetermined (0) => true only when every
+    // reward mint is the default pubkey; any other value fails closed to false.
+    let reward_mints_default = data.len() >= 440
+        && data[264..296].iter().all(|&b| b == 0)
+        && data[408..440].iter().all(|&b| b == 0);
+    let support_limit_order = match function_type {
+        2 => true,
+        1 => false,
+        0 => reward_mints_default,
+        _ => false,
+    };
+
     Some(arb_types::DlmmState {
         active_bin_id,
         status,
@@ -2016,13 +2030,14 @@ pub fn decode_dlmm_state(data: &[u8]) -> Option<arb_types::DlmmState> {
             max_volatility_accumulator,
             protocol_share,
             base_fee_power_factor,
-            function_type: if data.len() > 35 { data[35] } else { 0 },
+            function_type,
             collect_fee_mode: if data.len() > 36 { data[36] } else { 0 },
         }),
         volatility_accumulator,
         volatility_reference,
         index_reference: i32::from_le_bytes(data[48..52].try_into().ok()?),
         last_update_timestamp,
+        support_limit_order,
     })
 }
 
@@ -2076,13 +2091,25 @@ pub fn decode_bin_array(data: &[u8]) -> Vec<arb_types::DlmmBin> {
         let off = METEORA_BIN_ARRAY_HEADER + i * METEORA_BIN_SIZE;
         let amount_x = u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]));
         let amount_y = u64::from_le_bytes(data[off + 8..off + 16].try_into().unwrap_or([0; 8]));
-        if amount_x == 0 && amount_y == 0 {
+        let open_order_amount =
+            u64::from_le_bytes(data[off + 112..off + 120].try_into().unwrap_or([0; 8]));
+        let processed_order_remaining_amount =
+            u64::from_le_bytes(data[off + 128..off + 136].try_into().unwrap_or([0; 8]));
+        let limit_order_ask_side = data.get(off + 140).copied().unwrap_or(0) != 0;
+        if amount_x == 0
+            && amount_y == 0
+            && open_order_amount == 0
+            && processed_order_remaining_amount == 0
+        {
             continue;
         }
         out.push(arb_types::DlmmBin {
             bin_id: base_bin_id.saturating_add(i as i32),
             amount_x: amount_x as u128,
             amount_y: amount_y as u128,
+            open_order_amount,
+            processed_order_remaining_amount,
+            limit_order_ask_side,
         });
     }
     out
@@ -2663,6 +2690,7 @@ mod tests {
             volatility_reference: 0,
             index_reference: active_id,
             last_update_timestamp: 0,
+            support_limit_order: false,
         }
     }
 
@@ -2685,11 +2713,13 @@ mod tests {
                     bin_id: 998,
                     amount_x: 0,
                     amount_y: 1_000_000,
+                    ..Default::default()
                 },
                 arb_types::DlmmBin {
                     bin_id: 1002,
                     amount_x: 1_000_000,
                     amount_y: 0,
+                    ..Default::default()
                 },
             ],
         );
@@ -2711,6 +2741,7 @@ mod tests {
                 bin_id: 1000,
                 amount_x: 0,
                 amount_y: 1_444_908_165,
+                ..Default::default()
             }],
         );
         assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
@@ -2728,16 +2759,19 @@ mod tests {
                     bin_id: 998,
                     amount_x: 0,
                     amount_y: 500,
+                    ..Default::default()
                 },
                 arb_types::DlmmBin {
                     bin_id: 1000,
                     amount_x: 1_000,
                     amount_y: 2_700,
+                    ..Default::default()
                 },
                 arb_types::DlmmBin {
                     bin_id: 1002,
                     amount_x: 3_000,
                     amount_y: 0,
+                    ..Default::default()
                 },
             ],
         );
@@ -2761,6 +2795,7 @@ mod tests {
                 bin_id: 1000,
                 amount_x: 1_000_000,
                 amount_y: 100_000,
+                ..Default::default()
             }],
         );
         assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);

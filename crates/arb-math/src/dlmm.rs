@@ -30,6 +30,11 @@ pub const FEE_PRECISION: u128 = 1_000_000_000;
 /// Maximum fee rate enforced by the on-chain protocol ($10\% = 100{,}000{,}000$ in $10^9$ units).
 pub const MAX_FEE_RATE: u128 = 100_000_000;
 
+/// Share of the limit-order fee that goes to the order placer (50% = 5000 bps).
+/// The remaining 50% is protocol fee. Source: official Meteora DLMM SDK
+/// `MeteoraAg/dlmm-sdk` `commons/src/quote.rs` (`LIMIT_ORDER_FEE_SHARE`).
+pub const LIMIT_ORDER_FEE_SHARE: u128 = 5000;
+
 /// Minimum valid Bin ID on Solana Meteora DLMM.
 pub const MIN_BIN_ID: i32 = -443_636;
 
@@ -110,7 +115,7 @@ pub fn dlmm_fee_on_input(collect_fee_mode: u8, swap_for_y: bool) -> Result<bool,
 }
 
 /// Static parameters of an `LbPair` pool configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DlmmParameters {
     /// Bin step in basis points (e.g. 10 = 0.1%, 25 = 0.25%, 100 = 1.0%).
     pub bin_step: u16,
@@ -135,7 +140,7 @@ pub struct DlmmParameters {
 }
 
 /// Runtime variable parameters of an `LbPair` tracking volatility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DlmmVariableParameters {
     /// Real-time volatility accumulator tracking bin movement intensity.
     pub volatility_accumulator: u32,
@@ -158,10 +163,20 @@ pub struct DlmmBin {
     pub amount_y: u64,
     /// Cached Q64.64 price of Token X in terms of Token Y. (0 if uninitialized).
     pub price_q64: u128,
+    /// Limit-order layer: open (unprocessed) order liquidity, denominated in
+    /// the order's committed output token. Zero for pools without limit orders.
+    pub open_order_amount: u64,
+    /// Limit-order layer: remaining fillable amount of already-processed
+    /// orders, denominated in the order's committed output token.
+    pub processed_order_remaining_amount: u64,
+    /// Limit-order side flag from the on-chain `Bin` (`limit_order_ask_side`).
+    /// Bid-side orders are fillable by X -> Y swaps (`swap_for_y = true`);
+    /// ask-side orders by Y -> X swaps (`swap_for_y = false`).
+    pub limit_order_ask_side: bool,
 }
 
 /// Snapshot of an `LbPair` DLMM pool state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DlmmPoolState {
     /// Currently active bin ID.
     pub active_id: i32,
@@ -173,6 +188,12 @@ pub struct DlmmPoolState {
     pub parameters: DlmmParameters,
     /// Runtime volatility tracking state.
     pub v_parameters: DlmmVariableParameters,
+    /// Whether the pool's `function_type`/reward configuration enables the
+    /// limit-order liquidity layer (`LbPair::is_support_limit_order` in the
+    /// official SDK). When `false`, order layers are ignored: quotes use the
+    /// MM reserves only, which underquotes rather than overquotes (fail-safe).
+    /// Decoders MUST populate this from the on-chain account.
+    pub support_limit_order: bool,
 }
 
 /// Result of swapping into a single bin.
@@ -703,7 +724,273 @@ fn gross_out_for_input(net_in: u64, price_q64: u128, swap_for_y: bool) -> Result
     res.try_into().map_err(|_| DlmmError::TypeCastFailed)
 }
 
-/// Swap into a single discrete bin, consuming input and draining opposite-side reserves.
+/// Liquidity fill result for a single layer within a bin (MM, processed limit
+/// orders, or open limit orders). Mirrors the official SDK `FillResult`.
+struct LayerFill {
+    /// Net (fee-excluded) input consumed by this layer.
+    amount_in: u64,
+    /// Input not absorbed by this layer.
+    amount_left: u64,
+    /// Gross output produced by this layer.
+    out_amount: u64,
+    /// True when the layer's full output capacity was consumed (including the
+    /// vacuous zero-capacity case). A bin is drained only when every layer
+    /// that received flow was exhausted.
+    exhausted: bool,
+}
+
+/// Aggregate fill result across all liquidity layers of a bin. Mirrors the
+/// official SDK `ExactInFillResult`, extended with per-layer outputs so the
+/// caller can commit route-local state per layer.
+struct BinFillResult {
+    /// Total net (fee-excluded) input consumed across all layers.
+    amount_in: u64,
+    /// Input not absorbed by the bin (bin fully drained when `> 0`).
+    amount_left: u64,
+    /// Total gross output produced across all layers.
+    out_amount: u64,
+    /// Net input consumed by the market-maker (reserve) layer.
+    mm_amount_in: u64,
+    /// Gross output taken from the market-maker (reserve) layer.
+    mm_out: u64,
+    /// Gross output taken from the processed-order layer.
+    processed_out: u64,
+    /// Gross output taken from the open-order layer.
+    open_out: u64,
+    /// True when the bin's deliverable output liquidity was fully consumed.
+    drained: bool,
+}
+
+/// Limit-order liquidity fillable in this swap direction.
+///
+/// Bid-side orders (`limit_order_ask_side = false`) are filled by X -> Y swaps
+/// (`swap_for_y = true`); ask-side orders (`limit_order_ask_side = true`) by
+/// Y -> X swaps (`swap_for_y = false`). Returns
+/// `(open_order_amount, processed_order_remaining_amount)`, or `(0, 0)` when
+/// the bin's order side does not match the swap direction. Mirrors the
+/// official SDK `Bin::get_limit_order_amounts_by_direction`.
+fn limit_order_amounts_by_direction(bin: &DlmmBin, swap_for_y: bool) -> (u64, u64) {
+    let is_ask_side = bin.limit_order_ask_side;
+    if (swap_for_y && !is_ask_side) || (!swap_for_y && is_ask_side) {
+        (bin.open_order_amount, bin.processed_order_remaining_amount)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Maximum gross output this bin can deliver, including the limit-order
+/// layers when the pool supports them. Mirrors the official SDK
+/// `Bin::get_max_amount_out_with_limit_orders`.
+pub fn bin_max_amount_out(bin: &DlmmBin, swap_for_y: bool, support_limit_order: bool) -> u64 {
+    let mm_amount = if swap_for_y {
+        bin.amount_y
+    } else {
+        bin.amount_x
+    };
+    if !support_limit_order {
+        return mm_amount;
+    }
+    let (open_order, processed_remaining) = limit_order_amounts_by_direction(bin, swap_for_y);
+    mm_amount
+        .saturating_add(open_order)
+        .saturating_add(processed_remaining)
+}
+
+/// Fill a single liquidity layer: consume up to `max_amount_out` worth of
+/// output for at most `amount` of net input. Mirrors the official SDK
+/// `calculate_exact_in_fill_amount` (`Rounding::Up` for the full-layer input,
+/// `Rounding::Down` for partial-fill output).
+fn fill_liquidity_layer(
+    amount: u64,
+    max_amount_out: u64,
+    price_q64: u128,
+    swap_for_y: bool,
+) -> Result<LayerFill, DlmmError> {
+    if max_amount_out == 0 {
+        return Ok(LayerFill {
+            amount_in: 0,
+            amount_left: amount,
+            out_amount: 0,
+            exhausted: true,
+        });
+    }
+    let max_amount_in = input_for_gross_out(max_amount_out, price_q64, swap_for_y)?;
+    if amount >= max_amount_in {
+        Ok(LayerFill {
+            amount_in: max_amount_in,
+            amount_left: amount
+                .checked_sub(max_amount_in)
+                .ok_or(DlmmError::MathOverflow)?,
+            out_amount: max_amount_out,
+            exhausted: true,
+        })
+    } else {
+        let out_amount = gross_out_for_input(amount, price_q64, swap_for_y)?;
+        Ok(LayerFill {
+            amount_in: amount,
+            amount_left: 0,
+            out_amount,
+            exhausted: false,
+        })
+    }
+}
+
+/// Fill a bin's liquidity layers in official order: market-maker reserves
+/// first, then processed limit orders, then open limit orders. Mirrors the
+/// official SDK `get_exact_in_fill_amount_result`.
+fn fill_bin_layers(
+    bin: &DlmmBin,
+    amount_in: u64,
+    price_q64: u128,
+    swap_for_y: bool,
+    support_limit_order: bool,
+) -> Result<BinFillResult, DlmmError> {
+    let mm_amount = if swap_for_y {
+        bin.amount_y
+    } else {
+        bin.amount_x
+    };
+    let mm_fill = fill_liquidity_layer(amount_in, mm_amount, price_q64, swap_for_y)?;
+
+    if !support_limit_order {
+        return Ok(BinFillResult {
+            amount_in: mm_fill.amount_in,
+            amount_left: mm_fill.amount_left,
+            out_amount: mm_fill.out_amount,
+            mm_amount_in: mm_fill.amount_in,
+            mm_out: mm_fill.out_amount,
+            processed_out: 0,
+            open_out: 0,
+            drained: mm_fill.exhausted,
+        });
+    }
+
+    let mut total_amount_in = mm_fill.amount_in;
+    let mut total_amount_out = mm_fill.out_amount;
+    let mut amount_left = mm_fill.amount_left;
+    let mut processed_out = 0u64;
+    let mut open_out = 0u64;
+    let mut drained = mm_fill.exhausted;
+
+    if amount_left > 0 {
+        let (open_order_amount, processed_order_remaining) =
+            limit_order_amounts_by_direction(bin, swap_for_y);
+
+        let processed_fill = fill_liquidity_layer(
+            amount_left,
+            processed_order_remaining,
+            price_q64,
+            swap_for_y,
+        )?;
+        total_amount_in = total_amount_in
+            .checked_add(processed_fill.amount_in)
+            .ok_or(DlmmError::MathOverflow)?;
+        total_amount_out = total_amount_out
+            .checked_add(processed_fill.out_amount)
+            .ok_or(DlmmError::MathOverflow)?;
+        processed_out = processed_fill.out_amount;
+        amount_left = processed_fill.amount_left;
+        drained &= processed_fill.exhausted;
+
+        if amount_left > 0 {
+            let open_fill =
+                fill_liquidity_layer(amount_left, open_order_amount, price_q64, swap_for_y)?;
+            total_amount_in = total_amount_in
+                .checked_add(open_fill.amount_in)
+                .ok_or(DlmmError::MathOverflow)?;
+            total_amount_out = total_amount_out
+                .checked_add(open_fill.out_amount)
+                .ok_or(DlmmError::MathOverflow)?;
+            open_out = open_fill.out_amount;
+            amount_left = open_fill.amount_left;
+            drained &= open_fill.exhausted;
+        }
+    }
+
+    Ok(BinFillResult {
+        amount_in: total_amount_in,
+        amount_left,
+        out_amount: total_amount_out,
+        mm_amount_in: mm_fill.amount_in,
+        mm_out: mm_fill.out_amount,
+        processed_out,
+        open_out,
+        drained,
+    })
+}
+
+/// Split the total trading fee between the LP (user) fee and the protocol fee,
+/// accounting for the limit-order fee share. Mirrors the official SDK
+/// `split_fee`:
+///
+/// - `mm_fee = ceil(trading_fee * mm_amount_in / total_amount_in)`
+/// - `total_lo_fee = trading_fee - mm_fee`
+/// - `lo_fee = total_lo_fee * LIMIT_ORDER_FEE_SHARE / 10_000` (order placer)
+/// - `lo_protocol_fee = total_lo_fee - lo_fee`
+/// - `mm_protocol_fee = floor(mm_fee * protocol_share / 10_000)`
+/// - `protocol_fee = lo_protocol_fee + mm_protocol_fee`
+/// - `user_fee = trading_fee - protocol_fee`
+fn split_fee(
+    trading_fee: u64,
+    protocol_share_bps: u16,
+    mm_amount_in: u64,
+    total_amount_in: u64,
+) -> Result<(u64, u64), DlmmError> {
+    if total_amount_in == 0 || trading_fee == 0 {
+        return Ok((0, 0));
+    }
+
+    let mm_fee: u64 = u128::from(trading_fee)
+        .checked_mul(u128::from(mm_amount_in))
+        .ok_or(DlmmError::MathOverflow)?
+        .checked_add(
+            u128::from(total_amount_in)
+                .checked_sub(1)
+                .ok_or(DlmmError::MathOverflow)?,
+        )
+        .ok_or(DlmmError::MathOverflow)?
+        .checked_div(u128::from(total_amount_in))
+        .ok_or(DlmmError::MathOverflow)?
+        .try_into()
+        .map_err(|_| DlmmError::TypeCastFailed)?;
+
+    let total_lo_fee = trading_fee
+        .checked_sub(mm_fee)
+        .ok_or(DlmmError::MathOverflow)?;
+
+    let lo_fee: u64 = u128::from(total_lo_fee)
+        .checked_mul(LIMIT_ORDER_FEE_SHARE)
+        .ok_or(DlmmError::MathOverflow)?
+        .checked_div(BASIS_POINT_MAX)
+        .ok_or(DlmmError::MathOverflow)?
+        .try_into()
+        .map_err(|_| DlmmError::TypeCastFailed)?;
+
+    let lo_protocol_fee = total_lo_fee
+        .checked_sub(lo_fee)
+        .ok_or(DlmmError::MathOverflow)?;
+
+    let mm_protocol_fee: u64 = u128::from(mm_fee)
+        .checked_mul(u128::from(protocol_share_bps))
+        .ok_or(DlmmError::MathOverflow)?
+        .checked_div(BASIS_POINT_MAX)
+        .ok_or(DlmmError::MathOverflow)?
+        .try_into()
+        .map_err(|_| DlmmError::TypeCastFailed)?;
+
+    let total_protocol_fee = lo_protocol_fee
+        .checked_add(mm_protocol_fee)
+        .ok_or(DlmmError::MathOverflow)?;
+
+    let total_user_fee = trading_fee
+        .checked_sub(total_protocol_fee)
+        .ok_or(DlmmError::MathOverflow)?;
+
+    Ok((total_user_fee, total_protocol_fee))
+}
+
+/// Swap into a single discrete bin, consuming input across all liquidity
+/// layers (MM reserves, then processed limit orders, then open limit orders).
 ///
 /// Direction convention:
 /// - `swap_for_y = true` (X -> Y): Inbound is Token X, Outbound is Token Y.
@@ -712,6 +999,18 @@ fn gross_out_for_input(net_in: u64, price_q64: u128, swap_for_y: bool) -> Result
 /// `fee_on_input` mirrors the official SDK `getFeeMode(...).feeOnInput`:
 /// - `true`: the fee is removed from the input before the bin is priced.
 /// - `false`: the full input is priced and the fee is removed from the output.
+///
+/// Fee semantics follow the official SDK `swap_exact_in_quote_at_bin`:
+/// `fee_amount` is the total trading fee; when the bin cannot absorb the full
+/// input the fee is recomputed over the actually consumed fee-excluded input
+/// (`compute_fee`); the protocol share is derived via `split_fee`, which
+/// apportions the fee between the MM and limit-order layers.
+///
+/// Route-local state commit: the MM reserve layer exchanges reserves; the
+/// limit-order layers pay out from their own committed liquidity (their
+/// fields are decremented by the filled output amounts); input paid to the
+/// order layers is escrowed by the order placers, not added to the reserves.
+#[allow(clippy::too_many_arguments)]
 pub fn consume_bin_liquidity(
     bin: &mut DlmmBin,
     amount_in: u64,
@@ -720,6 +1019,7 @@ pub fn consume_bin_liquidity(
     fee_rate: u128,
     protocol_share_bps: u16,
     fee_on_input: bool,
+    support_limit_order: bool,
 ) -> Result<DlmmSwapStepResult, DlmmError> {
     if amount_in == 0 {
         return Ok(DlmmSwapStepResult {
@@ -731,11 +1031,7 @@ pub fn consume_bin_liquidity(
         });
     }
 
-    let bin_max_out = if swap_for_y {
-        bin.amount_y
-    } else {
-        bin.amount_x
-    };
+    let bin_max_out = bin_max_amount_out(bin, swap_for_y, support_limit_order);
     if bin_max_out == 0 {
         return Ok(DlmmSwapStepResult {
             amount_in_consumed: 0,
@@ -746,118 +1042,90 @@ pub fn consume_bin_liquidity(
         });
     }
 
+    let mut trading_fee: u64 = 0;
+    let mut excluded_fee_amount_in = amount_in;
+
     if fee_on_input {
-        // Calculate maximum net inbound amount required to completely drain this bin.
-        let net_in_max = input_for_gross_out(bin_max_out, price_q64, swap_for_y)?;
-        let max_fee = compute_fee_to_add(net_in_max, fee_rate)?;
-        let gross_in_max = net_in_max
-            .checked_add(max_fee)
+        trading_fee = compute_fee_from_amount(amount_in, fee_rate)?;
+        excluded_fee_amount_in = amount_in
+            .checked_sub(trading_fee)
             .ok_or(DlmmError::MathOverflow)?;
-
-        if amount_in >= gross_in_max {
-            // Trade fully drains the available reserve of this bin.
-            let protocol_fee = compute_protocol_fee(max_fee, protocol_share_bps)?;
-            if swap_for_y {
-                bin.amount_x = bin
-                    .amount_x
-                    .checked_add(net_in_max)
-                    .ok_or(DlmmError::MathOverflow)?;
-                bin.amount_y = 0;
-            } else {
-                bin.amount_y = bin
-                    .amount_y
-                    .checked_add(net_in_max)
-                    .ok_or(DlmmError::MathOverflow)?;
-                bin.amount_x = 0;
-            }
-
-            Ok(DlmmSwapStepResult {
-                amount_in_consumed: gross_in_max,
-                amount_out: bin_max_out,
-                fee_amount: max_fee,
-                protocol_fee,
-                drained_bin: true,
-            })
-        } else {
-            // Trade terminates inside this bin.
-            let fee = compute_fee_from_amount(amount_in, fee_rate)?;
-            let net_in = amount_in.checked_sub(fee).ok_or(DlmmError::MathOverflow)?;
-
-            let amount_out = gross_out_for_input(net_in, price_q64, swap_for_y)?.min(bin_max_out);
-
-            let protocol_fee = compute_protocol_fee(fee, protocol_share_bps)?;
-            if swap_for_y {
-                bin.amount_x = bin
-                    .amount_x
-                    .checked_add(net_in)
-                    .ok_or(DlmmError::MathOverflow)?;
-                bin.amount_y = bin
-                    .amount_y
-                    .checked_sub(amount_out)
-                    .ok_or(DlmmError::MathOverflow)?;
-            } else {
-                bin.amount_y = bin
-                    .amount_y
-                    .checked_add(net_in)
-                    .ok_or(DlmmError::MathOverflow)?;
-                bin.amount_x = bin
-                    .amount_x
-                    .checked_sub(amount_out)
-                    .ok_or(DlmmError::MathOverflow)?;
-            }
-
-            Ok(DlmmSwapStepResult {
-                amount_in_consumed: amount_in,
-                amount_out,
-                fee_amount: fee,
-                protocol_fee,
-                drained_bin: false,
-            })
-        }
-    } else {
-        // Fee is charged on the output token (CollectFeeMode::OnlyY, X -> Y).
-        // The pool fill consumes *gross* output; the user receives gross minus fee.
-        let net_in_max = input_for_gross_out(bin_max_out, price_q64, swap_for_y)?;
-
-        let (consumed_in, gross_out, drained) = if amount_in >= net_in_max {
-            (net_in_max, bin_max_out, true)
-        } else {
-            let gross = gross_out_for_input(amount_in, price_q64, swap_for_y)?.min(bin_max_out);
-            (amount_in, gross, false)
-        };
-
-        let fee = compute_fee_from_amount(gross_out, fee_rate)?;
-        let user_out = gross_out.checked_sub(fee).ok_or(DlmmError::MathOverflow)?;
-        let protocol_fee = compute_protocol_fee(fee, protocol_share_bps)?;
-
-        if swap_for_y {
-            bin.amount_x = bin
-                .amount_x
-                .checked_add(consumed_in)
-                .ok_or(DlmmError::MathOverflow)?;
-            bin.amount_y = bin
-                .amount_y
-                .checked_sub(gross_out)
-                .ok_or(DlmmError::MathOverflow)?;
-        } else {
-            bin.amount_y = bin
-                .amount_y
-                .checked_add(consumed_in)
-                .ok_or(DlmmError::MathOverflow)?;
-            bin.amount_x = bin
-                .amount_x
-                .checked_sub(gross_out)
-                .ok_or(DlmmError::MathOverflow)?;
-        }
-
-        Ok(DlmmSwapStepResult {
-            amount_in_consumed: consumed_in,
-            amount_out: user_out,
-            fee_amount: fee,
-            protocol_fee,
-            drained_bin: drained,
-        })
     }
+
+    let fill = fill_bin_layers(
+        bin,
+        excluded_fee_amount_in,
+        price_q64,
+        swap_for_y,
+        support_limit_order,
+    )?;
+
+    let mut included_fee_amount_in = amount_in;
+    if fill.amount_left > 0 {
+        let excluded_consumed = excluded_fee_amount_in
+            .checked_sub(fill.amount_left)
+            .ok_or(DlmmError::MathOverflow)?;
+        if fee_on_input {
+            trading_fee = compute_fee_to_add(excluded_consumed, fee_rate)?;
+            included_fee_amount_in = excluded_consumed
+                .checked_add(trading_fee)
+                .ok_or(DlmmError::MathOverflow)?;
+        } else {
+            included_fee_amount_in = excluded_consumed;
+        }
+    }
+
+    let mut excluded_fee_amount_out = fill.out_amount;
+    if !fee_on_input {
+        trading_fee = compute_fee_from_amount(fill.out_amount, fee_rate)?;
+        excluded_fee_amount_out = fill
+            .out_amount
+            .checked_sub(trading_fee)
+            .ok_or(DlmmError::MathOverflow)?;
+    }
+
+    let (_user_fee, protocol_fee) = split_fee(
+        trading_fee,
+        protocol_share_bps,
+        fill.mm_amount_in,
+        fill.amount_in,
+    )?;
+
+    if swap_for_y {
+        bin.amount_x = bin
+            .amount_x
+            .checked_add(fill.mm_amount_in)
+            .ok_or(DlmmError::MathOverflow)?;
+        bin.amount_y = bin
+            .amount_y
+            .checked_sub(fill.mm_out)
+            .ok_or(DlmmError::MathOverflow)?;
+    } else {
+        bin.amount_y = bin
+            .amount_y
+            .checked_add(fill.mm_amount_in)
+            .ok_or(DlmmError::MathOverflow)?;
+        bin.amount_x = bin
+            .amount_x
+            .checked_sub(fill.mm_out)
+            .ok_or(DlmmError::MathOverflow)?;
+    }
+    bin.processed_order_remaining_amount = bin
+        .processed_order_remaining_amount
+        .checked_sub(fill.processed_out)
+        .ok_or(DlmmError::MathOverflow)?;
+    bin.open_order_amount = bin
+        .open_order_amount
+        .checked_sub(fill.open_out)
+        .ok_or(DlmmError::MathOverflow)?;
+
+    Ok(DlmmSwapStepResult {
+        amount_in_consumed: included_fee_amount_in,
+        amount_out: excluded_fee_amount_out,
+        fee_amount: trading_fee,
+        protocol_fee,
+        drained_bin: fill.drained,
+    })
 }
 
 // ============================================================================
@@ -895,53 +1163,61 @@ pub fn quote_dlmm_multi_bin(
     let mut bins_crossed = 0u32;
 
     let start_price = get_price_from_id(pool.active_id, pool.bin_step)?;
+    let fee_on_input = dlmm_fee_on_input(pool.parameters.collect_fee_mode, swap_for_y)?;
 
     while remaining_in > 0 {
         // Find bin in provided slice matching current_bin_id
-        let bin = bins
-            .iter_mut()
-            .find(|b| b.id == current_bin_id)
+        let bin_index = bins
+            .iter()
+            .position(|b| b.id == current_bin_id)
             .ok_or(DlmmError::BinNotFound(current_bin_id))?;
+        let bin = &mut bins[bin_index];
 
-        // Update volatility accumulator for this bin
-        update_volatility_accumulator(&mut v_params, &pool.parameters, current_bin_id)?;
+        // The official engine only touches the volatility accumulator for bins
+        // that can actually deliver output (`max_out > 0`).
+        let max_out = bin_max_amount_out(bin, swap_for_y, pool.support_limit_order);
 
-        let fee_rate = compute_total_fee_rate(
-            &pool.parameters,
-            pool.bin_step,
-            v_params.volatility_accumulator,
-        )?;
+        if max_out > 0 {
+            update_volatility_accumulator(&mut v_params, &pool.parameters, current_bin_id)?;
 
-        let price_q64 = if bin.price_q64 != 0 {
-            bin.price_q64
-        } else {
-            let p = get_price_from_id(bin.id, pool.bin_step)?;
-            bin.price_q64 = p;
-            p
-        };
+            let fee_rate = compute_total_fee_rate(
+                &pool.parameters,
+                pool.bin_step,
+                v_params.volatility_accumulator,
+            )?;
 
-        let step = consume_bin_liquidity(
-            bin,
-            remaining_in,
-            price_q64,
-            swap_for_y,
-            fee_rate,
-            pool.parameters.protocol_share,
-            dlmm_fee_on_input(pool.parameters.collect_fee_mode, swap_for_y)?,
-        )?;
+            let price_q64 = if bin.price_q64 != 0 {
+                bin.price_q64
+            } else {
+                let p = get_price_from_id(bin.id, pool.bin_step)?;
+                bin.price_q64 = p;
+                p
+            };
 
-        remaining_in = remaining_in
-            .checked_sub(step.amount_in_consumed)
-            .ok_or(DlmmError::MathOverflow)?;
-        total_out = total_out
-            .checked_add(step.amount_out)
-            .ok_or(DlmmError::MathOverflow)?;
-        total_fee = total_fee
-            .checked_add(step.fee_amount)
-            .ok_or(DlmmError::MathOverflow)?;
-        total_protocol_fee = total_protocol_fee
-            .checked_add(step.protocol_fee)
-            .ok_or(DlmmError::MathOverflow)?;
+            let step = consume_bin_liquidity(
+                bin,
+                remaining_in,
+                price_q64,
+                swap_for_y,
+                fee_rate,
+                pool.parameters.protocol_share,
+                fee_on_input,
+                pool.support_limit_order,
+            )?;
+
+            remaining_in = remaining_in
+                .checked_sub(step.amount_in_consumed)
+                .ok_or(DlmmError::MathOverflow)?;
+            total_out = total_out
+                .checked_add(step.amount_out)
+                .ok_or(DlmmError::MathOverflow)?;
+            total_fee = total_fee
+                .checked_add(step.fee_amount)
+                .ok_or(DlmmError::MathOverflow)?;
+            total_protocol_fee = total_protocol_fee
+                .checked_add(step.protocol_fee)
+                .ok_or(DlmmError::MathOverflow)?;
+        }
 
         if remaining_in > 0 {
             current_bin_id = advance_active_id(current_bin_id, swap_for_y)?;
@@ -984,6 +1260,145 @@ pub fn quote_dlmm_view(
     )
 }
 
+/// Fee-excluded input required to deliver `included_fee_amount_out` of gross
+/// output from this bin, filling the MM reserve layer first, then processed
+/// limit orders, then open limit orders (`Rounding::Up` per layer). Mirrors
+/// the official SDK `get_excluded_fee_amount_in`.
+fn excluded_fee_amount_in_for_out(
+    bin: &DlmmBin,
+    swap_for_y: bool,
+    included_fee_amount_out: u64,
+    price_q64: u128,
+) -> Result<u64, DlmmError> {
+    let mm_amount = if swap_for_y {
+        bin.amount_y
+    } else {
+        bin.amount_x
+    };
+
+    let (open_order_amount, processed_order_remaining_amount) =
+        limit_order_amounts_by_direction(bin, swap_for_y);
+
+    let mut remaining_amount_out = included_fee_amount_out;
+    let mut total_amount_in: u64 = 0;
+
+    let mm_take = remaining_amount_out.min(mm_amount);
+    total_amount_in = total_amount_in
+        .checked_add(input_for_gross_out(mm_take, price_q64, swap_for_y)?)
+        .ok_or(DlmmError::MathOverflow)?;
+    remaining_amount_out = remaining_amount_out
+        .checked_sub(mm_take)
+        .ok_or(DlmmError::MathOverflow)?;
+
+    if remaining_amount_out > 0 {
+        let processed_take = remaining_amount_out.min(processed_order_remaining_amount);
+        total_amount_in = total_amount_in
+            .checked_add(input_for_gross_out(processed_take, price_q64, swap_for_y)?)
+            .ok_or(DlmmError::MathOverflow)?;
+        remaining_amount_out = remaining_amount_out
+            .checked_sub(processed_take)
+            .ok_or(DlmmError::MathOverflow)?;
+
+        if remaining_amount_out > 0 {
+            let open_take = remaining_amount_out.min(open_order_amount);
+            total_amount_in = total_amount_in
+                .checked_add(input_for_gross_out(open_take, price_q64, swap_for_y)?)
+                .ok_or(DlmmError::MathOverflow)?;
+        }
+    }
+
+    Ok(total_amount_in)
+}
+
+/// Per-bin exact-out quote over all liquidity layers. Mirrors the official SDK
+/// `swap_exact_out_quote_at_bin`: when the requested (fee-included) output
+/// meets or exceeds the bin's maximum deliverable output the bin is drained
+/// via an unbounded exact-in quote; otherwise the required fee-excluded input
+/// is computed layer-by-layer, re-included, and re-quoted as an exact-in fill.
+/// Any rounding surplus above one unit is assigned to the protocol fee.
+#[allow(clippy::too_many_arguments)]
+fn swap_exact_out_at_bin(
+    bin: &mut DlmmBin,
+    out_amount: u64,
+    price_q64: u128,
+    swap_for_y: bool,
+    fee_rate: u128,
+    protocol_share_bps: u16,
+    fee_on_input: bool,
+    support_limit_order: bool,
+) -> Result<DlmmSwapStepResult, DlmmError> {
+    let mut included_fee_amount_out = out_amount;
+
+    if !fee_on_input {
+        let fee = compute_fee_to_add(out_amount, fee_rate)?;
+        included_fee_amount_out = out_amount.checked_add(fee).ok_or(DlmmError::MathOverflow)?;
+    }
+
+    let max_amount_out = bin_max_amount_out(bin, swap_for_y, support_limit_order);
+
+    if included_fee_amount_out >= max_amount_out {
+        return consume_bin_liquidity(
+            bin,
+            u64::MAX,
+            price_q64,
+            swap_for_y,
+            fee_rate,
+            protocol_share_bps,
+            fee_on_input,
+            support_limit_order,
+        );
+    }
+
+    let excluded_fee_amount_in =
+        excluded_fee_amount_in_for_out(bin, swap_for_y, included_fee_amount_out, price_q64)?;
+
+    let included_fee_amount_in = if fee_on_input {
+        let fee = compute_fee_to_add(excluded_fee_amount_in, fee_rate)?;
+        excluded_fee_amount_in
+            .checked_add(fee)
+            .ok_or(DlmmError::MathOverflow)?
+    } else {
+        excluded_fee_amount_in
+    };
+
+    let mut step = consume_bin_liquidity(
+        bin,
+        included_fee_amount_in,
+        price_q64,
+        swap_for_y,
+        fee_rate,
+        protocol_share_bps,
+        fee_on_input,
+        support_limit_order,
+    )?;
+
+    // Delta between the quoted output and the requested output goes to the
+    // protocol (rounding dust), exactly as the official SDK does. The dust is
+    // collected from the output side, so the TOTAL trading fee rises by the
+    // same amount (`fee_amount` must stay the sum of LP + protocol shares,
+    // matching the SDK's `fee + protocolFee` accounting).
+    if step.amount_out > out_amount {
+        let delta = step
+            .amount_out
+            .checked_sub(out_amount)
+            .ok_or(DlmmError::MathOverflow)?;
+        if delta > 1 {
+            step.protocol_fee = step
+                .protocol_fee
+                .checked_add(delta)
+                .ok_or(DlmmError::MathOverflow)?;
+            step.fee_amount = step
+                .fee_amount
+                .checked_add(delta)
+                .ok_or(DlmmError::MathOverflow)?;
+        }
+    }
+
+    step.amount_out = out_amount;
+
+    Ok(step)
+}
+
 /// Execute an Exact-Out quote: compute the exact required input amount and fees to receive `amount_out`.
 pub fn quote_dlmm_exact_out(
     pool: &DlmmPoolState,
@@ -1013,179 +1428,62 @@ pub fn quote_dlmm_exact_out(
     let mut cloned_bins = bins.to_vec();
 
     let start_price = get_price_from_id(pool.active_id, pool.bin_step)?;
+    let fee_on_input = dlmm_fee_on_input(pool.parameters.collect_fee_mode, swap_for_y)?;
 
     while remaining_out > 0 {
-        let bin = cloned_bins
-            .iter_mut()
-            .find(|b| b.id == current_bin_id)
+        let bin_index = cloned_bins
+            .iter()
+            .position(|b| b.id == current_bin_id)
             .ok_or(DlmmError::BinNotFound(current_bin_id))?;
+        let bin = &mut cloned_bins[bin_index];
 
-        update_volatility_accumulator(&mut v_params, &pool.parameters, current_bin_id)?;
+        // The official engine only touches the volatility accumulator for bins
+        // that can actually deliver output (`max_out > 0`).
+        let max_out = bin_max_amount_out(bin, swap_for_y, pool.support_limit_order);
 
-        let fee_rate = compute_total_fee_rate(
-            &pool.parameters,
-            pool.bin_step,
-            v_params.volatility_accumulator,
-        )?;
+        if max_out > 0 {
+            update_volatility_accumulator(&mut v_params, &pool.parameters, current_bin_id)?;
 
-        let price_q64 = if bin.price_q64 != 0 {
-            bin.price_q64
-        } else {
-            let p = get_price_from_id(bin.id, pool.bin_step)?;
-            bin.price_q64 = p;
-            p
-        };
-
-        let fee_on_input = dlmm_fee_on_input(pool.parameters.collect_fee_mode, swap_for_y)?;
-
-        let available_gross_out = if swap_for_y {
-            bin.amount_y
-        } else {
-            bin.amount_x
-        };
-        if available_gross_out == 0 {
-            current_bin_id = advance_active_id(current_bin_id, swap_for_y)?;
-            bins_crossed = bins_crossed.saturating_add(1);
-            continue;
-        }
-
-        // Gross output required so the user receives `remaining_out` net.
-        // Mirrors the SDK's `includedFeeAmountOut`: when the fee is on the input it
-        // is the requested output itself, otherwise `getIncludedFeeAmount`.
-        let desired_gross_out = if fee_on_input {
-            U256::from(remaining_out)
-        } else {
-            let denom = FEE_PRECISION
-                .checked_sub(fee_rate)
-                .ok_or(DlmmError::MathOverflow)?;
-            let num = U256::from(remaining_out) * U256::from(FEE_PRECISION);
-            let (q, r) = num.div_rem(U256::from(denom));
-            if r.is_zero() {
-                q
-            } else {
-                q.checked_add(U256::from(1))
-                    .ok_or(DlmmError::MathOverflow)?
-            }
-        };
-
-        // Probe the bin without committing state: the SDK computes the exact-in
-        // quote over the derived input and reports that quote's fee split.
-        let mut probe = *bin;
-        let (step, user_out) = if desired_gross_out >= U256::from(available_gross_out) {
-            // Requested output exceeds this bin. The SDK re-quotes the bin with an
-            // unbounded input, i.e. it fills the bin completely.
-            let step = consume_bin_liquidity(
-                &mut probe,
-                u64::MAX,
-                price_q64,
-                swap_for_y,
-                fee_rate,
-                pool.parameters.protocol_share,
-                fee_on_input,
+            let fee_rate = compute_total_fee_rate(
+                &pool.parameters,
+                pool.bin_step,
+                v_params.volatility_accumulator,
             )?;
-            let user_out = step.amount_out;
-            (step, user_out)
-        } else {
-            let gross_from_bin: u64 = desired_gross_out
-                .try_into()
-                .map_err(|_| DlmmError::TypeCastFailed)?;
-            // Required fee-excluded input for that gross output, then the fee-included
-            // input the user actually pays (`getIncludedFeeAmount`).
-            let net_in = input_for_gross_out(gross_from_bin, price_q64, swap_for_y)?;
-            let included_in = if fee_on_input {
-                included_fee_amount(net_in, fee_rate)?
+
+            let price_q64 = if bin.price_q64 != 0 {
+                bin.price_q64
             } else {
-                net_in
+                let p = get_price_from_id(bin.id, pool.bin_step)?;
+                bin.price_q64 = p;
+                p
             };
-            let mut step = consume_bin_liquidity(
-                &mut probe,
-                included_in,
+
+            let step = swap_exact_out_at_bin(
+                bin,
+                remaining_out,
                 price_q64,
                 swap_for_y,
                 fee_rate,
                 pool.parameters.protocol_share,
                 fee_on_input,
+                pool.support_limit_order,
             )?;
-            // Rounding dust. The exact-in quote over `included_in` can produce
-            // slightly more than the requested net output; the SDK assigns any
-            // surplus greater than one unit to the protocol fee (see
-            // `swapExactOutQuoteAtBin`). The total trading fee increases by the
-            // same delta, while the user fee (fee_amount - protocol_fee) stays
-            // constant. We mirror this by adding the dust to both `protocol_fee`
-            // and `fee_amount` (the latter represents the total trading fee).
-            if !step.drained_bin {
-                let dust_threshold = remaining_out.saturating_add(1);
-                if step.amount_out > dust_threshold {
-                    let dust = step.amount_out - remaining_out;
-                    step.protocol_fee = step
-                        .protocol_fee
-                        .checked_add(dust)
-                        .ok_or(DlmmError::MathOverflow)?;
-                    step.fee_amount = step
-                        .fee_amount
-                        .checked_add(dust)
-                        .ok_or(DlmmError::MathOverflow)?;
-                }
+
+            if step.amount_out > 0 {
+                remaining_out = remaining_out
+                    .checked_sub(step.amount_out)
+                    .ok_or(DlmmError::MathOverflow)?;
+                total_in = total_in
+                    .checked_add(step.amount_in_consumed)
+                    .ok_or(DlmmError::MathOverflow)?;
+                total_fee = total_fee
+                    .checked_add(step.fee_amount)
+                    .ok_or(DlmmError::MathOverflow)?;
+                total_protocol_fee = total_protocol_fee
+                    .checked_add(step.protocol_fee)
+                    .ok_or(DlmmError::MathOverflow)?;
             }
-            (step, remaining_out)
-        };
-        let fee = step.fee_amount;
-        let gross_in = step.amount_in_consumed;
-        // Fee-excluded input that moves into the bin, and the gross reserve the bin
-        // gives up, both derived from the same step result.
-        let net_in = if fee_on_input {
-            gross_in.checked_sub(fee).ok_or(DlmmError::MathOverflow)?
-        } else {
-            gross_in
-        };
-        let gross_from_bin = if fee_on_input {
-            step.amount_out
-        } else {
-            step.amount_out
-                .checked_add(fee)
-                .ok_or(DlmmError::MathOverflow)?
-        };
-
-        if user_out == 0 && remaining_out > 0 {
-            // Cannot make progress: the gross output is entirely consumed by fees.
-            return Err(DlmmError::InsufficientLiquidity {
-                required: remaining_out,
-                available: gross_from_bin,
-            });
         }
-
-        let p_fee = step.protocol_fee;
-
-        if swap_for_y {
-            bin.amount_x = bin
-                .amount_x
-                .checked_add(net_in)
-                .ok_or(DlmmError::MathOverflow)?;
-            bin.amount_y = bin
-                .amount_y
-                .checked_sub(gross_from_bin)
-                .ok_or(DlmmError::MathOverflow)?;
-        } else {
-            bin.amount_y = bin
-                .amount_y
-                .checked_add(net_in)
-                .ok_or(DlmmError::MathOverflow)?;
-            bin.amount_x = bin
-                .amount_x
-                .checked_sub(gross_from_bin)
-                .ok_or(DlmmError::MathOverflow)?;
-        }
-
-        total_in = total_in
-            .checked_add(gross_in)
-            .ok_or(DlmmError::MathOverflow)?;
-        total_fee = total_fee.checked_add(fee).ok_or(DlmmError::MathOverflow)?;
-        total_protocol_fee = total_protocol_fee
-            .checked_add(p_fee)
-            .ok_or(DlmmError::MathOverflow)?;
-        remaining_out = remaining_out
-            .checked_sub(user_out)
-            .ok_or(DlmmError::MathOverflow)?;
 
         if remaining_out > 0 {
             current_bin_id = advance_active_id(current_bin_id, swap_for_y)?;
@@ -1276,6 +1574,7 @@ mod tests {
                 index_reference: active_id,
                 last_update_timestamp: 1_700_000_000,
             },
+            ..Default::default()
         }
     }
 
@@ -1293,6 +1592,7 @@ mod tests {
             amount_x: 0,
             amount_y: 1_000_000,
             price_q64: 0,
+            ..Default::default()
         }];
         let before = bins.clone();
         let _ = quote_dlmm_view(&pool, &bins, 10_000, true, None);
@@ -1371,12 +1671,14 @@ mod tests {
             amount_x: 0,
             amount_y: 1_000_000,
             price_q64: ONE_Q64,
+            ..Default::default()
         };
 
         let step = consume_bin_liquidity(
             &mut bin, 100_000, ONE_Q64, true,    // X -> Y
             250_000, // 2.5 bps fee
             0, true, // fee on input
+            false,
         )
         .expect("swap step");
 
@@ -1396,12 +1698,14 @@ mod tests {
             amount_x: 0,
             amount_y: 100_000,
             price_q64: ONE_Q64,
+            ..Default::default()
         };
 
         let step = consume_bin_liquidity(
             &mut bin, 1_000_000, // much larger than available 100k
             ONE_Q64, true, // X -> Y
             250_000, 0, true, // fee on input
+            false,
         )
         .expect("swap step");
 
@@ -1420,18 +1724,21 @@ mod tests {
                 amount_x: 0,
                 amount_y: 1_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 9,
                 amount_x: 0,
                 amount_y: 2_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 8,
                 amount_x: 0,
                 amount_y: 5_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
         ];
 
@@ -1457,18 +1764,21 @@ mod tests {
                 amount_x: 1_000_000,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 11,
                 amount_x: 2_000_000,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 12,
                 amount_x: 5_000_000,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
         ];
 
@@ -1567,30 +1877,35 @@ mod tests {
                 amount_x: 0,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 1,
                 amount_x: 0,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: 0,
                 amount_x: 5_000_000,
                 amount_y: 0,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: -1,
                 amount_x: 0,
                 amount_y: 10_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: -2,
                 amount_x: 0,
                 amount_y: 20_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
         ];
         // X->Y: bin 0 contributes 0 (amount_y=0); bin -1 gives 10M/price(-1);
@@ -1615,12 +1930,14 @@ mod tests {
                 amount_x: 0,
                 amount_y: 9_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
             DlmmBin {
                 id: -2,
                 amount_x: 0,
                 amount_y: 9_000_000,
                 price_q64: 0,
+                ..Default::default()
             },
         ];
         // Active bin 0 not present in the window: incomplete state -> None.
@@ -1636,6 +1953,7 @@ mod tests {
             amount_x: 5_000_000,
             amount_y: 10_000_000,
             price_q64: 0,
+            ..Default::default()
         }];
         assert_eq!(
             dlmm_multi_bin_max_input(0, 25, &bins, true),
