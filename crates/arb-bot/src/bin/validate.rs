@@ -237,8 +237,17 @@ async fn main() -> Result<()> {
     };
 
     // ── 3. Build MarketGraph with the authoritative config ──
+    let app_config = arb_config::loader::load("config/base.toml").ok();
+    let min_profit = app_config
+        .as_ref()
+        .map(|c| c.strategy.min_net_profit_abs.0)
+        .unwrap_or(arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS);
     let mut graph = MarketGraph::new(vec![MintId(wsol)]);
-    graph.set_economic_config(verified.clone().into_economic_config(TokenAmount(30_000)));
+    graph.set_economic_config(
+        verified
+            .clone()
+            .into_economic_config(TokenAmount(min_profit)),
+    );
     graph.build_from_pools(&live_pools);
     let edge_count = graph.edges_by_from.values().map(|v| v.len()).sum::<usize>();
     info!("MarketGraph built: {edge_count} edges");
@@ -278,7 +287,14 @@ async fn main() -> Result<()> {
             || (p.base_mint.0 == usdc && p.quote_mint.0 == wsol)
     });
 
-    let jupiter = JupiterClient::new();
+    let jupiter = if let Some(cfg) = &app_config {
+        JupiterClient::with_endpoint_and_timeout(
+            &cfg.jupiter.base_url,
+            std::time::Duration::from_millis(cfg.jupiter.timeout_ms.0),
+        )
+    } else {
+        JupiterClient::new()
+    };
     if jupiter.api_keys.is_empty() {
         warn!("JUPITER_API_KEY not set — skipping math-vs-Jupiter comparison");
     } else if let Some(pool) = sol_usdc {

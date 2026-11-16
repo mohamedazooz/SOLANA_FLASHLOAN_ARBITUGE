@@ -15,6 +15,8 @@ pub struct Config {
     pub admin: AdminConfig,
     #[serde(default)]
     pub chronos: ChronosConfig,
+    #[serde(default)]
+    pub jupiter: JupiterConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -80,6 +82,35 @@ fn default_contingency_buffer_lamports() -> u64 {
 }
 fn default_max_implausible_roi_bps() -> u64 {
     1_500
+}
+fn default_jupiter_base_url() -> String {
+    "https://api.jup.ag/swap/v2".to_string()
+}
+fn default_jupiter_api_key_env() -> String {
+    "JUPITER_API_KEY".to_string()
+}
+fn default_jupiter_timeout_ms() -> u64 {
+    400
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct JupiterConfig {
+    #[serde(default = "default_jupiter_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_jupiter_api_key_env")]
+    pub api_key_env: String,
+    #[serde(default = "default_jupiter_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for JupiterConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_jupiter_base_url(),
+            api_key_env: default_jupiter_api_key_env(),
+            timeout_ms: default_jupiter_timeout_ms(),
+        }
+    }
 }
 
 impl Default for ChronosConfig {
@@ -493,6 +524,11 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             min_ev_usd: usd(arb.chronos.min_ev_usd),
             failed_attempt_cost_lamports: arb.chronos.failed_attempt_cost_lamports.0,
             beta_risk_factor: arb.chronos.beta_risk_factor,
+        },
+        jupiter: JupiterConfig {
+            base_url: arb.jupiter.base_url,
+            api_key_env: arb.jupiter.api_key_env,
+            timeout_ms: arb.jupiter.timeout_ms.0,
         },
     }
 }
