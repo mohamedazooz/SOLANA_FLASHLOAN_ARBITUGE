@@ -24,8 +24,8 @@ pub const DEFAULT_STRICT_PROFIT_HURDLE_LAMPORTS: u64 = 50_000;
 /// Default maximum allowable slot lag between quote observation and simulation bank context.
 pub const DEFAULT_MAX_QUOTE_SLOT_LAG: u64 = 2;
 
-/// Standard Solana base fee per signature in lamports.
-pub const STANDARD_SOLANA_BASE_FEE_LAMPORTS: u64 = 5_000;
+/// Standard Solana base fee per signature in lamports (delegates to canonical arb_constants).
+pub const STANDARD_SOLANA_BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
 /// Granular, non-overlapping execution cost breakdown for an arbitrage transaction or bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

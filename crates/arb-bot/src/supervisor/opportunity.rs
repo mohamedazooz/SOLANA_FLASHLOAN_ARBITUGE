@@ -89,11 +89,19 @@ impl Supervisor {
             let base_cu = measured_cu.unwrap_or(estimated_cu);
             let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
             let desired_cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
+            // Dynamic priority fee ceiling: scales adaptively between base_share and max_share
+            // according to real-time competition factor observed by TipOracle.
+            let comp_factor = self.jito_service.competition_factor();
+            let base_share = self.config.strategy.priority_fee_base_share_bps;
+            let max_share = self.config.strategy.priority_fee_max_share_bps;
+            let dynamic_max_share_bps =
+                ((base_share as f64 * comp_factor) as u64).clamp(base_share, max_share);
+
             let cu_price = arb_tx::cap_cu_price_by_profit(
                 opp.gross_profit.as_u64(),
                 cu_limit,
                 desired_cu_price,
-                PRIORITY_FEE_MAX_SHARE_BPS,
+                dynamic_max_share_bps,
             );
             // cu_price is micro-lamports per CU; convert to a lamport estimate.
             // Ceil: priority fee is a non-refundable cost, so underestimating

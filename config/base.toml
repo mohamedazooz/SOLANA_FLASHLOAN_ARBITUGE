@@ -76,6 +76,8 @@ max_route_hops = 3
 # HTTP catalog discovery off by default: pools arrive via WebSocket only.
 http_discovery_enabled = false
 contingency_buffer_lamports = 10000         # lamports: slippage buffer protecting profit floor
+priority_fee_base_share_bps = 1000          # bps: baseline 10% share during calm conditions
+priority_fee_max_share_bps = 2000           # bps: maximum 20% ceiling during intense competition
 
 [risk]
 max_trade_size_usd = 10000.0        # USD (>0)
