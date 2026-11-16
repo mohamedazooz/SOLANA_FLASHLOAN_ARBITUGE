@@ -97,7 +97,7 @@ impl Default for DiscoveryConfig {
             arb_constants::WSOL_MINT,
             arb_constants::USDC_MINT,
             // USDT — the second-deepest quote asset on Solana.
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+            arb_constants::USDT_MINT,
             // POPCAT — high volatility memecoin
             "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
             // WIF — high volatility memecoin
@@ -876,7 +876,7 @@ impl PoolDiscovery {
                 let mint_str = mint.0.to_string();
                 let is_hub = mint_str == arb_constants::WSOL_MINT
                     || mint_str == arb_constants::USDC_MINT
-                    || mint_str == "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+                    || mint_str == arb_constants::USDT_MINT;
                 if !is_hub {
                     let mint_auth_tag =
                         u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([1, 0, 0, 0]));

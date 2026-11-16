@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     let orca_vault_usdc_pk = Pubkey::from_str(orca_usdc_vault)?;
 
     // Online-verified Raydium v4 authority PDA
-    let raydium_authority = Pubkey::from_str("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")?;
+    let raydium_authority = Pubkey::from_str(arb_constants::RAYDIUM_V4_AUTHORITY)?;
 
     let mut raydium_pool = RaydiumV4Pool::new(
         PoolId(Pubkey::from_str(raydium_sol_usdc)?),

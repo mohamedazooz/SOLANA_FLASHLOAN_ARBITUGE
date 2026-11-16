@@ -1,0 +1,73 @@
+{
+  "session": 7,
+  "date": "2026-11-17",
+  "dead_code": {
+    "deleted_functions": 68,
+    "deleted_private_cascades": 2,
+    "lines_removed": 1725,
+    "files_touched": 36,
+    "method": "reference-count call graph + rg -w double verification + brace-matching remover",
+    "verification": {
+      "clippy_deny_warnings": "exit 0",
+      "tests_before": 1030,
+      "tests_after": 1030
+    },
+    "keep_set_unwired_subsystems": [
+      {
+        "item": "arb-risk::activate_from_signal / reset_losses",
+        "reason": "risk-engine activation path, wiring = execution-adjacent operator decision"
+      },
+      {
+        "item": "jito_service::verify_landing / poll_until_terminal / ledger_json",
+        "reason": "landing verification, wiring = operator decision"
+      },
+      {
+        "item": "capability::validate_execution_prerequisites",
+        "reason": "pre-execution validation, wiring = operator decision"
+      },
+      {
+        "item": "dependency_manifest::from_registered_pool",
+        "reason": "pool dependency manifest, wiring = operator decision"
+      },
+      {
+        "item": "dual_ingest::record_decode_error / record_resync / run_comparison_loop",
+        "reason": "dual-ingest comparison loop, wiring = operator decision"
+      },
+      {
+        "item": "rpc_reconcile::fetch_and_publish",
+        "reason": "RPC reconciliation, wiring = operator decision"
+      }
+    ]
+  },
+  "hardcoded_values": {
+    "scan": {
+      "addresses": 109,
+      "urls": 53,
+      "durations": 32,
+      "denominator_kinds": 7
+    },
+    "new_conflict_found": {
+      "id": "HC-1",
+      "severity": "P0",
+      "description": "SOL/USDC OpenBook market address conflict: raydium_v4.rs used verified 8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6, builder.rs used fabricated 8BnEgHoWFysVcuFFX7QBpDmvu3xei5qGE9KitUfqWQH9",
+      "resolution": "kept verified value (openserum.io + Solana StackExchange), fixed builder.rs, added regression test fabricated_openbook_market_absent_from_all_workspace_sources"
+    },
+    "unlinked_values_centralized": [
+      "USDT_MINT (was inline in 7 files: opportunity.rs, compiler.rs, master_alt.rs, discovery.rs x2, registry.rs)",
+      "OPENBOOK_PROGRAM_ID (was inline in 4 files: arb-dex/raydium_v4.rs, arb-tx/raydium_v4.rs, builder.rs, registry.rs)",
+      "RAYDIUM_V4_AUTHORITY (was inline in 4 files despite existing in arb-constants)",
+      "RAYDIUM_SOL_USDC_OPENBOOK_MARKET + 7 pool-scoped OpenBook accounts (were inline in raydium_v4.rs, one copy fabricated)",
+      "RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG (was inline x2 in raydium_cpmm.rs)"
+    ]
+  },
+  "docs": {
+    "total_md_files": 551,
+    "removed_duplicates": {
+      "audit_extract/": "tracked; byte-identical to docs/archive/audit_reports/ (19 files) + docs/archive/audit_work/ (10 files + gen_bug_register.py)",
+      "audit_work/": "untracked; byte-identical to audit_extract/audit_work/ == docs/archive/audit_work/"
+    },
+    "live_dirs": {
+      "dashboard/": "referenced by Dockerfile COPY \u2014 kept"
+    }
+  }
+}

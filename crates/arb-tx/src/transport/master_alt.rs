@@ -20,7 +20,7 @@ use crate::{AccountMeta, CompiledInstruction};
 use arb_constants::{
     ADDRESS_LOOKUP_TABLE_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID,
     JITO_TIP_ACCOUNTS, SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT,
-    WSOL_MINT,
+    USDT_MINT, WSOL_MINT,
 };
 use solana_pubkey::Pubkey;
 use std::collections::{BTreeSet, HashSet};
@@ -39,9 +39,6 @@ const MEMO_PROGRAM_ID_STR: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 /// Derived from `[b"__event_authority"]` under the Meteora DLMM program.
 /// Expected: D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6
 pub const EXPECTED_DLMM_EVENT_AUTHORITY: &str = "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6";
-
-/// USDT mint (SPL Token) on Mainnet.
-pub const USDT_MINT_STR: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 /// Result of provisioning: how many addresses were added vs skipped (already present).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,7 +476,7 @@ impl StaticMasterAlt {
             .map_err(|e| MasterAltError::InvalidAddress(format!("wsol mint: {e}")))?;
         let usdc_mint = Pubkey::from_str(USDC_MINT)
             .map_err(|e| MasterAltError::InvalidAddress(format!("usdc mint: {e}")))?;
-        let usdt_mint = Pubkey::from_str(USDT_MINT_STR)
+        let usdt_mint = Pubkey::from_str(USDT_MINT)
             .map_err(|e| MasterAltError::InvalidAddress(format!("usdt mint: {e}")))?;
         entries.push(StaticAddressEntry {
             category: AddressCategory::WsolMint,
@@ -997,7 +994,7 @@ mod tests {
         let payer = test_payer();
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
-        let usdt = Pubkey::from_str(USDT_MINT_STR).unwrap();
+        let usdt = Pubkey::from_str(USDT_MINT).unwrap();
         let bot_wsol_ata = derive_ata(&payer, &wsol, &Pubkey::from_str(SPL).unwrap());
         let bot_usdc_ata = derive_ata(&payer, &usdc, &Pubkey::from_str(SPL).unwrap());
         let bot_usdt_ata = derive_ata(&payer, &usdt, &Pubkey::from_str(SPL).unwrap());
@@ -1095,7 +1092,7 @@ mod tests {
             },
             StaticAddressEntry {
                 category: AddressCategory::UsdtMint,
-                address: Pubkey::from_str(USDT_MINT_STR).unwrap(),
+                address: Pubkey::from_str(USDT_MINT).unwrap(),
                 owner_program: Some(spl),
                 label: "usdt",
             },
@@ -1369,7 +1366,7 @@ mod tests {
             },
             StaticAddressEntry {
                 category: AddressCategory::UsdtMint,
-                address: Pubkey::from_str(USDT_MINT_STR).unwrap(),
+                address: Pubkey::from_str(USDT_MINT).unwrap(),
                 owner_program: Some(spl),
                 label: "usdt",
             },

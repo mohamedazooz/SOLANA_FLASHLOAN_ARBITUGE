@@ -20,10 +20,6 @@ use solana_pubkey::Pubkey;
 use std::collections::HashSet;
 use std::str::FromStr;
 
-// USDT mint (not in arb-constants; defined locally).
-#[allow(dead_code)]
-const USDT_MINT_STR: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-
 // Re-export types needed by tests and external consumers.
 use crate::meteora_dlmm;
 pub use meteora_dlmm::{SwapDirection, SwapMode};
@@ -1232,7 +1228,7 @@ mod tests {
         let payer = Pubkey::new_from_array([1u8; 32]);
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
-        let usdt = Pubkey::from_str(USDT_MINT_STR).unwrap();
+        let usdt = Pubkey::from_str(arb_constants::USDT_MINT).unwrap();
         let spl = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
         let bot_wsol_ata = derive_ata(&payer, &wsol, &spl);
         let bot_usdc_ata = derive_ata(&payer, &usdc, &spl);

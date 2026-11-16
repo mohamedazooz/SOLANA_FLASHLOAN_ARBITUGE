@@ -15,10 +15,17 @@ use std::str::FromStr;
 const FABRICATED_RAYDIUM_VAULT: &str = "DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz";
 /// The fabricated USDC reserve value from the historical audit document.
 const FABRICATED_KAMINO_RESERVE: &str = "D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25";
+/// Fabricated OpenBook SOL/USDC market that once shipped in
+/// `arb-tx/src/primitives/builder.rs` (shares the real market's 20-char prefix;
+/// returns null via getAccountInfo on mainnet).
+const FABRICATED_OPENBOOK_MARKET: &str = "8BnEgHoWFysVcuFFX7QBpDmvu3xei5qGE9KitUfqWQH9";
 
 /// On-chain-verified (2026-11-16, mainnet getAccountInfo) values.
 const VERIFIED_RAYDIUM_SOL_VAULT: &str = "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz";
 const VERIFIED_KAMINO_USDC_RESERVE: &str = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59";
+/// Verified via openserum.io market page and Solana StackExchange references
+/// (the market bound to Raydium pool 58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2).
+const VERIFIED_OPENBOOK_SOL_USDC_MARKET: &str = "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6";
 
 #[test]
 fn raydium_v4_mainnet_sol_usdc_uses_verified_vault() {
@@ -43,6 +50,50 @@ fn arb_constants_match_onchain_verified_addresses() {
     assert_eq!(
         arb_constants::KAMINO_USDC_RESERVE,
         VERIFIED_KAMINO_USDC_RESERVE
+    );
+}
+
+#[test]
+fn raydium_v4_mainnet_sol_usdc_uses_verified_openbook_market() {
+    let accs = arb_tx::RaydiumV4Accounts::mainnet_sol_usdc();
+    assert_eq!(
+        accs.serum_market,
+        solana_pubkey::Pubkey::from_str(VERIFIED_OPENBOOK_SOL_USDC_MARKET).unwrap()
+    );
+    assert_eq!(
+        accs.serum_program,
+        solana_pubkey::Pubkey::from_str(arb_constants::OPENBOOK_PROGRAM_ID).unwrap()
+    );
+    assert_eq!(
+        arb_constants::RAYDIUM_SOL_USDC_OPENBOOK_MARKET,
+        VERIFIED_OPENBOOK_SOL_USDC_MARKET
+    );
+}
+
+#[test]
+fn fabricated_openbook_market_absent_from_all_workspace_sources() {
+    let crates_dir = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+    let self_path = std::fs::canonicalize(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/address_regression_guards.rs"
+    ))
+    .map(|p| p.to_string_lossy().into_owned())
+    .unwrap_or_default();
+    let mut offenders = Vec::new();
+    for entry in walkdir_like(crates_dir) {
+        if entry == self_path {
+            continue;
+        }
+        if let Ok(src) = std::fs::read_to_string(&entry) {
+            if src.contains(FABRICATED_OPENBOOK_MARKET) {
+                offenders.push(format!("{}: fabricated OpenBook market", entry));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "fabricated OpenBook market re-introduced into source:\n{}",
+        offenders.join("\n")
     );
 }
 

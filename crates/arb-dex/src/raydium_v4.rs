@@ -60,8 +60,7 @@ impl RaydiumV4Pool {
             quote_vault_balance: 0,
             open_orders,
             target_orders: Pubkey::default(),
-            market_program: Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX")
-                .unwrap(),
+            market_program: Pubkey::from_str(arb_constants::OPENBOOK_PROGRAM_ID).unwrap(),
             serum_market: Pubkey::default(),
             serum_bids: Pubkey::default(),
             serum_asks: Pubkey::default(),

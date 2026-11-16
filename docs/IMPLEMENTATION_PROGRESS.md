@@ -372,3 +372,50 @@ Also fixed: `[profile.release] overflow-checks = true` (defense-in-depth with th
 1. Hardcoded-value inventory refresh + classification table regeneration.
 2. Secret provider rotation tooling.
 3. Live trading remains DISABLED (Gate G) — explicit operator decision only.
+
+## Session 7 — Dead-code removal, hardcoded-value unification, docs organization
+
+### Dead code (68 pub fns + 2 private cascades, ~1,725 lines, 36 files)
+
+Method: reference-count call graph over all workspace `.rs` → zero-reference
+candidates double-verified with `rg -w` across the whole repo (excluding definition
+line, trait methods, `#[test]` fns) → brace-matching removal including docs and
+attributes → fixpoint iteration. Evidence of death: workspace test count unchanged
+(1030 → 1030). Commit `a317a29`.
+
+KEEP set (built-but-unwired, flagged for operator decision, NOT deleted):
+`arb-risk::activate_from_signal/reset_losses`, `jito_service::verify_landing/
+poll_until_terminal/ledger_json`, `capability::validate_execution_prerequisites`,
+`dependency_manifest::from_registered_pool`, `dual_ingest::record_decode_error/
+record_resync/run_comparison_loop`, `rpc_reconcile::fetch_and_publish`.
+
+### Hardcoded values
+
+- **HC-1 (P0) resolved**: OpenBook SOL/USDC market conflict — `primitives/builder.rs`
+  carried a fabricated address (`8BnEgHoWFysVcuFFX7QBpDmvu3xei5qGE9KitUfqWQH9`);
+  verified value `8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6` (openserum.io,
+  Solana StackExchange) now sourced from `arb-constants`.
+- Unlinked constants centralized into `arb-constants`: `USDT_MINT`, `OPENBOOK_PROGRAM_ID`,
+  `RAYDIUM_V4_AUTHORITY` (existed but wasn't imported at 4 sites), the 9 pool-scoped
+  Raydium SOL/USDC OpenBook accounts, `RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG`.
+- New regression tests in `address_regression_guards.rs` (5 total now, all pass).
+- Inventory scan (non-test code): 109 address literals, 53 URLs, 32 Duration kinds,
+  7 denominator kinds — classified A–F in `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md`.
+
+### Docs organization
+
+- Deleted `audit_extract/` (28 tracked files) and `audit_work/` (10 untracked files):
+  byte-identical duplicates of `docs/archive/audit_reports/` + `docs/archive/audit_work/`.
+- `dashboard/` kept (referenced by `Dockerfile:22`).
+- Doc-authority statement added to `docs/README.md` (PROJECT_STATE.md +
+  PRODUCTION_READINESS_2026-11-13.md are authoritative; PR7/PR8-era audits are historical).
+- Stale-reference scan: zero live docs reference the 68 deleted functions.
+
+### Verification (session 7)
+
+| Check | Result |
+|---|---|
+| `cargo fmt --all` | clean |
+| `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| `cargo test --workspace` | **1032 passed / 0 failed** |
+| Report | `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md` + `cleanup_summary.json` |

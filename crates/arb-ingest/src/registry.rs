@@ -1100,7 +1100,7 @@ impl MultiDexRegistry {
                     let market_program = if d.len() >= 592 {
                         Pubkey::new_from_array(d[560..592].try_into().unwrap())
                     } else {
-                        Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap()
+                        Pubkey::from_str(arb_constants::OPENBOOK_PROGRAM_ID).unwrap()
                     };
                     let prog =
                         Pubkey::from_str(arb_constants::RAYDIUM_V4_PROGRAM_ID).unwrap_or_default();
@@ -1493,7 +1493,7 @@ pub async fn resolve_mints_decimals(
         let mint_str = mint.0.to_string();
         let is_hub = mint_str == arb_constants::WSOL_MINT
             || mint_str == arb_constants::USDC_MINT
-            || mint_str == "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+            || mint_str == arb_constants::USDT_MINT;
         if !is_hub {
             let mint_auth_tag = u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([1, 0, 0, 0]));
             let freeze_auth_tag =
