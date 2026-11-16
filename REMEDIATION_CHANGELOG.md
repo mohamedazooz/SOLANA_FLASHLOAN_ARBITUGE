@@ -126,6 +126,16 @@ This changelog records the root-cause analysis, exact technical modifications, a
 
 ---
 
+### Remediation 8: Web Dashboard TypeScript Ambient Type Scanning Isolation
+- **Component**: `web/tsconfig.json`
+- **Vulnerability**: Running `npm run build` failed with `TS2688: Cannot find type definition file for 'validate-npm-package-name'` due to unconstrained ambient type searching in parent directory paths.
+- **Root Cause**: Missing `"types": []` constraint allowed TypeScript to attempt scanning ambient global type stubs outside the project boundary.
+- **Fix Applied**:
+  Added `"types": []` to compilerOptions in `web/tsconfig.json` so only explicitly imported dependencies are type-checked.
+- **Verification**: `cd web; npm run build` compiles with 0 errors in 2.15s (`dist/index.html`, `dist/assets/index-DVjQMAbR.css`, `dist/assets/index-Usx7VelH.js`).
+
+---
+
 ## 3. Comprehensive Verification Summary
 
-Following these remediations, the entire workspace compiles with **zero errors and zero warnings**, and **100% of tests pass green**.
+Following these remediations, the entire workspace compiles with **zero errors and zero warnings**, and **100% of tests pass green across all Rust crates and the Web UI**.
