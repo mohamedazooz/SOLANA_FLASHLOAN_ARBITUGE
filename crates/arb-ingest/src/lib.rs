@@ -3,6 +3,8 @@
 
 pub mod gmgn;
 pub use gmgn::{GmgnClient, TrendingToken};
+pub mod meteora_data_api;
+pub use meteora_data_api::{DiscoveredMeteoraPool, MeteoraDataApiClient, MeteoraPoolItem};
 pub mod dependency_manifest;
 #[cfg(feature = "extra-ingest")]
 pub mod dexscreener;

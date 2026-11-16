@@ -31,6 +31,7 @@ pub use dlmm_flash_arbitrage::{
 };
 pub mod meteora_pair_discovery;
 pub use meteora_pair_discovery::{
+    CrossProtocolEligiblePair, CrossProtocolPairDiscovery, CrossProtocolPairDiscoveryReport,
     MeteoraDlmmEligiblePair, MeteoraDlmmPairDiscoveryReport, MeteoraDlmmPoolPairDiscovery,
     PoolRejectionReason,
 };

@@ -2041,6 +2041,8 @@ pub fn resolve_fee_bps(protocol: DexProtocol, pool_account_data: &[u8]) -> Optio
         DexProtocol::PumpFun => None,
         DexProtocol::PumpSwap => None,
         DexProtocol::MeteoraDammV2 => None,
+        DexProtocol::MeteoraDbc => None,
+        DexProtocol::MeteoraDlmmPro => None,
         DexProtocol::RaydiumLaunchLab => None,
     }
 }
