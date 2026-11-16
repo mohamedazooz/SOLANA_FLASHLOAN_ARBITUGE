@@ -1,4 +1,5 @@
 [package]
+license = "MIT OR Apache-2.0"
 name = "solana-webhook-service"
 version = "0.1.0"
 edition = "2021"
@@ -24,6 +25,7 @@ anyhow = "1.0"
 thiserror = "1.0"
 tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["trace", "cors"] }
+http = "1.1"
 reqwest = { version = "0.11", features = ["json"] }
 dotenvy = "0.15"
 

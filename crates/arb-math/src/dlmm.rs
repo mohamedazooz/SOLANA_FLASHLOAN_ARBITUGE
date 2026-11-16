@@ -287,8 +287,12 @@ pub fn dlmm_active_bin_max_input(
 /// Scale trade input across a 3-hop Meteora DLMM cycle to extract maximum active bin liquidity.
 ///
 /// In Meteora DLMM, price is constant-sum inside each bin (zero price impact within the active bin).
-/// This calculates the bottleneck across all three hops, applies a 92% safety factor to avoid
-/// crossing into suboptimal bins, and scales the gross edge linearly.
+/// This calculates the bottleneck across all three hops — the minimum active-bin capacity
+/// across hops — and uses it directly. No arbitrary percentage scaling is applied;
+/// the exact bottleneck is the safe limit. Bin-level safety is enforced by
+/// `dlmm_active_bin_max_input` (rejects zero output liquidity), `consume_bin_liquidity`
+/// (respects drained bins and real reserve ceilings), and `compute_total_fee_rate`
+/// (caps total fee at MAX_FEE_RATE).
 pub fn scale_dlmm_three_hop_input(
     probe_amount_in: u64,
     probe_gross_profit: u64,
@@ -302,7 +306,10 @@ pub fn scale_dlmm_three_hop_input(
         .min(hop3_active_bin_max_in_equiv)
         .min(max_wallet_cap);
 
-    let safe_optimal_in = (bottleneck_in * 92) / 100;
+    // Use the exact bottleneck: no arbitrary 92% scaling. The exact bottleneck
+    // is already bounded by real per-bin liquidity and wallet cap. Bin traversal
+    // safety is enforced at quote time by consume_bin_liquidity.
+    let safe_optimal_in = bottleneck_in;
 
     if safe_optimal_in <= probe_amount_in || probe_amount_in == 0 {
         return (probe_amount_in, probe_gross_profit);
@@ -1107,9 +1114,9 @@ mod tests {
             max_wallet,
         );
 
-        // Safe optimal in = (1,000,000 * 92) / 100 = 920,000
-        assert_eq!(scaled_in, 920_000);
-        // Scaled profit = 23,000 * 920,000 / 10,000 = 2,116,000 lamports!
-        assert_eq!(scaled_profit, 2_116_000);
+        // Safe optimal in = exact bottleneck = 1,000,000 (no 92% scaling)
+        assert_eq!(scaled_in, 1_000_000);
+        // Scaled profit = 23,000 * 1,000,000 / 10,000 = 2,300,000 lamports
+        assert_eq!(scaled_profit, 2_300_000);
     }
 }

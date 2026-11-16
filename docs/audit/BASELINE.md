@@ -160,7 +160,8 @@ verification. Do not put secret values in this document.
 | `cargo test -p arb-math -p arb-dex` | Exit 0 after fail-closed fixture updates; 148 tests passed across the selected targets |
 | `cargo clippy -p arb-math -p arb-dex --all-targets -- -D warnings` | Exit 0 after fixing the strict-lint failures in the changed math/DEX code |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Exit 101; compilation stops at the same Windows-incompatible `yellowstone-grpc-client` import |
-| `cargo audit`, `cargo deny` | Pending installation attempt; checks have not yet been run |
+| `cargo audit` | `cargo-audit 0.22.2` installed; both fetch attempts failed because the connection reset while fetching RustSec advisory DB. `--no-fetch` confirms no usable cached DB is present, so vulnerability status is unknown. |
+| `cargo deny check` | `cargo-deny 0.20.2` installed. Initial run exposed removed `licenses.unlicensed` config key; removed that obsolete key from `deny.toml` to use current fail-closed defaults. Rerun: advisories, bans, and sources passed; licenses failed because all 14 workspace crates omit license expressions. No license was guessed or assigned. |
 | `docker compose config -q` | Exit 0 |
 | `docker build -t solana-arb-baseline:local .` | Exit 1; Docker could not resolve `static.rust-lang.org` while the floating `stable` toolchain attempted to download Rust 1.99.1 |
 | Linux offline check via Docker | Exit 101 before compilation; the mounted Cargo cache has no `axum` index/package metadata |
@@ -199,3 +200,39 @@ full acceptance suite.
    Clippy result, dependency audit, shadow soak, replay/fault injection,
    live-path rejection matrix, or realized PnL evidence is established by this
    baseline.
+7. **Dependency policy:** current `cargo-deny` passes advisories, bans, and
+   sources, but the license check fails for all 14 workspace packages because
+   their manifests do not declare a license expression. Do not invent a project
+   license; choose and document it before adding SPDX metadata. `cargo audit`
+   remains unverified until the RustSec advisory database can be fetched.
+
+## Re-validation pass (same day, later snapshot)
+
+The sections above describe the earlier `feature/ci-bootstrap` worktree. The
+repository has since moved: those changes were committed as `541cdec`, pushed to
+`main`, and `main` is now the checked-out baseline. Re-checked on 2026-11-07.
+
+| Item | Observed value |
+|---|---|
+| Repository | `https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE` |
+| Branch / HEAD | `main` = `541cdecdc2118190e012453f8767d4d37e6fba91` = `origin/main` |
+| Older branch | `feature/ci-bootstrap` = `8e1b3ea` (CI commit); **not merged into `main`** |
+| Commit history | `7677cbe` → `c42c387` → `541cdec` (+ agent checkpoint refs) |
+| Worktree | Dirty: `deny.toml`, `docs/audit/BASELINE.md`, `docs/audit/FINDINGS_REGISTER.md` only; no source files modified |
+| `git fetch --all --tags` | Exit 0; no tags |
+| Toolchain | `rustc 1.99.0`, `cargo 1.99.0`, host `x86_64-pc-windows-msvc` |
+| Source size | 85 `.rs` files / 1.61 MB under `crates/`; 409 `#[test]`/`#[tokio::test]` functions (static count, not executed) |
+| CI on `main` | **Absent**: `.github/workflows/rust-ci.yml` exists only on `8e1b3ea` |
+
+Baseline commands on this snapshot:
+
+| Command | Result on this snapshot |
+|---|---|
+| `cargo fmt --all -- --check` | Exit 1; existing formatting drift (first shown: `crates/arb-bot/src/main.rs:350`, `:361`) |
+| `cargo check --workspace --all-targets` (Windows) | Exit 101; unchanged `tokio::net::UnixStream` import in `yellowstone-grpc-client 16.0.1` |
+| Docker Linux check (`rust:1.99.1-slim-bookworm`, mounted repo) | First attempt BLOCKED: Docker DNS could not resolve `index.crates.io`. Re-run with `--network host` resolves DNS; result recorded in the CI/evidence column of `FINDINGS_REGISTER.md` when it completes. |
+| `docker compose config -q` | Exit 0 (previously recorded; not re-run with source changes) |
+
+This pass did **not** run the workspace test suite, Clippy, `cargo audit`,
+`cargo deny`, or any runtime/shadow session. Nothing in this section is a
+release or Phase-15 acceptance claim, and no live transaction was submitted.

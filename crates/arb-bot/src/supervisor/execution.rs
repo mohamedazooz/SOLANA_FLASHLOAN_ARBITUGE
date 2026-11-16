@@ -103,7 +103,7 @@ impl Supervisor {
         )
     }
 
-    pub(super) async fn fetch_recent_blockhash(&self) -> [u8; 32] {
+    pub(super) async fn fetch_recent_blockhash(&self) -> Option<[u8; 32]> {
         // Reuse a fresh cached hash: a blockhash stays valid for ~60-90s, so a
         // few seconds of reuse removes an RPC round-trip from the send path
         // without risking an expired hash.
@@ -112,7 +112,7 @@ impl Supervisor {
             if let Some((bh, at)) = *cache
                 && at.elapsed() < std::time::Duration::from_secs(3)
             {
-                return bh;
+                return Some(bh);
             }
         }
         let req_params = serde_json::json!([{"commitment": "confirmed"}]);
@@ -133,10 +133,11 @@ impl Supervisor {
                 && let Ok(arr) = bytes.try_into()
             {
                 *self.blockhash_cache.lock() = Some((arr, Instant::now()));
-                return arr;
+                return Some(arr);
             }
         }
-        [0u8; 32]
+        // Fail closed: never fabricate a zero blockhash. Caller must skip submission.
+        None
     }
 
     /// Latest live SOL/USD mid from the tracked SOL-USDC pools, or `None` when
@@ -166,13 +167,13 @@ impl Supervisor {
             Lamports(self.config.jito.max_tip_lamports),
             current_slot,
             self.live_sol_price(),
-        ).map_err(anyhow::Error::msg)?;
+        )
+        .map_err(anyhow::Error::msg)?;
         if !inputs.is_fresh(self.config.strategy.max_state_age_slots) {
             anyhow::bail!("verified Yellowstone economic inputs exceed max_state_age_slots");
         }
         Ok(inputs)
     }
-
 }
 
 /// Maximum age, in slots, across every pool an opportunity depends on.
@@ -181,7 +182,11 @@ impl Supervisor {
 /// gate, so freshness is never derived from wall-clock. Fails closed: a hop
 /// whose pool is missing from the snapshot — or that was never stamped — makes
 /// the whole route maximally stale rather than silently fresh.
-pub(super) fn max_state_age_slots(hops: &[SwapHop], pools: &[PoolState], current_slot: Slot) -> u64 {
+pub(super) fn max_state_age_slots(
+    hops: &[SwapHop],
+    pools: &[PoolState],
+    current_slot: Slot,
+) -> u64 {
     hops.iter()
         .map(|h| {
             pools

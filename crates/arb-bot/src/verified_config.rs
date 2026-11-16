@@ -265,8 +265,7 @@ pub fn usdc_mint() -> Pubkey {
 }
 
 pub fn usdc_reserve() -> Pubkey {
-    Pubkey::from_str("D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25")
-        .expect("valid USDC reserve constant")
+    Pubkey::from_str(arb_constants::KAMINO_USDC_RESERVE).expect("valid USDC reserve constant")
 }
 
 #[cfg(test)]

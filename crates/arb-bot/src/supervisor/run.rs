@@ -107,9 +107,9 @@ impl Supervisor {
             // vaults, both mints and canonical Pump Fees FeeConfig at coherent slots.
             // The graph uses a conservative whole-BPS fee for candidate discovery;
             // exact route validation remains protocol-adapter driven.
-            let pump_swap_report = self.ingest.refresh_pump_swap_states(
-                self.config.strategy.max_state_age_slots,
-            );
+            let pump_swap_report = self
+                .ingest
+                .refresh_pump_swap_states(self.config.strategy.max_state_age_slots);
             if pump_swap_report.pools_promoted > 0 || pump_swap_report.pools_rejected > 0 {
                 debug!(
                     "PumpSwap promotion: owner_accounts={} tracked={} joined={} promoted={} rejected={}",
@@ -193,7 +193,15 @@ impl Supervisor {
 
             // Filter out stale pools from graph to prevent phantom arbitrage cycles
             // caused by price divergence against frozen/unupdated pools.
-            let max_graph_age_slots = self.config.strategy.max_state_age_slots.saturating_mul(4).max(8);
+            // Graph freshness is an explicit policy: pools older than the
+            // configured graph age never enter the candidate graph. Defaults
+            // to the quote-freshness policy; no arbitrary multiplier.
+            let max_graph_age_slots = self
+                .config
+                .strategy
+                .graph_max_age_slots
+                .unwrap_or(self.config.strategy.max_state_age_slots)
+                .max(1);
             let fresh_pools: Vec<PoolState> = pools
                 .iter()
                 .filter(|p| {
@@ -491,12 +499,13 @@ impl Supervisor {
 
                 // Convert the actual input notional to USD before either risk path.
                 // Unknown base-mint valuation is a hard rejection, never a $10 placeholder.
-                let base_price_usd = if opp.base_mint.0 == Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default() {
-                    Some(live_sol_price)
-                } else if opp.base_mint.0 == Pubkey::from_str(arb_tx::USDC_MINT).unwrap_or_default() {
-                    Some(1.0)
-                } else {
-                    None
+                let base_mint = opp.hops.first().map(|hop| hop.mint_in.0);
+                let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default();
+                let usdc = Pubkey::from_str(arb_tx::USDC_MINT).unwrap_or_default();
+                let base_price_usd = match base_mint {
+                    Some(mint) if mint == wsol => Some(sol_price),
+                    Some(mint) if mint == usdc => Some(1.0),
+                    _ => None,
                 };
                 let trade_size_usd = base_price_usd.map(|price| {
                     (opp.size_in.as_u64() as f64 / 10_f64.powi(opp.base_decimals as i32)) * price
@@ -509,17 +518,32 @@ impl Supervisor {
                             .unwrap_or(0);
                         if self.config.strategy.use_flash_loan {
                             self.risk_gate.evaluate_flash_loan(
-                                real_net_profit, opp.size_in, current_slot, state_age_slots,
-                                size_usd, tip.as_u64(), tip_share_bps, effective_price_impact_bps,
+                                real_net_profit,
+                                opp.size_in,
+                                current_slot,
+                                state_age_slots,
+                                size_usd,
+                                tip.as_u64(),
+                                tip_share_bps,
+                                effective_price_impact_bps,
                             )
                         } else {
                             self.risk_gate.evaluate_full(
-                                real_net_profit, opp.size_in, current_slot, state_age_slots,
-                                size_usd, tip.as_u64(), tip_share_bps, effective_price_impact_bps,
+                                real_net_profit,
+                                opp.size_in,
+                                current_slot,
+                                state_age_slots,
+                                size_usd,
+                                tip.as_u64(),
+                                tip_share_bps,
+                                effective_price_impact_bps,
                             )
                         }
                     }
-                    _ => Err("cannot establish USD notional for base mint; risk gate fails closed".to_string()),
+                    _ => Err(
+                        "cannot establish USD notional for base mint; risk gate fails closed"
+                            .to_string(),
+                    ),
                 };
 
                 if let Err(reason) = risk_check {
@@ -708,22 +732,20 @@ impl Supervisor {
 
                 let mut blockhash_b58 = String::new();
                 let tx_bytes = if let Some(ref signer) = self.keypair {
-                    let blockhash = self.fetch_recent_blockhash().await;
-                    blockhash_b58 = bs58::encode(blockhash).into_string();
-                    // Fail fast: a zero blockhash must never be sent.
-                    if blockhash == [0u8; 32] {
+                    let Some(blockhash) = self.fetch_recent_blockhash().await else {
                         self.telegram
                             .alert_opportunity_rejected(
                                 &route_label,
                                 gross_sol,
                                 "Solana Blockhash",
-                                "فشل جلب أحدث Blockhash صالح من شبكة سولانا (Zero Blockhash)",
+                                "فشل جلب أحدث Blockhash صالح من شبكة سولانا (No Blockhash)",
                                 current_slot.0,
                             )
                             .await;
-                        warn!("fetch_recent_blockhash returned zero; skipping opportunity");
+                        warn!("fetch_recent_blockhash returned None; skipping opportunity");
                         continue;
-                    }
+                    };
+                    blockhash_b58 = bs58::encode(blockhash).into_string();
                     // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
                     let patched_ram = {
                         let mut guard = self.ram_templates.lock();
@@ -923,7 +945,8 @@ impl Supervisor {
                     real_net_profit,
                     payer,
                     route_sig: &route_sig,
-                }).await;
+                })
+                .await;
             }
 
             if tick >= 10 && std::env::var("ARB_TEST_EXIT").is_ok() {

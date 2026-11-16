@@ -109,6 +109,47 @@ impl Slot {
     }
 }
 
+/// Duration in milliseconds. Distinct from seconds to avoid unit confusion
+/// in timeouts, poll intervals, and freshness windows.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
+pub struct Milliseconds(pub u64);
+
+impl Milliseconds {
+    pub const ZERO: Self = Self(0);
+
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).map(Self)
+    }
+
+    pub fn saturating_sub(self, rhs: Self) -> Self {
+        Self(self.0.saturating_sub(rhs.0))
+    }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+/// Duration in seconds. Distinct from milliseconds to avoid unit confusion.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
+pub struct Seconds(pub u64);
+
+impl Seconds {
+    pub const ZERO: Self = Self(0);
+
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).map(Self)
+    }
+
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// Compute units consumed/requested by a transaction. Distinct from Lamports.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
@@ -712,24 +753,36 @@ pub struct PoolState {
 }
 
 impl PoolState {
+    /// Maximum representable fee rate in basis points (100%). Any computed fee
+    /// above this is invalid and must be rejected, never silently capped.
+    pub const FEE_BPS_MAX: u16 = 10_000;
+
     /// Total swap fee in basis points, derived from the stored numerator/denom.
     ///
-    /// Returns `None` when `fee_denominator == 0` (invalid fee). Callers MUST handle
-    /// the `None` case and reject the pool rather than price it with a guessed fee.
+    /// Returns `None` when the fee is invalid: `fee_denominator == 0`, the
+    /// computed value overflows `u16`, or the result exceeds `FEE_BPS_MAX`
+    /// (100%). Invalid fee data is never silently converted to 100% — callers
+    /// MUST handle the `None` case and reject the pool rather than price it
+    /// with a guessed fee.
     pub fn fee_bps(&self) -> Option<u16> {
         if self.fee_denominator == 0 {
             return None;
         }
-        Some(
-            u16::try_from((self.fee_numerator as u128 * 10_000) / self.fee_denominator as u128)
-                .unwrap_or(10_000),
-        )
+        let value = (self.fee_numerator as u128 * 10_000u128) / self.fee_denominator as u128;
+        let fee = u16::try_from(value).ok()?;
+        if fee > Self::FEE_BPS_MAX {
+            return None;
+        }
+        Some(fee)
     }
 
     /// True when the pool carries a usable fee numerator/denominator pair.
     /// A pool with an invalid fee must never be priced or discovered.
+    ///
+    /// Consistent with [`Self::fee_bps`]: a pool whose fee is out of range or
+    /// overflows is not fee-valid.
     pub fn is_fee_valid(&self) -> bool {
-        self.fee_denominator != 0
+        self.fee_bps().is_some()
     }
 }
 
@@ -778,7 +831,7 @@ impl RaydiumV4Accounts {
             )
             .unwrap(),
             pool_coin_vault: solana_pubkey::Pubkey::from_str(
-                "DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz",
+                "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
             )
             .unwrap(),
             pool_pc_vault: solana_pubkey::Pubkey::from_str(
@@ -1261,4 +1314,121 @@ pub enum ArbError {
 
     #[error("pump.fun reserve exceeded: requested {requested}, available {available}")]
     PumpFunReserveExceeded { requested: u64, available: u64 },
+}
+
+// ============================================================================
+// Regression tests — address conflicts (P0 C-01 / C-02)
+// ============================================================================
+//
+// These tests lock the canonical on-chain addresses in place so the historical
+// typo values (which existed only in the audit document, never in source) can
+// never be reintroduced:
+//
+//   C-01: Kamino USDC reserve must match arb_constants::KAMINO_USDC_RESERVE
+//         (canonical ...NbBmgJ59, NOT the audit-doc typo ...Ug6xK25).
+//   C-02: Raydium v4 pool_coin_vault must match arb-constants::RAYDIUM_SOL_VAULT
+//         (canonical ...JtteuvPpz, NOT the audit-doc typo ...Ww5jz).
+//
+// On-chain identity of each address remains UNVERIFIED in this repo; these tests
+// only enforce intra-repo consistency. Verify against mainnet account state
+// before mainnet use.
+#[cfg(test)]
+mod address_conflict_regression_tests {
+    use super::*;
+    use arb_constants;
+    use solana_pubkey::Pubkey;
+    use std::str::FromStr;
+
+    /// C-02: RaydiumV4Accounts::mainnet_sol_usdc() pool_coin_vault must equal the
+    /// canonical arb-constants::RAYDIUM_SOL_VAULT, never the audit-doc typo.
+    #[test]
+    fn raydium_v4_pool_coin_vault_matches_canonical_constant() {
+        let accounts = RaydiumV4Accounts::mainnet_sol_usdc();
+        let canonical = Pubkey::from_str(arb_constants::RAYDIUM_SOL_VAULT)
+            .expect("RAYDIUM_SOL_VAULT must be a valid pubkey");
+        assert_eq!(
+            accounts.pool_coin_vault, canonical,
+            "pool_coin_vault drifted from canonical arb-constants::RAYDIUM_SOL_VAULT (C-02 regression)"
+        );
+
+        // Explicitly reject the historical typo value so it cannot be reintroduced.
+        let typo = Pubkey::from_str("DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz")
+            .expect("typo must be a valid pubkey");
+        assert_ne!(
+            accounts.pool_coin_vault, typo,
+            "pool_coin_vault must not equal the historical typo value (C-02 regression)"
+        );
+    }
+
+    /// C-01: arb-constants::KAMINO_USDC_RESERVE must equal the canonical value,
+    /// never the audit-doc typo found in verified_config.rs history.
+    #[test]
+    fn kamino_usdc_reserve_matches_canonical_constant() {
+        let canonical = Pubkey::from_str(arb_constants::KAMINO_USDC_RESERVE)
+            .expect("KAMINO_USDC_RESERVE must be a valid pubkey");
+        assert_eq!(
+            canonical,
+            Pubkey::from_str("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59")
+                .expect("canonical USDC reserve must be a valid pubkey"),
+            "KAMINO_USDC_RESERVE drifted from canonical value (C-01 regression)"
+        );
+
+        // Explicitly reject the historical typo value.
+        let typo = Pubkey::from_str("D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25")
+            .expect("typo must be a valid pubkey");
+        assert_ne!(
+            canonical, typo,
+            "KAMINO_USDC_RESERVE must not equal the historical typo value (C-01 regression)"
+        );
+    }
+
+    /// SEC-05: fee_bps must never silently convert invalid fees to 100%.
+    #[test]
+    fn fee_bps_rejects_invalid_fees_fail_closed() {
+        fn test_pool(fee_numerator: u64, fee_denominator: u64) -> PoolState {
+            PoolState {
+                pool_id: PoolId::new([1; 32]),
+                protocol: DexProtocol::RaydiumV4,
+                slot: Slot(1),
+                write_version: 1,
+                base_mint: MintId(Pubkey::new_from_array([1; 32])),
+                quote_mint: MintId(Pubkey::new_from_array([2; 32])),
+                decimals_a: 9,
+                decimals_b: 6,
+                reserve_in: 1_000_000,
+                reserve_out: 1_000_000,
+                fee_numerator,
+                fee_denominator,
+                is_active: true,
+                has_risky_token: false,
+                kind: PoolKind::Cpmm,
+                clmm: None,
+                dlmm: None,
+                pump_fun: None,
+                transfer_fee_bps: 0,
+                last_update_slot: 1,
+                last_update_ms: 0,
+            }
+        }
+
+        // Zero denominator -> None.
+        let p = test_pool(25, 0);
+        assert_eq!(p.fee_bps(), None);
+        assert!(!p.is_fee_valid());
+
+        // Fee above FEE_BPS_MAX (100%) -> None, never Some(10_000).
+        let p = test_pool(20_000, 10_000); // 200%
+        assert_eq!(p.fee_bps(), None);
+        assert!(!p.is_fee_valid());
+
+        // Valid fee -> Some.
+        let p = test_pool(25, 10_000); // 25 bps
+        assert_eq!(p.fee_bps(), Some(25));
+        assert!(p.is_fee_valid());
+
+        // Overflow-safe: huge numerator that would overflow u16 -> None.
+        let p = test_pool(u64::MAX, 1);
+        assert_eq!(p.fee_bps(), None);
+        assert!(!p.is_fee_valid());
+    }
 }

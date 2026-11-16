@@ -5,7 +5,7 @@
 //! Account payloads are journaled individually with slot/write-version ordering. DEX-specific
 //! promotion into quote state is a separate, validated stage.
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -186,8 +186,10 @@ impl crate::YellowstoneClient {
                                 }
                                 Some(UpdateOneof::Account(account_update)) => {
                                     if let Some(account) = account_update.account {
-                                        let pubkey_bytes: std::result::Result<[u8; 32], _> = account.pubkey.as_ref().try_into();
-                                        let owner_bytes: std::result::Result<[u8; 32], _> = account.owner.as_ref().try_into();
+                                        let pubkey_slice: &[u8] = account.pubkey.as_ref();
+                                        let owner_slice: &[u8] = account.owner.as_ref();
+                                        let pubkey_bytes: std::result::Result<[u8; 32], _> = pubkey_slice.try_into();
+                                        let owner_bytes: std::result::Result<[u8; 32], _> = owner_slice.try_into();
                                         if let (Ok(pubkey_bytes), Ok(owner_bytes)) = (pubkey_bytes, owner_bytes) {
                                             let pubkey = solana_pubkey::Pubkey::new_from_array(pubkey_bytes);
                                             let owner = solana_pubkey::Pubkey::new_from_array(owner_bytes);

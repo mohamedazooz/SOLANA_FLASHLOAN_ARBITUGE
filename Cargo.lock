@@ -200,6 +200,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "arb-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arb-constants",
+ "arb-types",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "arb-constants"
 version = "0.1.0"
 dependencies = [

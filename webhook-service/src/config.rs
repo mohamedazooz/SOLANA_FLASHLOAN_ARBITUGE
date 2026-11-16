@@ -28,6 +28,10 @@ pub struct ServerConfig {
     pub auth_token: String,
     pub channel_buffer_size: usize,
     pub worker_threads: usize,
+    /// Allowed CORS origins. Empty = deny all cross-origin requests (fail closed).
+    /// In production, list explicit origins (e.g. ["https://dashboard.example.com"]).
+    #[serde(default)]
+    pub cors_origins: Vec<String>,
 }
 
 /// Strict Deduplication parameters.
@@ -126,6 +130,11 @@ impl AppConfig {
         }
         if self.dedup.local_cache_ttl_secs == 0 {
             anyhow::bail!("local_cache_ttl_secs must be greater than zero");
+        }
+        // CORS: fail closed. If no origins are configured, cross-origin requests
+        // are denied. Do not allow permissive CORS in production.
+        if self.server.cors_origins.iter().any(|o| o == "*") {
+            anyhow::bail!("CORS wildcard origin '*' is not allowed; list explicit origins");
         }
         Ok(())
     }

@@ -785,8 +785,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_bitquery_ws_url_resolution() {
-        let mut config = BitqueryConfig::default();
-        config.graphql_url = "https://streaming.bitquery.io/graphql".to_string();
+        let config = BitqueryConfig {
+            graphql_url: "https://streaming.bitquery.io/graphql".to_string(),
+            ..Default::default()
+        };
         *config.access_token.write() = Some("mock_token_12345".to_string());
 
         let ws_client = BitqueryWsClient::new(config);

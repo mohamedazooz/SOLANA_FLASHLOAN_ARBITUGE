@@ -280,9 +280,11 @@ mod tests {
         let mut g = SlotIntegrity::default();
         g.observe(40, Some(39), SLOT_PROCESSED);
         g.observe(41, Some(40), SLOT_PROCESSED);
-        g.observe(40, Some(39), SLOT_DEAD);
+        g.observe_with_bank(40, Some(39), SLOT_DEAD, Some(700));
         assert!(g.is_dead(40) && g.is_dead(41));
-        g.observe(40, Some(39), SLOT_CREATED_BANK);
+        // A re-created bank must carry its identity: an untagged CREATED_BANK
+        // cannot reopen a dead slot (see `created_bank_without_identity_...`).
+        g.observe_with_bank(40, Some(39), SLOT_CREATED_BANK, Some(900));
         assert!(!g.is_dead(40));
         assert!(g.is_dead(41));
     }

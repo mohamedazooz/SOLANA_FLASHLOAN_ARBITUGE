@@ -46,6 +46,8 @@ pub use pump_state::{
 };
 pub mod pumpfun_discovery;
 pub use pumpfun_discovery::{PumpFunCoin, PumpFunDiscoveryClient};
+pub mod oxylabs;
+pub use oxylabs::{OxylabsClient, OxylabsConfig, OxylabsError, ScrapeResult, SearchResult};
 pub mod pumpdev_stream;
 pub use pumpdev_stream::{PumpDevEvent, PumpDevWebSocketClient};
 pub mod solami_stream;
@@ -681,6 +683,11 @@ impl YellowstoneClient {
         let generation = self.stream_generation();
         let connected = self.stream_connected();
         let observed_slot = self.current_slot();
+        // Report the root cause first: a disconnected stream also clears the
+        // slot watermark, and "disconnected" is the actionable diagnosis.
+        if !connected {
+            return Err(QuoteReadinessError::StreamDisconnected);
+        }
         if observed_slot == 0 {
             return Err(QuoteReadinessError::NoSlotWatermark);
         }

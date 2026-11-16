@@ -356,8 +356,7 @@ pub fn build_economic_quote(
     };
     let net_profit_raw = positive_projection(expected_net_signed)?;
     let gross_profit_raw = positive_projection(gross_signed)?;
-    let meets_min_profit = minimum_net_signed
-        >= i128::from(min_profit_raw.as_u64());
+    let meets_min_profit = minimum_net_signed >= i128::from(min_profit_raw.as_u64());
 
     Ok(EconomicQuote {
         base_mint,
@@ -495,7 +494,7 @@ mod tests {
             TokenAmount(1_000_000_000), // borrow 1 SOL
             TokenAmount(1_005_000_000), // expect 1.005 SOL back
             TokenAmount(1_000_020_000), // conservative output clears the profit floor
-            TokenAmount(0), // flash fee 0
+            TokenAmount(0),             // flash fee 0
             TokenAmount(0),
             TokenAmount(0),
             TokenAmount(0),
@@ -575,9 +574,9 @@ mod tests {
             TokenAmount(10_000_000_000), // borrow 10 SOL
             TokenAmount(10_100_000_000), // 100_000_000 gross
             TokenAmount(10_000_651_000), // min-out covers costs and min-profit floor
-            TokenAmount(500_000), // flash fee 5 bps
-            TokenAmount(100_000), // dex fee
-            TokenAmount(50_000),  // transfer fee
+            TokenAmount(500_000),        // flash fee 5 bps
+            TokenAmount(100_000),        // dex fee
+            TokenAmount(50_000),         // transfer fee
             TokenAmount(0),
             TokenAmount(0),
             Lamports(0),
@@ -609,7 +608,7 @@ mod tests {
             TokenAmount(100_000_000), // borrow 100 USDC
             TokenAmount(105_000_000), // expect 105 USDC back (gross = 5_000_000)
             TokenAmount(100_018_950), // costs plus the 10,000-raw profit floor
-            TokenAmount(6_250), // flash fee 0.00625 USDC
+            TokenAmount(6_250),       // flash fee 0.00625 USDC
             TokenAmount(0),
             TokenAmount(0),
             TokenAmount(0),
@@ -657,10 +656,7 @@ mod tests {
             1_000_000_000,
         );
         let quote = result.expect("u64-sized loss is representable as signed PnL");
-        assert_eq!(
-            quote.expected_net_profit_signed_raw,
-            -i128::from(u64::MAX)
-        );
+        assert_eq!(quote.expected_net_profit_signed_raw, -i128::from(u64::MAX));
         assert!(!quote.is_profitable());
     }
 

@@ -161,7 +161,7 @@ impl RpcSnapshotClient {
             .begin(generation, min_context_slot, raw_keys.iter().copied())
             .map_err(|e| anyhow!("snapshot reconciler begin failed: {e:?}"))?;
         let mut total_data_bytes = 0usize;
-        for (key, account) in keys.iter().zip(result.value.into_iter()) {
+        for (key, account) in keys.iter().zip(result.value) {
             let account = account.ok_or_else(|| anyhow!("required account {key} is null"))?;
             let owner: Pubkey = account
                 .owner

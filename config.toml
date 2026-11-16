@@ -1,5 +1,9 @@
 # Sentinel Solana Arbitrage Bot Configuration
 # Automatically mapped from .env infrastructure credentials
+#
+# SECURITY: This file contains only ENV VAR NAMES (e.g. "HELIUS_API_KEY"),
+# never secret values. Actual secrets live in .env (gitignored, 0600 perms).
+# Copy .env.example to .env and fill in real values before running.
 
 [bot]
 mode = "shadow"         # shadow | simulate; live is gated off in this build
@@ -83,6 +87,7 @@ min_net_profit_abs = 50000          # 50,000 lamports (strictly above Jito media
 min_net_profit_bps = 5              # 5 bps
 max_price_impact_bps = 40           # 40 bps max impact bound
 max_state_age_slots = 2             # 2 slots max state age for fresh quotes
+graph_max_age_slots = 8             # discovery-graph horizon (explicit policy; execution still revalidates <= max_state_age_slots)
 use_flash_loan = true
 max_pools = 1000                    # expanded to 1000 for deep ecosystem coverage
 discovery_refresh_secs = 15         # refreshed every 15s for fast multi-venue ingestion

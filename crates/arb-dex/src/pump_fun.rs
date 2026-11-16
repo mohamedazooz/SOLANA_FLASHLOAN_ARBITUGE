@@ -17,7 +17,7 @@ pub const PUMP_FUN_BONDING_CURVE_SIZE: usize = 83;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PumpFunBondingCurve {
     pub pool_id: PoolId,
-    pub base_mint: MintId,  // Quote asset mint (currently WSOL-only in this adapter)
+    pub base_mint: MintId, // Quote asset mint (currently WSOL-only in this adapter)
     pub quote_mint: MintId, // Meme token mint
     pub virtual_token_reserves: u64,
     pub virtual_sol_reserves: u64,
@@ -137,7 +137,8 @@ impl PumpFunBondingCurve {
         {
             return Err(ArbError::DeserializationError(format!(
                 "invalid or truncated Pump.fun BondingCurve: expected current {}-byte layout, got {}",
-                PUMP_FUN_BONDING_CURVE_SIZE, data.len()
+                PUMP_FUN_BONDING_CURVE_SIZE,
+                data.len()
             )));
         }
         let read_u64 = |offset: usize| -> Result<u64> {
@@ -152,10 +153,13 @@ impl PumpFunBondingCurve {
             match data.get(offset).copied() {
                 Some(0) => Ok(false),
                 Some(1) => Ok(true),
-                _ => Err(ArbError::DeserializationError("invalid Pump.fun BondingCurve bool".into())),
+                _ => Err(ArbError::DeserializationError(
+                    "invalid Pump.fun BondingCurve bool".into(),
+                )),
             }
         };
-        let creator_bytes: [u8; 32] = data.get(49..81)
+        let creator_bytes: [u8; 32] = data
+            .get(49..81)
             .ok_or_else(|| ArbError::DeserializationError("truncated Pump.fun creator".into()))?
             .try_into()
             .map_err(|_| ArbError::DeserializationError("invalid Pump.fun creator".into()))?;
@@ -191,7 +195,9 @@ impl PumpFunBondingCurve {
     /// Fees are denominated in the quote asset.
     pub fn quote_with_fee(&self, amount_in: u64, a_to_b: bool) -> Result<(u64, u64)> {
         let fee_bps = self.fee_bps.ok_or_else(|| {
-            ArbError::InvalidInput("Pump.fun quote requires an explicit current fee schedule".into())
+            ArbError::InvalidInput(
+                "Pump.fun quote requires an explicit current fee schedule".into(),
+            )
         })?;
         self.quote_with_fee_bps(amount_in, a_to_b, fee_bps)
     }
@@ -206,37 +212,56 @@ impl PumpFunBondingCurve {
             return Err(ArbError::InvalidInput("Pump.fun fee exceeds 100%".into()));
         }
         if !self.mode_flags_present {
-            return Err(ArbError::InvalidInput("Pump.fun current mode flags are missing".into()));
+            return Err(ArbError::InvalidInput(
+                "Pump.fun current mode flags are missing".into(),
+            ));
         }
         if self.token_decimals.is_none() {
-            return Err(ArbError::InvalidInput("Pump.fun mint decimals are missing".into()));
+            return Err(ArbError::InvalidInput(
+                "Pump.fun mint decimals are missing".into(),
+            ));
         }
         if self.is_mayhem_mode || self.is_cashback_coin {
-            return Err(ArbError::InvalidInput("Pump.fun mayhem/cashback curves are not supported by this quote adapter".into()));
+            return Err(ArbError::InvalidInput(
+                "Pump.fun mayhem/cashback curves are not supported by this quote adapter".into(),
+            ));
         }
         if self.complete {
-            return Err(ArbError::Internal("Pump.fun bonding curve is complete (migrated)".into()));
+            return Err(ArbError::Internal(
+                "Pump.fun bonding curve is complete (migrated)".into(),
+            ));
         }
         if amount_in == 0 {
             return Err(ArbError::InvalidInput("zero Pump.fun input".into()));
         }
         if self.virtual_sol_reserves == 0 || self.virtual_token_reserves == 0 {
-            return Err(ArbError::Internal("Pump.fun virtual reserves are zero".into()));
+            return Err(ArbError::Internal(
+                "Pump.fun virtual reserves are zero".into(),
+            ));
         }
         let fee_rate = fee_bps as u128;
         let (out, fee) = if a_to_b {
-            let fee = (amount_in as u128).checked_mul(fee_rate).ok_or(ArbError::Overflow)? / 10_000;
-            let net_quote_in = (amount_in as u128).checked_sub(fee).ok_or(ArbError::Overflow)?;
+            let fee = (amount_in as u128)
+                .checked_mul(fee_rate)
+                .ok_or(ArbError::Overflow)?
+                / 10_000;
+            let net_quote_in = (amount_in as u128)
+                .checked_sub(fee)
+                .ok_or(ArbError::Overflow)?;
             let out = cpmm_out_fee(
                 net_quote_in,
                 self.virtual_sol_reserves as u128,
                 self.virtual_token_reserves as u128,
                 10_000,
                 10_000,
-            ).and_then(|v| u64::try_from(v).ok())
-                .ok_or_else(|| ArbError::Internal("Pump.fun buy quote failed".into()))?;
+            )
+            .and_then(|v| u64::try_from(v).ok())
+            .ok_or_else(|| ArbError::Internal("Pump.fun buy quote failed".into()))?;
             if out > self.real_token_reserves {
-                return Err(ArbError::PumpFunReserveExceeded { requested: out, available: self.real_token_reserves });
+                return Err(ArbError::PumpFunReserveExceeded {
+                    requested: out,
+                    available: self.real_token_reserves,
+                });
             }
             (out, u64::try_from(fee).map_err(|_| ArbError::Overflow)?)
         } else {
@@ -246,17 +271,29 @@ impl PumpFunBondingCurve {
                 self.virtual_sol_reserves as u128,
                 10_000,
                 10_000,
-            ).and_then(|v| u64::try_from(v).ok())
-                .ok_or_else(|| ArbError::Internal("Pump.fun sell quote failed".into()))?;
+            )
+            .and_then(|v| u64::try_from(v).ok())
+            .ok_or_else(|| ArbError::Internal("Pump.fun sell quote failed".into()))?;
             if gross > self.real_sol_reserves {
-                return Err(ArbError::PumpFunReserveExceeded { requested: gross, available: self.real_sol_reserves });
+                return Err(ArbError::PumpFunReserveExceeded {
+                    requested: gross,
+                    available: self.real_sol_reserves,
+                });
             }
-            let fee = (gross as u128).checked_mul(fee_rate).ok_or(ArbError::Overflow)? / 10_000;
+            let fee = (gross as u128)
+                .checked_mul(fee_rate)
+                .ok_or(ArbError::Overflow)?
+                / 10_000;
             let net = (gross as u128).checked_sub(fee).ok_or(ArbError::Overflow)?;
-            (u64::try_from(net).map_err(|_| ArbError::Overflow)?, u64::try_from(fee).map_err(|_| ArbError::Overflow)?)
+            (
+                u64::try_from(net).map_err(|_| ArbError::Overflow)?,
+                u64::try_from(fee).map_err(|_| ArbError::Overflow)?,
+            )
         };
         if out == 0 {
-            return Err(ArbError::Internal("Pump.fun quote has no output liquidity".into()));
+            return Err(ArbError::Internal(
+                "Pump.fun quote has no output liquidity".into(),
+            ));
         }
         Ok((out, fee))
     }
@@ -265,7 +302,6 @@ impl PumpFunBondingCurve {
     pub fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
         self.quote_with_fee(amount_in, a_to_b).map(|(out, _)| out)
     }
-
 }
 
 impl AmmPool for PumpFunBondingCurve {
@@ -369,7 +405,9 @@ mod tests {
 
         // Test BUY: 1 SOL gross in, with the verified quote-asset fee deducted from input.
         let sol_in = 1_000_000_000u64;
-        let (tokens_out, buy_fee) = pool.quote_with_fee(sol_in, true).expect("quote buy should succeed");
+        let (tokens_out, buy_fee) = pool
+            .quote_with_fee(sol_in, true)
+            .expect("quote buy should succeed");
         assert_eq!(buy_fee, 12_500_000);
         assert!(tokens_out > 0);
         assert!(tokens_out < pool.real_token_reserves);

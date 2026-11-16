@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "arb-bot"
 version = "0.1.0"
 edition = "2024"
@@ -46,6 +47,7 @@ arb-constants = { path = "../arb-constants" }
 arb-store = { path = "../arb-store" }
 arb-metrics = { path = "../arb-metrics" }
 arb-sim = { path = "../arb-sim" }
+arb-config = { path = "../arb-config" }
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }

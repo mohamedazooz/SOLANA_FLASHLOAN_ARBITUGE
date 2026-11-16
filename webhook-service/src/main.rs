@@ -14,6 +14,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use http::{header::{HeaderValue, CONTENT_TYPE, AUTHORIZATION}, Method};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,10 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(target: "main", "Starting Sentinel Solana Webhook Service...");
 
     // Load TOML configuration
-    let config = AppConfig::load_default().unwrap_or_else(|e| {
-        warn!(target: "main", error = %e, "Failed to load default config, trying 'config.toml' in current directory");
-        AppConfig::load_from_file("config.toml").expect("FATAL: Unable to load config.toml")
-    });
+    let config = AppConfig::load_default().or_else(|_| AppConfig::load_from_file("config.toml"))
+        .map_err(|e| anyhow::anyhow!("Failed to load webhook configuration: {e}"))?;
     let config_arc = Arc::new(config.clone());
 
     info!(
@@ -98,7 +97,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/topology", get(topology_snapshot))
         .route("/ws/topology", get(ws_topology_handler))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer({
+            let origins = config.server.cors_origins.clone();
+            if origins.is_empty() {
+                // Fail closed: no CORS origins configured, deny all cross-origin.
+                CorsLayer::new()
+            } else {
+                CorsLayer::new()
+                    .allow_origin(
+                        origins
+                            .iter()
+                            .map(|o| o.parse::<http::header::HeaderValue>())
+                            .filter_map(|r| r.ok())
+                            .collect::<Vec<_>>(),
+                    )
+                    .allow_methods([http::Method::GET, http::Method::POST])
+                    .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION])
+            }
+        })
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)

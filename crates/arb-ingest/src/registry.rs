@@ -342,7 +342,7 @@ impl MultiDexRegistry {
                 _ => None,
             };
 
-            let pump_state = pump_curve;
+            let pump_state = pump_curve.clone();
 
             let mut clmm = match (p.protocol, pool_data.as_deref()) {
                 (DexProtocol::OrcaWhirlpool, Some(data)) => decode_clmm_state(data),
@@ -419,9 +419,16 @@ impl MultiDexRegistry {
             // pool's base/quote mints (Meteora orders tokens X/Y by pubkey).
             let (reserve_in, reserve_out) = match p.protocol {
                 DexProtocol::PumpSwap => (0, 0),
-                DexProtocol::PumpFun => match pump_curve {
-                    Some((v_tok, v_sol, _, _, _, false)) if v_sol > 0 && v_tok > 0 => {
-                        (v_sol as u128, v_tok as u128)
+                DexProtocol::PumpFun => match pump_state.as_ref() {
+                    Some(state)
+                        if state.is_tradeable()
+                            && state.virtual_sol_reserves > 0
+                            && state.virtual_token_reserves > 0 =>
+                    {
+                        (
+                            u128::from(state.virtual_sol_reserves),
+                            u128::from(state.virtual_token_reserves),
+                        )
                     }
                     _ => (0, 0),
                 },

@@ -1,0 +1,105 @@
+# Sentinel Solana Arbitrage Bot — Base Configuration
+#
+# This file contains the deployment-independent operational parameters.
+# Secrets are NOT stored here; only secret ENV VAR NAMES are declared so the
+# runtime can resolve them through a secret provider (env for local dev, secret
+# manager in production).
+#
+# Precedence: compiled protocol invariants → base.toml → env-specific TOML →
+# environment variables → CLI overrides. Operator config can never override
+# protocol invariants or mandatory safety limits.
+
+[bot]
+mode = "shadow"            # shadow | simulate | canary | live
+# live is additionally gated behind ARB_LIVE=1 and live_enabled = true.
+live_enabled = false
+
+[grpc]
+primary_url = ""
+primary_token_env = "HELIUS_API_KEY"
+failover_url = ""
+failover_token_env = "SHYFT_API_KEY"
+commitment = "processed"
+ping_reply = true
+
+[rpc]
+# Endpoint URL must be supplied by the operator (no default).
+url = ""
+commitment = "processed"
+
+[jito]
+regions = ["frankfurt", "amsterdam", "ny"]
+tip_floor_percentile = "p50"           # p50 | p75 | p90 | p99
+tip_share_bps = 5500                   # must not exceed max_tip_share_bps
+max_tip_lamports = 2000000
+max_tip_share_bps = 7000               # <= 10000 (Bps::MAX)
+min_keep_lamports = 10000
+
+keep_share = 0.60                      # [0, 1] — edge surviving all costs incl. tip
+ladder_growth = 1.6                    # > 1.0
+tip_floor_max_age_ms = 5000            # staler snapshot = absent
+tip_floor_poll_ms = 1000               # >= 1000 (endpoint 1 rps per IP)
+leader_gate_enabled = true
+# kobe_url = null                      # optional validator registry endpoint
+# ledger_path = "data/adaptive_ledger.json"
+leader_refresh_secs = 60
+
+[jupiter]
+base_url = "https://api.jup.ag/swap/v2"   # https only
+api_key_env = "JUPITER_API_KEY"
+timeout_ms = 400
+
+[wallet]
+keypair_path = "solana_keypair.json"
+# cold_wallet_pubkey = null
+min_sol_balance_lamports = 0
+
+[strategy]
+base_tokens = [
+    "So11111111111111111111111111111111111111112", # WSOL
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", # USDC
+]
+min_net_profit_abs = 50000          # lamports (>0)
+min_net_profit_bps = 5              # bps (0..=10000)
+max_price_impact_bps = 40           # bps (0..=10000)
+max_state_age_slots = 2             # slots (>0)
+graph_max_age_slots = 8             # slots, >= max_state_age_slots
+use_flash_loan = true
+max_pools = 1000
+discovery_refresh_secs = 15
+discovery_min_tvl_usd = 25000.0
+
+[risk]
+max_trade_size_usd = 10000.0        # USD (>0)
+max_daily_loss_usd = 5.0            # USD (>0)
+max_hourly_loss_usd = 2.0           # USD (>0, <= daily)
+max_consecutive_failures = 8        # count (>0)
+min_landing_rate = 0.02             # ratio [0, 1]
+max_attempts_per_slot = 3           # count (>0)
+max_inflight_bundles = 2            # count (>0)
+max_tip_spend_ratio = 0.7           # ratio [0, 1]
+max_orders_per_hour = 120           # count/hr (>0)
+cooldown_slots = 75                 # slots (>0)
+
+[store]
+url = "sqlite://arb_sentinel.db"
+
+[metrics]
+listen = "127.0.0.1:9100"
+
+[admin]
+listen = "127.0.0.1:9101"
+token_env = "SENTINEL_ADMIN_KEY"
+
+[security]
+cors_allow_origins = []             # production: explicit allowlist (never permissive)
+max_request_body_bytes = 1048576    # 1 MiB
+webhook_signature_required = true
+
+[chronos]
+enabled = true
+decay_lambda_per_sec = 3.0          # >= 0
+max_age_ms = 400                    # 100..=5000
+min_ev_usd = 0.05                   # >= 0
+failed_attempt_cost_lamports = 10000
+beta_risk_factor = 0.0005           # >= 0

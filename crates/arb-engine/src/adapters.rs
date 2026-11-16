@@ -619,7 +619,20 @@ mod tests {
                 tick_current: tick,
                 tick_spacing: spacing,
                 fee_rate: 3_000,
-                tick_arrays: vec![],
+                // Exact CLMM traversal is fail-closed without the array that
+                // covers the active tick: it refuses to synthesize a boundary
+                // from tick spacing alone. Supply the array above and below the
+                // active tick so a quote can run in either direction.
+                tick_arrays: vec![
+                    ClmmTickArray {
+                        start_tick_index: -88 * i32::from(spacing),
+                        ticks: vec![],
+                    },
+                    ClmmTickArray {
+                        start_tick_index: 0,
+                        ticks: vec![],
+                    },
+                ],
             }),
             dlmm: None,
             pump_fun: None,

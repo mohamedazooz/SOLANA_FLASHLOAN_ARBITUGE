@@ -1,0 +1,86 @@
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .env.example
+	modified:   Cargo.toml
+	modified:   Dockerfile
+	modified:   PROMPET.MD
+	modified:   README.md
+	modified:   config.toml
+	modified:   crates/arb-bot/Cargo.toml
+	modified:   crates/arb-bot/src/bin/validate.rs
+	modified:   crates/arb-bot/src/main.rs
+	modified:   crates/arb-bot/src/supervisor.rs
+	modified:   crates/arb-bot/src/supervisor/dispatch.rs
+	modified:   crates/arb-bot/src/supervisor/execution.rs
+	modified:   crates/arb-bot/src/supervisor/run.rs
+	modified:   crates/arb-bot/src/telegram.rs
+	modified:   crates/arb-bot/src/verified_config.rs
+	modified:   crates/arb-constants/Cargo.toml
+	modified:   crates/arb-constants/src/lib.rs
+	modified:   crates/arb-dex/Cargo.toml
+	modified:   crates/arb-dex/src/lib.rs
+	modified:   crates/arb-dex/src/orca_whirlpool.rs
+	modified:   crates/arb-dex/src/pump_fun.rs
+	modified:   crates/arb-dex/src/pump_swap.rs
+	modified:   crates/arb-dex/src/traits.rs
+	modified:   crates/arb-engine/Cargo.toml
+	modified:   crates/arb-engine/src/adapters.rs
+	modified:   crates/arb-ingest/Cargo.toml
+	modified:   crates/arb-ingest/src/bitquery.rs
+	modified:   crates/arb-ingest/src/lib.rs
+	modified:   crates/arb-ingest/src/pump_state_tests.rs
+	modified:   crates/arb-ingest/src/quote_readiness.rs
+	modified:   crates/arb-ingest/src/registry.rs
+	modified:   crates/arb-ingest/src/rpc_reconcile.rs
+	modified:   crates/arb-ingest/src/slot_integrity.rs
+	modified:   crates/arb-ingest/src/yellowstone.rs
+	modified:   crates/arb-land/Cargo.toml
+	modified:   crates/arb-math/Cargo.toml
+	modified:   crates/arb-math/src/economic.rs
+	modified:   crates/arb-mcp/Cargo.toml
+	modified:   crates/arb-metrics/Cargo.toml
+	modified:   crates/arb-risk/Cargo.toml
+	modified:   crates/arb-risk/src/lib.rs
+	modified:   crates/arb-sim/Cargo.toml
+	modified:   crates/arb-store/Cargo.toml
+	modified:   crates/arb-tx/Cargo.toml
+	modified:   crates/arb-tx/src/lib.rs
+	modified:   crates/arb-types/Cargo.toml
+	modified:   crates/arb-types/src/lib.rs
+	modified:   deny.toml
+	modified:   docs/PHASE_STATUS.md
+	modified:   docs/audit/BASELINE.md
+	modified:   docs/audit/FINDINGS_REGISTER.md
+	modified:   rust-toolchain.toml
+	modified:   webhook-service/Cargo.toml
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.agents/
+	.github/
+	SAFETY_AND_HARDCODED_AUDIT.md
+	config/
+	crates/arb-ingest/src/oxylabs.rs
+	crates/arb-ingest/tests/oxylabs_mock.rs
+	docs/ARCHITECTURE.md
+	docs/ECONOMICS_AND_SIZING.md
+	docs/EXECUTION_LIFECYCLE.md
+	docs/OPERATIONS_RUNBOOK.md
+	docs/PROTOCOL_COMPATIBILITY.md
+	docs/RELEASE_READINESS.md
+	docs/SECURITY.md
+	docs/audit/DATA_INTEGRITY_AUDIT.md
+	docs/audit/DECISIONS_AND_CONFLICTS.md
+	docs/audit/EXECUTION_AUDIT.md
+	docs/audit/LOGIC_AND_MATH_AUDIT.md
+	docs/audit/SECURITY_AUDIT.md
+	phase1210.rar
+	reports/
+	scripts/
+	skills-lock.json
+
+no changes added to commit (use "git add" and/or "git commit -a")

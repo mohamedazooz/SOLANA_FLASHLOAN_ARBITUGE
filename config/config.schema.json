@@ -1,0 +1,375 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://sentinel.example.com/schemas/arb-config.schema.json",
+  "title": "Sentinel Solana Arbitrage Bot Configuration",
+  "type": "object",
+  "description": "Strongly-typed configuration for the Solana arbitrage bot. "
+    "Protocol invariants are compiled in (arb-constants) and cannot be overridden "
+    "by operator configuration.",
+  "required": [
+    "bot", "provider", "jito", "jupiter", "wallet", "strategy",
+    "risk", "store", "metrics", "admin", "security", "chronos"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "mode": {
+      "type": "object",
+      "required": ["mode"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["shadow", "simulate", "canary", "live"],
+          "description": "Deployment mode. 'live' additionally requires live_enabled=true and ARB_LIVE=1."
+        },
+        "live_enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Explicit opt-in for live execution. Must be true (via ARB_LIVE=1) before any transaction can be broadcast."
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "required": ["primary_url", "primary_token_env", "commitment"],
+      "additionalProperties": false,
+      "properties": {
+        "primary_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Primary RPC/Geyser endpoint URL (http or https scheme)."
+        },
+        "primary_token_env": {
+          "type": "string",
+          "description": "Environment variable name holding the primary provider auth token (never the value)."
+        },
+        "failover_url": {
+          "type": ["string", "null"],
+          "format": "uri",
+          "description": "Optional failover endpoint URL."
+        },
+        "failover_token_env": {
+          "type": ["string", "null"],
+          "description": "Environment variable name holding the failover provider auth token."
+        },
+        "commitment": {
+          "type": "string",
+          "enum": ["processed", "confirmed", "finalized"],
+          "description": "Solana commitment level."
+        },
+        "ping_reply": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "jito": {
+      "type": "object",
+      "required": [
+        "regions", "tip_floor_percentile", "tip_share_bps", "max_tip_lamports",
+        "max_tip_share_bps", "min_keep_lamports"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "regions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "tip_floor_percentile": {
+          "type": "string",
+          "enum": ["p50", "p75", "p90", "p99"]
+        },
+        "tip_share_bps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Tip share of gross edge, in basis points."
+        },
+        "max_tip_lamports": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum Jito tip in lamports."
+        },
+        "max_tip_share_bps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "description": "Maximum tip share as a fraction of edge, in basis points."
+        },
+        "min_keep_lamports": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum lamports the wallet must keep after paying the tip."
+        },
+        "keep_share": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.85
+        },
+        "ladder_growth": {
+          "type": "number",
+          "exclusiveMinimum": 1.0,
+          "default": 1.6
+        },
+        "tip_floor_max_age_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5000
+        },
+        "tip_floor_poll_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "default": 1000
+        },
+        "leader_gate_enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "kobe_url": {
+          "type": ["string", "null"],
+          "format": "uri"
+        },
+        "ledger_path": {
+          "type": ["string", "null"]
+        },
+        "leader_refresh_secs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60
+        }
+      }
+    },
+    "jupiter": {
+      "type": "object",
+      "required": ["base_url", "api_key_env", "timeout_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Jupiter swap API base URL (https scheme only)."
+        },
+        "api_key_env": {
+          "type": "string"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "wallet": {
+      "type": "object",
+      "required": ["keypair_path", "min_sol_balance_lamports"],
+      "additionalProperties": false,
+      "properties": {
+        "keypair_path": {
+          "type": "string"
+        },
+        "cold_wallet_pubkey": {
+          "type": ["string", "null"]
+        },
+        "min_sol_balance_lamports": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "required": [
+        "base_tokens", "min_net_profit_abs", "min_net_profit_bps",
+        "max_price_impact_bps", "max_state_age_slots", "use_flash_loan"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "base_tokens": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "min_net_profit_abs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_net_profit_bps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "max_price_impact_bps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "max_state_age_slots": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "graph_max_age_slots": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Must be >= max_state_age_slots when set."
+        },
+        "use_flash_loan": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_pools": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "discovery_refresh_secs": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "discovery_min_tvl_usd": {
+          "type": ["number", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": [
+        "max_trade_size_usd", "max_daily_loss_usd", "max_hourly_loss_usd",
+        "max_consecutive_failures", "min_landing_rate", "max_attempts_per_slot",
+        "max_inflight_bundles", "max_tip_spend_ratio", "max_orders_per_hour",
+        "cooldown_slots"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "max_trade_size_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_daily_loss_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_hourly_loss_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_consecutive_failures": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_landing_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "max_attempts_per_slot": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_inflight_bundles": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_tip_spend_ratio": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "max_orders_per_hour": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cooldown_slots": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "chronos": {
+      "type": "object",
+      "required": [
+        "enabled", "decay_lambda_per_sec", "max_age_ms", "min_ev_usd",
+        "failed_attempt_cost_lamports", "beta_risk_factor"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "decay_lambda_per_sec": {
+          "type": "number",
+          "minimum": 0.0
+        },
+        "max_age_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 5000
+        },
+        "min_ev_usd": {
+          "type": "number",
+          "minimum": 0.0
+        },
+        "failed_attempt_cost_lamports": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "beta_risk_factor": {
+          "type": "number",
+          "minimum": 0.0
+        }
+      }
+    },
+    "store": {
+      "type": "object",
+      "required": ["url"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string" }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["listen"],
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "type": "string",
+          "pattern": "^[0-9.]+:[0-9]+$"
+        }
+      }
+    },
+    "admin": {
+      "type": "object",
+      "required": ["listen", "token_env"],
+      "additionalProperties": false,
+      "properties": {
+        "listen": {
+          "type": "string",
+          "pattern": "^[0-9.]+:[0-9]+$"
+        },
+        "token_env": {
+          "type": "string"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "required": ["cors_allow_origins", "max_request_body_bytes", "webhook_signature_required"],
+      "additionalProperties": false,
+      "properties": {
+        "cors_allow_origins": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Explicit production CORS allowlist. Empty = deny all cross-origin. CorsLayer::permissive() is never allowed."
+        },
+        "max_request_body_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1048576
+        },
+        "webhook_signature_required": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    }
+  }
+}

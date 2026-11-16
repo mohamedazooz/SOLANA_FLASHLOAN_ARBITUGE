@@ -1,5 +1,5 @@
-
 use super::*;
+use crate::ProviderId;
 use std::sync::Arc;
 
 #[test]

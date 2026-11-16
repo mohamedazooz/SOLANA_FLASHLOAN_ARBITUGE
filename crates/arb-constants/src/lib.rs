@@ -293,6 +293,9 @@ pub fn get_cu_limit_for_hops(hops_count: usize) -> u32 {
         COMPUTE_BUDGET_LIMIT_3HOP
     }
 }
+/// Pump.fun bonding-curve graduation threshold in lamports (protocol constant; verify against deployed program upgrades).
+pub const PUMP_FUN_GRADUATION_LAMPORTS: u64 = 85_000_000_000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +352,3 @@ mod tests {
         assert!(Pubkey::from_str(PUMP_FUN_FEE_RECIPIENT).is_ok());
     }
 }
-
-/// Pump.fun bonding-curve graduation threshold in lamports (protocol constant; verify against deployed program upgrades).
-pub const PUMP_FUN_GRADUATION_LAMPORTS: u64 = 85_000_000_000;

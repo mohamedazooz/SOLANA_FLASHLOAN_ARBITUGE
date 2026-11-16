@@ -2692,6 +2692,16 @@ mod tests {
     use arb_types::{Bps, DexProtocol, MintId, PoolId, RouteId, Slot, SwapHop, TokenAmount};
     use ed25519_dalek::Verifier;
 
+    /// `assemble_flash_arbitrage` returns `anyhow::Result`, so the typed
+    /// `TxError` may be wrapped. Accept either the downcast variant or the
+    /// rendered message, but require the specific fail-closed reason.
+    fn assert_pump_fun_fail_closed(err: &anyhow::Error) -> bool {
+        let typed = err.downcast_ref::<TxError>().is_some_and(|e| {
+            matches!(e, TxError::UnsupportedProtocol(msg) if msg.contains("Pump.fun live adapter disabled"))
+        });
+        typed || format!("{err:#}").contains("Pump.fun live adapter disabled")
+    }
+
     #[test]
     fn cu_model_is_protocol_aware_and_route_sized() {
         // CLMM/DLMM cost more than a CPMM swap.
@@ -3159,7 +3169,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_swap_hop_instruction_for_all_protocols() {
+    fn test_build_swap_hop_instruction_for_all_supported_protocols() {
         let user = Pubkey::new_unique();
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
@@ -3171,7 +3181,6 @@ mod tests {
             (DexProtocol::MeteoraDlmm, wsol, usdc),
             (DexProtocol::RaydiumCpmm, wsol, usdc),
             (DexProtocol::RaydiumClmm, wsol, usdc),
-            (DexProtocol::PumpFun, wsol, meme_token),
         ];
 
         for (proto, mint_in, mint_out) in protocols {
@@ -3195,6 +3204,23 @@ mod tests {
             assert!(!ix.accounts.is_empty());
             assert!(!ix.data.is_empty());
         }
+
+        // Pump.fun has no verified live adapter, so the builder MUST fail closed
+        // instead of emitting a best-effort instruction matrix.
+        let pump_hop = SwapHop {
+            pool_id: arb_types::PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::PumpFun,
+            mint_in: arb_types::MintId(wsol),
+            mint_out: arb_types::MintId(meme_token),
+            fee_bps: 25,
+            active_bin_id: None,
+        };
+        let err = build_swap_hop_instruction(&pump_hop, user, 1_000_000_000, 100_000_000)
+            .expect_err("Pump.fun builder must be disabled until its account matrix is verified");
+        assert!(
+            matches!(&err, TxError::UnsupportedProtocol(msg) if msg.contains("Pump.fun live adapter disabled")),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]
@@ -3266,7 +3292,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pump_fun_flash_arbitrage_assembly_with_wsol_bridge() {
+    fn assembly_rejects_pump_fun_routes_without_verified_adapter() {
         let payer = Pubkey::new_unique();
         let tip_account = Pubkey::from_str(JITO_TIP_ACCOUNTS[0]).unwrap();
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
@@ -3304,7 +3330,7 @@ mod tests {
             ],
         };
 
-        let ixs1 = TxBuilder::assemble_flash_arbitrage(
+        let err1 = TxBuilder::assemble_flash_arbitrage(
             payer,
             tip_account,
             Lamports(1_000_000),
@@ -3315,12 +3341,12 @@ mod tests {
             6250,
             TokenAmount(1_000_000),
         )
-        .expect("assemble_flash_arbitrage should succeed for Pump.fun -> Raydium route");
+        .expect_err("Pump.fun route must fail closed until the live adapter is verified");
 
-        let pump_program = Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap();
-        let klend_program = Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap();
-        assert!(ixs1.iter().any(|ix| ix.program_id == pump_program));
-        assert!(ixs1.iter().any(|ix| ix.program_id == klend_program));
+        assert!(
+            assert_pump_fun_fail_closed(&err1),
+            "unexpected error: {err1:#}"
+        );
 
         // 2. Route: Raydium Buy -> Pump.fun Sell
         let opp2 = ExecutionOpportunity {
@@ -3353,7 +3379,7 @@ mod tests {
             ],
         };
 
-        let ixs2 = TxBuilder::assemble_flash_arbitrage(
+        let err2 = TxBuilder::assemble_flash_arbitrage(
             payer,
             tip_account,
             Lamports(1_000_000),
@@ -3364,9 +3390,13 @@ mod tests {
             6250,
             TokenAmount(1_000_000),
         )
-        .expect("assemble_flash_arbitrage should succeed for Raydium -> Pump.fun route");
+        .expect_err(
+            "Raydium -> Pump.fun route must fail closed until the live adapter is verified",
+        );
 
-        assert!(ixs2.iter().any(|ix| ix.program_id == pump_program));
-        assert!(ixs2.iter().any(|ix| ix.program_id == klend_program));
+        assert!(
+            assert_pump_fun_fail_closed(&err2),
+            "unexpected error: {err2:#}"
+        );
     }
 }

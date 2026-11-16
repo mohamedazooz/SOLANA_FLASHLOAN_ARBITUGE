@@ -58,7 +58,6 @@ struct CachedTemplate {
     tip: u64,
 }
 
-
 pub struct Supervisor {
     mode: BotMode,
     config: Config,
@@ -136,7 +135,11 @@ impl Supervisor {
             max_consecutive_failures,
             cooldown_slots,
         ));
-        let kill_switch = Arc::new(KillSwitch::new());
+        // Durable kill switch: the marker file survives restarts, and an
+        // existing marker forces the supervisor to start BLOCKED (fail safe).
+        let kill_switch_path =
+            std::env::var("KILL_SWITCH_FILE").unwrap_or_else(|_| "data/kill_switch".to_string());
+        let kill_switch = Arc::new(KillSwitch::with_file(kill_switch_path));
         let chronos_risk = arb_risk::ChronosRiskConfig {
             enabled: config.chronos.enabled,
             decay_lambda_per_sec: config.chronos.decay_lambda_per_sec,
@@ -186,7 +189,9 @@ impl Supervisor {
             .filter(|value| !value.trim().is_empty() && !value.starts_with("REPLACE_ME"))
             .unwrap_or_default();
         if ingest_url.is_empty() || ingest_token.is_empty() {
-            warn!("Solami Yellowstone gRPC is not configured; market ingestion will remain unavailable");
+            warn!(
+                "Solami Yellowstone gRPC is not configured; market ingestion will remain unavailable"
+            );
         }
         let ingest = Arc::new(YellowstoneClient::new(ingest_url, ingest_token));
 
@@ -440,10 +445,7 @@ impl Supervisor {
                 .await;
         }
     }
-
-
 }
-
 
 #[cfg(test)]
 mod tests {

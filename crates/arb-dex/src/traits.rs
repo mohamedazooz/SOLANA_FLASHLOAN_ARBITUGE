@@ -26,9 +26,10 @@ pub trait AmmPool: Send + Sync {
     /// Pricing family: determines which curve the quote model must use.
     fn kind(&self) -> PoolKind {
         match self.protocol() {
-            DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm | DexProtocol::PumpFun | DexProtocol::PumpSwap => {
-                PoolKind::Cpmm
-            }
+            DexProtocol::RaydiumV4
+            | DexProtocol::RaydiumCpmm
+            | DexProtocol::PumpFun
+            | DexProtocol::PumpSwap => PoolKind::Cpmm,
             DexProtocol::RaydiumClmm | DexProtocol::OrcaWhirlpool => PoolKind::Clmm,
             DexProtocol::MeteoraDlmm => PoolKind::Dlmm,
         }

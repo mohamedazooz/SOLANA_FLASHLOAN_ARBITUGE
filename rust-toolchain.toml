@@ -1,4 +1,7 @@
 [toolchain]
-channel = "stable"   # مدعوم من rustc المثبت محليًا (1.99.0)
+# Pinned to the exact toolchain validated for this workspace (Docker and CI).
+# Do not use a moving "stable" channel: rustfmt/clippy output must be
+# reproducible between local, CI, and release builds.
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

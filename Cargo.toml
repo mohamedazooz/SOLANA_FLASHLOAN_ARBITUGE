@@ -6,7 +6,10 @@ exclude = ["webhook-service"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+# The workspace uses edition 2024 and let-chains, which require 1.88+, and is
+# validated only on 1.99.1 (rust-toolchain.toml). Do not lower this without a
+# full Linux build/test run on the claimed compiler.
+rust-version = "1.99"
 publish = false
 license = "MIT OR Apache-2.0"
 

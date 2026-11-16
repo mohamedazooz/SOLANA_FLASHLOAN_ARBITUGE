@@ -12,11 +12,12 @@
 
 use anyhow::Result;
 use arb_engine::MarketGraph;
-use arb_ingest::{MultiDexRegistry, RpcPool};
+use arb_ingest::{AccountSnapshot, AccountSnapshotStore, MultiDexRegistry, ProviderId, RpcPool};
 use arb_math::economic::calculate_flash_fee_raw;
 use arb_math::{Leg, cpmm_out, optimal_two_pool};
 use arb_tx::JupiterClient;
 use arb_types::{Lamports, MintId, Slot, TokenAmount};
+use base64::Engine as _;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use tracing::{info, warn};
@@ -150,22 +151,75 @@ async fn main() -> Result<()> {
     }
 
     // ── 2. VERIFIED economic inputs (fail closed) ──
+    // The runtime reads verified inputs only from account snapshots. This
+    // read-only diagnostic mirrors that contract: it fetches the two accounts
+    // over RPC and places them in the same snapshot store, instead of using the
+    // retired HTTP JSON-RPC shortcut that always fails closed.
     let reserve = Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE)?;
+    let reserve_str = reserve.to_string();
+    let wsol_str = wsol.to_string();
+    let accounts = match rpc
+        .get_multiple_accounts(&[reserve_str.as_str(), wsol_str.as_str()])
+        .await
+    {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            warn!("❌ Account fetch failed ({e}) — cannot price; aborting.");
+            return Ok(());
+        }
+    };
 
-    let rpc_url = std::env::var("SOLANA_RPC_URL")
-        .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+    let store = AccountSnapshotStore::default();
+    for (index, (label, pubkey)) in [("Kamino reserve", &reserve), ("WSOL mint", &wsol)]
+        .into_iter()
+        .enumerate()
+    {
+        let Some(value) = accounts.get(index).and_then(|a| a.as_ref()) else {
+            warn!("❌ {label} account missing — cannot price; aborting.");
+            return Ok(());
+        };
+        let Some(owner) = value.get("owner").and_then(|v| v.as_str()) else {
+            warn!("❌ {label} account has no owner — cannot price; aborting.");
+            return Ok(());
+        };
+        let Some(data_b64) = value
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|d| d.as_str())
+        else {
+            warn!("❌ {label} account has no base64 data — cannot price; aborting.");
+            return Ok(());
+        };
+        let data = match base64::engine::general_purpose::STANDARD.decode(data_b64) {
+            Ok(data) => data,
+            Err(e) => {
+                warn!("❌ {label} base64 decode failed ({e}) — cannot price; aborting.");
+                return Ok(());
+            }
+        };
+        store.apply(AccountSnapshot {
+            pubkey: *pubkey,
+            owner: Pubkey::from_str(owner)?,
+            slot: slot.0,
+            write_version: 1,
+            is_startup: false,
+            // ProviderId(0) is the documented RPC-bootstrap identity.
+            provider_id: ProviderId(0),
+            bank_id: None,
+            generation: 0,
+            data: std::sync::Arc::new(data),
+        });
+    }
 
-    let verified = match verified_config::build_verified_inputs(
-        &rpc_url,
+    let verified = match verified_config::build_verified_inputs_from_snapshots(
+        &store,
         &MintId(wsol),
         &reserve,
         &wsol,
         Lamports(0), // tip not needed for validation
         slot,
         None,
-    )
-    .await
-    {
+    ) {
         Ok(v) => {
             info!(
                 "✅ Verified on-chain: Kamino flash fee_sf={} (source={}), base_decimals={} (source={}), rate={}",

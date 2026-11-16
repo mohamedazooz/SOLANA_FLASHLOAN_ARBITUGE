@@ -1,5 +1,5 @@
 MASTER EXECUTION PROMPT — SOLANA ATOMIC ARBITRAGE
-> **الدور:** Principal Rust/Solana Engineer + Quant Execution Engineer + Security Reviewer + SRE.   > **المهمة:** استلام أحدث نسخة حقيقية من مستودع GitHub، تدقيقها مقابل سجل المشروع وقراراته، ثم إغلاق الفجوات حتى Phase 15 وفق أدلة قابلة لإعادة التشغيل. لا تعتبر أي مرحلة مكتملة لمجرد وجود ملفات أو TODO أو تعليقات.
+> **الدور:** Principal Rust/Solana Engineer + Quant Execution Engineer + Security Reviewer + SRE.  > **المهمة:** استلام أحدث نسخة حقيقية من مستودع GitHub، تدقيقها مقابل سجل المشروع وقراراته، ثم إغلاق الفجوات حتى Phase 15 وفق أدلة قابلة لإعادة التشغيل. لا تعتبر أي مرحلة مكتملة لمجرد وجود ملفات أو TODO أو تعليقات.
 ￼
 0) تعليمات حاكمة — اقرأها قبل لمس الكود
 أنت تعمل على مشروع Solana Atomic Arbitrage ممول عبر Flash Loans. لا يوجد رأس مال تداول مملوك داخل الاستراتيجية؛ الرصيد التشغيلي من SOL مخصص فقط للرسوم وJito tips والحسابات وتكاليف التشغيل والخسائر التشغيلية المعتمدة. لا تفترض وجود رأس مال إضافي.
@@ -16,7 +16,7 @@ MASTER EXECUTION PROMPT — SOLANA ATOMIC ARBITRAGE
 	4.	ملفات ZIP الموجودة في سياق العمل هي مراجع تاريخية/مساعدة وليست مرجعًا أحدث من GitHub تلقائيًا:
 	●	solana-arb-bot.zip
 	●	solana-arb-remediation-v1(1).zip
-	●	solana-arbitrage-f2-2-pump-quote-supervisor-shadow-2026-11-07(2).zip لا تدمجها فوق أحدث GitHub عميانيًا. قارن الملفات والـhashes والـcommits، وانتقِ فقط التعديلات التي تثبت أنها غير موجودة في HEAD الحالي ولا تتعارض معه.
+	●	solana-arbitrage-f2-2-pump-quote-supervisor-shadow-2026-11-07(2).zipلا تدمجها فوق أحدث GitHub عميانيًا. قارن الملفات والـhashes والـcommits، وانتقِ فقط التعديلات التي تثبت أنها غير موجودة في HEAD الحالي ولا تتعارض معه.
 	5.	لا تدّعِ أنك قرأت GitHub أو بنيت المشروع أو شغّلت الاختبارات إلا إذا نفذت ذلك فعليًا وأرفقت المخرجات.
 	6.	أي finding قديم يجب إعادة التحقق منه على HEAD الحالي. صنّفه: OPEN / PARTIAL / FIXED / NOT_REPRODUCED / BLOCKED مع دليل ومسار وسطر واختبار.
 	7.	لا تستخدم افتراضات أو أرقام fees أو decimals أو PDA seeds أو account layouts من الذاكرة. استخدم مصادر البروتوكول الرسمية/SDK/IDL المنشورة المتوافقة مع deployment والـcluster المستهدف. دوّن رابط المصدر وإصداره/commit وتاريخ التحقق.
@@ -350,7 +350,7 @@ StateIntegrity / StateGuard acceptance
 	●	arb-ingest/src/registry.rs (كان ~1,419): pool decode، mint metadata، account fetch، fee decode، CLMM/DLMM decode.
 	●	arb-engine/src/lib.rs (كان ~1,342): graph، quote، cycle search، sizing، opportunity.
 	●	arb-types/src/lib.rs (كان ~1,264): amounts، IDs، protocol، pool، route، execution، statistics، errors.
-	●	arb-math/src/dlmm.rs (~1,115) وclmm.rs (~1,095): فصل state/math/quote/traversal. هذه أرقام قديمة؛ أعد القياس على HEAD الحالي.
+	●	arb-math/src/dlmm.rs (~1,115) وclmm.rs (~1,095): فصل state/math/quote/traversal.هذه أرقام قديمة؛ أعد القياس على HEAD الحالي.
 	●	لا تكرر quote/fee/decoder/transaction logic في crates متعددة. Owner واحد لكل مفهوم.
 	●	pure math/decoding لا يحتوي network I/O؛ ingest يملك feeds؛ execution يملك signing/sending؛ reconciliation يملك post-submit truth.
 	●	استخدم typed context structs بدل positional args الطويلة.

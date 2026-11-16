@@ -124,19 +124,58 @@ impl KillSwitch {
             file_path: Mutex::new(None),
         }
     }
+
+    /// Durable kill switch: the marker file is the source of truth across
+    /// restarts. If the marker already exists the switch starts BLOCKED (fail
+    /// safe), even if no operator has touched this process yet.
     pub fn with_file(path: impl Into<String>) -> Self {
+        let path = path.into();
+        let blocked = std::path::Path::new(&path).exists();
+        if blocked {
+            error!(path = %path, "kill-switch marker present at startup; trading stays blocked");
+        }
         Self {
-            enabled: Mutex::new(false),
-            file_path: Mutex::new(Some(path.into())),
+            enabled: Mutex::new(blocked),
+            file_path: Mutex::new(Some(path)),
         }
     }
+
     pub fn activate(&self) {
-        *self.enabled.lock() = true;
+        // Lock ordering: file_path then enabled, consistent with is_blocked().
+        let file_path = self.file_path.lock().clone();
+        let mut enabled = self.enabled.lock();
+        *enabled = true;
+        if let Some(path) = file_path {
+            if let Some(parent) = std::path::Path::new(&path).parent()
+                && !parent.as_os_str().is_empty()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                error!(path = %path, error = %e, "failed to create kill-switch marker directory");
+            }
+            if let Err(e) = std::fs::write(&path, b"paused\n") {
+                // Fail safe: the in-memory flag stays set, and the operator is
+                // told durability failed so a restart cannot silently re-arm.
+                error!(path = %path, error = %e, "failed to persist kill-switch marker");
+            }
+        }
         error!("kill switch activated");
     }
+
     pub fn deactivate(&self) {
-        *self.enabled.lock() = false;
+        let file_path = self.file_path.lock().clone();
+        let mut enabled = self.enabled.lock();
+        if let Some(path) = file_path
+            && let Err(e) = std::fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            // Keep the in-memory state cleared but warn: the marker survives,
+            // so a restart will re-block (fail safe).
+            error!(path = %path, error = %e, "failed to remove kill-switch marker; restart will re-block");
+        }
+        *enabled = false;
+        warn!("kill switch deactivated by operator");
     }
+
     pub fn is_blocked(&self) -> bool {
         if self
             .file_path
@@ -205,8 +244,6 @@ impl Default for RiskLimits {
         }
     }
 }
-
-pub const MAX_VELOCITY_ORDERS_PER_HOUR: usize = 10;
 
 /// Configuration for Chronos Spatiotemporal Expected Value (EV) Gate.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -729,6 +766,33 @@ mod tests {
         assert!(ks.is_blocked());
         ks.deactivate();
         assert!(!ks.is_blocked());
+    }
+    #[test]
+    fn kill_switch_marker_survives_restart() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("arb-risk-ks-{}-{nanos}", std::process::id()));
+        let path = dir.join("kill_switch");
+        let path_str = path.to_string_lossy().to_string();
+
+        let ks = KillSwitch::with_file(&path_str);
+        assert!(!ks.is_blocked(), "fresh path must start unblocked");
+        ks.activate();
+        assert!(ks.is_blocked());
+        assert!(path.exists(), "activation must persist a marker file");
+        drop(ks);
+
+        let restarted = KillSwitch::with_file(&path_str);
+        assert!(
+            restarted.is_blocked(),
+            "kill switch must remain blocked after a restart"
+        );
+        restarted.deactivate();
+        assert!(!restarted.is_blocked());
+        assert!(!path.exists(), "deactivation must remove the marker");
+        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn risk_gate_loss_tracking() {

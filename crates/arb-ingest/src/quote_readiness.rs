@@ -148,7 +148,8 @@ pub fn validate_execution_readiness(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AccountSnapshot, SLOT_PROCESSED, SlotIntegrity};
+    use crate::slot_integrity::{SLOT_DEAD, SLOT_PROCESSED};
+    use crate::{AccountSnapshot, SlotIntegrity};
     use std::sync::Arc;
 
     fn setup(
@@ -212,7 +213,7 @@ mod tests {
             Err(QuoteReadinessError::StreamDisconnected)
         ));
         let (live_store, _, live_key, _, live_owners) = setup(false);
-        slots.observe(100, Some(99), crate::SLOT_DEAD);
+        slots.observe(100, Some(99), SLOT_DEAD);
         assert!(matches!(
             build_quote_dependency_set(&live_store, &slots, &[live_key], &live_owners, context()),
             Err(QuoteReadinessError::DeadSlot)
