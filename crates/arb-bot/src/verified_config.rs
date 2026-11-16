@@ -4,11 +4,6 @@
 //! provenance + freshness. The Jito cost input is the configured conservative tip
 //! ceiling. Any unverifiable account fails closed; no JSON-RPC fallback is used.
 
-// This module is included by several binary targets (main + bins) via `#[path]`;
-// each target uses a different subset of the public API, so unused-in-one-target
-// items are expected and not dead code.
-#![allow(dead_code)]
-
 use arb_ingest::AccountSnapshotStore;
 use arb_math::economic::EconomicConfig;
 use arb_types::{Lamports, MintId, Slot, TokenAmount};
@@ -42,8 +37,8 @@ impl<T> VerifiedValue<T> {
 /// All verified inputs needed to build the authoritative `EconomicConfig`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedQuoteInputs {
-    /// Kamino flash-loan fee as the raw Q64.64 on-chain value
-    /// (`ReserveConfig.fees.flash_loan_fee_sf`).
+    /// Kamino flash-loan fee as the raw U68F60 on-chain value
+    /// (`ReserveConfig.fees.flash_loan_fee_sf`, 60 fractional bits).
     pub flash_loan_fee_sf: VerifiedValue<u64>,
     /// Base mint decimals, read from the verified SPL Mint account.
     pub base_decimals: VerifiedValue<u8>,
@@ -114,6 +109,7 @@ pub fn derive_rational_rate(decimals: u8, sol_price_usd: Option<f64>) -> Option<
 /// Derive `10^decimals / 10^9` as an integer ratio, or `None` when the ratio is
 /// not integral (the lamport conversion would lose precision — fail closed).
 /// Kept for backward compatibility with tests expecting integer-only ratio.
+#[cfg(test)]
 pub fn lamports_per_base_raw(decimals: u8) -> Option<u128> {
     if decimals > 18 {
         return None;
@@ -146,24 +142,6 @@ pub fn decode_mint_decimals(account: &[u8]) -> Result<u8, String> {
         return Err(format!("implausible mint decimals: {decimals}"));
     }
     Ok(decimals)
-}
-
-/// Legacy API retained only to produce an explicit error for old diagnostic callers.
-/// It never opens a JSON-RPC connection.
-#[deprecated(note = "HTTP JSON-RPC reads are disabled; use build_verified_inputs_from_snapshots")]
-pub async fn build_verified_inputs(
-    _rpc_url: &str,
-    _base_mint: &MintId,
-    _reserve: &Pubkey,
-    _expected_reserve_mint: &Pubkey,
-    _tip_lamports: Lamports,
-    _current_slot: Slot,
-    _sol_price_usd: Option<f64>,
-) -> Result<VerifiedQuoteInputs, String> {
-    Err(
-        "HTTP JSON-RPC verified-input reads are disabled; Yellowstone snapshots are required"
-            .into(),
-    )
 }
 
 /// Build authoritative economic inputs only from the current Yellowstone account
@@ -260,6 +238,7 @@ pub fn wsol_reserve() -> Pubkey {
     Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE).expect("valid WSOL reserve constant")
 }
 
+<<<<<<< HEAD
 pub fn usdc_mint() -> Pubkey {
     Pubkey::from_str(arb_constants::USDC_MINT).expect("valid USDC mint constant")
 }
@@ -268,6 +247,8 @@ pub fn usdc_reserve() -> Pubkey {
     Pubkey::from_str(arb_constants::KAMINO_USDC_RESERVE).expect("valid USDC reserve constant")
 }
 
+=======
+>>>>>>> origin/main
 #[cfg(test)]
 mod tests {
     use super::*;

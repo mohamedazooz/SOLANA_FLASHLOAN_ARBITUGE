@@ -503,6 +503,7 @@ fn challenge_dlmm_extreme_bin_steps_and_active_bin_crossing() {
                 max_volatility_accumulator: 350_000,
                 protocol_share: 0,
                 base_fee_power_factor: 0,
+                collect_fee_mode: 0,
             },
             v_parameters: DlmmVariableParameters {
                 volatility_accumulator: 0,
@@ -557,6 +558,7 @@ fn challenge_dlmm_variable_fee_surge_under_high_volatility() {
         max_volatility_accumulator: 500_000,
         protocol_share: 0,
         base_fee_power_factor: 0,
+        collect_fee_mode: 0,
     };
 
     // Test monotonicity across accumulator values
@@ -607,6 +609,7 @@ fn challenge_dlmm_maximum_fee_rate_clamping() {
         max_volatility_accumulator: 350_000,
         protocol_share: 0,
         base_fee_power_factor: 1, // Scaled by 10
+        collect_fee_mode: 0,
     };
     let total_fee_high_base =
         compute_total_fee_rate(&high_base_params, 1000, 0).expect("Base fee clamping");
@@ -626,6 +629,7 @@ fn challenge_dlmm_maximum_fee_rate_clamping() {
         max_volatility_accumulator: 2_000_000,
         protocol_share: 0,
         base_fee_power_factor: 0,
+        collect_fee_mode: 0,
     };
     let total_fee_high_var =
         compute_total_fee_rate(&high_var_params, 100, 1_000_000).expect("Var fee clamping");
@@ -645,6 +649,7 @@ fn challenge_dlmm_maximum_fee_rate_clamping() {
         max_volatility_accumulator: 350_000,
         protocol_share: 0,
         base_fee_power_factor: 0,
+        collect_fee_mode: 0,
     };
     let total_combined =
         compute_total_fee_rate(&combined_params, 100, 100_000).expect("Combined clamping");
@@ -692,6 +697,7 @@ fn challenge_dlmm_zero_liquidity_bins_and_empty_bin_traversal() {
             max_volatility_accumulator: 350_000,
             protocol_share: 0,
             base_fee_power_factor: 0,
+            collect_fee_mode: 0,
         },
         v_parameters: DlmmVariableParameters {
             volatility_accumulator: 0,

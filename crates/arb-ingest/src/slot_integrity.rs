@@ -1,5 +1,5 @@
-//! Bounded fork tracking and snapshot-reconciliation primitives for one Yellowstone source.
-//! SlotStatus numeric values follow rpcpool/yellowstone-grpc geyser.proto.
+//! Bounded fork tracking and snapshot-reconciliation primitives for one ingest source.
+//! SlotStatus numeric values follow Solana slot status conventions.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub const SLOT_PROCESSED: i32 = 0;

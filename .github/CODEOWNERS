@@ -1,0 +1,10 @@
+# CODEOWNERS
+# All changes require owner review
+* @mohamedazooz
+
+# Critical security files
+.env.example @mohamedazooz
+.github/workflows/ @mohamedazooz
+Dockerfile @mohamedazooz
+Cargo.toml @mohamedazooz
+SECURITY.md @mohamedazooz

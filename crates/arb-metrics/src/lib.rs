@@ -11,10 +11,12 @@ use tracing::{debug, error};
 
 /// Metric name constants as required.
 pub mod metric_names {
-    pub const GRPC_LAG_SLOTS: &str = "grpc_lag_slots";
-    pub const GRPC_RECONNECTS_TOTAL: &str = "grpc_reconnects_total";
-    pub const GRPC_UPDATES_TOTAL: &str = "grpc_updates_total";
     pub const STATE_AGE_SLOTS: &str = "state_age_slots";
+    pub const ACCOUNT_UPDATE_LAG_MS: &str = "account_update_lag_ms";
+    pub const RESYNCS_TOTAL: &str = "resyncs_total";
+    pub const DECODE_ERRORS_TOTAL: &str = "decode_errors_total";
+    pub const STALE_REJECTIONS_TOTAL: &str = "stale_rejections_total";
+    pub const CACHE_CONSISTENCY: &str = "cache_consistency";
     pub const OPPORTUNITIES_TOTAL: &str = "opportunities_total";
     pub const NET_PROFIT_TOTAL: &str = "net_profit_total";
     pub const TIP_SHARE_BPS: &str = "tip_share_bps";
@@ -27,27 +29,55 @@ pub mod metric_names {
 }
 
 static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
-static GRPC_LAG_SLOTS: Lazy<Gauge> = Lazy::new(|| {
-    let gauge = Gauge::new(metric_names::GRPC_LAG_SLOTS, "gRPC lag in slots")
-        .unwrap_or_else(|_| Gauge::new(metric_names::GRPC_LAG_SLOTS, "").expect("static metric"));
+static ACCOUNT_UPDATE_LAG_MS: Lazy<Gauge> = Lazy::new(|| {
+    let gauge = Gauge::new(
+        metric_names::ACCOUNT_UPDATE_LAG_MS,
+        "Account update lag in milliseconds",
+    )
+    .unwrap_or_else(|_| {
+        Gauge::new(metric_names::ACCOUNT_UPDATE_LAG_MS, "").expect("static metric")
+    });
     let _ = REGISTRY.register(Box::new(gauge.clone()));
     gauge
 });
-static GRPC_RECONNECTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
-    let counter = IntCounter::new(metric_names::GRPC_RECONNECTS_TOTAL, "Total gRPC reconnects")
+static RESYNCS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(metric_names::RESYNCS_TOTAL, "Total resyncs after reconnect")
         .unwrap_or_else(|_| {
-            IntCounter::new(metric_names::GRPC_RECONNECTS_TOTAL, "").expect("static metric")
+            IntCounter::new(metric_names::RESYNCS_TOTAL, "").expect("static metric")
         });
     let _ = REGISTRY.register(Box::new(counter.clone()));
     counter
 });
-static GRPC_UPDATES_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
-    let counter = IntCounter::new(metric_names::GRPC_UPDATES_TOTAL, "Total gRPC updates")
-        .unwrap_or_else(|_| {
-            IntCounter::new(metric_names::GRPC_UPDATES_TOTAL, "").expect("static metric")
-        });
+static DECODE_ERRORS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        metric_names::DECODE_ERRORS_TOTAL,
+        "Total account decode errors",
+    )
+    .unwrap_or_else(|_| {
+        IntCounter::new(metric_names::DECODE_ERRORS_TOTAL, "").expect("static metric")
+    });
     let _ = REGISTRY.register(Box::new(counter.clone()));
     counter
+});
+static STALE_REJECTIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        metric_names::STALE_REJECTIONS_TOTAL,
+        "Total stale account update rejections",
+    )
+    .unwrap_or_else(|_| {
+        IntCounter::new(metric_names::STALE_REJECTIONS_TOTAL, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(counter.clone()));
+    counter
+});
+static CACHE_CONSISTENCY: Lazy<Gauge> = Lazy::new(|| {
+    let gauge = Gauge::new(
+        metric_names::CACHE_CONSISTENCY,
+        "Cache consistency check result (1=consistent, 0=divergent)",
+    )
+    .unwrap_or_else(|_| Gauge::new(metric_names::CACHE_CONSISTENCY, "").expect("static metric"));
+    let _ = REGISTRY.register(Box::new(gauge.clone()));
+    gauge
 });
 static STATE_AGE_SLOTS: Lazy<Gauge> = Lazy::new(|| {
     let gauge = Gauge::new(metric_names::STATE_AGE_SLOTS, "State age in slots")
@@ -214,14 +244,23 @@ pub fn inc_fills() {
 pub fn get_fills_total() -> u64 {
     FILLS_TOTAL.get()
 }
-pub fn inc_reconnects() {
-    GRPC_RECONNECTS_TOTAL.inc();
+pub fn set_account_update_lag_ms(v: f64) {
+    ACCOUNT_UPDATE_LAG_MS.set(v);
 }
-pub fn inc_updates() {
-    GRPC_UPDATES_TOTAL.inc();
+pub fn inc_resyncs() {
+    RESYNCS_TOTAL.inc();
 }
-pub fn set_grpc_lag(v: f64) {
-    GRPC_LAG_SLOTS.set(v);
+pub fn inc_decode_errors() {
+    DECODE_ERRORS_TOTAL.inc();
+}
+pub fn inc_stale_rejections() {
+    STALE_REJECTIONS_TOTAL.inc();
+}
+pub fn set_cache_consistency(consistent: bool) {
+    CACHE_CONSISTENCY.set(if consistent { 1.0 } else { 0.0 });
+}
+pub fn get_cache_consistency() -> bool {
+    CACHE_CONSISTENCY.get() >= 0.5
 }
 pub fn set_state_age(v: f64) {
     STATE_AGE_SLOTS.set(v);
@@ -229,8 +268,14 @@ pub fn set_state_age(v: f64) {
 pub fn add_net_profit(v: f64) {
     NET_PROFIT_TOTAL.inc_by(v);
 }
+pub fn get_net_profit_total() -> f64 {
+    NET_PROFIT_TOTAL.get()
+}
 pub fn add_simulated_net_profit(v: f64) {
     SIMULATED_NET_PROFIT_TOTAL.inc_by(v);
+}
+pub fn get_simulated_net_profit_total() -> f64 {
+    SIMULATED_NET_PROFIT_TOTAL.get()
 }
 pub fn set_tip_share_bps(v: f64) {
     TIP_SHARE_BPS.set(v);

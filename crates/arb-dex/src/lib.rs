@@ -1,14 +1,31 @@
 //! DEX State Deserialization, Binary Parsing, and Unified Quoting Engine.
 
+pub mod dlmm_validation;
+pub mod meteora_damm_v2;
+pub mod meteora_dlmm;
 pub mod orca_whirlpool;
 pub mod pump_fun;
 pub mod pump_swap;
+pub mod raydium_clmm;
+pub mod raydium_cpmm;
+pub mod raydium_launchlab;
 pub mod raydium_v4;
 pub mod traits;
 
+pub use dlmm_validation::{
+    DlmmValidationError, DlmmValidationResult, ValidatedDlmmPool, canonical_mint_pair,
+    derive_bin_array_pda, derive_bitmap_extension_pda, derive_event_authority, derive_oracle_pda,
+    derive_reserve_pda, validate_bin_array_account, validate_bitmap_extension_account,
+    validate_lb_pair_account, validate_pool_pair_compatibility,
+};
+pub use meteora_damm_v2::MeteoraDammV2Pool;
+pub use meteora_dlmm::MeteoraDlmmPool;
 pub use orca_whirlpool::OrcaWhirlpool;
 pub use pump_fun::PumpFunBondingCurve;
 pub use pump_swap::{PumpSwapFeeConfig, PumpSwapFeeTier, PumpSwapPool, PumpSwapPoolHeader};
+pub use raydium_clmm::RaydiumClmmPool;
+pub use raydium_cpmm::RaydiumCpmmPool;
+pub use raydium_launchlab::RaydiumLaunchLabPool;
 pub use raydium_v4::RaydiumV4Pool;
 pub use traits::AmmPool;
 
@@ -146,6 +163,90 @@ impl CpmmDecoder {
     }
 }
 
+use arb_constants::{
+    METEORA_DLMM_PROGRAM_ID, ORCA_WHIRLPOOL_PROGRAM_ID, PUMP_FUN_PROGRAM_ID, PUMP_SWAP_PROGRAM_ID,
+    RAYDIUM_CLMM_PROGRAM_ID, RAYDIUM_CPMM_PROGRAM_ID, RAYDIUM_V4_PROGRAM_ID,
+};
+use arb_types::{DexProtocol, MintId, PoolId};
+use solana_pubkey::Pubkey;
+
+/// Map a program ID (account owner) to its DEX protocol, if known.
+pub fn program_id_to_protocol(program_id: &Pubkey) -> Option<DexProtocol> {
+    let id_str = program_id.to_string();
+    match id_str.as_str() {
+        RAYDIUM_V4_PROGRAM_ID => Some(DexProtocol::RaydiumV4),
+        RAYDIUM_CPMM_PROGRAM_ID => Some(DexProtocol::RaydiumCpmm),
+        RAYDIUM_CLMM_PROGRAM_ID => Some(DexProtocol::RaydiumClmm),
+        ORCA_WHIRLPOOL_PROGRAM_ID => Some(DexProtocol::OrcaWhirlpool),
+        METEORA_DLMM_PROGRAM_ID => Some(DexProtocol::MeteoraDlmm),
+        PUMP_FUN_PROGRAM_ID => Some(DexProtocol::PumpFun),
+        PUMP_SWAP_PROGRAM_ID => Some(DexProtocol::PumpSwap),
+        _ => None,
+    }
+}
+
+/// Decode raw account bytes into an `AmmPool` instance for a given protocol and pool address.
+pub fn decode_amm_pool(
+    protocol: DexProtocol,
+    pool_id: PoolId,
+    data: &[u8],
+) -> Option<Box<dyn AmmPool>> {
+    let mut pool: Box<dyn AmmPool> = match protocol {
+        DexProtocol::RaydiumV4 => Box::new(RaydiumV4Pool::new(
+            pool_id,
+            MintId::default(),
+            MintId::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+        )),
+        DexProtocol::RaydiumCpmm => {
+            if data.len() < raydium_cpmm::RAYDIUM_CPMM_POOL_MIN_SIZE {
+                return None;
+            }
+            Box::new(RaydiumCpmmPool::from_account(pool_id, data).ok()?)
+        }
+        DexProtocol::RaydiumClmm => {
+            if data.len() < raydium_clmm::RAYDIUM_CLMM_POOL_MIN_SIZE {
+                return None;
+            }
+            Box::new(RaydiumClmmPool::from_account(pool_id, data).ok()?)
+        }
+        DexProtocol::OrcaWhirlpool => Box::new(OrcaWhirlpool::new(
+            pool_id,
+            MintId::default(),
+            MintId::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+            64,
+            3000,
+        )),
+        DexProtocol::MeteoraDlmm => {
+            if data.len() < meteora_dlmm::METEORA_LB_PAIR_MIN_SIZE {
+                return None;
+            }
+            Box::new(MeteoraDlmmPool::from_account(pool_id, data).ok()?)
+        }
+        DexProtocol::PumpFun => {
+            if data.len() < pump_fun::PUMP_FUN_BONDING_CURVE_SIZE {
+                return None;
+            }
+            Box::new(PumpFunBondingCurve::new(
+                pool_id,
+                MintId::default(),
+                MintId::default(),
+            ))
+        }
+        _ => return None,
+    };
+
+    if pool.update_from_account(data).is_ok() {
+        Some(pool)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +264,9 @@ mod tests {
             Pubkey::new_from_array([6; 32]),
         );
         pool.update_reserves(1_000_000, 2_000_000);
+        pool.fee_numerator = 25;
+        pool.fee_denominator = 10_000;
+        pool.status = 6;
 
         let quote = pool.quote(10_000, true).unwrap();
         assert!(quote > 0);

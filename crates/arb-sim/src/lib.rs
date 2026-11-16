@@ -5,8 +5,29 @@
 
 use arb_types::{ArbError, Lamports, Result};
 
+pub mod fork_sim;
 pub mod litesvm_sim;
+pub mod meteora_fresh_pipeline;
+pub mod meteora_simulation_harness;
+pub mod opportunity_recorder;
+pub mod profitability_gate;
+pub use fork_sim::{
+    DEFAULT_FORK_SIM_TIMEOUT_MS, ForkSimResult, ForkSimulator, ForkState, SimAccountSnapshot,
+    SimTokenBalance,
+};
 pub use litesvm_sim::{LocalSimResult, simulate_locally};
+pub use meteora_fresh_pipeline::{
+    MeteoraDlmmFreshStatePipeline, MeteoraFreshPipelineConfig, MeteoraProfitabilityReport,
+};
+pub use meteora_simulation_harness::{
+    MeteoraDlmmMainnetSimulationHarness, MeteoraSimulationRecord,
+};
+pub use opportunity_recorder::{CandidateOpportunityRecord, OpportunityHistoryRecorder};
+pub use profitability_gate::{
+    DEFAULT_MAX_QUOTE_SLOT_LAG, DEFAULT_STRICT_PROFIT_HURDLE_LAMPORTS, ExecutionCostBreakdown,
+    ProfitabilityGate, ProfitabilityRejection, STANDARD_SOLANA_BASE_FEE_LAMPORTS,
+    SimulationOutcome,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info};
@@ -64,18 +85,12 @@ impl RpcSimulator {
     /// Asynchronously simulate a transaction via Solana JSON-RPC.
     pub async fn simulate_async(&self, tx_bytes: &[u8]) -> Result<SimResult> {
         let b64 = base64_encode(tx_bytes);
+        let params = simulate_transaction_params(&b64, tx_bytes);
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "simulateTransaction",
-            "params": [
-                b64,
-                {
-                    "encoding": "base64",
-                    "commitment": "processed",
-                    "replaceRecentBlockhash": true
-                }
-            ]
+            "params": params,
         });
 
         let resp = self
@@ -208,6 +223,23 @@ fn base64_encode(input: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(input)
 }
 
+/// Build the `simulateTransaction` params for the given wire bytes.
+///
+/// Solana RPC refuses to deserialize versioned transactions above
+/// `maxSupportedTransactionVersion` (0 = v0, 1 = v1), so simulation must pass
+/// the correct maximum supported version explicitly.
+fn simulate_transaction_params(b64_tx: &str, wire_bytes: &[u8]) -> serde_json::Value {
+    let mut config = serde_json::Map::new();
+    config.insert("encoding".into(), json!("base64"));
+    config.insert("commitment".into(), json!("processed"));
+    config.insert("replaceRecentBlockhash".into(), json!(true));
+    config.insert("sigVerify".into(), json!(false));
+    if let Ok(Some(version)) = arb_tx::rpc_max_supported_version_from_wire(wire_bytes) {
+        config.insert("maxSupportedTransactionVersion".into(), json!(version));
+    }
+    json!([b64_tx, serde_json::Value::Object(config)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,5 +258,37 @@ mod tests {
     fn shadow_check_test() {
         assert!(shadow_check(Lamports(50_000), Lamports(30_000)));
         assert!(!shadow_check(Lamports(10_000), Lamports(30_000)));
+    }
+
+    #[test]
+    fn simulate_params_carry_version_for_versioned_transactions() {
+        use arb_tx::{KeypairSigner, V1ConfigParams};
+
+        // Legacy wire bytes: first byte is compact-u16 sig count (0x01) -> no version param.
+        let signer = KeypairSigner::new_random();
+        let legacy = arb_tx::TxBuilder::build_signed_transaction(&signer, &[], [1u8; 32])
+            .expect("legacy tx");
+        let params = simulate_transaction_params("b64", &legacy);
+        assert!(params[1].get("maxSupportedTransactionVersion").is_none());
+
+        // V1 wire bytes (0x81): the RPC must be told the version number (1).
+        let v1 = arb_tx::AdaptiveTxCompiler::build_signed_v1_transaction(
+            &signer,
+            &[],
+            [1u8; 32],
+            V1ConfigParams {
+                compute_unit_limit: Some(200_000),
+                loaded_accounts_data_size_limit: Some(65_536),
+                ..Default::default()
+            },
+            arb_tx::FormatSelectionReason::ExplicitRequested(arb_tx::TransactionVersion::V1),
+        )
+        .expect("v1 tx");
+        assert_eq!(v1.wire_bytes[0], 0x81);
+        let params = simulate_transaction_params("b64", &v1.wire_bytes);
+        assert_eq!(
+            params[1].get("maxSupportedTransactionVersion").unwrap(),
+            &json!(1)
+        );
     }
 }

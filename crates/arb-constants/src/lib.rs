@@ -32,10 +32,10 @@ pub const SYSVAR_INSTRUCTIONS_ID: &str = "Sysvar1nstructions11111111111111111111
 pub const SYSVAR_RENT_ID: &str = "SysvarRent111111111111111111111111111111111";
 /// System Program (zero address).
 pub const SYSTEM_PROGRAM_ID: [u8; 32] = [0; 32];
-/// Compute Budget Program ID.
+/// Compute Budget Program ID (`ComputeBudget111111111111111111111111111111`).
 pub const COMPUTE_BUDGET_PROGRAM_ID: [u8; 32] = [
-    3, 6, 70, 111, 237, 226, 137, 220, 150, 182, 117, 191, 163, 110, 56, 222, 166, 185, 186, 178,
-    187, 85, 234, 150, 142, 242, 132, 192, 0, 0, 0, 0,
+    3, 6, 70, 111, 229, 33, 23, 50, 255, 236, 173, 186, 114, 195, 155, 231, 188, 140, 229, 187,
+    197, 247, 18, 107, 44, 67, 155, 58, 64, 0, 0, 0,
 ];
 
 // ============================================================================
@@ -94,6 +94,28 @@ pub fn jito_tip_account_round_robin() -> Pubkey {
     jito_tip_account_at(idx)
 }
 
+/// Deterministically resolve a Jito tip account for a validator leader identity.
+///
+/// Hashing the validator identity across the 8 verified Jito tip accounts guarantees
+/// that transactions targeting the same leader consistently use the identical tip account,
+/// preventing cache bust during retries while distributing tip volume uniformly across accounts.
+pub fn jito_tip_account_for_leader(leader: &Pubkey) -> Pubkey {
+    let bytes = leader.to_bytes();
+    let hash = bytes
+        .iter()
+        .fold(0usize, |acc, &b| acc.wrapping_add(b as usize));
+    jito_tip_account_at(hash)
+}
+
+/// Resolve the appropriate Jito tip account for a target slot, mapping to the leader
+/// identity when known, or falling back to deterministic slot-based indexing.
+pub fn jito_tip_account_for_slot(slot: u64, leader: Option<&Pubkey>) -> Pubkey {
+    match leader {
+        Some(leader_pk) => jito_tip_account_for_leader(leader_pk),
+        None => jito_tip_account_at(slot as usize),
+    }
+}
+
 // ============================================================================
 // Jito Sandwich-Protection Marker
 // ============================================================================
@@ -123,6 +145,8 @@ pub fn jitodontfront_marker() -> Pubkey {
 
 /// Raydium AMM v4 Program ID.
 pub const RAYDIUM_V4_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+/// Raydium AMM v4 Authority PDA.
+pub const RAYDIUM_V4_AUTHORITY: &str = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
 /// Raydium CP-Swap (CPMM) Program ID.
 pub const RAYDIUM_CPMM_PROGRAM_ID: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
 /// Raydium CLMM Program ID.
@@ -199,6 +223,34 @@ pub const METEORA_BINS_PER_BIN_ARRAY: i64 = 70;
 /// Anchor 8-byte discriminator for `swap2` = sha256("global:swap2")[..8].
 pub const METEORA_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
+/// Half-width of the LbPair default bin-array bitmap window, in bin-array
+/// indices. Official deployed value from the DLMM program IDL constant
+/// `BIN_ARRAY_BITMAP_SIZE` (MeteoraAg/dlmm-sdk, ts-client/src/dlmm/idl/idl.json).
+/// The LbPair's default bitmap covers bin-array indices
+/// `[-(BIN_ARRAY_BITMAP_SIZE), BIN_ARRAY_BITMAP_SIZE - 1]` = `[-512, 511]`;
+/// anything outside that window is tracked in the `BinArrayBitmapExtension`
+/// account instead (official SDK rule `isOverflowDefaultBinArrayBitmap`,
+/// ts-client/src/dlmm/helpers/binArray.ts).
+pub const METEORA_BIN_ARRAY_BITMAP_SIZE: i64 = 512;
+
+/// Inclusive default-bitmap window for bin-array indices.
+pub const METEORA_DEFAULT_BITMAP_MIN_INDEX: i64 = -METEORA_BIN_ARRAY_BITMAP_SIZE;
+pub const METEORA_DEFAULT_BITMAP_MAX_INDEX: i64 = METEORA_BIN_ARRAY_BITMAP_SIZE - 1;
+
+/// Official protocol rule: a bin-array index is tracked in the
+/// `BinArrayBitmapExtension` (not the LbPair default bitmap) iff it falls
+/// outside the default window `[-512, 511]`. A swap whose traversal touches any
+/// such index requires the extension account in the `swap2` account list.
+///
+/// This is the ONLY correct condition. It is NOT `indices.len() > 1`: a
+/// two-array traversal entirely inside the default window needs no extension,
+/// and a single-array traversal at index 600 does.
+#[inline]
+pub fn meteora_bin_array_index_requires_bitmap_extension(bin_array_index: i64) -> bool {
+    !(METEORA_DEFAULT_BITMAP_MIN_INDEX..=METEORA_DEFAULT_BITMAP_MAX_INDEX)
+        .contains(&bin_array_index)
+}
+
 // ============================================================================
 // Raydium CPMM — SOL-USDC Pool & Vaults (Mainnet)
 // ============================================================================
@@ -229,6 +281,66 @@ pub const RAYDIUM_CLMM_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 1
 pub const RAYDIUM_CLMM_TICK_ARRAY_SEED: &[u8] = b"tick_array";
 /// Raydium CLMM observation state seed.
 pub const RAYDIUM_CLMM_OBSERVATION_SEED: &[u8] = b"observation";
+/// Anchor discriminator for Raydium CLMM `swap_v2`: sha256("global:swap_v2")[..8].
+pub const RAYDIUM_CLMM_SWAP_V2_DISCRIMINATOR: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
+/// SPL Memo v2 Program ID (required by Raydium CLMM swap_v2).
+pub const MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+
+// ============================================================================
+// Meteora DAMM v2 (cp_amm) — Program, Authority & Discriminators
+// ============================================================================
+
+/// Meteora DAMM v2 (`cp_amm`) Program ID.
+pub const METEORA_DAMM_V2_PROGRAM_ID: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
+/// Meteora DAMM v2 Pool Authority PDA.
+pub const METEORA_DAMM_V2_POOL_AUTHORITY: &str = "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC";
+/// Anchor discriminator for `cp_amm::swap`: sha256("global:swap")[..8].
+pub const METEORA_DAMM_V2_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+/// Anchor discriminator for `cp_amm::swap2`: sha256("global:swap2")[..8].
+pub const METEORA_DAMM_V2_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
+
+// ============================================================================
+// Raydium LaunchLab — Program & Discriminators
+// ============================================================================
+
+/// Raydium LaunchLab Program ID.
+pub const RAYDIUM_LAUNCHLAB_PROGRAM_ID: &str = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj";
+/// Anchor discriminator for `buy_exact_in`: sha256("global:buy_exact_in")[..8].
+pub const RAYDIUM_LAUNCHLAB_BUY_EXACT_IN_DISCRIMINATOR: [u8; 8] =
+    [250, 234, 13, 123, 213, 156, 19, 236];
+/// Anchor discriminator for `sell_exact_in`: sha256("global:sell_exact_in")[..8].
+pub const RAYDIUM_LAUNCHLAB_SELL_EXACT_IN_DISCRIMINATOR: [u8; 8] =
+    [149, 39, 222, 155, 211, 124, 152, 26];
+
+// ============================================================================
+// PumpSwap — Instruction Discriminators
+// ============================================================================
+
+/// Anchor discriminator for PumpSwap `buy`: sha256("global:buy")[..8].
+pub const PUMP_SWAP_BUY_DISCRIMINATOR: [u8; 8] = [102, 6, 61, 18, 1, 218, 235, 234];
+/// Anchor discriminator for PumpSwap `sell`: sha256("global:sell")[..8].
+pub const PUMP_SWAP_SELL_DISCRIMINATOR: [u8; 8] = [51, 230, 133, 164, 1, 127, 131, 173];
+/// Anchor discriminator for PumpSwap `buy_v2`: sha256("global:buy_v2")[..8].
+pub const PUMP_SWAP_BUY_V2_DISCRIMINATOR: [u8; 8] = [184, 23, 238, 97, 103, 197, 211, 61];
+/// Anchor discriminator for PumpSwap `buy_exact_quote_in_v2`: sha256("global:buy_exact_quote_in_v2")[..8].
+pub const PUMP_SWAP_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR: [u8; 8] =
+    [194, 171, 28, 70, 104, 77, 91, 47];
+/// Anchor discriminator for PumpSwap `sell_v2`: sha256("global:sell_v2")[..8].
+pub const PUMP_SWAP_SELL_V2_DISCRIMINATOR: [u8; 8] = [93, 246, 130, 60, 231, 233, 64, 178];
+
+// ============================================================================
+// Proprietary AMMs (Routed via Jupiter Fallback)
+// ============================================================================
+
+/// HumidiFi Swap Program ID.
+pub const HUMIDIFI_PROGRAM_ID: &str = "9H6tua7jkLhdm3w8BvgpTn5LZNU7g4ZynDmCiNN3q6Rp";
+/// SolFi V2 Program ID.
+pub const SOLFI_PROGRAM_ID: &str = "SoLFiHG9TfgtdUXUjWAxi3LtvYuFyDLVhBWxdMZxyCe";
+/// ZeroFi Program ID.
+pub const ZEROFI_PROGRAM_ID: &str = "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY";
+/// All proprietary AMMs routed through Jupiter fallback.
+pub const PROP_AMM_PROGRAM_IDS: [&str; 3] =
+    [HUMIDIFI_PROGRAM_ID, SOLFI_PROGRAM_ID, ZEROFI_PROGRAM_ID];
 
 // ============================================================================
 // Kamino Lend (klend) — Program & Main Market (Mainnet)
@@ -256,16 +368,24 @@ pub const FLASH_REPAY_DISCRIMINATOR: [u8; 8] = [185, 117, 0, 203, 96, 245, 180, 
 /// Seeds for deriving lending market authority PDA: `[b"lma", lending_market.as_ref()]`.
 pub const LENDING_MARKET_AUTH_SEED: &[u8] = b"lma";
 // The Kamino flash-loan fee is NOT a constant: it is read on-chain from each
-// reserve's `ReserveConfig.fees.flash_loan_fee_sf` (Q64.64 u64) via
-// Yellowstone account snapshots decoded by `arb_tx::kamino::decode_reserve_flash_fee_sf`. Verified main-market values on
-// 2026-11-04: WSOL and USDC reserves both carry `sf = 11_529_215_046_068`
-// (≈ 6.25e-7 ≈ 0.006 bps). There is deliberately no default fee constant —
-// any hardcoded 0/5 bps misprices quotes (800x on main market).
+// reserve's `ReserveConfig.fees.flash_loan_fee_sf` (a U68F60 `Fraction`, i.e.
+// 60 fractional bits — *not* Q64.64) via Yellowstone account snapshots decoded
+// by `arb_tx::kamino::decode_reserve_flash_fee_sf`. Verified main-market WSOL
+// reserve (`d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q`) on 2026-11-11 carries
+// `sf = 11_529_215_046_068` (== 1e-5 == 0.1 bps → 10,000 lamports per 1 SOL).
+// There is deliberately no default fee constant — a hardcoded 0/5 bps (or the
+// old Q64.64 625-lamport figure) misprices quotes.
 
 /// Per-hop slippage tolerance used when deriving on-chain `min_amount_out`.
 /// Small enough to avoid compounding (n-1)*s across hops; the final profit
 /// floor is the real safety net.
 pub const DEFAULT_HOP_SLIPPAGE_BPS: u64 = 10;
+
+/// Hard safety ceiling on the per-hop slippage floor (10%). At 1000 bps the
+/// `min_amount_out` still guarantees 90% of the quoted output; beyond this the
+/// floor no longer protects against adverse selection. Operators may lower
+/// the configured value per strategy but can never raise it past this cap.
+pub const HOP_SLIPPAGE_MAX_BPS: u64 = 1_000;
 
 // ============================================================================
 // Compute Budget Limits
@@ -296,6 +416,15 @@ pub fn get_cu_limit_for_hops(hops_count: usize) -> u32 {
 /// Pump.fun bonding-curve graduation threshold in lamports (protocol constant; verify against deployed program upgrades).
 pub const PUMP_FUN_GRADUATION_LAMPORTS: u64 = 85_000_000_000;
 
+// ============================================================================
+// Endpoint Role Constants & Pacing Defaults
+// ============================================================================
+
+pub const DEFAULT_WS_COMMITMENT: &str = "processed";
+pub const DEFAULT_WS_ENCODING: &str = "base64";
+pub const DEFAULT_RPC_MAX_CONCURRENT_REQUESTS: usize = 1;
+pub const DEFAULT_RPC_MIN_INTERVAL_MS: u64 = 200;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,6 +452,22 @@ mod tests {
             assert!(seen.insert(key), "duplicate tip account at index {idx}");
         }
         assert_eq!(seen.len(), JITO_TIP_ACCOUNTS.len());
+
+        // Leader deterministic mapping
+        let leader_a = Pubkey::new_from_array([1; 32]);
+        let leader_b = Pubkey::new_from_array([2; 32]);
+        let tip_a = jito_tip_account_for_leader(&leader_a);
+        let tip_b = jito_tip_account_for_leader(&leader_b);
+        assert!(seen.contains(&tip_a));
+        assert!(seen.contains(&tip_b));
+        // Idempotency: same leader always produces same tip account
+        assert_eq!(tip_a, jito_tip_account_for_leader(&leader_a));
+
+        // Slot deterministic mapping
+        let slot_tip_known = jito_tip_account_for_slot(12345, Some(&leader_a));
+        assert_eq!(slot_tip_known, tip_a);
+        let slot_tip_unknown = jito_tip_account_for_slot(12345, None);
+        assert!(seen.contains(&slot_tip_unknown));
     }
 
     #[test]

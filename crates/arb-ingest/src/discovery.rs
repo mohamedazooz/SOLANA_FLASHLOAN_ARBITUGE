@@ -27,7 +27,10 @@
 //! pools to watch; it never supplies a number that the quote trusts.
 
 use crate::RpcPool;
-use crate::registry::{decode_account_data, decode_raydium_vaults, fetch_accounts_chunked};
+use crate::registry::{
+    decode_account_data, decode_raydium_clmm_vaults, decode_raydium_cpmm_vaults,
+    decode_raydium_vaults, fetch_accounts_chunked,
+};
 use arb_types::{DexProtocol, MintId, PoolId};
 use base64::Engine;
 use solana_pubkey::Pubkey;
@@ -42,6 +45,8 @@ pub const ORCA_CATALOG_URL: &str = "https://api.orca.so/v1/whirlpool/list";
 pub const RAYDIUM_POOL_LIST_URL: &str = "https://api-v3.raydium.io/pools/info/list";
 /// DexScreener: every pair trading a given mint, ranked by liquidity.
 pub const DEXSCREENER_TOKEN_PAIRS: &str = "https://api.dexscreener.com/token-pairs/v1/solana";
+/// DexScreener: general search endpoint for active DEX pairs.
+pub const DEXSCREENER_SEARCH_URL: &str = "https://api.dexscreener.com/latest/dex/search";
 
 /// Maximum accounts per `getMultipleAccounts` request (RPC hard limit is 100).
 const RPC_BATCH: usize = 100;
@@ -73,6 +78,8 @@ pub struct DiscoveryConfig {
     pub min_tvl_usd: f64,
     /// Hard cap on registered pools (each one costs an account fetch per tick).
     pub max_pools: usize,
+    /// Maximum active pools to select per DEX venue (e.g. 33 per venue).
+    pub max_per_venue: usize,
     /// Mints used as discovery hubs on DexScreener (SOL, USDC, USDT...).
     pub hub_mints: Vec<MintId>,
     /// Per-hub cap before the global ranking is applied.
@@ -144,7 +151,8 @@ impl Default for DiscoveryConfig {
         }
         Self {
             min_tvl_usd: 25000.0,
-            max_pools: 1000,
+            max_pools: 200,
+            max_per_venue: 33,
             hub_mints: hubs,
             max_per_hub: 100,
             include_orca: true,
@@ -159,6 +167,14 @@ impl Default for DiscoveryConfig {
 pub struct PoolDiscovery {
     rpc: RpcPool,
     http: reqwest::Client,
+    /// Immutable mint-decimal cache. Mint decimals can never change after
+    /// creation, so a resolved value is valid for the process lifetime.
+    /// Without this, every ~90s rediscovery cycle re-resolved the same meme
+    /// mints over RPC; on free-tier endpoints those calls landed during
+    /// 429-cooldown windows, `resolve_mint_decimals` failed, and the cycle
+    /// registered a degraded pool set (measured soak5-soak8: 165 -> 93 pools,
+    /// Raydium venues dropped entirely each cycle).
+    decimals_cache: parking_lot::Mutex<HashMap<MintId, u8>>,
 }
 
 impl PoolDiscovery {
@@ -168,7 +184,11 @@ impl PoolDiscovery {
             .user_agent("arb-bot-discovery/1.0")
             .build()
             .unwrap_or_default();
-        Self { rpc, http }
+        Self {
+            rpc,
+            http,
+            decimals_cache: parking_lot::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Backwards-compatible entry point: sweep with default bounds, using
@@ -188,16 +208,21 @@ impl PoolDiscovery {
     /// Discover the watch set: bounded, ranked, deduplicated, fail-closed.
     pub async fn discover(&self, cfg: &DiscoveryConfig) -> Vec<DiscoveredPoolState> {
         info!(
-            "🔍 Discovery: min_tvl=${:.0} cap={} hubs={}",
+            "🔍 Discovery: min_tvl=${:.0} max_per_venue={} cap={} hubs={}",
             cfg.min_tvl_usd,
+            cfg.max_per_venue,
             cfg.max_pools,
             cfg.hub_mints.len()
         );
 
         let mut found: Vec<DiscoveredPoolState> = Vec::new();
+        let catalog_fetch_limit = cfg.max_pools.max(cfg.max_per_venue * 6).max(250);
 
         if cfg.include_orca {
-            match self.discover_orca(cfg.min_tvl_usd, cfg.max_pools).await {
+            match self
+                .discover_orca(cfg.min_tvl_usd, catalog_fetch_limit)
+                .await
+            {
                 Ok(pools) => {
                     info!("  Orca catalog: {} pools above TVL floor", pools.len());
                     found.extend(pools);
@@ -207,7 +232,10 @@ impl PoolDiscovery {
         }
 
         if cfg.include_raydium {
-            match self.discover_raydium(cfg.min_tvl_usd, cfg.max_pools).await {
+            match self
+                .discover_raydium(cfg.min_tvl_usd, catalog_fetch_limit)
+                .await
+            {
                 Ok(pools) => {
                     info!(
                         "  Raydium v3 catalog: {} pools above TVL floor",
@@ -233,14 +261,25 @@ impl PoolDiscovery {
                     Err(e) => warn!("  Meteora hub {} discovery failed: {e}", hub.0),
                 }
             }
+
+            match self.discover_meteora_search(cfg.min_tvl_usd).await {
+                Ok(pools) => {
+                    info!(
+                        "  Meteora DLMM search discovered {} candidate pools",
+                        pools.len()
+                    );
+                    found.extend(pools);
+                }
+                Err(e) => debug!("  Meteora DLMM search note: {e}"),
+            }
         }
 
         if cfg.include_pump_fun {
             // 1. Dynamic API discovery of top active bonding curves (BankkRoll / pump.fun API)
             let pump_client = crate::pumpfun_discovery::PumpFunDiscoveryClient::new();
-            match pump_client.fetch_top_coins(50).await {
+            match pump_client.fetch_top_coins(cfg.max_per_venue.max(50)).await {
                 Ok(coins) => {
-                    let top_pump = pump_client.select_top_30(&coins);
+                    let top_pump = pump_client.select_top_n(&coins, cfg.max_per_venue);
                     if !top_pump.is_empty() {
                         info!(
                             "  Pump.fun active catalog discovered {} bonding curves",
@@ -353,17 +392,23 @@ impl PoolDiscovery {
             );
         }
 
-        // Rank by TVL and cap: every registered pool costs an account per tick.
+        // Rank by TVL and select up to cfg.max_per_venue (default 33) per DEX venue.
         found.sort_by(|a, b| {
             b.liquidity_usd
                 .partial_cmp(&a.liquidity_usd)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let selected = select_watch_set(found, cfg.max_pools);
+        let selected = select_watch_set_per_venue(found, cfg.max_per_venue, cfg.max_pools);
 
+        let mut venue_counts: HashMap<DexProtocol, usize> = HashMap::new();
+        for p in &selected {
+            *venue_counts.entry(p.protocol).or_default() += 1;
+        }
         info!(
-            "🔍 Discovery done: {} pools registered for live monitoring (top TVL, venue-balanced)",
-            selected.len()
+            "🔍 Discovery done: {} pools registered for live monitoring (top <= {} per venue): {:?}",
+            selected.len(),
+            cfg.max_per_venue,
+            venue_counts
         );
         selected
     }
@@ -408,20 +453,32 @@ impl PoolDiscovery {
         Err(last.unwrap_or_else(|| anyhow::anyhow!("catalog request failed after 4 attempts")))
     }
 
-    /// Raydium standard AMM (v4) pools from the v3 catalog, with the two token
-    /// vaults read from each pool account.
+    /// Raydium pools from the v3 catalog across AMM v4, CPMM, and CLMM.
     ///
-    /// Raydium's own catalog does not publish vault addresses, and a CPMM pool
-    /// is priced from vault balances — so the pool accounts are fetched in
-    /// batches and their `coin_vault` / `pc_vault` decoded here. A pool whose
-    /// vaults cannot be decoded is dropped rather than guessed.
+    /// The pool accounts are fetched in batches and their token vaults decoded:
+    /// - Raydium V4: `decode_raydium_vaults`
+    /// - Raydium CPMM: `decode_raydium_cpmm_vaults`
+    /// - Raydium CLMM: `decode_raydium_clmm_vaults`
+    ///
+    /// Pools whose vaults cannot be decoded are dropped (fail closed).
     async fn discover_raydium(
         &self,
         min_tvl: f64,
         limit: usize,
     ) -> anyhow::Result<Vec<DiscoveredPoolState>> {
+        struct RaydiumCandidate {
+            pool_id: PoolId,
+            protocol: DexProtocol,
+            base_mint: MintId,
+            quote_mint: MintId,
+            decimals_a: u8,
+            decimals_b: u8,
+            fee_bps: u16,
+            tvl: f64,
+        }
+
         let url = format!(
-            "{RAYDIUM_POOL_LIST_URL}?poolType=standard&poolSortField=liquidity&sortType=desc&pageSize={limit}&page=1"
+            "{RAYDIUM_POOL_LIST_URL}?poolType=all&poolSortField=liquidity&sortType=desc&pageSize={limit}&page=1"
         );
         let body = self.get_json(&url).await?;
         let items = body
@@ -430,15 +487,19 @@ impl PoolDiscovery {
             .and_then(|v| v.as_array())
             .ok_or_else(|| anyhow::anyhow!("raydium catalog: missing data.data array"))?;
 
-        // Only the v4 (constant-product) program: its account layout is the one
-        // this crate decodes. CPMM/CLMM pools would be mis-decoded here.
-        let mut candidates: Vec<(PoolId, MintId, MintId, u8, u8, u16, f64)> = Vec::new();
+        let mut candidates: Vec<RaydiumCandidate> = Vec::new();
         for p in items {
-            if p.get("programId").and_then(|v| v.as_str())
-                != Some(arb_constants::RAYDIUM_V4_PROGRAM_ID)
-            {
+            let prog_str = p.get("programId").and_then(|v| v.as_str()).unwrap_or("");
+            let protocol = if prog_str == arb_constants::RAYDIUM_V4_PROGRAM_ID {
+                DexProtocol::RaydiumV4
+            } else if prog_str == arb_constants::RAYDIUM_CPMM_PROGRAM_ID {
+                DexProtocol::RaydiumCpmm
+            } else if prog_str == arb_constants::RAYDIUM_CLMM_PROGRAM_ID {
+                DexProtocol::RaydiumClmm
+            } else {
                 continue;
-            }
+            };
+
             let tvl = p.get("tvl").and_then(|v| v.as_f64()).unwrap_or(0.0);
             if tvl < min_tvl {
                 continue;
@@ -456,8 +517,7 @@ impl PoolDiscovery {
             ) else {
                 continue;
             };
-            // Token-2022 mints are not modelled (transfer fees would silently
-            // shrink the output).
+            // Token-2022 mints are not modelled in legacy/standard paths
             if ma.get("programId").and_then(|v| v.as_str()) != Some(arb_constants::TOKEN_PROGRAM_ID)
                 || mb.get("programId").and_then(|v| v.as_str())
                     != Some(arb_constants::TOKEN_PROGRAM_ID)
@@ -471,31 +531,31 @@ impl PoolDiscovery {
             ) else {
                 continue;
             };
-            candidates.push((
-                PoolId(pool),
-                MintId(base),
-                MintId(quote),
-                ma.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
-                mb.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
-                p.get("feeRate")
+            candidates.push(RaydiumCandidate {
+                pool_id: PoolId(pool),
+                protocol,
+                base_mint: MintId(base),
+                quote_mint: MintId(quote),
+                decimals_a: ma.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+                decimals_b: mb.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
+                fee_bps: p
+                    .get("feeRate")
                     .and_then(|v| v.as_f64())
                     .map(|f| (f * 10_000.0).round() as u16)
-                    .unwrap_or(0),
+                    .unwrap_or(25),
                 tvl,
-            ));
+            });
         }
         if candidates.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Pool accounts → vault pubkeys, one batched request per 100 pools.
-        let keys: Vec<String> = candidates.iter().map(|c| c.0.0.to_string()).collect();
+        // Pool accounts → vault pubkeys, batched requests.
+        let keys: Vec<String> = candidates.iter().map(|c| c.pool_id.0.to_string()).collect();
         let accounts = fetch_accounts_chunked(&self.rpc, &keys).await;
 
         let mut out = Vec::new();
-        for (i, (pool_id, base_mint, quote_mint, dec_a, dec_b, fee_bps, tvl)) in
-            candidates.into_iter().enumerate()
-        {
+        for (i, cand) in candidates.into_iter().enumerate() {
             let Some(data) = accounts
                 .get(i)
                 .and_then(|a| a.as_ref())
@@ -503,20 +563,26 @@ impl PoolDiscovery {
             else {
                 continue;
             };
-            let Some((base_vault, quote_vault)) = decode_raydium_vaults(&data) else {
+            let vaults = match cand.protocol {
+                DexProtocol::RaydiumV4 => decode_raydium_vaults(&data),
+                DexProtocol::RaydiumCpmm => decode_raydium_cpmm_vaults(&data),
+                DexProtocol::RaydiumClmm => decode_raydium_clmm_vaults(&data),
+                _ => None,
+            };
+            let Some((base_vault, quote_vault)) = vaults else {
                 continue;
             };
             out.push(DiscoveredPoolState {
-                pool_id,
-                protocol: DexProtocol::RaydiumV4,
-                base_mint,
-                quote_mint,
+                pool_id: cand.pool_id,
+                protocol: cand.protocol,
+                base_mint: cand.base_mint,
+                quote_mint: cand.quote_mint,
                 base_vault,
                 quote_vault,
-                decimals_a: dec_a,
-                decimals_b: dec_b,
-                fee_bps,
-                liquidity_usd: tvl,
+                decimals_a: cand.decimals_a,
+                decimals_b: cand.decimals_b,
+                fee_bps: cand.fee_bps,
+                liquidity_usd: cand.tvl,
             });
         }
         Ok(out)
@@ -674,6 +740,82 @@ impl PoolDiscovery {
         Ok(out)
     }
 
+    /// Search DexScreener for active Meteora DLMM pools across common Solana hubs.
+    async fn discover_meteora_search(
+        &self,
+        min_tvl: f64,
+    ) -> anyhow::Result<Vec<DiscoveredPoolState>> {
+        let queries = ["meteora", "SOL%20meteora", "USDC%20meteora"];
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+
+        for q in queries {
+            let url = format!("{DEXSCREENER_SEARCH_URL}?q={q}");
+            let body = match self.get_json(&url).await {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            let pairs = match body.get("pairs").and_then(|v| v.as_array()) {
+                Some(p) => p,
+                None => continue,
+            };
+            for pair in pairs {
+                if pair.get("dexId").and_then(|v| v.as_str()) != Some("meteora") {
+                    continue;
+                }
+                let is_dlmm = pair
+                    .get("labels")
+                    .and_then(|v| v.as_array())
+                    .map(|ls| ls.iter().any(|l| l.as_str() == Some("DLMM")))
+                    .unwrap_or(false);
+                if !is_dlmm {
+                    continue;
+                }
+                let liq = pair
+                    .get("liquidity")
+                    .and_then(|l| l.get("usd"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                if liq < min_tvl {
+                    continue;
+                }
+                let (Some(addr), Some(base), Some(quote)) = (
+                    pair.get("pairAddress").and_then(|v| v.as_str()),
+                    pair.get("baseToken")
+                        .and_then(|t| t.get("address"))
+                        .and_then(|v| v.as_str()),
+                    pair.get("quoteToken")
+                        .and_then(|t| t.get("address"))
+                        .and_then(|v| v.as_str()),
+                ) else {
+                    continue;
+                };
+                let (Ok(pool), Ok(base_pk), Ok(quote_pk)) = (
+                    Pubkey::from_str(addr),
+                    Pubkey::from_str(base),
+                    Pubkey::from_str(quote),
+                ) else {
+                    continue;
+                };
+                if seen.insert(pool) {
+                    out.push(DiscoveredPoolState {
+                        pool_id: PoolId(pool),
+                        protocol: DexProtocol::MeteoraDlmm,
+                        base_mint: MintId(base_pk),
+                        quote_mint: MintId(quote_pk),
+                        base_vault: pool,
+                        quote_vault: pool,
+                        decimals_a: 0,
+                        decimals_b: 0,
+                        fee_bps: 0,
+                        liquidity_usd: liq,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Read mint decimals (offset 44) for each mint, in batched
     /// `getMultipleAccounts` calls. Mints owned by Token-2022 are deliberately
     /// omitted from the result so their pools are dropped.
@@ -681,7 +823,18 @@ impl PoolDiscovery {
         let mut out = HashMap::new();
         let unique: Vec<MintId> = {
             let mut seen = HashSet::new();
-            mints.iter().copied().filter(|m| seen.insert(*m)).collect()
+            mints
+                .iter()
+                .copied()
+                .filter(|m| seen.insert(*m))
+                .filter(|m| match self.decimals_cache.lock().get(m) {
+                    Some(d) => {
+                        out.insert(*m, *d);
+                        false
+                    }
+                    None => true,
+                })
+                .collect()
         };
         if unique.is_empty() {
             return out;
@@ -738,31 +891,41 @@ impl PoolDiscovery {
                     }
                 }
                 out.insert(*mint, bytes[44]);
+                self.decimals_cache.lock().insert(*mint, bytes[44]);
             }
         }
         out
     }
 }
 
-/// Choose the watch set from a TVL-sorted pool list.
+/// Choose the watch set from a TVL-sorted pool list, reserving up to
+/// `max_per_venue` (default 33) most active pools for each DEX venue.
 ///
 /// Pure "top N by TVL" is the wrong objective for arbitrage: the deepest pools
-/// on Solana are all on one venue, so a top-60 list can be 100% Orca and the
-/// bot can never see a cross-venue pair — zero cycles, forever. This reserves a
-/// per-venue quota first (so the same pair shows up on more than one venue) and
-/// fills any remainder by TVL.
-fn select_watch_set(found: Vec<DiscoveredPoolState>, max_pools: usize) -> Vec<DiscoveredPoolState> {
-    if found.len() <= max_pools {
-        return found;
+/// on Solana are all on one venue, so a global top list can be 100% Orca and the
+/// bot can never see a cross-venue pair — zero cycles, forever. Selecting top N
+/// active pools per venue guarantees multi-DEX coverage without RPC saturation.
+pub fn select_watch_set_per_venue(
+    found: Vec<DiscoveredPoolState>,
+    max_per_venue: usize,
+    max_pools: usize,
+) -> Vec<DiscoveredPoolState> {
+    if found.is_empty() || max_pools == 0 || max_per_venue == 0 {
+        return Vec::new();
     }
 
     let mut venues: Vec<DexProtocol> = found.iter().map(|p| p.protocol).collect();
     venues.sort_by_key(|p| *p as u8);
     venues.dedup();
-    let quota = max_pools.div_ceil(venues.len()).max(1);
+
+    let quota = if max_pools >= venues.len().saturating_mul(max_per_venue) {
+        max_per_venue
+    } else {
+        max_pools.div_ceil(venues.len()).max(1)
+    };
 
     let mut taken = vec![false; found.len()];
-    let mut selected: Vec<usize> = Vec::with_capacity(max_pools);
+    let mut selected: Vec<usize> = Vec::with_capacity(max_pools.min(found.len()));
     for venue in &venues {
         let mut n = 0usize;
         for (i, p) in found.iter().enumerate() {
@@ -776,22 +939,39 @@ fn select_watch_set(found: Vec<DiscoveredPoolState>, max_pools: usize) -> Vec<Di
             }
         }
     }
-    // Fill the remaining slots by TVL (the list is already sorted).
-    for (i, _) in found.iter().enumerate() {
-        if selected.len() >= max_pools {
-            break;
-        }
-        if !taken[i] {
-            taken[i] = true;
-            selected.push(i);
+
+    // Only fill remainder by global TVL if global max_pools is tighter than per-venue quotas
+    if max_pools < venues.len().saturating_mul(max_per_venue) {
+        for (i, _) in found.iter().enumerate() {
+            if selected.len() >= max_pools {
+                break;
+            }
+            if !taken[i] {
+                taken[i] = true;
+                selected.push(i);
+            }
         }
     }
+
     found
         .into_iter()
         .enumerate()
         .filter(|(i, _)| taken[*i])
         .map(|(_, p)| p)
         .collect()
+}
+
+/// Convenience helper selecting the top 33 most active pools per DEX venue.
+pub fn select_top_33_per_venue(found: Vec<DiscoveredPoolState>) -> Vec<DiscoveredPoolState> {
+    select_watch_set_per_venue(found, 33, 33 * 8)
+}
+
+/// Backwards-compatible wrapper for `select_watch_set_per_venue` with default 33 per venue.
+pub fn select_watch_set(
+    found: Vec<DiscoveredPoolState>,
+    max_pools: usize,
+) -> Vec<DiscoveredPoolState> {
+    select_watch_set_per_venue(found, 33, max_pools)
 }
 
 /// Selects the dual 30-pool watch set:
@@ -946,6 +1126,64 @@ mod tests {
     }
 
     #[test]
+    fn watch_set_selects_33_per_venue() {
+        let mut pools = Vec::new();
+        for i in 0..50u8 {
+            pools.push(pool(DexProtocol::RaydiumV4, i, 500_000.0 - i as f64));
+            pools.push(pool(
+                DexProtocol::OrcaWhirlpool,
+                50 + i,
+                1_000_000.0 - i as f64,
+            ));
+            pools.push(pool(
+                DexProtocol::MeteoraDlmm,
+                100 + i,
+                200_000.0 - i as f64,
+            ));
+            pools.push(pool(DexProtocol::PumpFun, 150 + i, 100_000.0 - i as f64));
+        }
+
+        // Pre-sort descending by liquidity_usd just like discover() does
+        pools.sort_by(|a, b| {
+            b.liquidity_usd
+                .partial_cmp(&a.liquidity_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let selected = select_watch_set_per_venue(pools, 33, 200);
+        assert_eq!(selected.len(), 132);
+
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::RaydiumV4)
+                .count(),
+            33
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::OrcaWhirlpool)
+                .count(),
+            33
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::MeteoraDlmm)
+                .count(),
+            33
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::PumpFun)
+                .count(),
+            33
+        );
+    }
+
+    #[test]
     fn raydium_vaults_decode_from_real_offsets() {
         let a = Pubkey::new_from_array([7u8; 32]);
         let b = Pubkey::new_from_array([9u8; 32]);
@@ -958,6 +1196,56 @@ mod tests {
         assert_eq!(
             crate::registry::decode_raydium_vaults(&vec![0u8; 752]),
             None
+        );
+    }
+
+    #[test]
+    fn watch_set_allocates_quotas_to_cpmm_and_clmm() {
+        let mut pools = Vec::new();
+        for i in 0..50u8 {
+            pools.push(pool(DexProtocol::RaydiumV4, i, 500_000.0 - i as f64));
+            pools.push(pool(DexProtocol::RaydiumCpmm, 50 + i, 400_000.0 - i as f64));
+            pools.push(pool(
+                DexProtocol::RaydiumClmm,
+                100 + i,
+                300_000.0 - i as f64,
+            ));
+            pools.push(pool(
+                DexProtocol::OrcaWhirlpool,
+                150 + i,
+                600_000.0 - i as f64,
+            ));
+        }
+        pools.sort_by(|a, b| b.liquidity_usd.partial_cmp(&a.liquidity_usd).unwrap());
+        let selected = select_watch_set_per_venue(pools, 20, 100);
+        assert_eq!(selected.len(), 80);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::RaydiumCpmm)
+                .count(),
+            20
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::RaydiumClmm)
+                .count(),
+            20
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::RaydiumV4)
+                .count(),
+            20
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|p| p.protocol == DexProtocol::OrcaWhirlpool)
+                .count(),
+            20
         );
     }
 }

@@ -11,5 +11,8 @@ arb-constants = { path = "../arb-constants" }
 ruint = { workspace = true }
 solana-pubkey = { workspace = true, features = ["curve25519"] }
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 workspace = true

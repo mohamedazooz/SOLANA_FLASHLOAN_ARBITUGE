@@ -518,7 +518,7 @@ pub struct PumpSwapRefreshReport {
     pub pools_rejected: usize,
 }
 
-impl crate::YellowstoneClient {
+impl crate::IngestClient {
     /// Discover PumpSwap Pool accounts from the owner-filtered Yellowstone journal,
     /// subscribe to their vault/mint/FeeConfig dependencies, and promote only coherent
     /// snapshots into the shared market cache. No HTTP/RPC fallback is used.
@@ -675,6 +675,8 @@ impl crate::YellowstoneClient {
                 clmm: None,
                 dlmm: None,
                 pump_fun: None,
+                token_programs: Default::default(),
+                execution_accounts: None,
                 transfer_fee_bps: 0,
                 last_update_slot: joined.slot,
                 last_update_ms: now_ms,

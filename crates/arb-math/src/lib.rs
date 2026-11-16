@@ -13,9 +13,13 @@
 pub mod chronos;
 pub mod clmm;
 pub mod cpmm;
+pub mod damm_v2;
 pub mod dlmm;
 pub mod economic;
+pub mod economic_integration;
 pub mod latency;
+pub mod launchlab;
+pub mod pump_fun_raydium;
 
 pub use chronos::{
     BPS_DIVISOR_F64, ExecutionTimeline, GateDecision, GateInput, GateOutput, LatencyMetrics,
@@ -27,9 +31,17 @@ pub use economic::{
     EconomicConfig, EconomicQuote, LAMPORTS_PER_SOL, base_raw_to_lamports, build_economic_quote,
     calculate_flash_fee_raw, calculate_net_profit_raw,
 };
+pub use economic_integration::{
+    ExecutionCosts, UnifiedEconomicCalculator, UnifiedEconomicConfig, UnifiedEconomicResult,
+};
 pub use latency::{
     COLD_MARGIN_MS, FirePlan, MAX_MARGIN_MS, MAX_SLOT_PAIRS, RttTracker, SLOT_MS, SlotClock,
     SlotFire, plan_fire,
+};
+pub use pump_fun_raydium::{
+    DEFAULT_FLASH_LOAN_FEE_BPS, DEFAULT_RAYDIUM_FEE_BPS, MIN_NET_PROFIT_LAMPORTS, OptimalTrade,
+    PumpFunParams, RaydiumParams, calculate_optimal_trade, calculate_optimal_trade_integer,
+    pump_fun_buy_cost, pump_fun_marginal_price, raydium_sell_output, verify_marginal_decreasing,
 };
 
 pub use clmm::{
@@ -44,25 +56,33 @@ pub use clmm::{
     update_liquidity_on_cross,
 };
 pub use cpmm::*;
+pub use damm_v2::{
+    DAMM_V2_FEE_DENOMINATOR, DammV2FeeParams, damm_v2_virtual_reserves, quote_damm_v2_exact_in,
+};
 pub use dlmm::{
     DlmmBin, DlmmError, DlmmParameters, DlmmPoolState, DlmmSwapQuote, DlmmSwapStepResult,
     DlmmVariableParameters, MAX_BIN_ID, MAX_FEE_RATE, MIN_BIN_ID, ONE_Q64, advance_active_id,
     compute_base_fee, compute_total_fee_rate, compute_variable_fee, consume_bin_liquidity,
     get_price_from_id, pow_q64, quote_dlmm_multi_bin, quote_dlmm_view,
 };
+pub use launchlab::{quote_launchlab_buy_exact_in, quote_launchlab_sell_exact_in};
 
 use arb_types::Lamports;
 
-/// Apply Token-2022 transfer fee deduction.
-#[cfg(test)]
-fn apply_transfer_fee(amount: u64, fee_bps: u16) -> u64 {
-    if fee_bps == 0 {
+/// Apply Token-2022 transfer fee deduction with ceiling rounding and max-fee cap.
+pub fn apply_transfer_fee_ceil(amount: u64, fee_bps: u16, maximum_fee: u64) -> u64 {
+    if amount == 0 || fee_bps == 0 {
         return amount;
     }
-    let fee_num = u128::from(fee_bps);
-    let fee = (u128::from(amount) * fee_num) / u128::from(BASIS_POINTS_DIVISOR);
-    let fee_u64 = u64::try_from(fee).unwrap_or(amount);
-    amount.saturating_sub(fee_u64)
+    let num = u128::from(amount).saturating_mul(u128::from(fee_bps));
+    let raw_fee = num.saturating_add(9_999) / 10_000;
+    let capped_fee = u64::try_from(raw_fee).unwrap_or(amount).min(maximum_fee);
+    amount.saturating_sub(capped_fee)
+}
+
+/// Apply Token-2022 transfer fee deduction (bps-only convenience wrapper).
+pub fn apply_transfer_fee(amount: u64, fee_bps: u16) -> u64 {
+    apply_transfer_fee_ceil(amount, fee_bps, u64::MAX)
 }
 
 /// Select Jito tip bounded by profit, floor, cap, and minimum retained profit.

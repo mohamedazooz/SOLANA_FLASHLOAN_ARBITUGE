@@ -33,6 +33,35 @@ pub struct Leg {
     pub gamma: u128, // fee complement in basis points, e.g. 9975 for 0.25% fee
 }
 
+/// Calculate CPMM output where the input swap fee is deducted upfront via ceiling
+/// division (`fee = ceil(dx * fee_num / fee_den)`, `net_dx = dx - fee`,
+/// `out = floor(net_dx * y / (x + net_dx))`).
+/// Matches on-chain Raydium AMM v4, Raydium CPMM (`fee_den = 1_000_000`),
+/// and Meteora DAMM v2 constant-product accounting.
+pub fn cpmm_out_upfront_fee_ceil(
+    dx: u128,
+    x: u128,
+    y: u128,
+    fee_num: u128,
+    fee_den: u128,
+) -> Option<u64> {
+    if dx == 0 || x == 0 || y == 0 || fee_den == 0 || fee_num >= fee_den {
+        return None;
+    }
+    let dx_u = U256::from(dx);
+    let num_u = U256::from(fee_num);
+    let den_u = U256::from(fee_den);
+    let fee = (dx_u * num_u + den_u - U256::from(1u64)) / den_u;
+    if fee >= dx_u {
+        return Some(0);
+    }
+    let net_dx = dx_u - fee;
+    let x_u = U256::from(x);
+    let y_u = U256::from(y);
+    let out = (net_dx * y_u) / (x_u + net_dx);
+    u64::try_from(out).ok()
+}
+
 /// Calculate CPMM output with standard 10,000 basis points fee denominator.
 /// Returns `None` on overflow or invalid inputs (fail-closed).
 pub fn cpmm_out(dx: u128, x: u128, y: u128, gamma: u128) -> Option<u128> {
@@ -48,7 +77,7 @@ pub fn cpmm_out_fee(
     gamma: u128,
     fee_denominator: u128,
 ) -> Option<u128> {
-    if dx == 0 || x == 0 || y == 0 || fee_denominator == 0 {
+    if dx == 0 || x == 0 || y == 0 || fee_denominator == 0 || gamma == 0 {
         return None;
     }
     let dx_u = U256::from(dx);

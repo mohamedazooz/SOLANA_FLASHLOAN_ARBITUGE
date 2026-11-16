@@ -7,22 +7,37 @@
 pub mod bidder;
 pub mod leader;
 pub mod ledger;
+pub mod lifecycle;
 pub mod tip_oracle;
 
+pub use arb_constants::{
+    jito_tip_account_at, jito_tip_account_for_leader, jito_tip_account_for_slot,
+    jito_tip_account_round_robin,
+};
 pub use bidder::{AdaptiveBidder, BidderConfig, MIN_JITO_TIP_LAMPORTS};
 pub use leader::{JitoValidatorSet, Landability, LeaderSchedule, landability};
 pub use ledger::{LEDGER_SCHEMA, LandingLedger};
+pub use lifecycle::*;
 pub use tip_oracle::{DEFAULT_MAX_AGE_MS, TIP_FLOOR_URL, TipOracle, now_ms, parse_tip_floor};
 
 use arb_math::pick_tip;
-use arb_types::{ArbError, InflightStatus, Lamports, Result as ArbResult};
+use arb_types::{ArbError, InflightStatus, Lamports, Result as ArbResult, Slot};
 use serde_json::{Value, json};
 use solana_pubkey::Pubkey;
 use tracing::debug;
 
+/// Default Jito regional Block Engine endpoints (Amsterdam, Frankfurt, NY) for ultra-low latency fanout.
+pub const DEFAULT_JITO_REGIONS: [&str; 3] = ["amsterdam", "frankfurt", "ny"];
+
 /// Get a round-robin official verified Jito tip pubkey (delegates to arb-constants).
 pub fn get_random_tip_account() -> Pubkey {
     arb_constants::jito_tip_account_round_robin()
+}
+
+/// Choose the appropriate Jito tip account for a target slot, mapping to the leader
+/// identity when known, or falling back to deterministic slot indexing.
+pub fn get_tip_account_for_slot(slot: Slot, leader: Option<&Pubkey>) -> Pubkey {
+    arb_constants::jito_tip_account_for_slot(slot.0, leader)
 }
 
 /// Process-wide HTTP client for bundle dispatch.
@@ -59,6 +74,16 @@ pub enum BundleResult {
     Failed { reason: String },
     Dropped,
     Expired,
+}
+
+/// Rich status payload returned by Jito block engine `getBundleStatuses`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleStatusDetails {
+    pub bundle_id: String,
+    pub status: LandStatus,
+    pub slot: Option<u64>,
+    pub transactions: Vec<String>,
+    pub err: Option<String>,
 }
 
 /// Dynamic Jito Tip Strategy based on profit percentage and market competition.
@@ -150,6 +175,9 @@ impl TipStrategy {
 #[derive(Clone)]
 pub struct JitoLander {
     regions: Vec<String>,
+    /// Explicit block-engine target from `JITO_BLOCK_ENGINE_URL`, resolved
+    /// once at construction (see [`JitoLander::resolved_override_url`]).
+    override_url: Option<String>,
     client: reqwest::Client,
     #[allow(dead_code)]
     max_retries: u32,
@@ -157,25 +185,78 @@ pub struct JitoLander {
 
 impl JitoLander {
     pub fn new(regions: Vec<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .pool_max_idle_per_host(8)
-            .tcp_nodelay(true)
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let regions = if regions.is_empty() {
+            DEFAULT_JITO_REGIONS.iter().map(|s| s.to_string()).collect()
+        } else {
+            regions
+        };
+        let client = shared_dispatch_client().clone();
         Self {
             regions,
+            override_url: Self::resolved_override_url(),
             client,
             max_retries: 3,
         }
     }
 
-    fn endpoint(region: &str) -> String {
-        if region.is_empty() || region == "mainnet" {
-            "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
-        } else {
-            format!("https://{region}.mainnet.block-engine.jito.wtf/api/v1/bundles")
+    /// Reads `JITO_BLOCK_ENGINE_URL` (documented in `.env.example`) as an
+    /// explicit dispatch override. Fail-closed by construction: an empty
+    /// value, a `REPLACE_ME` placeholder, or anything that is not an
+    /// `https://` URL is rejected here — a malformed value is ignored and
+    /// the region-derived engines below take over, never the reverse.
+    fn resolved_override_url() -> Option<String> {
+        let raw = std::env::var("JITO_BLOCK_ENGINE_URL").ok()?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.contains("REPLACE_ME") || !trimmed.starts_with("https://")
+        {
+            return None;
         }
+        Some(trimmed.trim_end_matches('/').to_string())
+    }
+
+    pub fn endpoint(region: &str) -> String {
+        let region = region.trim();
+        if region.is_empty() || region.eq_ignore_ascii_case("mainnet") {
+            "https://mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
+        } else if region.starts_with("http://") || region.starts_with("https://") {
+            let trimmed = region.trim_end_matches('/');
+            if trimmed.ends_with("/api/v1/bundles") {
+                trimmed.to_string()
+            } else {
+                format!("{trimmed}/api/v1/bundles")
+            }
+        } else {
+            let lower = region.to_ascii_lowercase();
+            format!("https://{lower}.mainnet.block-engine.jito.wtf/api/v1/bundles")
+        }
+    }
+
+    /// Dispatch targets in priority order: the env override first (it wins),
+    /// then the region-derived engines, deduplicated.
+    pub fn endpoints(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.regions.len() + 1);
+        if let Some(url) = &self.override_url {
+            out.push(url.clone());
+        }
+        for region in &self.regions {
+            let url = Self::endpoint(region);
+            if !out.contains(&url) {
+                out.push(url);
+            }
+        }
+        if out.is_empty() {
+            out.push(Self::endpoint(""));
+        }
+        out
+    }
+
+    /// The target used for single-endpoint calls (simulation, status polls):
+    /// the override when present, else the first regional engine.
+    pub fn primary_endpoint(&self) -> String {
+        self.endpoints()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Self::endpoint(""))
     }
 
     pub async fn send_bundle(&self, txs: &[Vec<u8>]) -> ArbResult<String> {
@@ -190,15 +271,14 @@ impl JitoLander {
             "params": [encoded, {"encoding": "base64", "bundleOnly": true}]
         });
 
-        // Multi-region concurrent dispatch
+        // Concurrent dispatch over every resolved block-engine target: the
+        // `JITO_BLOCK_ENGINE_URL` override first, then each region.
         let futures: Vec<_> = self
-            .regions
-            .iter()
-            .map(|region| {
-                let url = Self::endpoint(region);
+            .endpoints()
+            .into_iter()
+            .map(|url| {
                 let client = self.client.clone();
                 let body = body.clone();
-                let region = region.clone();
                 async move {
                     let resp = client.post(&url).json(&body).send().await;
                     match resp {
@@ -209,15 +289,15 @@ impl JitoLander {
                                 && let Ok(val) = serde_json::from_str::<Value>(&text)
                                 && let Some(res) = val.get("result").and_then(|x| x.as_str())
                             {
-                                debug!("Bundle accepted by region {}: {}", region, res);
+                                debug!("Bundle accepted by block engine {url}: {res}");
                                 return Ok(res.to_string());
                             }
                             Err(ArbError::Internal(format!(
-                                "Region {region} HTTP {status}: {text}"
+                                "Block engine {url} HTTP {status}: {text}"
                             )))
                         }
                         Err(e) => Err(ArbError::Internal(format!(
-                            "Region {region} network error: {e}"
+                            "Block engine {url} network error: {e}"
                         ))),
                     }
                 }
@@ -233,7 +313,7 @@ impl JitoLander {
             }
         }
         Err(ArbError::Internal(format!(
-            "All Jito regional Block Engines failed to accept bundle: [{}]",
+            "All Jito block engines failed to accept bundle: [{}]",
             err_details.join(" | ")
         )))
     }
@@ -243,7 +323,12 @@ impl JitoLander {
         txs: &[Vec<u8>],
         regions: &[String],
     ) -> ArbResult<String> {
-        send_bundle_multi_region(txs, regions).await
+        let target_regions = if regions.is_empty() {
+            &self.regions
+        } else {
+            regions
+        };
+        send_bundle_multi_region(txs, target_regions).await
     }
 
     pub async fn simulate_bundle(&self, txs: &[Vec<u8>]) -> ArbResult<Value> {
@@ -257,7 +342,8 @@ impl JitoLander {
             "method": "simulateBundle",
             "params": [encoded, {"encoding": "base64"}]
         });
-        let url = Self::endpoint(self.regions.first().map(String::as_str).unwrap_or(""));
+        // Honor the `JITO_BLOCK_ENGINE_URL` override here as well.
+        let url = self.primary_endpoint();
         let r = self
             .client
             .post(&url)
@@ -272,14 +358,18 @@ impl JitoLander {
         Ok(v)
     }
 
-    pub async fn get_bundle_statuses(&self, bundle_id: &str) -> ArbResult<Vec<LandStatus>> {
+    /// Query detailed bundle status including landing slot, transaction signatures and errors.
+    pub async fn get_bundle_statuses_detailed(
+        &self,
+        bundle_id: &str,
+    ) -> ArbResult<Vec<BundleStatusDetails>> {
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getBundleStatuses",
             "params": [[bundle_id]]
         });
-        let url = Self::endpoint(self.regions.first().map(String::as_str).unwrap_or(""));
+        let url = self.primary_endpoint();
         let r = self
             .client
             .post(&url)
@@ -291,6 +381,7 @@ impl JitoLander {
             .json()
             .await
             .map_err(|e| ArbError::Internal(e.to_string()))?;
+
         let mut out = Vec::new();
         if let Some(arr) = v
             .get("result")
@@ -298,33 +389,71 @@ impl JitoLander {
             .and_then(|x| x.as_array())
         {
             for item in arr {
-                // P0 #7: Jito returns confirmation_status even for failed bundles;
-                // a non-null `err` means the bundle did NOT land successfully.
-                let has_err = item.get("err").map(|e| !e.is_null()).unwrap_or(false);
-                if has_err {
-                    out.push(LandStatus::Failed);
-                    continue;
+                let id = item
+                    .get("bundle_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(bundle_id)
+                    .to_string();
+                let slot = item.get("slot").and_then(|x| x.as_u64());
+                let mut txs = Vec::new();
+                if let Some(transactions) = item.get("transactions").and_then(|x| x.as_array()) {
+                    for tx in transactions {
+                        if let Some(s) = tx.as_str() {
+                            txs.push(s.to_string());
+                        }
+                    }
                 }
-                let status = item
+
+                let err = item.get("err").and_then(|e| {
+                    if e.is_null() {
+                        None
+                    } else {
+                        Some(e.to_string())
+                    }
+                });
+
+                let status_str = item
                     .get("confirmation_status")
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
-                let s = match status {
-                    // Processed is provisional and must never be reported as landed.
-                    "processed" => LandStatus::Sent,
-                    "confirmed" | "finalized" => LandStatus::Landed,
-                    "failed" => LandStatus::Failed,
-                    "dropped" => LandStatus::Dropped,
-                    "expired" => LandStatus::Expired,
-                    _ => LandStatus::Sent,
+
+                let status = if err.is_some() {
+                    LandStatus::Failed
+                } else {
+                    match status_str {
+                        "processed" => LandStatus::Sent,
+                        "confirmed" | "finalized" => LandStatus::Landed,
+                        "failed" => LandStatus::Failed,
+                        "dropped" => LandStatus::Dropped,
+                        "expired" => LandStatus::Expired,
+                        _ => LandStatus::Sent,
+                    }
                 };
-                out.push(s);
+
+                out.push(BundleStatusDetails {
+                    bundle_id: id,
+                    status,
+                    slot,
+                    transactions: txs,
+                    err,
+                });
             }
         }
         if out.is_empty() {
-            out.push(LandStatus::Sent);
+            out.push(BundleStatusDetails {
+                bundle_id: bundle_id.to_string(),
+                status: LandStatus::Sent,
+                slot: None,
+                transactions: Vec::new(),
+                err: None,
+            });
         }
         Ok(out)
+    }
+
+    pub async fn get_bundle_statuses(&self, bundle_id: &str) -> ArbResult<Vec<LandStatus>> {
+        let details = self.get_bundle_statuses_detailed(bundle_id).await?;
+        Ok(details.into_iter().map(|d| d.status).collect())
     }
 
     /// Poll the in-flight status of submitted bundles.
@@ -357,7 +486,7 @@ impl JitoLander {
             "method": "getInflightBundleStatuses",
             "params": [bundle_ids]
         });
-        let url = Self::endpoint("");
+        let url = self.primary_endpoint();
 
         let response = self
             .client
@@ -386,7 +515,7 @@ impl JitoLander {
             "method": "getTipAccounts",
             "params": []
         });
-        let url = Self::endpoint(self.regions.first().map(String::as_str).unwrap_or(""));
+        let url = self.primary_endpoint();
         let r = self
             .client
             .post(&url)
@@ -421,21 +550,42 @@ impl JitoLander {
         max_attempts: usize,
         poll_interval: std::time::Duration,
     ) -> LandStatus {
+        let details = self
+            .poll_bundle_detailed_until_terminal(bundle_id, max_attempts, poll_interval)
+            .await;
+        details.status
+    }
+
+    /// Asynchronously poll bundle landing detailed status until terminal state or timeout.
+    pub async fn poll_bundle_detailed_until_terminal(
+        &self,
+        bundle_id: &str,
+        max_attempts: usize,
+        poll_interval: std::time::Duration,
+    ) -> BundleStatusDetails {
         for _ in 0..max_attempts {
             tokio::time::sleep(poll_interval).await;
-            if let Ok(status) = self.check_status(bundle_id).await
-                && matches!(
-                    status,
-                    LandStatus::Landed
-                        | LandStatus::Failed
-                        | LandStatus::Dropped
-                        | LandStatus::Expired
-                )
-            {
-                return status;
+            if let Ok(records) = self.get_bundle_statuses_detailed(bundle_id).await {
+                if let Some(record) = records.into_iter().next() {
+                    if matches!(
+                        record.status,
+                        LandStatus::Landed
+                            | LandStatus::Failed
+                            | LandStatus::Dropped
+                            | LandStatus::Expired
+                    ) {
+                        return record;
+                    }
+                }
             }
         }
-        LandStatus::Sent
+        BundleStatusDetails {
+            bundle_id: bundle_id.to_string(),
+            status: LandStatus::Sent,
+            slot: None,
+            transactions: Vec::new(),
+            err: None,
+        }
     }
 }
 
@@ -449,11 +599,11 @@ pub async fn send_bundle_multi_region(txs: &[Vec<u8>], regions: &[String]) -> Ar
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendBundle",
-        "params": [encoded, {"encoding": "base64"}]
+        "params": [encoded, {"encoding": "base64", "bundleOnly": true}]
     });
 
-    let regions = if regions.is_empty() {
-        vec![String::new()]
+    let regions_list: Vec<String> = if regions.is_empty() {
+        DEFAULT_JITO_REGIONS.iter().map(|s| s.to_string()).collect()
     } else {
         regions.to_vec()
     };
@@ -462,7 +612,7 @@ pub async fn send_bundle_multi_region(txs: &[Vec<u8>], regions: &[String]) -> Ar
     // send does NOT pay a fresh TLS/TCP handshake on the critical path. Creating
     // a client per call added tens of ms of avoidable latency per attempt.
     let client = shared_dispatch_client();
-    let futures: Vec<_> = regions
+    let futures: Vec<_> = regions_list
         .iter()
         .map(|region| {
             let url = JitoLander::endpoint(region);
@@ -674,5 +824,56 @@ mod tests {
     fn missing_result_yields_no_statuses() {
         assert!(parse_inflight_statuses(&serde_json::json!({})).is_empty());
         assert!(parse_inflight_statuses(&serde_json::json!({"result": {}})).is_empty());
+    }
+
+    #[test]
+    fn test_regional_endpoints_resolution_and_defaults() {
+        // Default regions when empty
+        let lander = JitoLander::new(Vec::new());
+        assert_eq!(lander.regions, vec!["amsterdam", "frankfurt", "ny"]);
+        let endpoints = lander.endpoints();
+        assert!(endpoints.contains(
+            &"https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
+        ));
+        assert!(endpoints.contains(
+            &"https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string()
+        ));
+        assert!(
+            endpoints
+                .contains(&"https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles".to_string())
+        );
+
+        // Case-insensitivity and trimming
+        assert_eq!(
+            JitoLander::endpoint(" Frankfurt "),
+            "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles"
+        );
+        assert_eq!(
+            JitoLander::endpoint("AMSTERDAM"),
+            "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles"
+        );
+        assert_eq!(
+            JitoLander::endpoint("NY"),
+            "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles"
+        );
+        assert_eq!(
+            JitoLander::endpoint("https://custom.engine.com"),
+            "https://custom.engine.com/api/v1/bundles"
+        );
+    }
+
+    #[test]
+    fn test_tip_account_for_slot_with_and_without_leader() {
+        let leader = Pubkey::new_from_array([42; 32]);
+        let slot = Slot(100);
+        let tip_with_leader = get_tip_account_for_slot(slot, Some(&leader));
+        let tip_without_leader = get_tip_account_for_slot(slot, None);
+
+        // Deterministic: repeat calls produce identical results
+        assert_eq!(
+            tip_with_leader,
+            get_tip_account_for_slot(slot, Some(&leader))
+        );
+        assert_eq!(tip_without_leader, get_tip_account_for_slot(slot, None));
     }
 }

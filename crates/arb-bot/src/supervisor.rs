@@ -7,20 +7,20 @@ use crate::verified_config::VerifiedQuoteInputs;
 use crate::{BotMode, health_monitor::HealthMonitor};
 use anyhow::Result;
 use arb_engine::MarketGraph;
-use arb_ingest::YellowstoneClient;
+use arb_ingest::IngestClient;
 use arb_land::{BidderConfig, JitoLander, TipStrategy};
 use arb_math::economic::calculate_net_profit_raw;
 use arb_math::{RttTracker, SlotClock};
 use arb_risk::{CircuitBreaker, KillSwitch, RiskGate, RiskLimits};
-use arb_sim::Simulator;
+use arb_sim::{ForkSimulator, Simulator};
 use arb_store::{AttemptRecord, PostgresStore, SqliteStore, Store};
-use arb_tx::{JupiterClient, KaminoFlashParams, KeypairSigner, TxBuilder};
+use arb_tx::{KaminoFlashParams, KeypairSigner, TxBuilder};
 use arb_types::{
-    DexProtocol, ExecutionOpportunity, InflightStatus, Lamports, MintId, PoolState, Slot, SwapHop,
+    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolState, RouteId, Slot, SwapHop,
     TipDecision, TokenAmount,
 };
-use base64::prelude::*;
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -32,7 +32,10 @@ use tracing::{debug, error, info, warn};
 // same type and can access its private state without introducing wrapper indirection.
 mod dispatch;
 mod execution;
+mod opportunity;
+mod recovery;
 mod run;
+mod strategy;
 
 use execution::max_state_age_slots;
 
@@ -58,14 +61,21 @@ struct CachedTemplate {
     tip: u64,
 }
 
+<<<<<<< HEAD
+=======
+type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
+
+>>>>>>> origin/main
 pub struct Supervisor {
-    mode: BotMode,
+    mode: Arc<std::sync::atomic::AtomicU8>,
     config: Config,
-    ingest: Arc<YellowstoneClient>,
+    ingest: Arc<IngestClient>,
     graph: parking_lot::Mutex<MarketGraph>,
     risk_gate: Arc<RiskGate>,
+    #[allow(dead_code)] // wired into dispatch when Jito bundles are enabled
     jito_lander: JitoLander,
     tip_strategy: TipStrategy,
+    registry: Arc<parking_lot::RwLock<arb_ingest::MultiDexRegistry>>,
     /// Recent landed compute-unit prices for adaptive priority fee.
     recent_landed_cu: Vec<u64>,
     #[allow(dead_code)]
@@ -78,11 +88,11 @@ pub struct Supervisor {
     /// Periodic health sweep: RPC, disk, Telegram. Logs the exact reason for
     /// any outage and alerts via Telegram — never blocks the hot path.
     health_monitor: HealthMonitor,
+    /// Atomic, externally verifiable process liveness record. Written from the
+    /// main loop so a wedged loop is visible as a stale `heartbeat_seq`.
+    heartbeat: Arc<crate::heartbeat::Heartbeat>,
     /// Shared short-TTL Redis / in-memory cache for sub-ms dedup of pools & quotes.
     redis_cache: Arc<arb_store::RedisStore>,
-    /// Jupiter v6 client for live swap-instruction resolution of exotic / trending
-    /// (e.g. Meteora DLMM) routes — byte-exact, fully account-resolved, live.
-    jupiter: arb_tx::JupiterClient,
     /// Adaptive Jito tip pricing + leader gating + landing evidence.
     jito_service: Arc<JitoService>,
     /// Maps slots onto the local monotonic clock so a bundle leaves at
@@ -95,7 +105,7 @@ pub struct Supervisor {
     /// Short-TTL recent-blockhash cache. A blockhash is valid for ~60-90s, so
     /// reusing one for a few seconds removes an RPC round-trip from the send
     /// path without risking an expired hash.
-    blockhash_cache: parking_lot::Mutex<Option<([u8; 32], Instant)>>,
+    blockhash_cache: parking_lot::Mutex<Option<CachedBlockhash>>,
     /// Tip paid per `(slot, route)`: a retry inside the same window may not
     /// jump past `ladder_growth × previous`, and a new window starts clean.
     previous_tips: parking_lot::Mutex<std::collections::HashMap<(u64, u32), Lamports>>,
@@ -104,11 +114,79 @@ pub struct Supervisor {
     /// Tier-1 in-memory pre-warmed transaction templates for zero-copy in-place signing
     ram_templates:
         parking_lot::Mutex<std::collections::HashMap<String, arb_tx::PreWarmedTxTemplate>>,
-    // In-memory cache for Kamino flash fee and base mint decimals with 5-minute TTL (PERF-01).
+    /// Dedicated fallback snapshot store for RPC-refreshed Kamino reserve & WSOL mint
+    /// accounts so live WS provider invariants in `AccountSnapshotStore` remain intact.
+    kamino_fallback_store: arb_ingest::AccountSnapshotStore,
+    pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
+    pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
+    pub recent_rejected: Arc<parking_lot::Mutex<Vec<crate::telegram::RejectedTradeSummary>>>,
+    /// Unified control service shared with the web API and Telegram. `None`
+    /// until main.rs attaches it (tests construct a supervisor without one).
+    pub control: std::sync::OnceLock<Arc<crate::control_service::ControlService>>,
+}
+
+/// Resolve the configured store to a durable backend. Fail-closed: a
+/// configured-but-unavailable store returns an error and startup aborts —
+/// the supervisor never silently degrades to non-durable in-memory storage,
+/// because dispatch-intent reconciliation (R12) requires durable persistence.
+/// Precedence: `store_url` postgres → `database_url` postgres → `database_url`
+/// sqlite → `store_url` sqlite/plain path.
+fn open_store(store_url: &str, database_url: Option<&str>) -> anyhow::Result<Arc<dyn Store>> {
+    if store_url.starts_with("postgres") {
+        return PostgresStore::open(store_url)
+            .map(|pg| Arc::new(pg) as Arc<dyn Store>)
+            .map_err(|e| anyhow::anyhow!("PostgreSQL store unavailable (fail-closed): {e}"));
+    }
+    if let Some(pg_url) = database_url.filter(|u| u.starts_with("postgres")) {
+        return PostgresStore::open(pg_url)
+            .map(|pg| Arc::new(pg) as Arc<dyn Store>)
+            .map_err(|e| {
+                anyhow::anyhow!("PostgreSQL store from DATABASE_URL unavailable (fail-closed): {e}")
+            });
+    }
+    if let Some(sqlite_url) = database_url.filter(|u| u.starts_with("sqlite://")) {
+        return SqliteStore::open(&sqlite_path_from_url(sqlite_url))
+            .map(|s| Arc::new(s) as Arc<dyn Store>)
+            .map_err(|e| {
+                anyhow::anyhow!("SQLite store from DATABASE_URL unavailable (fail-closed): {e}")
+            });
+    }
+    SqliteStore::open(&sqlite_path_from_url(store_url))
+        .map(|s| Arc::new(s) as Arc<dyn Store>)
+        .map_err(|e| anyhow::anyhow!("SQLite store unavailable (fail-closed): {e}"))
+}
+
+/// Convert a `sqlite://` URL to a filesystem path. `sqlite:///abs/path` yields
+/// `/abs/path`; `sqlite://./rel` and `sqlite://rel` yield the relative path;
+/// plain paths pass through. The URL was previously passed raw to
+/// `Connection::open`, which silently failed on the literal filename and
+/// degraded to in-memory storage.
+fn sqlite_path_from_url(url: &str) -> String {
+    match url.strip_prefix("sqlite://") {
+        Some(rest) => {
+            let no_leading_slashes = rest.trim_start_matches('/');
+            if no_leading_slashes.starts_with("./") || no_leading_slashes.starts_with("../") {
+                // `sqlite:///./rel` — scheme slashes followed by a dot-relative path
+                no_leading_slashes.to_string()
+            } else {
+                rest.to_string()
+            }
+        }
+        None => url.to_string(),
+    }
 }
 
 impl Supervisor {
     pub fn new(mode: BotMode, config: Config) -> Self {
+        Self::with_mode_atomic(
+            Arc::new(std::sync::atomic::AtomicU8::new(mode as u8)),
+            config,
+        )
+    }
+
+    /// Constructor sharing an externally-owned mode atomic — the unified
+    /// control service writes to the same atomic to switch modes at runtime.
+    pub fn with_mode_atomic(mode: Arc<std::sync::atomic::AtomicU8>, config: Config) -> Self {
         info!("TRACE SUP 1: start");
         dotenvy::dotenv().ok();
         let limits = RiskLimits {
@@ -166,10 +244,8 @@ impl Supervisor {
         let recent_landed_cu = Vec::<u64>::new();
 
         let jito_lander = JitoLander::new(config.jito.regions.clone());
-        // HTTP JSON-RPC is disabled by architecture. Simulation remains unavailable
-        // until a provider-native gRPC/WebSocket simulation path is implemented.
-        let simulator = Simulator::default();
 
+<<<<<<< HEAD
         let base_mints: Vec<MintId> = config
             .strategy
             .base_tokens
@@ -194,55 +270,31 @@ impl Supervisor {
             );
         }
         let ingest = Arc::new(YellowstoneClient::new(ingest_url, ingest_token));
+=======
+        // The configured Kamino flash-loan reserve is WSOL. Every candidate
+        // cycle must therefore start and finish in WSOL so the borrow, route
+        // accounting, fee units and same-transaction repayment share one mint
+        // and 9-decimal raw-unit domain. Other configured tokens remain valid
+        // intermediate route vertices; they are not independent loan anchors.
+        let wsol_mint =
+            Pubkey::from_str(arb_tx::WSOL_MINT).expect("canonical WSOL mint constant must parse");
+        let graph = MarketGraph::new(vec![MintId(wsol_mint)]);
+        // Ingestion is WebSocket + RPC only. gRPC transport removed.
+        let ingest = Arc::new(IngestClient::new());
+>>>>>>> origin/main
 
         info!("TRACE SUP 2: before store");
-        let store: Arc<dyn Store> = if config.store.url.starts_with("postgres")
-            || config.store.url.starts_with("postgresql")
-        {
-            match PostgresStore::open(&config.store.url) {
-                Ok(pg) => {
-                    // Never log the DSN: it carries the database password.
-                    info!("Connected to PostgreSQL store");
-                    Arc::new(pg)
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to connect to PostgreSQL ({}): falling back to SQLite",
-                        e
-                    );
-                    Arc::new(SqliteStore::open_in_memory().unwrap())
-                }
-            }
-        } else if let Ok(pg_url) = std::env::var("DATABASE_URL") {
-            if pg_url.starts_with("postgres") || pg_url.starts_with("postgresql") {
-                match PostgresStore::open(&pg_url) {
-                    Ok(pg) => {
-                        info!("Connected to PostgreSQL store via DATABASE_URL");
-                        Arc::new(pg)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to connect to PostgreSQL via DATABASE_URL ({}): falling back to SQLite",
-                            e
-                        );
-                        Arc::new(
-                            SqliteStore::open(&config.store.url)
-                                .unwrap_or_else(|_| SqliteStore::open_in_memory().unwrap()),
-                        )
-                    }
-                }
-            } else {
-                Arc::new(
-                    SqliteStore::open(&config.store.url)
-                        .unwrap_or_else(|_| SqliteStore::open_in_memory().unwrap()),
-                )
-            }
-        } else {
-            Arc::new(
-                SqliteStore::open(&config.store.url)
-                    .unwrap_or_else(|_| SqliteStore::open_in_memory().unwrap()),
-            )
-        };
+        // Fail-closed store selection (see `open_store`): a configured but
+        // unavailable store aborts startup. Silent degradation to in-memory
+        // storage would break dispatch-intent durability (R12) and PnL
+        // accounting while appearing healthy.
+        let store: Arc<dyn Store> = open_store(
+            &config.store.url,
+            std::env::var("DATABASE_URL").ok().as_deref(),
+        )
+        .expect(
+            "durable store unavailable; refusing to start (fail-closed: no in-memory fallback)",
+        );
         info!("TRACE SUP 3: after store");
 
         let telegram = TelegramNotifier::from_env();
@@ -251,7 +303,7 @@ impl Supervisor {
             .and_then(|pk| match KeypairSigner::from_base58(&pk) {
                 Ok(signer) => {
                     info!(
-                        "🔑 In-Memory Keypair loaded from SOLANA_PRIVATE_KEY: {}",
+                        "In-memory keypair loaded from SOLANA_PRIVATE_KEY: {}",
                         signer.pubkey()
                     );
                     Some(signer)
@@ -271,7 +323,7 @@ impl Supervisor {
                     match KeypairSigner::from_file(kp_path) {
                         Ok(signer) => {
                             info!(
-                                "🔑 In-Memory Keypair loaded from {kp_path}: {}",
+                                "In-memory keypair loaded from {kp_path}: {}",
                                 signer.pubkey()
                             );
                             Some(signer)
@@ -287,14 +339,35 @@ impl Supervisor {
             });
 
         // Legacy JSON-RPC pool is disabled in runtime configuration; retained only for
-        // unmigrated APIs and isolated tests. Market state comes from Yellowstone gRPC.
+        // unmigrated APIs and isolated tests. Market state comes from the WebSocket + RPC ingestion path. gRPC transport removed.
         let rpc_pool = arb_ingest::RpcPool::from_env();
 
-        // Server health monitor: watches Yellowstone gRPC, disk, Telegram. Logs the exact
+        let sim_url = rpc_pool
+            .endpoints()
+            .first()
+            .cloned()
+            .or_else(|| std::env::var("SOLANA_RPC_URL").ok())
+            .or_else(|| std::env::var("FAST_ENDPOINT").ok())
+            .or_else(|| std::env::var("HELIUS_RPC_URL").ok());
+        let simulator = match sim_url {
+            Some(url) => Simulator::with_rpc_url(url),
+            None => Simulator::new(),
+        };
+
+        let registry = Arc::new(parking_lot::RwLock::new(
+            arb_ingest::MultiDexRegistry::mainnet_default(rpc_pool.clone()),
+        ));
+
+        // Server health monitor: watches WebSocket/RPC ingestion, disk, Telegram. Logs the exact
         // reason for any outage and alerts — never blocks trading.
         let data_dir =
             PathBuf::from(std::env::var("DATA_DIR").unwrap_or_else(|_| "data".to_string()));
-        let health_monitor = HealthMonitor::new(Arc::clone(&ingest), data_dir, telegram.clone());
+        let health_monitor = HealthMonitor::new(
+            Arc::clone(&ingest),
+            data_dir,
+            telegram.clone(),
+            rpc_pool.clone(),
+        );
 
         // Jito transport remains isolated from the Solana market-data plane.
         // No RPC market-state reads are performed by this service in this phase.
@@ -328,6 +401,16 @@ impl Supervisor {
             Arc::new(JitoService::new(jito_service_config).expect("valid jito service config"));
         info!("TRACE SUP 4: after jito_service");
 
+        let heartbeat = Arc::new(crate::heartbeat::Heartbeat::new(
+            crate::heartbeat::Heartbeat::path_from_env(),
+            BotMode::from_u8(mode.load(std::sync::atomic::Ordering::Acquire)).to_string(),
+        ));
+        info!(
+            "Heartbeat writer active: pid={} path={}",
+            heartbeat.pid(),
+            heartbeat.path().display()
+        );
+
         Self {
             mode,
             config,
@@ -336,6 +419,7 @@ impl Supervisor {
             risk_gate,
             jito_lander,
             tip_strategy,
+            registry,
             recent_landed_cu,
             simulator,
             store,
@@ -344,11 +428,11 @@ impl Supervisor {
             last_known_live_sol_price: parking_lot::RwLock::new(0.0),
             rpc_pool,
             health_monitor,
+            heartbeat,
             redis_cache: Arc::new(arb_store::RedisStore::new(
                 std::env::var("REDIS_URL").ok(),
                 10,
             )),
-            jupiter: JupiterClient::new(),
             jito_service,
             slot_clock: parking_lot::Mutex::new(SlotClock::new()),
             rtt: parking_lot::Mutex::new((RttTracker::new(300.0), None)),
@@ -356,12 +440,89 @@ impl Supervisor {
             previous_tips: parking_lot::Mutex::new(std::collections::HashMap::new()),
             measured_cu: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             ram_templates: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            kamino_fallback_store: arb_ingest::AccountSnapshotStore::default(),
+            recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            recent_rejected: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            control: std::sync::OnceLock::new(),
         }
     }
 
     /// Access the underlying risk kill-switch for administrative controls.
     pub fn kill_switch(&self) -> Arc<arb_risk::KillSwitch> {
         self.risk_gate.kill_switch()
+    }
+
+    pub fn ingest(&self) -> Arc<IngestClient> {
+        Arc::clone(&self.ingest)
+    }
+
+    /// Shared heartbeat writer, so the main loop can record liveness and gates
+    /// can record rejections.
+    pub fn heartbeat(&self) -> Arc<crate::heartbeat::Heartbeat> {
+        Arc::clone(&self.heartbeat)
+    }
+
+    /// Effective execution mode. Runtime-switchable through the shared atomic
+    /// so the unified control service (web + Telegram) can transition
+    /// shadow/paper/live without a restart.
+    pub fn mode(&self) -> BotMode {
+        BotMode::from_u8(self.mode.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn set_mode(&self, mode: BotMode) {
+        self.mode
+            .store(mode as u8, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Attaches the shared control service (called once from main before run).
+    pub fn attach_control(&self, control: Arc<crate::control_service::ControlService>) {
+        let _ = self.control.set(control);
+    }
+
+    fn control(&self) -> Option<&Arc<crate::control_service::ControlService>> {
+        self.control.get()
+    }
+
+    /// Publishes the current live-state view to the unified control service.
+    /// Cheap (small struct copy) and called once per loop iteration.
+    fn publish_control_state(&self, current_slot: Slot) {
+        let Some(control) = self.control() else {
+            return;
+        };
+        control.refresh_deps(crate::control_service::ControlDeps {
+            slot: current_slot.0,
+            pools_tracked: self.ingest.snapshot().pool_count(),
+            stream_connected: self.ingest.stream_connected(),
+            helius_connected: self.ingest.helius_connected(),
+            route_coverage: self.route_coverage(),
+        });
+    }
+
+    /// Per-protocol route coverage for the route monitor: one cheap pass over
+    /// the registry (protocol + fee_bps only, no PoolState clones).
+    fn route_coverage(&self) -> Vec<crate::control_service::ProtocolCoverage> {
+        use std::collections::BTreeMap;
+        let registry = self.registry.read();
+        let mut acc: BTreeMap<&'static str, (usize, u64)> = BTreeMap::new();
+        for p in registry.pools() {
+            let entry = acc.entry(p.protocol.as_str()).or_default();
+            entry.0 += 1;
+            entry.1 += u64::from(p.fee_bps);
+        }
+        acc.into_iter()
+            .map(
+                |(protocol, (pools, fee_sum))| crate::control_service::ProtocolCoverage {
+                    protocol: protocol.to_string(),
+                    pools,
+                    avg_fee_bps: if pools > 0 {
+                        fee_sum as f64 / pools as f64
+                    } else {
+                        0.0
+                    },
+                },
+            )
+            .collect()
     }
 
     /// Fold one accepted block-engine round trip into the latency model.
@@ -392,10 +553,11 @@ impl Supervisor {
         for p in &pools {
             match p.protocol {
                 DexProtocol::OrcaWhirlpool => orca_count += 1,
-                DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm | DexProtocol::RaydiumClmm => {
-                    raydium_count += 1
-                }
-                DexProtocol::MeteoraDlmm => meteora_count += 1,
+                DexProtocol::RaydiumV4
+                | DexProtocol::RaydiumCpmm
+                | DexProtocol::RaydiumClmm
+                | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
+                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
                 DexProtocol::PumpFun => pump_count += 1,
                 DexProtocol::PumpSwap => pumpswap_count += 1,
             }
@@ -445,6 +607,151 @@ impl Supervisor {
                 .await;
         }
     }
+<<<<<<< HEAD
+=======
+
+    pub fn record_landed_trade(&self, trade: crate::telegram::TradeSummary) {
+        Self::record_landed_trade_task(&self.recent_landed, self.control().cloned(), trade);
+    }
+
+    pub(crate) fn record_landed_trade_task(
+        recent_landed: &parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>,
+        control: Option<Arc<crate::control_service::ControlService>>,
+        trade: crate::telegram::TradeSummary,
+    ) {
+        let mut guard = recent_landed.lock();
+        if guard.len() >= 50 {
+            guard.remove(0);
+        }
+        let route = trade.route.clone();
+        guard.push(trade);
+        drop(guard);
+        if let Some(control) = control {
+            control.record_execution("landed", &route, "trade confirmed landed");
+            control.record_execution_result(true);
+        }
+    }
+
+    pub fn record_dropped_bundle(&self, dropped: crate::telegram::DroppedTradeSummary) {
+        Self::record_dropped_bundle_task(&self.recent_dropped, self.control().cloned(), dropped);
+    }
+
+    pub(crate) fn record_dropped_bundle_task(
+        recent_dropped: &parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>,
+        control: Option<Arc<crate::control_service::ControlService>>,
+        dropped: crate::telegram::DroppedTradeSummary,
+    ) {
+        let mut guard = recent_dropped.lock();
+        if guard.len() >= 50 {
+            guard.remove(0);
+        }
+        let route = dropped.route.clone();
+        let status = dropped.reason.clone();
+        guard.push(dropped);
+        drop(guard);
+        if let Some(control) = control {
+            control.record_execution("dropped", &route, &status);
+            control.record_execution_result(false);
+        }
+    }
+
+    pub fn record_rejected_opportunity(&self, rejected: crate::telegram::RejectedTradeSummary) {
+        self.heartbeat
+            .observe_rejection(rejected.slot, &rejected.stage, &rejected.reason);
+        if let Some(control) = self.control() {
+            control.record_log(
+                "warn",
+                &rejected.stage,
+                format!("{}: {}", rejected.route, rejected.reason),
+            );
+        }
+        let mut guard = self.recent_rejected.lock();
+        if guard.len() >= 100 {
+            guard.remove(0);
+        }
+        guard.push(rejected);
+    }
+
+    /// Periodic 5-minute digest with detailed lists of successful, dropped, and rejected trades,
+    /// along with infrastructure and RPC rate-limit status.
+    pub async fn emit_five_minute_digest(&self, current_slot: u64) {
+        let pools = self.ingest.snapshot().snapshot_pools();
+        let total_pools = pools.len();
+        let mut orca_count = 0;
+        let mut raydium_count = 0;
+        let mut meteora_count = 0;
+        let mut pump_count = 0;
+
+        for p in &pools {
+            match p.protocol {
+                DexProtocol::OrcaWhirlpool => orca_count += 1,
+                DexProtocol::RaydiumV4
+                | DexProtocol::RaydiumCpmm
+                | DexProtocol::RaydiumClmm
+                | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
+                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::PumpFun | DexProtocol::PumpSwap => pump_count += 1,
+            }
+        }
+
+        let sol_price = self.live_sol_price().unwrap_or(0.0);
+        let opportunities_total = arb_metrics::get_opportunities_total();
+
+        let landed = {
+            let mut guard = self.recent_landed.lock();
+            std::mem::take(&mut *guard)
+        };
+        let dropped = {
+            let mut guard = self.recent_dropped.lock();
+            std::mem::take(&mut *guard)
+        };
+        let rejected = {
+            let mut guard = self.recent_rejected.lock();
+            std::mem::take(&mut *guard)
+        };
+
+        let rpc_status = if self.rpc_pool.endpoints_count() > 0 {
+            format!("{} Active (Balanced)", self.rpc_pool.endpoints_count())
+        } else {
+            "No endpoints".to_string()
+        };
+
+        let ws_status = if self.ingest.helius_connected() {
+            "Connected (Mainnet WebSocket)".to_string()
+        } else {
+            "Reconnecting...".to_string()
+        };
+
+        // gRPC transport removed: ingestion is WebSocket + RPC only.
+        let ingest_status = "WebSocket + RPC (gRPC disabled)".to_string();
+
+        let jito_status = if self.jito_service.leader_for(Slot(current_slot)).is_some() {
+            "Online (Leader Synced / Tip Active)".to_string()
+        } else {
+            "Online (Tip Stream Active)".to_string()
+        };
+
+        let stats = crate::telegram::DigestStats {
+            slot: current_slot,
+            sol_price,
+            total_pools,
+            orca_count,
+            raydium_count,
+            meteora_count,
+            pump_count,
+            cycles_evaluated: opportunities_total,
+            rpc_status,
+            ws_status,
+            ingest_status,
+            jito_status,
+            landed_trades: landed,
+            dropped_trades: dropped,
+            rejected_trades: rejected,
+        };
+
+        self.telegram.alert_five_minute_digest(&stats).await;
+    }
+>>>>>>> origin/main
 }
 
 #[cfg(test)]
@@ -454,9 +761,112 @@ mod tests {
     #[test]
     fn test_supervisor_initialization() {
         let config_str = include_str!("../../../config/config.example.toml");
-        let config: Config = toml::from_str(config_str).expect("Valid example config");
-        let supervisor = Supervisor::new(BotMode::Shadow, config);
-        assert_eq!(supervisor.mode, BotMode::Shadow);
+        let mut config: Config = toml::from_str(config_str).expect("Valid example config");
+        // Hermetic durable store: the example URL points at /app/data
+        // (container topology). Point it at a temp file so the fail-closed
+        // store selection succeeds without touching system paths.
+        let db_path = std::env::temp_dir().join(format!(
+            "arb_supervisor_init_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        config.store.url = format!("sqlite://{}", db_path.display());
+        let prev_db_url = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::remove_var("DATABASE_URL") };
+        let supervisor = Supervisor::new(BotMode::Simulate, config);
+        assert_eq!(supervisor.mode(), BotMode::Simulate);
+        if let Some(prev) = prev_db_url {
+            unsafe { std::env::set_var("DATABASE_URL", prev) };
+        }
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn sqlite_path_from_url_resolves_absolute_relative_and_plain_paths() {
+        assert_eq!(
+            sqlite_path_from_url("sqlite:///app/data/shadow.db"),
+            "/app/data/shadow.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("sqlite:///./data/warm/sentinel_state.db"),
+            "./data/warm/sentinel_state.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("sqlite://./data/warm/sentinel_state.db"),
+            "./data/warm/sentinel_state.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("sqlite://data/shadow.db"),
+            "data/shadow.db"
+        );
+        assert_eq!(
+            sqlite_path_from_url("./data/warm/sentinel_state.db"),
+            "./data/warm/sentinel_state.db"
+        );
+    }
+
+    #[test]
+    fn open_store_fails_closed_on_unreachable_postgres() {
+        // Port 1: connection refused. Must error — never an in-memory store.
+        let err = match open_store("postgresql://127.0.0.1:1/nope", None) {
+            Ok(_) => panic!("unreachable postgres must fail closed"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("fail-closed"));
+    }
+
+    #[test]
+    fn open_store_fails_closed_when_database_url_postgres_unreachable() {
+        // DATABASE_URL takes precedence over a valid sqlite store_url and
+        // must fail closed rather than silently falling back.
+        let db_path = std::env::temp_dir().join(format!(
+            "arb_store_prec_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        let store_url = format!("sqlite://{}", db_path.display());
+        let err = match open_store(&store_url, Some("postgresql://127.0.0.1:1/nope")) {
+            Ok(_) => panic!("unreachable DATABASE_URL postgres must fail closed"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("fail-closed"));
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn open_store_sqlite_url_is_durable_file_backed() {
+        let db_path = std::env::temp_dir().join(format!(
+            "arb_store_durable_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        let url = format!("sqlite://{}", db_path.display());
+        let store = open_store(&url, None).expect("sqlite url must open a durable file store");
+        store
+            .record_attempt(&AttemptRecord {
+                id: 1,
+                slot: 1,
+                route_id: "r".into(),
+                expected_net: Lamports(1),
+                tip_lamports: None,
+                decision: "test".into(),
+            })
+            .expect("write must succeed");
+        drop(store);
+        assert!(db_path.exists(), "store must be file-backed, not in-memory");
+        // Data survives close/reopen: durable, not memory-resident.
+        let reopened = open_store(&url, None).expect("reopen");
+        assert_eq!(reopened.get_attempt(1).expect("read").expect("row").id, 1);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     fn pool_at(id: u8, last_update_slot: u64) -> PoolState {
@@ -480,6 +890,8 @@ mod tests {
             dlmm: None,
             pump_fun: None,
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
             last_update_slot,
             last_update_ms: 0,
         }
@@ -493,6 +905,9 @@ mod tests {
             mint_out: MintId(Pubkey::new_from_array([8; 32])),
             fee_bps: 25,
             active_bin_id: None,
+            token_programs: Default::default(),
+            trade_intent: Default::default(),
+            execution_accounts: None,
         }
     }
 

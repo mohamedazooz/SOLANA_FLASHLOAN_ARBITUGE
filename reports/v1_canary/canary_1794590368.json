@@ -1,0 +1,32 @@
+{
+  "account_count": 1,
+  "blockhash": "2VhBNQRnZZ3Nv9R649yjXc2jqZZJCeL3BrnWT7uDxWNT",
+  "confirmation_status": "finalized",
+  "confirmed_slot": 469007459,
+  "generated_at_unix": 1,
+  "instruction_count": 1,
+  "instruction_summary": "spl-memo (non-financial canary)",
+  "landed": true,
+  "last_valid_block_height": 447022797,
+  "rpc_acceptance": true,
+  "send_error": null,
+  "send_latency_ms": 147,
+  "signature": "SmR6uhE4dr3PoimphULfC2WQpxA7aTQ7ztu9at2mqvm6VAXzMo1GRWn8KGbwnKivr2aUgUrm1gtHzUcsxhbZgMg",
+  "simulation_error": null,
+  "simulation_logs": [
+    "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr invoke [1]",
+    "Program log: Memo (len 45): \"SOLANA_FLASHLOAN_ARBITUGE V1 TRANSPORT CANARY\"",
+    "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr consumed 17724 of 200000 compute units",
+    "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr success"
+  ],
+  "simulation_ok": true,
+  "simulation_preflight": "skipPreflight=false (honest acceptance test)",
+  "simulation_units_consumed": 17724,
+  "status_poll_error": null,
+  "total_runtime_secs": 1,
+  "transaction_version": "V1",
+  "transport": "https://solana-rpc.publicnode.com",
+  "verdict": "V1_TRANSPORT_VERIFIED",
+  "version_byte": 129,
+  "wire_size_bytes": 235
+}

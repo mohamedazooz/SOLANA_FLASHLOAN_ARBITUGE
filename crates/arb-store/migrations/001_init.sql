@@ -29,3 +29,21 @@ CREATE INDEX IF NOT EXISTS idx_attempts_slot ON attempts(slot);
 CREATE INDEX IF NOT EXISTS idx_outcomes_attempt_id ON outcomes(attempt_id);
 CREATE INDEX IF NOT EXISTS idx_fills_attempt_id ON fills(attempt_id);
 
+
+-- Durable dispatch intents (R12): written before any sendTransaction so a
+-- restart during an ambiguous timeout can reconcile by signature instead of
+-- blindly resubmitting. Reconciliation rule: check getSignatureStatuses first;
+-- only mark 'expired' when the blockhash validity window (slot + margin) has
+-- provably passed.
+CREATE TABLE IF NOT EXISTS dispatch_intents (
+    attempt_id INTEGER PRIMARY KEY REFERENCES attempts(id),
+    signature TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    dispatch_slot INTEGER NOT NULL,
+    last_valid_block_height INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    resolved_status TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_intents_status ON dispatch_intents(status);

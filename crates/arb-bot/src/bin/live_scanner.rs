@@ -5,20 +5,21 @@ use anyhow::Result;
 use arb_dex::orca_whirlpool::OrcaWhirlpool;
 use arb_dex::raydium_v4::RaydiumV4Pool;
 use arb_dex::traits::AmmPool;
+#[cfg(feature = "split-routing")]
 use arb_engine::{PoolDepth, RouteArchitectWorker};
 use arb_ingest::GmgnClient;
 use arb_math::economic::{build_economic_quote, calculate_flash_fee_raw};
 use arb_math::{Leg, cpmm_out, optimal_two_pool};
 use arb_tx::jupiter::JupiterClient;
-use arb_types::{DexProtocol, Lamports, MintId, PoolId, Slot, TokenAmount};
+#[cfg(feature = "split-routing")]
+use arb_types::DexProtocol;
+use arb_types::{Lamports, MintId, PoolId, Slot, TokenAmount};
 use base64::prelude::*;
 use serde_json::json;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
-// Shared verified-input helpers from the main bin (arb-bot has no lib target).
-#[path = "../verified_config.rs"]
-mod verified_config;
+use arb_bot::verified_config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -329,45 +330,48 @@ async fn main() -> Result<()> {
     // =========================================================================
     // EQUAL MARGINAL PRICE IMPACT MULTI-POOL SPLIT WORKER DEMO
     // =========================================================================
-    println!(
-        "\n🌊 ---------------- ROUTE ARCHITECT WORKER: MULTI-POOL SPLIT OPTIMIZER ----------------"
-    );
-    println!(
-        "📐 Evaluating Kamino Flash Loan Split Optimization across Raydium & Orca to eliminate slippage:"
-    );
-
-    let simulated_loans = [10_000_000_000u64, 50_000_000_000u64, 200_000_000_000u64];
-    let pool1_depth = PoolDepth {
-        pool_id: raydium_pool.pool_id,
-        protocol: DexProtocol::RaydiumV4,
-        reserve_in: ray_sol_res,
-        reserve_out: ray_usdc_res,
-        fee_bps: 25,
-    };
-    let pool2_depth = PoolDepth {
-        pool_id: orca_pool.pool_id,
-        protocol: DexProtocol::OrcaWhirlpool,
-        reserve_in: orca_sol_res,
-        reserve_out: orca_usdc_res,
-        fee_bps: 5,
-    };
-
-    for loan in simulated_loans {
-        let (x1, x2) = RouteArchitectWorker::calculate_optimal_split_two_pools(
-            &pool1_depth,
-            &pool2_depth,
-            loan,
-        );
-        let ratio1 = (x1 as f64 / loan as f64) * 100.0;
-        let ratio2 = (x2 as f64 / loan as f64) * 100.0;
+    #[cfg(feature = "split-routing")]
+    {
         println!(
-            "  • Total Flash Loan: {:>6.2} SOL -> Leg 1 (Raydium): {:>6.2} SOL ({:>5.1}%) | Leg 2 (Orca): {:>6.2} SOL ({:>5.1}%)",
-            loan as f64 / 1e9,
-            x1 as f64 / 1e9,
-            ratio1,
-            x2 as f64 / 1e9,
-            ratio2
+            "\n🌊 ---------------- ROUTE ARCHITECT WORKER: MULTI-POOL SPLIT OPTIMIZER ----------------"
         );
+        println!(
+            "📐 Evaluating Kamino Flash Loan Split Optimization across Raydium & Orca to eliminate slippage:"
+        );
+
+        let simulated_loans = [10_000_000_000u64, 50_000_000_000u64, 200_000_000_000u64];
+        let pool1_depth = PoolDepth {
+            pool_id: raydium_pool.pool_id,
+            protocol: DexProtocol::RaydiumV4,
+            reserve_in: ray_sol_res,
+            reserve_out: ray_usdc_res,
+            fee_bps: 25,
+        };
+        let pool2_depth = PoolDepth {
+            pool_id: orca_pool.pool_id,
+            protocol: DexProtocol::OrcaWhirlpool,
+            reserve_in: orca_sol_res,
+            reserve_out: orca_usdc_res,
+            fee_bps: 5,
+        };
+
+        for loan in simulated_loans {
+            let (x1, x2) = RouteArchitectWorker::calculate_optimal_split_two_pools(
+                &pool1_depth,
+                &pool2_depth,
+                loan,
+            );
+            let ratio1 = (x1 as f64 / loan as f64) * 100.0;
+            let ratio2 = (x2 as f64 / loan as f64) * 100.0;
+            println!(
+                "  • Total Flash Loan: {:>6.2} SOL -> Leg 1 (Raydium): {:>6.2} SOL ({:>5.1}%) | Leg 2 (Orca): {:>6.2} SOL ({:>5.1}%)",
+                loan as f64 / 1e9,
+                x1 as f64 / 1e9,
+                ratio1,
+                x2 as f64 / 1e9,
+                ratio2
+            );
+        }
     }
 
     // =========================================================================
@@ -615,10 +619,10 @@ fn extract_dex_labels(quote: &serde_json::Value) -> String {
     "Direct AMM".to_string()
 }
 
-/// Read the Kamino flash-loan fee (Q64.64 sf) and the WSOL mint decimals live
-/// from the RPC pool. Returns `None` when either read fails — the scanner must
-/// never substitute a hardcoded fee, so an unreadable source means "profit not
-/// established" rather than a guessed number.
+/// Read the Kamino flash-loan fee (U68F60 sf, 60 fractional bits) and the WSOL
+/// mint decimals live from the RPC pool. Returns `None` when either read fails —
+/// the scanner must never substitute a hardcoded fee, so an unreadable source
+/// means "profit not established" rather than a guessed number.
 async fn read_verified_economics(rpc_pool: &arb_ingest::RpcPool) -> Option<(u64, u8)> {
     let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).ok()?;
     let reserve = Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE).ok()?;

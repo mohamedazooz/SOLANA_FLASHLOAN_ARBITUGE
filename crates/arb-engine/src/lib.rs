@@ -8,12 +8,53 @@ pub use route_worker::{
 };
 pub mod adapters;
 pub use adapters::*;
+pub mod route_graph;
+pub use route_graph::{
+    AdapterHopQuote, AdapterHopRequest, AdapterRouteCandidate, AdapterRouteGraph,
+    AdapterRouteQuote, QuotedCycle, RouteCandidate, UnifiedRouteGraph,
+};
 pub mod guarded;
 pub use guarded::{
     GuardedQuoteError, GuardedRouteQuote, quote_route_guarded, revalidate_before_dispatch,
 };
 pub mod bellman_ford;
 pub use bellman_ford::{ArbitrageCycle, BellmanFordEngine, BfEdge};
+pub mod cross_pool_dlmm;
+pub use cross_pool_dlmm::{
+    CrossPoolRejection, CrossPoolRejectionReason, CrossPoolScan, CrossPoolScanStats,
+    DlmmCrossPoolConfig,
+};
+pub mod dlmm_flash_arbitrage;
+pub use dlmm_flash_arbitrage::{
+    DlmmFlashArbConfig, DlmmFlashArbEvaluation, DlmmFlashArbEvaluator, DlmmFlashArbPool,
+    DlmmFlashArbRoute, DlmmHopQuote, DlmmPoolAllowlist, FlashArbRejection, enumerate_routes,
+};
+pub mod meteora_pair_discovery;
+pub use meteora_pair_discovery::{
+    MeteoraDlmmEligiblePair, MeteoraDlmmPairDiscoveryReport, MeteoraDlmmPoolPairDiscovery,
+    PoolRejectionReason,
+};
+pub mod meteora_quote_engine;
+pub use meteora_quote_engine::{MeteoraDlmmCrossPoolQuoteEngine, TwoHopDlmmQuote};
+pub mod flash_loan_sizing;
+pub mod meteora_fresh_state;
+pub mod meteora_size_optimizer;
+pub mod three_leg_meme_pipeline;
+pub use flash_loan_sizing::{
+    FlashLoanSizingConfig, FlashLoanSizingResult, KAMINO_FRACTION_FRAC_BITS,
+    KAMINO_FRACTION_ONE_BITS, calculate_kamino_flash_fee, calculate_optimal_flash_loan,
+    net_profit_lamports,
+};
+pub use meteora_fresh_state::{FreshnessConfig, FreshnessVerdict, evaluate_freshness};
+pub use meteora_size_optimizer::{
+    DlmmArbitrageDirection, DlmmOptimizerConfig, MeteoraDlmmTradeSizeOptimizer,
+    MeteoraOptimalSizeResult,
+};
+pub use three_leg_meme_pipeline::{
+    ThreeLegMemeContextParams, ThreeLegMemeLegQuote, ThreeLegMemePipelineError,
+    ThreeLegMemePipelineResult, ThreeLegMemeSizeSearchResult, build_three_leg_meme_pipeline,
+    simulate_profitability_gate,
+};
 
 use arb_math::{
     DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters, Leg,
@@ -25,8 +66,8 @@ use arb_math::{
     optimal_three_pool, optimal_two_pool, quote_clmm, quote_dlmm_view,
 };
 use arb_types::{
-    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolId, PoolKind, PoolState, RouteId,
-    Slot, SwapHop, TokenAmount,
+    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolExecutionAccounts, PoolId,
+    PoolKind, PoolState, RouteId, Slot, SwapHop, TokenAmount, TokenProgramKind,
 };
 use std::collections::HashMap;
 
@@ -106,11 +147,15 @@ pub fn quote_pool(
             if let Some(e) = edge {
                 if let Some(d) = &e.dlmm {
                     if let Some(params) = &d.params {
+                        if d.status != 0 || params.function_type != 0 || params.collect_fee_mode > 1
+                        {
+                            return 0;
+                        }
                         if !d.bins.is_empty() {
                             let pool = DlmmPoolState {
                                 active_id: d.active_bin_id,
                                 bin_step: d.bin_step_bps,
-                                status: 0,
+                                status: d.status,
                                 parameters: DlmmParameters {
                                     bin_step: d.bin_step_bps,
                                     base_factor: params.base_factor,
@@ -121,11 +166,12 @@ pub fn quote_pool(
                                     max_volatility_accumulator: params.max_volatility_accumulator,
                                     protocol_share: params.protocol_share,
                                     base_fee_power_factor: params.base_fee_power_factor,
+                                    collect_fee_mode: params.collect_fee_mode,
                                 },
                                 v_parameters: DlmmVariableParameters {
                                     volatility_accumulator: d.volatility_accumulator,
                                     volatility_reference: d.volatility_reference,
-                                    index_reference: d.active_bin_id,
+                                    index_reference: d.index_reference,
                                     last_update_timestamp: d.last_update_timestamp,
                                 },
                             };
@@ -193,6 +239,8 @@ pub fn cycle_profit_at(path: &[&MarketEdge], d: u64) -> u64 {
             dlmm: e.dlmm.clone(),
             pump_fun: e.pump_fun.clone(),
             transfer_fee_bps: e.transfer_fee_bps,
+            token_programs: e.token_programs,
+            execution_accounts: e.execution_accounts.clone(),
             last_update_slot: 0,
             last_update_ms: 0,
         });
@@ -262,6 +310,12 @@ pub struct MarketEdge {
     pub pump_fun: Option<arb_types::PumpFunState>,
     /// Token-2022 transfer fee in bps.
     pub transfer_fee_bps: u16,
+    /// Token programs for (from_mint, to_mint).
+    pub token_programs: [TokenProgramKind; 2],
+    /// Verified on-chain execution accounts resolved for this pool.
+    pub execution_accounts: Option<PoolExecutionAccounts>,
+    /// Active bin ID for DLMM pools.
+    pub active_bin_id: Option<i32>,
 }
 
 /// Directed multi-asset liquidity graph anchored to base currencies.
@@ -272,6 +326,24 @@ pub struct MarketGraph {
     /// Authoritative economic configuration. When `None` the graph cannot price
     /// opportunities and `find_base_cycles` returns empty (fail closed).
     pub economic_config: Option<EconomicConfig>,
+}
+
+/// Per-tick scan telemetry for the base-cycle search.
+///
+/// Without this, a log line of "0 candidate route(s)" is ambiguous between
+/// two fundamentally different causes that demand different fixes:
+/// - `gross_profitable == 0`: the market genuinely had no cycle whose raw
+///   output exceeded its input (nothing to do — correct fail-closed).
+/// - `gross_profitable > 0 && gate_rejected > 0`: cycles existed but the
+///   economic gate (flash fee, min profit, Jito tip) rejected them —
+///   tuning/observability problem, NOT a market absence.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BaseCycleScanStats {
+    pub base_anchors: usize,
+    pub two_hop_gross_profitable: u64,
+    pub three_hop_gross_profitable: u64,
+    pub gate_rejected: u64,
+    pub opportunities: u64,
 }
 
 impl MarketGraph {
@@ -368,6 +440,7 @@ impl MarketGraph {
         .ok()?;
 
         Some(ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id,
             slot: current_slot,
             size_in: TokenAmount(size_in),
@@ -378,6 +451,8 @@ impl MarketGraph {
             base_decimals: config.base_decimals,
             price_impact_bps: impact,
             hops,
+
+            expected_min_final_output: 0,
         })
     }
 
@@ -390,6 +465,7 @@ impl MarketGraph {
                 || p.reserve_in == 0
                 || p.reserve_out == 0
                 || p.has_risky_token
+                || p.transfer_fee_bps != 0
                 || !p.is_fee_valid()
             {
                 continue;
@@ -415,6 +491,9 @@ impl MarketGraph {
                     dlmm: p.dlmm.clone(),
                     pump_fun: p.pump_fun.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
+                    token_programs: p.token_programs,
+                    execution_accounts: p.execution_accounts.clone(),
+                    active_bin_id: p.dlmm.as_ref().map(|d| d.active_bin_id),
                 });
 
             // Edge: quote_mint -> base_mint
@@ -436,6 +515,9 @@ impl MarketGraph {
                     dlmm: p.dlmm.clone(),
                     pump_fun: p.pump_fun.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
+                    token_programs: [p.token_programs[1], p.token_programs[0]],
+                    execution_accounts: p.execution_accounts.clone(),
+                    active_bin_id: p.dlmm.as_ref().map(|d| d.active_bin_id),
                 });
         }
     }
@@ -505,15 +587,21 @@ impl MarketGraph {
             }
             PoolKind::Dlmm => {
                 let d = edge.dlmm.as_ref()?;
-                let active_bin = d.bins.iter().find(|b| b.bin_id == d.active_bin_id)?;
                 let a_to_b = edge.pool_base == edge.from_mint;
-                let ax = active_bin.amount_x.min(u64::MAX as u128) as u64;
-                let ay = active_bin.amount_y.min(u64::MAX as u128) as u64;
-                arb_math::dlmm::dlmm_active_bin_max_input(
+                let bins: Vec<arb_math::dlmm::DlmmBin> = d
+                    .bins
+                    .iter()
+                    .map(|b| arb_math::dlmm::DlmmBin {
+                        id: b.bin_id,
+                        amount_x: b.amount_x.min(u64::MAX as u128) as u64,
+                        amount_y: b.amount_y.min(u64::MAX as u128) as u64,
+                        price_q64: 0,
+                    })
+                    .collect();
+                arb_math::dlmm::dlmm_multi_bin_max_input(
                     d.active_bin_id,
                     d.bin_step_bps,
-                    ax,
-                    ay,
+                    &bins,
                     a_to_b,
                 )
             }
@@ -527,7 +615,21 @@ impl MarketGraph {
         current_slot: Slot,
         max_trade_size: u64,
     ) -> Vec<ExecutionOpportunity> {
+        self.find_base_cycles_with_stats(current_slot, max_trade_size)
+            .0
+    }
+
+    /// `find_base_cycles` with per-tick scan telemetry (see `BaseCycleScanStats`).
+    pub fn find_base_cycles_with_stats(
+        &self,
+        current_slot: Slot,
+        max_trade_size: u64,
+    ) -> (Vec<ExecutionOpportunity>, BaseCycleScanStats) {
         let mut opportunities = Vec::new();
+        let mut stats = BaseCycleScanStats {
+            base_anchors: self.base_anchors.len(),
+            ..Default::default()
+        };
         let mut route_counter = 1u32;
 
         for &base in &self.base_anchors {
@@ -559,7 +661,15 @@ impl MarketGraph {
                             gamma: 10_000u128.saturating_sub(e2.fee_bps as u128),
                         };
 
-                        if let Some(opt_size) = optimal_two_pool(&l1, &l2) {
+                        let non_cpmm_hops = (e1.kind != PoolKind::Cpmm) as usize
+                            + (e2.kind != PoolKind::Cpmm) as usize;
+                        let initial_size = optimal_two_pool(&l1, &l2).or(if non_cpmm_hops > 0 {
+                            Some(100_000)
+                        } else {
+                            None
+                        });
+
+                        if let Some(opt_size) = initial_size {
                             let mut size_in = opt_size.min(max_trade_size);
                             // Two-sided CLMM & DLMM active tick/bin capacity clamping (Hop 1)
                             if let Some(c1) = Self::edge_max_input_capacity(e1) {
@@ -600,6 +710,7 @@ impl MarketGraph {
                                         Some(e2),
                                     );
                                     if out2 > size_in as u128 {
+                                        stats.two_hop_gross_profitable += 1;
                                         let impact = cpmm_price_impact_bps(
                                             size_in as u128,
                                             l1.r_in,
@@ -614,7 +725,10 @@ impl MarketGraph {
                                                 mint_in: e1.from_mint,
                                                 mint_out: e1.to_mint,
                                                 fee_bps: e1.fee_bps,
-                                                active_bin_id: None,
+                                                active_bin_id: e1.active_bin_id,
+                                                token_programs: e1.token_programs,
+                                                trade_intent: Default::default(),
+                                                execution_accounts: e1.execution_accounts.clone(),
                                             },
                                             SwapHop {
                                                 pool_id: e2.pool_id,
@@ -622,7 +736,10 @@ impl MarketGraph {
                                                 mint_in: e2.from_mint,
                                                 mint_out: e2.to_mint,
                                                 fee_bps: e2.fee_bps,
-                                                active_bin_id: None,
+                                                active_bin_id: e2.active_bin_id,
+                                                token_programs: e2.token_programs,
+                                                trade_intent: Default::default(),
+                                                execution_accounts: e2.execution_accounts.clone(),
                                             },
                                         ];
                                         if let Some(opp) = self.make_economic_opportunity(
@@ -637,6 +754,8 @@ impl MarketGraph {
                                         ) {
                                             opportunities.push(opp);
                                             route_counter += 1;
+                                        } else {
+                                            stats.gate_rejected += 1;
                                         }
                                     }
                                 }
@@ -829,6 +948,7 @@ impl MarketGraph {
                                         );
 
                                         if out3 > size_in as u128 {
+                                            stats.three_hop_gross_profitable += 1;
                                             let impact = cpmm_price_impact_bps(
                                                 size_in as u128,
                                                 l1.r_in,
@@ -848,7 +968,12 @@ impl MarketGraph {
                                                     mint_in: e1.from_mint,
                                                     mint_out: e1.to_mint,
                                                     fee_bps: e1.fee_bps,
-                                                    active_bin_id: None,
+                                                    active_bin_id: e1.active_bin_id,
+                                                    token_programs: e1.token_programs,
+                                                    trade_intent: Default::default(),
+                                                    execution_accounts: e1
+                                                        .execution_accounts
+                                                        .clone(),
                                                 },
                                                 SwapHop {
                                                     pool_id: e2.pool_id,
@@ -856,7 +981,12 @@ impl MarketGraph {
                                                     mint_in: e2.from_mint,
                                                     mint_out: e2.to_mint,
                                                     fee_bps: e2.fee_bps,
-                                                    active_bin_id: None,
+                                                    active_bin_id: e2.active_bin_id,
+                                                    token_programs: e2.token_programs,
+                                                    trade_intent: Default::default(),
+                                                    execution_accounts: e2
+                                                        .execution_accounts
+                                                        .clone(),
                                                 },
                                                 SwapHop {
                                                     pool_id: e3.pool_id,
@@ -864,7 +994,12 @@ impl MarketGraph {
                                                     mint_in: e3.from_mint,
                                                     mint_out: e3.to_mint,
                                                     fee_bps: e3.fee_bps,
-                                                    active_bin_id: None,
+                                                    active_bin_id: e3.active_bin_id,
+                                                    token_programs: e3.token_programs,
+                                                    trade_intent: Default::default(),
+                                                    execution_accounts: e3
+                                                        .execution_accounts
+                                                        .clone(),
                                                 },
                                             ];
                                             if let Some(opp) = self.make_economic_opportunity(
@@ -879,6 +1014,8 @@ impl MarketGraph {
                                             ) {
                                                 opportunities.push(opp);
                                                 route_counter += 1;
+                                            } else {
+                                                stats.gate_rejected += 1;
                                             }
                                         }
                                     }
@@ -892,7 +1029,8 @@ impl MarketGraph {
 
         // Candidate Ranking: Sort opportunities descending by net profit
         opportunities.sort_by_key(|a| std::cmp::Reverse(a.net_profit.0));
-        opportunities
+        stats.opportunities = opportunities.len() as u64;
+        (opportunities, stats)
     }
 
     /// Discover multi-hop arbitrage cycles up to `max_hops` (e.g. 4-hop, 5-hop) using DFS cycle traversal
@@ -1106,7 +1244,10 @@ impl MarketGraph {
                 mint_in: e.from_mint,
                 mint_out: e.to_mint,
                 fee_bps: e.fee_bps,
-                active_bin_id: None,
+                active_bin_id: e.active_bin_id,
+                token_programs: e.token_programs,
+                trade_intent: Default::default(),
+                execution_accounts: e.execution_accounts.clone(),
             })
             .collect();
 
@@ -1197,6 +1338,8 @@ mod tests {
             dlmm: None,
             pump_fun: None,
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
         }
     }
 

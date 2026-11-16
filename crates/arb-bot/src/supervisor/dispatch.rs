@@ -1,5 +1,7 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
+use arb_types::InflightStatus;
+use base64::prelude::*;
 
 pub(super) struct DispatchContext<'a> {
     pub opp: &'a ExecutionOpportunity,
@@ -10,10 +12,15 @@ pub(super) struct DispatchContext<'a> {
     pub expected_stream_generation: u64,
     pub route_label: &'a str,
     pub gross_rev_sol: f64,
+    #[allow(dead_code)] // logged by telemetry sinks, not read on dispatch path
     pub gross_sol: f64,
     pub profit_sol: f64,
     pub live_sol_price: f64,
     pub blockhash_b58: &'a str,
+    /// `lastValidBlockHeight` of this blockhash, persisted with the dispatch
+    /// intent so recovery can prove expiration with block-height evidence.
+    #[allow(dead_code)] // mirrored into DispatchIntent for recovery evidence
+    pub last_valid_block_height: Option<i64>,
     pub cu_limit: u32,
     pub cu_price: u64,
     pub tx_bytes: &'a Vec<u8>,
@@ -21,6 +28,25 @@ pub(super) struct DispatchContext<'a> {
     pub real_net_profit: Lamports,
     pub payer: Pubkey,
     pub route_sig: &'a str,
+    pub t_ingest_to_quote_us: u64,
+    pub t_risk_us: u64,
+    pub t_assembly_us: u64,
+    pub t_signing_us: u64,
+    pub pools_count: usize,
+    pub loan_size_sol: f64,
+}
+
+fn format_mint_short(pk: &Pubkey) -> String {
+    let s = pk.to_string();
+    if s == arb_constants::WSOL_MINT {
+        "WSOL".to_string()
+    } else if s == arb_constants::USDC_MINT {
+        "USDC".to_string()
+    } else if s.len() > 8 {
+        format!("{}...{}", &s[..4], &s[s.len() - 4..])
+    } else {
+        s
+    }
 }
 
 impl Supervisor {
@@ -38,6 +64,10 @@ impl Supervisor {
             profit_sol,
             live_sol_price,
             blockhash_b58,
+<<<<<<< HEAD
+=======
+            last_valid_block_height,
+>>>>>>> origin/main
             cu_limit,
             cu_price,
             tx_bytes,
@@ -45,6 +75,7 @@ impl Supervisor {
             real_net_profit,
             payer,
             route_sig,
+<<<<<<< HEAD
         } = context;
         // 6. Dispatch based on mode
         let leader_str = self
@@ -69,6 +100,68 @@ impl Supervisor {
                 .await;
         }
         match self.mode {
+=======
+            t_ingest_to_quote_us,
+            t_risk_us,
+            t_assembly_us,
+            t_signing_us,
+            pools_count,
+            loan_size_sol,
+        } = context;
+
+        let active_bins: Vec<Option<i32>> = opp.hops.iter().map(|h| h.active_bin_id).collect();
+
+        // GUARD-01: Revalidate critical state immediately before dispatch.
+        // Fail-closed: stream generation must match quoting generation, and every pool
+        // must remain fresh, un-invalidated, and without active bin shifts.
+        if self.ingest.stream_generation() != expected_stream_generation {
+            warn!("GUARD-01: Ingest stream reconnected during cycle; rejecting dispatch");
+            return;
+        }
+
+        let max_age_slots = self.config.strategy.max_state_age_slots;
+        for hop in &opp.hops {
+            let Some(live_pool) = self.ingest.cache().get_pool(&hop.pool_id) else {
+                warn!(
+                    "GUARD-01: Pool {} vanished from cache before dispatch; aborting",
+                    hop.pool_id.0
+                );
+                return;
+            };
+            if current_slot.0.saturating_sub(live_pool.last_update_slot) > max_age_slots {
+                warn!(
+                    "GUARD-01: Pool {} became stale before dispatch (last slot {}); aborting",
+                    hop.pool_id.0, live_pool.last_update_slot
+                );
+                return;
+            }
+            if self.ingest.slot_is_dead(live_pool.slot.0) {
+                warn!(
+                    "GUARD-01: Pool {} updated in dead slot {}; aborting dispatch",
+                    hop.pool_id.0, live_pool.slot.0
+                );
+                return;
+            }
+            if let Some(ref dlmm) = live_pool.dlmm {
+                if hop.active_bin_id.is_some() && hop.active_bin_id != Some(dlmm.active_bin_id) {
+                    warn!(
+                        "GUARD-01: DLMM pool {} active bin shifted from {:?} to {} before dispatch; aborting",
+                        hop.pool_id.0, hop.active_bin_id, dlmm.active_bin_id
+                    );
+                    return;
+                }
+            }
+        }
+
+        // 6. Dispatch based on mode
+        let leader_str = self
+            .jito_service
+            .leader_for(current_slot)
+            .map(|pk| pk.to_string())
+            .unwrap_or_else(|| "Unknown (Non-Jito / Stale Schedule)".to_string());
+
+        match self.mode() {
+>>>>>>> origin/main
             BotMode::Canary => {
                 info!(
                     "canary: simulated valid execution of {} bytes (not broadcast to Jito)",
@@ -93,10 +186,21 @@ impl Supervisor {
                         &leader_str,
                         cu_limit,
                         cu_price,
+<<<<<<< HEAD
                     )
                     .await;
             }
             BotMode::Shadow | BotMode::Simulate => {
+=======
+                        opp.price_impact_bps.0,
+                        &active_bins,
+                        pools_count,
+                        loan_size_sol,
+                    )
+                    .await;
+            }
+            BotMode::Simulate => {
+>>>>>>> origin/main
                 arb_metrics::add_simulated_net_profit(profit_sol);
                 let _ = self
                     .store
@@ -113,11 +217,16 @@ impl Supervisor {
                             &leader_str,
                             cu_limit,
                             cu_price,
+                            opp.price_impact_bps.0,
+                            &active_bins,
+                            pools_count,
+                            loan_size_sol,
                         )
                         .await;
                 }
             }
             BotMode::Live => {
+<<<<<<< HEAD
                 if crate::live_execution_enabled() {
                     // Safety Floor Check: Enforce minimum 0.05 SOL reserve (50_000_000 lamports)
                     let current_balance = self.rpc_pool.get_balance(&payer).await.unwrap_or(0);
@@ -219,6 +328,840 @@ impl Supervisor {
                                     .ok();
                             }
                         }
+=======
+                // Safety Floor Check: Enforce minimum reserve only if configured > 0.
+                // When MIN_SOL_RESERVE_LAMPORTS=0 (fast-path flash loan default), skip the blocking RPC getBalance check completely.
+                let min_reserve_lamports = std::env::var("MIN_SOL_RESERVE_LAMPORTS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(self.config.wallet.min_sol_balance_lamports);
+                if min_reserve_lamports > 0
+                    && let Ok(current_balance) = self.rpc_pool.get_balance(&payer).await
+                    && current_balance < min_reserve_lamports
+                {
+                    warn!(
+                        "🚨 Safety Floor Active: Wallet balance ({} lamports / {:.4} SOL) is below {:.4} SOL minimum reserve — skipping execution to protect fees",
+                        current_balance,
+                        current_balance as f64 / 1e9,
+                        min_reserve_lamports as f64 / 1e9
+                    );
+                    self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
+                        route: route_label.to_string(),
+                        gross_sol,
+                        stage: "Safety Floor Reserve".to_string(),
+                        reason: format!(
+                            "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                            current_balance as f64 / 1e9,
+                            min_reserve_lamports as f64 / 1e9
+                        ),
+                        slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
+                    });
+                    self.telegram
+                        .alert_opportunity_rejected(
+                            route_label,
+                            gross_sol,
+                            "Safety Floor Reserve",
+                            &format!(
+                                "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                                current_balance as f64 / 1e9,
+                                min_reserve_lamports as f64 / 1e9
+                            ),
+                            current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(profit_sol),
+                        )
+                        .await;
+                    return;
+                }
+
+                // V1-only release policy: never accept Legacy or V0 output.
+                // V1 has inline accounts (no ALTs), a 4,096-byte limit, and this
+                // release only uses direct RPC/SWQoS simulation/transport.
+                let tx_version =
+                    match arb_tx::CompiledAdaptiveTransaction::parse_version_from_wire(tx_bytes) {
+                        Ok(version) => version,
+                        Err(error) => {
+                            warn!("Rejecting malformed/unknown transaction envelope: {error}");
+                            self.record_rejected_opportunity(
+                                crate::telegram::RejectedTradeSummary {
+                                    route: route_label.to_string(),
+                                    gross_sol,
+                                    stage: "Transaction Format Check".to_string(),
+                                    reason: format!("تعذر تحديد إصدار المعاملة: {error}"),
+                                    slot: current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    net_sol: Some(profit_sol),
+                                },
+                            );
+                            return;
+                        }
+                    };
+                if tx_version != arb_tx::TransactionVersion::V1 {
+                    warn!(
+                        "V1-only release rejected non-V1 transaction: {:?}",
+                        tx_version
+                    );
+                    self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
+                        route: route_label.to_string(),
+                        gross_sol,
+                        stage: "V1-only policy".to_string(),
+                        reason: format!(
+                            "Only Solana transaction V1 is permitted; received {tx_version:?}"
+                        ),
+                        slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
+                    });
+                    return;
+                }
+                // Authoritative transport selection with explicit capability verification.
+                let cap = arb_tx::TransportCapability::mainnet_v1_capable("Mainnet-RPC-Pool");
+                let direct_v1_enabled = matches!(self.mode(), BotMode::Simulate)
+                    || std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
+                        .unwrap_or(false);
+                let jito_v1_enabled = matches!(self.mode(), BotMode::Simulate)
+                    || std::env::var("SOLANA_TX_V1_JITO_ENABLED")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
+                        .unwrap_or(false);
+
+                if let Err(err) = arb_tx::select_authoritative_transport(
+                    tx_bytes,
+                    is_swqos_route,
+                    direct_v1_enabled,
+                    jito_v1_enabled,
+                    &cap,
+                ) {
+                    let reason = format!("Transport capability validation failed: {err}");
+                    warn!("{reason}");
+                    self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
+                        route: route_label.to_string(),
+                        gross_sol,
+                        stage: "Transport Capability Check".to_string(),
+                        reason: reason.clone(),
+                        slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
+                    });
+                    self.telegram
+                        .alert_opportunity_rejected(
+                            route_label,
+                            gross_sol,
+                            "Transport Capability Check",
+                            &reason,
+                            current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(profit_sol),
+                        )
+                        .await;
+                    return;
+                }
+
+                // LiteSVM is an optional local accelerator. Its installed
+                // transaction parser may lag V1; for V1, rely on the mandatory
+                // network RPC simulation below rather than misclassifying an
+                // unsupported local parser as an on-chain execution failure.
+                if tx_version != arb_tx::TransactionVersion::V1 {
+                    let local_sim = self.simulator.simulate_local(tx_bytes.as_slice());
+                    if local_sim.success {
+                        debug!(
+                            "LiteSVM in-memory simulation succeeded (CU: {})",
+                            local_sim.compute_units_consumed
+                        );
+                    } else if let Some(ref err) = local_sim.error
+                        && !err.contains("litesvm feature disabled")
+                    {
+                        warn!(
+                            "LiteSVM in-memory simulation rejected ({}) - skipping dispatch",
+                            err
+                        );
+                        return;
+                    }
+                }
+
+                // Mandatory live RPC preflight. There is no environment switch
+                // that can silently turn this guard off.
+                let sim_enabled = true;
+
+                if sim_enabled {
+                    // RPC simulation: fail-closed safety check before dispatch
+                    match self.simulator.simulate_async(tx_bytes.as_slice()).await {
+                        Ok(sim_res) => {
+                            if sim_res.success && sim_res.units_consumed > 0 {
+                                self.measured_cu.lock().insert(
+                                    route_sig.to_owned(),
+                                    u32::try_from(sim_res.units_consumed).unwrap_or(u32::MAX),
+                                );
+                            }
+                            if !sim_res.success {
+                                warn!(
+                                    "Pre-flight simulation failed ({:?}) - skipping bundle dispatch",
+                                    sim_res.error
+                                );
+                                let reason_msg =
+                                    format!("محاكاة المعاملة فشلت على الشبكة: {:?}", sim_res.error);
+                                self.record_rejected_opportunity(
+                                    crate::telegram::RejectedTradeSummary {
+                                        route: route_label.to_string(),
+                                        gross_sol,
+                                        stage: "Pre-flight Simulation".to_string(),
+                                        reason: reason_msg.clone(),
+                                        slot: current_slot.0,
+                                        pools_count,
+                                        loan_size_sol,
+                                        net_sol: Some(profit_sol),
+                                    },
+                                );
+                                self.telegram
+                                    .alert_opportunity_rejected(
+                                        route_label,
+                                        gross_sol,
+                                        "Pre-flight Simulation",
+                                        &reason_msg,
+                                        current_slot.0,
+                                        pools_count,
+                                        loan_size_sol,
+                                        Some(profit_sol),
+                                    )
+                                    .await;
+                                return;
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Primary simulator RPC call failed ({e}); failing over to RpcPool::simulate_transaction..."
+                            );
+                            let b64 = BASE64_STANDARD.encode(tx_bytes.as_slice());
+                            // Pass the wire version so the RPC can deserialize
+                            // v0/v1 transactions during pre-flight.
+                            let max_version = arb_tx::rpc_max_supported_version_from_wire(tx_bytes)
+                                .ok()
+                                .flatten();
+                            match self.rpc_pool.simulate_transaction(&b64, max_version).await {
+                                Ok(sim_val) => {
+                                    let sim_err = sim_val.get("err").and_then(|ev| {
+                                        if ev.is_null() {
+                                            None
+                                        } else {
+                                            Some(ev.to_string())
+                                        }
+                                    });
+                                    let units_consumed = sim_val
+                                        .get("unitsConsumed")
+                                        .and_then(|u| u.as_u64())
+                                        .unwrap_or(0);
+                                    if sim_err.is_none() && units_consumed > 0 {
+                                        self.measured_cu.lock().insert(
+                                            route_sig.to_owned(),
+                                            u32::try_from(units_consumed).unwrap_or(u32::MAX),
+                                        );
+                                    }
+                                    if let Some(err_str) = sim_err {
+                                        warn!(
+                                            "Pre-flight fallback simulation failed ({err_str}) - skipping bundle dispatch"
+                                        );
+                                        let reason_msg = format!(
+                                            "محاكاة المعاملة فشلت على الشبكة (Fallback RPC): {err_str}"
+                                        );
+                                        self.record_rejected_opportunity(
+                                            crate::telegram::RejectedTradeSummary {
+                                                route: route_label.to_string(),
+                                                gross_sol,
+                                                stage: "Pre-flight Simulation".to_string(),
+                                                reason: reason_msg.clone(),
+                                                slot: current_slot.0,
+                                                pools_count,
+                                                loan_size_sol,
+                                                net_sol: Some(profit_sol),
+                                            },
+                                        );
+                                        self.telegram
+                                            .alert_opportunity_rejected(
+                                                route_label,
+                                                gross_sol,
+                                                "Pre-flight Simulation",
+                                                &reason_msg,
+                                                current_slot.0,
+                                                pools_count,
+                                                loan_size_sol,
+                                                Some(profit_sol),
+                                            )
+                                            .await;
+                                        return;
+                                    }
+                                    info!(
+                                        "✅ Fallback RpcPool pre-flight simulation succeeded (CU={units_consumed})"
+                                    );
+                                }
+                                Err(pool_err) => {
+                                    warn!(
+                                        "Pre-flight simulation RPC call error ({e}; fallback: {pool_err}) - failing closed for live safety"
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Fire-time gate: bypassed immediately when FAST_PATH_IMMEDIATE_DISPATCH=true.
+                let immediate_dispatch = std::env::var("FAST_PATH_IMMEDIATE_DISPATCH")
+                    .map(|v| {
+                        matches!(
+                            v.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        )
+                    })
+                    .unwrap_or(false);
+                let target_slot = Slot(current_slot.0.saturating_add(1));
+                let fire_wait = if !immediate_dispatch
+                    && !is_swqos_route
+                    && self.jito_service.bids_for(target_slot)
+                {
+                    let clock = self.slot_clock.lock();
+                    clock
+                        .schedule(target_slot.0, &self.rtt.lock().0, 5)
+                        .map(|plan| clock.wait_duration(plan.fire_at_ns))
+                } else {
+                    None
+                };
+                if let Some(wait) = fire_wait
+                    && wait <= std::time::Duration::from_millis(arb_math::SLOT_MS as u64)
+                {
+                    tokio::time::sleep(wait).await;
+                }
+
+                // Final fire-time safety gate: the kill switch / emergency
+                // latch must block in-flight submissions too, not just new
+                // captures — a stop issued during simulation must win.
+                if self.risk_gate.kill_switch().is_blocked()
+                    || self.control().is_some_and(|c| c.is_emergency_stopped())
+                {
+                    warn!(route = %route_label, "Execution aborted by fire-time kill switch / emergency stop");
+                    let _ = self
+                        .store
+                        .record_outcome(record.id, "aborted_kill_switch", None);
+                    self.telegram
+                        .alert_execution_failed(
+                            "risk-gate",
+                            "kill switch / emergency stop active at fire time; transaction not sent",
+                            route_label,
+                        )
+                        .await;
+                    return;
+                }
+
+                // Final fire-time state guard: simulation and the optional
+                // slot-window wait may have outlived the stream generation.
+                // Re-check immediately before any network submission.
+                if let Err(reason) = arb_ingest::validate_execution_readiness(
+                    self.ingest.stream_connected(),
+                    expected_stream_generation,
+                    self.ingest.stream_generation(),
+                    self.ingest.current_slot(),
+                    opp.slot.0,
+                    self.config.strategy.max_state_age_slots,
+                ) {
+                    warn!(?reason, route = %route_label, "Execution rejected by final stream-readiness guard");
+                    let reason_msg =
+                        format!("Stream/slot integrity changed before submission: {reason:?}");
+                    self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
+                        route: route_label.to_string(),
+                        gross_sol,
+                        stage: "Final Stream Readiness".to_string(),
+                        reason: reason_msg.clone(),
+                        slot: current_slot.0,
+                        pools_count,
+                        loan_size_sol,
+                        net_sol: Some(profit_sol),
+                    });
+                    self.telegram
+                        .alert_opportunity_rejected(
+                            route_label,
+                            gross_sol,
+                            "Final Stream Readiness",
+                            &reason_msg,
+                            current_slot.0,
+                            pools_count,
+                            loan_size_sol,
+                            Some(profit_sol),
+                        )
+                        .await;
+                    return;
+                }
+
+                // R12, fail-closed: persist the dispatch intent (signature +
+                // transport + slot) BEFORE the send so a crash/ambiguous
+                // timeout is reconcilable by signature instead of a blind
+                // resubmit. A transaction whose signature cannot be extracted,
+                // or whose intent cannot be durably persisted, MUST NOT be
+                // dispatched — it would be unrecoverable after a crash.
+                let Some(pre_sig) = arb_tx::extract_transaction_signature(tx_bytes) else {
+                    error!(
+                        attempt_id = record.id,
+                        route = %route_label,
+                        "dispatch aborted: transaction signature not extractable (unreconcilable)"
+                    );
+                    let _ = self.store.record_outcome(
+                        record.id,
+                        "dispatch_aborted_unreconcilable",
+                        None,
+                    );
+                    return;
+                };
+                let provider = if is_swqos_route { "swqos" } else { "jito" };
+                if let Err(err) =
+                    self.store
+                        .record_dispatch_intent(&arb_store::DispatchIntentRecord {
+                            attempt_id: record.id,
+                            signature: pre_sig.clone(),
+                            provider: provider.to_string(),
+                            dispatch_slot: current_slot.0 as i64,
+                            last_valid_block_height,
+                            resolved_status: None,
+                        })
+                {
+                    error!(
+                        ?err,
+                        attempt_id = record.id,
+                        route = %route_label,
+                        "dispatch aborted: durable intent persistence failed — refusing to send an unrecoverable transaction"
+                    );
+                    let _ =
+                        self.store
+                            .record_outcome(record.id, "dispatch_aborted_unpersisted", None);
+                    self.telegram
+                        .alert_execution_failed(
+                            "dispatch-intent-persistence",
+                            "dispatch intent could not be persisted; transaction not sent",
+                            route_label,
+                        )
+                        .await;
+                    return;
+                }
+
+                let sent_at = Instant::now();
+                let (send_result, was_swqos): (Result<String, String>, bool) = if is_swqos_route {
+                    info!(
+                        "⚡ Submitting transaction via direct SWQoS RPC path ({} bytes)...",
+                        tx_bytes.len()
+                    );
+                    let b64 = BASE64_STANDARD.encode(tx_bytes.as_slice());
+                    let r = self
+                        .rpc_pool
+                        .send_raw_transaction(&b64)
+                        .await
+                        .map_err(|e| e.to_string());
+                    (r, true)
+                } else {
+                    info!(
+                        "Broadcasting private bundle via Jito Block Engine ({} bytes)...",
+                        tx_bytes.len()
+                    );
+                    let bundle_txs = vec![tx_bytes.to_vec()];
+                    let r = self
+                        .jito_lander
+                        .send_bundle_multi_region(&bundle_txs, &self.config.jito.regions)
+                        .await
+                        .map_err(|e| e.to_string());
+                    (r, false)
+                };
+                let rtt = sent_at.elapsed();
+
+                match send_result {
+                    Ok(bundle_id) => {
+                        self.observe_bundle_rtt(rtt);
+                        if was_swqos {
+                            info!("🚀 Transaction accepted via SWQoS RPC: {}", bundle_id);
+                        } else {
+                            info!("🚀 Bundle accepted by Jito Block Engine: {}", bundle_id);
+                        }
+                        self.telegram
+                            .alert_opportunity_with_telemetry(
+                                route_label,
+                                gross_rev_sol,
+                                profit_sol,
+                                profit_sol * live_sol_price,
+                                current_slot.0,
+                                blockhash_b58,
+                                &leader_str,
+                                cu_limit,
+                                cu_price,
+                                opp.price_impact_bps.0,
+                                &active_bins,
+                                pools_count,
+                                loan_size_sol,
+                            )
+                            .await;
+                        self.telegram
+                            .alert_execution_sent(
+                                &bundle_id,
+                                route_label,
+                                profit_sol,
+                                pools_count,
+                                loan_size_sol,
+                                &leader_str,
+                            )
+                            .await;
+                        // P0 #8: feed velocity tracking so the gate enforces its limit.
+                        self.risk_gate.record_order();
+                        // Phase E: track bundle sent for landing rate & inflight limits
+                        self.risk_gate.record_bundle_sent(current_slot);
+                        // A retry inside this window may not outbid
+                        // the previous attempt by more than the ladder.
+                        self.previous_tips
+                            .lock()
+                            .insert((current_slot.0, opp.route_id.0), tip);
+                        let _ = self.store.record_outcome(record.id, "sent", None);
+
+                        // Asynchronous Landing Tracker via getBundleStatuses and getSignatureStatuses (Layer 08)
+                        let tx_signature = arb_tx::extract_transaction_signature(tx_bytes);
+                        let signature_rpc = self.rpc_pool.clone();
+                        let was_swqos_task = was_swqos;
+                        let store = self.store.clone();
+                        let risk_gate = self.risk_gate.clone();
+                        let telegram = self.telegram.clone();
+                        let js = self.jito_service.clone();
+                        let rung_for_record = tip_rung;
+                        let rec_id = record.id;
+                        let b_id = bundle_id.clone();
+                        let net_profit_val = opp.net_profit;
+                        let profit_sol_val = profit_sol;
+                        let profit_usd_val = profit_sol * live_sol_price;
+                        let sol_price_val = live_sol_price;
+                        let slot_val = current_slot.0;
+                        let route_label_task = route_label.to_string();
+                        let loan_size_sol_val = opp.size_in.as_u64() as f64 / 1e9;
+                        let pools_count_task = pools_count;
+                        let leader_task = leader_str.clone();
+                        let tokens_str_val = {
+                            let mut parts = Vec::new();
+                            for (i, h) in opp.hops.iter().enumerate() {
+                                if i == 0 {
+                                    parts.push(format_mint_short(&h.mint_in.0));
+                                }
+                                parts.push(format_mint_short(&h.mint_out.0));
+                            }
+                            parts.join(" ➔ ")
+                        };
+                        let venues_str_val = opp
+                            .hops
+                            .iter()
+                            .map(|h| format!("{:?}", h.protocol))
+                            .collect::<Vec<_>>()
+                            .join(" ➔ ");
+                        let rtt_ms = rtt.as_secs_f64() * 1000.0;
+                        let land_start = std::time::Instant::now();
+                        let recent_landed_task = self.recent_landed.clone();
+                        let recent_dropped_task = self.recent_dropped.clone();
+                        let control_task = self.control().cloned();
+                        let last_valid_height_task =
+                            last_valid_block_height.unwrap_or(0).max(0) as u64;
+
+                        tokio::spawn(async move {
+                            // Dual-track landing verification:
+                            // SWQoS queries getSignatureStatuses directly.
+                            // Jito Bundle queries Jito getBundleStatuses AND cross-verifies with getSignatureStatuses.
+                            let (status, landed_slot, _err_reason) = if was_swqos_task {
+                                let (sig_status, slot, err) = signature_rpc
+                                    .poll_signature_with_details(
+                                        &b_id,
+                                        20,
+                                        std::time::Duration::from_millis(400),
+                                    )
+                                    .await
+                                    .unwrap_or((arb_ingest::SignatureStatus::Pending, None, None));
+
+                                let current_height =
+                                    signature_rpc.get_block_height().await.unwrap_or(0);
+                                let (lifecycle, reason) = match sig_status {
+                                    arb_ingest::SignatureStatus::Finalized => {
+                                        (arb_land::TransactionLifecycle::Finalized, None)
+                                    }
+                                    arb_ingest::SignatureStatus::Confirmed => {
+                                        (arb_land::TransactionLifecycle::Confirmed, None)
+                                    }
+                                    arb_ingest::SignatureStatus::Processed => {
+                                        (arb_land::TransactionLifecycle::Processed, None)
+                                    }
+                                    arb_ingest::SignatureStatus::Failed => {
+                                        (arb_land::TransactionLifecycle::Failed, err)
+                                    }
+                                    arb_ingest::SignatureStatus::Pending => {
+                                        arb_land::evaluate_lifecycle_with_block_height(
+                                            None,
+                                            false,
+                                            None,
+                                            current_height,
+                                            last_valid_height_task,
+                                        )
+                                    }
+                                };
+                                let st = if lifecycle.is_landed() {
+                                    arb_land::LandStatus::Landed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Failed {
+                                    arb_land::LandStatus::Failed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Expired {
+                                    arb_land::LandStatus::Expired
+                                } else {
+                                    arb_land::LandStatus::Sent
+                                };
+                                (st, slot, reason)
+                            } else {
+                                let (lifecycle, slot, err) = js
+                                    .verify_landing_with_height(
+                                        &signature_rpc,
+                                        &b_id,
+                                        tx_signature.as_deref(),
+                                        20,
+                                        std::time::Duration::from_millis(350),
+                                        last_valid_height_task,
+                                    )
+                                    .await;
+                                let st = if lifecycle.is_landed() {
+                                    arb_land::LandStatus::Landed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Failed {
+                                    arb_land::LandStatus::Failed
+                                } else if lifecycle == arb_land::TransactionLifecycle::Expired {
+                                    arb_land::LandStatus::Expired
+                                } else {
+                                    arb_land::LandStatus::Sent
+                                };
+                                (st, slot, err)
+                            };
+
+                            let effective_slot = landed_slot.unwrap_or(slot_val);
+                            match status {
+                                arb_land::LandStatus::Landed => {
+                                    if let Some(ref sig) = tx_signature {
+                                        if let Ok(Some(meta)) =
+                                            signature_rpc.get_transaction_with_metadata(sig).await
+                                        {
+                                            if let Some(cu) = meta
+                                                .get("meta")
+                                                .and_then(|m| m.get("computeUnitsConsumed"))
+                                                .and_then(|c| c.as_u64())
+                                            {
+                                                debug!(
+                                                    "On-chain confirmed compute units consumed: {cu}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    let landing_ms = land_start.elapsed().as_secs_f64() * 1000.0;
+                                    let total_e2e_ms = (t_ingest_to_quote_us
+                                        + t_risk_us
+                                        + t_assembly_us
+                                        + t_signing_us)
+                                        as f64
+                                        / 1000.0
+                                        + rtt_ms
+                                        + landing_ms;
+
+                                    let timings_str = format!(
+                                        "• Ingest ➔ Quote: <code>{} µs</code>\n\
+                                             • Risk & EV Gates: <code>{} µs</code>\n\
+                                             • Tx Assembly & ALTs: <code>{} µs</code>\n\
+                                             • Ed25519 Signing: <code>{} µs</code>\n\
+                                             • Broadcast RTT: <code>{:.2} ms</code>\n\
+                                             • Block Landing: <code>{:.2} ms</code>\n\
+                                             • <b>Total E2E Latency:</b> <code>{:.2} ms</code>",
+                                        t_ingest_to_quote_us,
+                                        t_risk_us,
+                                        t_assembly_us,
+                                        t_signing_us,
+                                        rtt_ms,
+                                        landing_ms,
+                                        total_e2e_ms
+                                    );
+
+                                    info!(
+                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: +{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
+                                        b_id,
+                                        effective_slot,
+                                        profit_sol_val,
+                                        profit_usd_val,
+                                        loan_size_sol_val,
+                                        tokens_str_val,
+                                        venues_str_val,
+                                        timings_str
+                                            .replace("<code>", "")
+                                            .replace("</code>", "")
+                                            .replace("<b>", "")
+                                            .replace("</b>", "")
+                                    );
+                                    let _ = store.record_outcome(
+                                        rec_id,
+                                        "landed",
+                                        Some(net_profit_val),
+                                    );
+                                    let _ = store.resolve_dispatch_intent(rec_id, "landed");
+                                    if let Some(r) = rung_for_record {
+                                        js.record(
+                                            r,
+                                            InflightStatus::Landed {
+                                                slot: effective_slot,
+                                            },
+                                        );
+                                    }
+                                    risk_gate.on_success();
+                                    // Phase E: track bundle landed for landing rate
+                                    risk_gate.record_bundle_landed(Slot(effective_slot), true);
+                                    arb_metrics::inc_fills();
+                                    arb_metrics::add_net_profit(profit_sol_val);
+                                    arb_metrics::set_breaker_state(0);
+
+                                    let effective_leader = js
+                                        .leader_for(Slot(effective_slot))
+                                        .map(|pk| pk.to_string())
+                                        .unwrap_or_else(|| leader_task.clone());
+                                    let landed_status_str =
+                                        "Confirmed / Finalized (مؤكد في البلوك)";
+
+                                    // Record landed trade in memory for 5-minute performance digest
+                                    let summary = crate::telegram::TradeSummary {
+                                        route: route_label_task.clone(),
+                                        profit_sol: profit_sol_val,
+                                        profit_usd: profit_usd_val,
+                                        loan_sol: loan_size_sol_val,
+                                        signature: tx_signature
+                                            .as_deref()
+                                            .unwrap_or(&b_id)
+                                            .to_string(),
+                                        venues: venues_str_val.clone(),
+                                        slot: effective_slot,
+                                        pools_count: pools_count_task,
+                                        leader: effective_leader.clone(),
+                                    };
+                                    Supervisor::record_landed_trade_task(
+                                        &recent_landed_task,
+                                        control_task.clone(),
+                                        summary,
+                                    );
+
+                                    telegram
+                                        .notify_trade_executed(
+                                            tx_signature.as_deref(),
+                                            &b_id,
+                                            profit_sol_val,
+                                            profit_usd_val,
+                                            loan_size_sol_val,
+                                            pools_count_task,
+                                            &tokens_str_val,
+                                            &venues_str_val,
+                                            effective_slot,
+                                            &effective_leader,
+                                            landed_status_str,
+                                            &timings_str,
+                                        )
+                                        .await;
+                                }
+                                arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
+                                    warn!("⚠️ Execution {:?} in block: {}", status, b_id);
+                                    let _ = store.record_outcome(rec_id, "dropped", None);
+                                    let _ = store.resolve_dispatch_intent(
+                                        rec_id,
+                                        match status {
+                                            arb_land::LandStatus::Dropped => "dropped",
+                                            _ => "expired",
+                                        },
+                                    );
+                                    if let Some(r) = rung_for_record {
+                                        js.record(r, InflightStatus::Failed);
+                                    }
+                                    // Unlanded/expired Jito bundles pay 0 SOL; do not count phantom tip loss or trip breaker
+                                    risk_gate.record_bundle_landed(Slot(effective_slot), false);
+
+                                    let dropped = crate::telegram::DroppedTradeSummary {
+                                        bundle_id: b_id.clone(),
+                                        route: route_label_task.clone(),
+                                        reason: format!("{status:?}"),
+                                        slot: effective_slot,
+                                    };
+                                    Supervisor::record_dropped_bundle_task(
+                                        &recent_dropped_task,
+                                        control_task.clone(),
+                                        dropped,
+                                    );
+
+                                    telegram
+                                        .alert_execution_dropped(
+                                            &b_id,
+                                            &route_label_task,
+                                            &format!("{status:?}"),
+                                        )
+                                        .await;
+                                }
+                                arb_land::LandStatus::Failed => {
+                                    warn!("⚠️ Execution reverted on-chain: {}", b_id);
+                                    let _ = store.record_outcome(rec_id, "failed", None);
+                                    let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
+                                    if let Some(r) = rung_for_record {
+                                        js.record(r, InflightStatus::Failed);
+                                    }
+                                    risk_gate.record_bundle_landed(Slot(effective_slot), false);
+                                    risk_gate.record_loss(5_000.0 / 1e9 * sol_price_val);
+                                    risk_gate.on_failure(Slot(effective_slot));
+                                    arb_metrics::set_breaker_state(
+                                        if risk_gate.is_breaker_open(Slot(effective_slot)) {
+                                            1
+                                        } else {
+                                            0
+                                        },
+                                    );
+
+                                    let dropped = crate::telegram::DroppedTradeSummary {
+                                        bundle_id: b_id.clone(),
+                                        route: route_label_task.clone(),
+                                        reason: "Failed".to_string(),
+                                        slot: effective_slot,
+                                    };
+                                    Supervisor::record_dropped_bundle_task(
+                                        &recent_dropped_task,
+                                        control_task.clone(),
+                                        dropped,
+                                    );
+
+                                    telegram
+                                        .alert_execution_dropped(&b_id, &route_label_task, "Failed")
+                                        .await;
+                                }
+                                _ => {
+                                    debug!(
+                                        "Execution {} terminal check finished with status {:?}",
+                                        b_id, status
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        error!("Bundle dispatch failed: {}", e);
+                        self.telegram
+                            .alert_execution_failed("dispatch", &e.to_string(), route_label)
+                            .await;
+                        let _ = self.store.record_outcome(record.id, "failed", None);
+                        let _ = self.store.resolve_dispatch_intent(record.id, "send_failed");
+                        // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
+>>>>>>> origin/main
                     }
 
                     if tx_bytes.len() > 1232 {

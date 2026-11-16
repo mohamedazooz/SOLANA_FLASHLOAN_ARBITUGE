@@ -11,48 +11,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-pub mod errors;
-pub mod health_monitor;
-pub mod jito_service;
-pub mod supervisor;
-pub mod telegram;
-pub mod verified_config;
-
-/// Supported operational modes for the bot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BotMode {
-    Shadow,
-    Simulate,
-    Live,
-    Canary,
-}
-
-impl std::str::FromStr for BotMode {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "shadow" => Ok(BotMode::Shadow),
-            "simulate" => Ok(BotMode::Simulate),
-            "live" => Ok(BotMode::Live),
-            "canary" => Ok(BotMode::Canary),
-            other => anyhow::bail!(
-                "Unknown bot mode: '{other}'. Allowed modes: shadow, simulate, live, canary"
-            ),
-        }
-    }
-}
-
-impl std::fmt::Display for BotMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BotMode::Shadow => write!(f, "shadow"),
-            BotMode::Simulate => write!(f, "simulate"),
-            BotMode::Live => write!(f, "live"),
-            BotMode::Canary => write!(f, "canary"),
-        }
-    }
-}
+use arb_bot::*;
 
 /// LIVE execution is opt-in only when `ARB_LIVE` is explicitly truthy.
 ///
@@ -77,23 +36,21 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = std::env::args().skip(1);
     let mut config_path = std::env::var("ARB_CONFIG").unwrap_or_default();
-    let mut cli_mode: Option<String> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Solana Arbitrage Bot\n\nUsage: arb-bot [OPTIONS]\n\nOptions:\n  -c, --config <PATH>  Path to configuration TOML [default: auto-detected]\n  -m, --mode <MODE>    Bot mode: shadow | simulate | live [default: shadow]\n  -h, --help           Print help"
+                    "Solana Arbitrage Bot\n\nUsage: arb-bot [OPTIONS]\n\nOptions:\n  -c, --config <PATH>  Path to configuration TOML [default: auto-detected]\n  -h, --help           Print help\n\nMode is controlled by environment only:\n  ARB_MODE=simulate|live|canary  (default: simulate)\n  live additionally requires ARB_LIVE=1"
                 );
                 std::process::exit(0);
             }
             "--config" | "-c" => {
                 config_path = args.next().context("Missing argument after --config")?;
             }
-            "--mode" | "-m" => {
-                cli_mode = Some(args.next().context("Missing argument after --mode")?);
-            }
-            other => anyhow::bail!("Unknown argument: '{other}'"),
+            other => anyhow::bail!(
+                "Unknown argument: '{other}'. Mode is environment-controlled (ARB_MODE)."
+            ),
         }
     }
 
@@ -109,39 +66,32 @@ fn parse_args() -> Result<Args> {
         }
     }
 
-    // Determine mode precedence:
-    // 1. Explicit CLI argument `--mode`
-    // 2. Environment variable `ARB_MODE` / `ARB_CANARY`
-    // 3. `bot.mode` configured in the target config.toml file
-    // 4. Safe fallback: "shadow"
-    let mode_str = if let Some(m) = cli_mode {
-        m
+    // Mode is environment-controlled only. Precedence:
+    // 1. `ARB_MODE` (explicit simulate|live|canary)
+    // 2. Legacy arming flags: ARB_CANARY, ARB_LIVE/LIVE/EXECUTE_LIVE
+    // 3. Safe fallback: "simulate" (non-broadcast)
+    let mode_str = if let Ok(m) = std::env::var("ARB_MODE") {
+        if !m.trim().is_empty() {
+            m
+        } else {
+            "simulate".to_string()
+        }
     } else if std::env::var("ARB_CANARY").is_ok() {
         "canary".to_string()
-    } else if let Ok(m) = std::env::var("ARB_MODE") {
-        m
-    } else if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        #[derive(serde::Deserialize)]
-        struct PartialConfig {
-            bot: Option<PartialBot>,
-        }
-        #[derive(serde::Deserialize)]
-        struct PartialBot {
-            mode: Option<String>,
-        }
-        toml::from_str::<PartialConfig>(&contents)
-            .ok()
-            .and_then(|c| c.bot)
-            .and_then(|b| b.mode)
-            .unwrap_or_else(|| "shadow".to_string())
+    } else if std::env::var("ARB_LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        || std::env::var("LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        || std::env::var("EXECUTE_LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    {
+        "live".to_string()
     } else {
-        "shadow".to_string()
+        "simulate".to_string()
     };
 
     let mode: BotMode = mode_str.parse()?;
     Ok(Args { config_path, mode })
 }
 
+<<<<<<< HEAD
 /// Bot configuration loaded from TOML file.
 pub mod config {
     use serde::Deserialize;
@@ -496,8 +446,8 @@ pub mod config {
             strategy: StrategyConfig {
                 base_tokens: arb.strategy.base_tokens,
                 min_net_profit_abs: arb.strategy.min_net_profit_abs.0,
-                min_net_profit_bps: arb.strategy.min_net_profit_bps.0,
-                max_price_impact_bps: arb.strategy.max_price_impact_bps.0,
+                min_net_profit_bps: arb.strategy.min_net_profit_bps.0 as u64,
+                max_price_impact_bps: arb.strategy.max_price_impact_bps.0 as u64,
                 max_state_age_slots: arb.strategy.max_state_age_slots.0,
                 graph_max_age_slots: arb.strategy.graph_max_age_slots.map(|s| s.0),
                 use_flash_loan: arb.strategy.use_flash_loan,
@@ -539,10 +489,36 @@ pub mod config {
     }
 }
 
+=======
+>>>>>>> origin/main
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("FATAL PANIC: {info}");
+        // Best-effort operator alert: the runtime may already be unwinding, so
+        // this uses a short-lived curl subprocess instead of the async client.
+        if let (Ok(token), Ok(chat)) = (
+            std::env::var("TELEGRAM_BOT_TOKEN"),
+            std::env::var("TELEGRAM_CHAT_ID"),
+        ) {
+            let text = format!("🚨 <b>FATAL PANIC — arb-bot stopped</b>\n<code>{info}</code>");
+            let _ = std::process::Command::new("curl")
+                .args([
+                    "-s",
+                    "-m",
+                    "5",
+                    "-X",
+                    "POST",
+                    &format!("https://api.telegram.org/bot{token}/sendMessage"),
+                    "-d",
+                    &format!("chat_id={chat}"),
+                    "--data-urlencode",
+                    &format!("text={text}"),
+                    "-d",
+                    "parse_mode=HTML",
+                ])
+                .output();
+        }
         default_hook(info);
     }));
 }
@@ -667,6 +643,7 @@ async fn main() -> Result<()> {
     if dotenvy::dotenv().is_ok() {
         // .env loaded
     }
+
     let args = parse_args()?;
 
     init_event_logger();
@@ -682,7 +659,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("Failed to load configuration from '{}'", args.config_path))?;
     let config = config::from_arb_config(arb);
 
-    info!("Configuration loaded — gRPC: {}", config.grpc.primary_url);
+    info!("Configuration loaded — RPC: {}", config.rpc.url);
     info!("Max trade size: {} USD", config.risk.max_trade_size_usd);
     info!(
         "Min net profit: {} lamports ({} bps)",
@@ -695,7 +672,7 @@ async fn main() -> Result<()> {
         }
         warn!("LIVE execution mode active on real network funds!");
     } else {
-        info!("Running in safe mode (dry-run / shadow). No live transactions will be submitted.");
+        info!("Running in safe mode (dry-run / simulate). No live transactions will be submitted.");
     }
 
     // Start Prometheus text-exporter metrics server
@@ -709,7 +686,13 @@ async fn main() -> Result<()> {
     info!("TRACE MAIN 1: before Supervisor::new");
     let admin_listen = config.admin.listen.clone();
     let admin_token_env = config.admin.token_env.clone();
+<<<<<<< HEAD
     let supervisor = supervisor::Supervisor::new(args.mode, config);
+=======
+    let supervisor_mode_atomic = Arc::new(std::sync::atomic::AtomicU8::new(args.mode as u8));
+    let supervisor =
+        supervisor::Supervisor::with_mode_atomic(Arc::clone(&supervisor_mode_atomic), config);
+>>>>>>> origin/main
     let admin_kill_switch = supervisor.kill_switch();
 
     // Operator authentication is mandatory for every mutating admin route.
@@ -807,6 +790,42 @@ async fn main() -> Result<()> {
             );
         }
     }
+<<<<<<< HEAD
+=======
+
+    // Unified control service: one command layer shared by the web app and
+    // Telegram. Attached to the supervisor before run so the loop publishes
+    // live state into it.
+    let audit_path =
+        std::env::var("WEB_AUDIT_LOG").unwrap_or_else(|_| "data/web_audit.log".to_string());
+    let control = Arc::new(control_service::ControlService::new(
+        Arc::clone(&supervisor_mode_atomic),
+        supervisor.kill_switch(),
+        audit_path,
+    ));
+    supervisor.attach_control(Arc::clone(&control));
+
+    // Web application server (React frontend + authenticated REST/WS API).
+    // Binds localhost by default; remote access goes through a TLS reverse proxy.
+    let web_bind = std::env::var("WEB_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    {
+        let control = Arc::clone(&control);
+        tokio::spawn(async move {
+            match web_api::serve((*control).clone(), &web_bind).await {
+                Ok(()) => {}
+                Err(err) => warn!("Web API server stopped on {web_bind}: {err}"),
+            }
+        });
+    }
+
+    // Telegram command listener: same unified control service as the web app.
+    {
+        let control = Arc::clone(&control);
+        tokio::spawn(async move {
+            telegram_control::run_listener(control).await;
+        });
+    }
+>>>>>>> origin/main
 
     info!("TRACE MAIN 2: after Supervisor::new, before run");
     supervisor.run().await?;

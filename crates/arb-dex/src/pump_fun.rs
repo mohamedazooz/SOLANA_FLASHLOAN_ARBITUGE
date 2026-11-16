@@ -83,16 +83,6 @@ impl PumpFunBondingCurve {
         }
     }
 
-    pub fn from_state_with_fee_bps(
-        pool_id: PoolId,
-        base_mint: MintId,
-        quote_mint: MintId,
-        state: &arb_types::PumpFunState,
-        fee_bps: u16,
-    ) -> Result<Self> {
-        Self::from_state(pool_id, base_mint, quote_mint, state).with_fee_bps(fee_bps)
-    }
-
     pub fn with_fee_bps(mut self, fee_bps: u16) -> Result<Self> {
         if fee_bps > 10_000 {
             return Err(ArbError::InvalidInput("Pump.fun fee exceeds 100%".into()));
@@ -302,6 +292,36 @@ impl PumpFunBondingCurve {
     pub fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
         self.quote_with_fee(amount_in, a_to_b).map(|(out, _)| out)
     }
+
+    /// Convert to PumpFunParams for cross-venue arbitrage math.
+    pub fn to_pump_fun_params(&self) -> arb_math::pump_fun_raydium::PumpFunParams {
+        arb_math::pump_fun_raydium::PumpFunParams {
+            reserve: self.virtual_sol_reserves as u128,
+            supply: self.virtual_token_reserves as u128,
+        }
+    }
+
+    /// Get real reserves (for liquidity constraints).
+    pub fn real_reserves(&self) -> (u64, u64) {
+        (self.real_sol_reserves, self.real_token_reserves)
+    }
+
+    /// Check if this pool is suitable for cross-venue arbitrage.
+    pub fn is_arbitrage_eligible(&self) -> bool {
+        !self.complete
+            && !self.is_mayhem_mode
+            && !self.is_cashback_coin
+            && self.mode_flags_present
+            && self.virtual_sol_reserves > 0
+            && self.virtual_token_reserves > 0
+            && self.real_sol_reserves > 0
+            && self.real_token_reserves > 0
+    }
+
+    /// Calculate maximum tradable amount for arbitrage.
+    pub fn max_arbitrage_amount(&self) -> u64 {
+        std::cmp::min(self.real_sol_reserves, self.real_token_reserves)
+    }
 }
 
 impl AmmPool for PumpFunBondingCurve {
@@ -430,5 +450,105 @@ mod tests {
         // Test completed curve rejection
         pool.complete = true;
         assert!(pool.quote(sol_in, true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cross_venue_tests {
+    use super::*;
+    use arb_math::pump_fun_raydium::{
+        DEFAULT_FLASH_LOAN_FEE_BPS, RaydiumParams, calculate_optimal_trade,
+    };
+    use solana_pubkey::Pubkey;
+
+    #[test]
+    fn test_cross_venue_arbitrage_params() {
+        let pool_id = PoolId(Pubkey::new_unique());
+        let wsol = MintId(Pubkey::new_unique());
+        let meme = MintId(Pubkey::new_unique());
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&PUMP_FUN_BONDING_CURVE_DISCRIMINATOR);
+        // virtual_token_reserves = 1_073_000_000_000_000
+        data.extend_from_slice(&1_073_000_000_000_000u64.to_le_bytes());
+        // virtual_sol_reserves = 30_000_000_000
+        data.extend_from_slice(&30_000_000_000u64.to_le_bytes());
+        // real_token_reserves = 793_100_000_000_000
+        data.extend_from_slice(&793_100_000_000_000u64.to_le_bytes());
+        // real_sol_reserves = 5_000_000_000
+        data.extend_from_slice(&5_000_000_000u64.to_le_bytes());
+        // token_total_supply = 1_000_000_000_000_000
+        data.extend_from_slice(&1_000_000_000_000_000u64.to_le_bytes());
+        data.push(0); // complete = false
+        data.extend_from_slice(Pubkey::new_unique().as_ref()); // creator
+        data.push(0); // is_mayhem_mode = false
+        data.push(0); // is_cashback_coin = false
+
+        let mut pool = PumpFunBondingCurve::new(pool_id, wsol, meme);
+        pool.update_from_account(&data).unwrap();
+        pool = pool.with_fee_bps(125).unwrap().with_token_decimals(6);
+
+        // Convert to params
+        let pump_params = pool.to_pump_fun_params();
+
+        // Create Raydium params (higher price for arbitrage)
+        let raydium_params = RaydiumParams {
+            token_reserve: 500_000 * 1_000_000,  // 500K tokens (6 decimals)
+            sol_reserve: 15_000 * 1_000_000_000, // 15,000 SOL
+            fee_bps: 25,                         // 0.25%
+        };
+
+        // Calculate optimal trade
+        let max_delta_t = pool.max_arbitrage_amount();
+        let result = calculate_optimal_trade(
+            pump_params,
+            raydium_params,
+            DEFAULT_FLASH_LOAN_FEE_BPS,
+            max_delta_t as u128,
+        );
+
+        assert!(result.is_ok(), "Should find arbitrage opportunity");
+        let trade = result.unwrap();
+        assert!(trade.is_profitable());
+    }
+
+    #[test]
+    fn test_arbitrage_eligibility() {
+        let pool_id = PoolId(Pubkey::new_unique());
+        let wsol = MintId(Pubkey::new_unique());
+        let meme = MintId(Pubkey::new_unique());
+
+        let pool = PumpFunBondingCurve::new(pool_id, wsol, meme);
+
+        // Without liquidity, not eligible
+        assert!(!pool.is_arbitrage_eligible());
+
+        // With liquidity
+        let mut data = Vec::new();
+        data.extend_from_slice(&PUMP_FUN_BONDING_CURVE_DISCRIMINATOR);
+        data.extend_from_slice(&1_000_000u64.to_le_bytes()); // virtual_token_reserves
+        data.extend_from_slice(&1_000_000u64.to_le_bytes()); // virtual_sol_reserves
+        data.extend_from_slice(&1_000_000u64.to_le_bytes()); // real_token_reserves
+        data.extend_from_slice(&1_000_000u64.to_le_bytes()); // real_sol_reserves
+        data.extend_from_slice(&1_000_000u64.to_le_bytes()); // token_total_supply
+        data.push(0); // complete = false
+        data.extend_from_slice(Pubkey::new_unique().as_ref()); // creator
+        data.push(0); // is_mayhem_mode = false
+        data.push(0); // is_cashback_coin = false
+
+        let mut pool = PumpFunBondingCurve::new(pool_id, wsol, meme);
+        pool.update_from_account(&data).unwrap();
+        pool = pool.with_fee_bps(125).unwrap().with_token_decimals(6);
+
+        assert!(pool.is_arbitrage_eligible());
+
+        // Mark as complete (migrated)
+        pool.complete = true;
+        assert!(!pool.is_arbitrage_eligible());
+
+        // Mark as mayhem mode
+        pool.complete = false;
+        pool.is_mayhem_mode = true;
+        assert!(!pool.is_arbitrage_eligible());
     }
 }

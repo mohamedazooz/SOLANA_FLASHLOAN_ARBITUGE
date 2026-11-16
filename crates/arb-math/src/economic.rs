@@ -126,11 +126,13 @@ impl CostLedger {
 /// verified source; nothing here is hardcoded in the authoritative path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomicConfig {
-    /// Kamino flash-loan fee as the raw Q64.64 value read from the verified
-    /// reserve account (`ReserveConfig.fees.flash_loan_fee_sf`). The fee in raw
-    /// units is `ceil(borrow * sf / 2^64)` — never assumed to be 0 or 5 bps.
-    /// A bps integer cannot represent the on-chain value (e.g. the main-market
-    /// WSOL/USDC reserves carry `sf = 11_529_215_046_068` ≈ 6.25e-7 ≈ 0.006 bps).
+    /// Kamino flash-loan fee as the raw U68F60 value read from the verified
+    /// reserve account (`ReserveConfig.fees.flash_loan_fee_sf`; klend's
+    /// `Fraction = fixed::types::U68F60` has **60** fractional bits). The fee in
+    /// raw units is `round(borrow * sf / 2^60)` with a 1-unit floor — never
+    /// assumed to be 0 or 5 bps. A bps integer cannot represent the on-chain
+    /// value (e.g. the main-market WSOL reserve carries
+    /// `sf = 11_529_215_046_068` = 1e-5 = 0.1 bps).
     pub flash_loan_fee_sf: u64,
     /// Jito tip in lamports, derived from current tip-floor market data and an
     /// explicit strategy policy — never a fabricated fraction of profit.
@@ -453,26 +455,102 @@ pub fn calculate_net_profit_raw(
 }
 
 /// Calculate the Kamino flash loan fee in base-mint raw units from the raw
-/// Q64.64 on-chain value (`ReserveConfig.fees.flash_loan_fee_sf`).
+/// U68F60 on-chain value (`ReserveConfig.fees.flash_loan_fee_sf`; klend's
+/// `Fraction = fixed::types::U68F60`, i.e. **60** fractional bits).
 ///
-/// Fee = ceil(borrow * sf / 2^64) — the protocol's fixed-point multiplication,
-/// with ceiling division so repayment is never understated.
-pub fn calculate_flash_fee_raw(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
-    if borrow_amount == 0 {
+/// Mirrors klend `ReserveFees::calculate_fees(amount, flash_loan_fee_sf,
+/// FeeCalculation::Exclusive, .., has_referrer = false)` exactly:
+///
+/// ```text
+/// fee_bits = amount * sf              // exact: (amount << 60) * sf >> 60
+/// fee_bits = max(fee_bits, 1 << 60)   // minimum_fee = 1
+/// fee      = round(fee_bits / 2^60)   // ties away from zero
+/// ```
+///
+/// Fails closed rather than returning a plausible-looking number:
+/// * `sf == u64::MAX` — klend's "flash loans disabled" sentinel.
+/// * `fee_bits >= amount << 60` — klend rejects with `BorrowTooSmall`.
+///
+/// Precise failure modes of the klend flash-loan fee formula. Canonical
+/// definition lives here (arb-math is the leaf math crate); `arb-tx`
+/// re-exports it so the transaction layer and this crate share one type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum KaminoFeeError {
+    /// `flash_loan_fee_sf == u64::MAX` — klend's sentinel for a reserve whose
+    /// flash loans are disabled.
+    #[error("flash loans are disabled on this reserve (flash_loan_fee_sf == u64::MAX)")]
+    FlashLoanDisabled,
+    /// klend reverts with `LendingError::BorrowTooSmall` when the origination
+    /// fee (after the 1-unit floor) is `>=` the principal.
+    #[error("borrow amount too small: origination fee >= principal (klend BorrowTooSmall)")]
+    BorrowTooSmall,
+    /// The fee does not fit `u64`.
+    #[error("flash-loan fee computation overflowed")]
+    Overflow,
+}
+
+/// Canonical klend flash-loan fee WITHOUT the `BorrowTooSmall` guard: the raw
+/// `FeeCalculation::Exclusive` formula only. `arb-tx`'s infallible helper maps
+/// every error to `u64::MAX` (fail closed) on top of this.
+pub fn kamino_flash_fee_unchecked(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
+    if fee_sf == u64::MAX {
+        return Err(ArbError::InvalidInput(
+            "kamino flash loans disabled (flash_loan_fee_sf == u64::MAX)".to_string(),
+        ));
+    }
+    if borrow_amount == 0 || fee_sf == 0 {
         return Ok(0);
     }
-    // A full-scale sf (>= 2^64) would make the fee >= the loan; u64 cannot hold
-    // 2^64, so any u64 sf yields a fee strictly below the loan (repayable).
-    let num = U256::from(borrow_amount) * U256::from(fee_sf);
-    let scale = U256::from(1u128) << 64;
-    let (quot, rem) = num.div_rem(scale);
-    // Ceiling: if there is a remainder, add 1 so repayment is never understated.
-    let fee = if rem.is_zero() {
-        quot
-    } else {
-        quot.checked_add(U256::from(1)).ok_or(ArbError::Overflow)?
-    };
+    let fee = kamino_fee_bits(borrow_amount, fee_sf);
     u64::try_from(fee).map_err(|_| ArbError::Overflow)
+}
+
+/// Canonical klend flash-loan fee with all on-chain failure modes surfaced:
+/// `kamino_flash_fee_unchecked` plus the klend `BorrowTooSmall` guard.
+pub fn kamino_flash_fee_checked(
+    borrow_amount: u64,
+    fee_sf: u64,
+) -> std::result::Result<u64, KaminoFeeError> {
+    if fee_sf == u64::MAX {
+        return Err(KaminoFeeError::FlashLoanDisabled);
+    }
+    if borrow_amount == 0 || fee_sf == 0 {
+        return Ok(0);
+    }
+    let one_bits = U256::from(1u128) << 60;
+    let amount_bits = U256::from(borrow_amount) << 60;
+    let product = U256::from(borrow_amount) * U256::from(fee_sf);
+    let fee_bits = product.max(one_bits);
+    if fee_bits >= amount_bits {
+        return Err(KaminoFeeError::BorrowTooSmall);
+    }
+    let half = U256::from(1u128) << 59;
+    let rounded = (fee_bits + half) >> 60;
+    u64::try_from(rounded).map_err(|_| KaminoFeeError::Overflow)
+}
+
+/// Exact un-rounded klend fee: `max(borrow * sf / 2^60, 1.0)` in U68F60,
+/// rounded to the nearest integer (ties away from zero). Wide-integer math
+/// (U256) so the product can never overflow.
+fn kamino_fee_bits(borrow_amount: u64, fee_sf: u64) -> U256 {
+    let one_bits = U256::from(1u128) << 60;
+    let product = U256::from(borrow_amount) * U256::from(fee_sf);
+    let fee_bits = product.max(one_bits);
+    // round to nearest, ties away from zero == (fee_bits + 2^59) >> 60.
+    let half = U256::from(1u128) << 59;
+    (fee_bits + half) >> 60
+}
+
+pub fn calculate_flash_fee_raw(borrow_amount: u64, fee_sf: u64) -> Result<u64> {
+    kamino_flash_fee_checked(borrow_amount, fee_sf).map_err(|e| match e {
+        KaminoFeeError::FlashLoanDisabled => ArbError::InvalidInput(
+            "kamino flash loans disabled (flash_loan_fee_sf == u64::MAX)".to_string(),
+        ),
+        KaminoFeeError::BorrowTooSmall => ArbError::InvalidInput(
+            "kamino flash loan borrow too small: origination fee >= principal".to_string(),
+        ),
+        KaminoFeeError::Overflow => ArbError::Overflow,
+    })
 }
 
 #[cfg(test)]
@@ -517,23 +595,28 @@ mod tests {
     }
 
     #[test]
-    fn flash_fee_uses_q64_64_sf_exactly() {
-        // sf = 5% expressed in Q64.64, derived with INTEGER math so the test
-        // value is exact (a float 0.05*2^64 rounds up to ...632).
-        let sf_5pct: u64 = ((1u128 << 64) / 20) as u64; // 922_337_203_685_477_580
+    fn flash_fee_uses_u68f60_sf_exactly() {
+        // sf = 5% expressed in U68F60 (60 fractional bits), derived with INTEGER
+        // math so the test value is exact.
+        let sf_5pct: u64 = ((1u128 << 60) / 20) as u64; // 57_646_075_230_342_348
         let fee = calculate_flash_fee_raw(1_000_000_000, sf_5pct).unwrap();
         assert_eq!(fee, 50_000_000, "5% of 1 SOL must be 50M raw units");
 
         // sf = 0 must be explicit too.
         assert_eq!(calculate_flash_fee_raw(1_000_000_000, 0).unwrap(), 0);
 
-        // The actual main-market WSOL/USDC reserve value (read from mainnet
-        // `ReserveConfig.fees.flash_loan_fee_sf`): 11_529_215_046_068 ≈ 6.25e-7.
-        // 1 SOL borrowed -> ceil(1e9 * 6.25e-7) = 625 lamports. A bps integer
-        // cannot represent this fee; only the Q64.64 path is exact.
+        // The actual main-market WSOL reserve value (read from mainnet
+        // `ReserveConfig.fees.flash_loan_fee_sf`): 11_529_215_046_068 = 1e-5.
+        // 1 SOL borrowed -> round(1e9 * 1e-5) = 10_000 lamports. A bps integer
+        // cannot represent this fee; only the U68F60 path is exact.
         let mainnet_sf: u64 = 11_529_215_046_068;
         let fee = calculate_flash_fee_raw(1_000_000_000, mainnet_sf).unwrap();
-        assert_eq!(fee, 625);
+        assert_eq!(fee, 10_000);
+
+        // Disabled sentinel and BorrowTooSmall fail closed.
+        assert!(calculate_flash_fee_raw(1_000_000_000, u64::MAX).is_err());
+        assert!(calculate_flash_fee_raw(1_000_000_000, 1u64 << 60).is_err());
+        assert!(calculate_flash_fee_raw(1, mainnet_sf).is_err());
     }
 
     #[test]
@@ -729,10 +812,20 @@ mod tests {
     }
 
     #[test]
-    fn flash_fee_sf_full_scale_ceils_to_the_loan() {
-        // sf = u64::MAX ≈ 1 - 2^-64: ceil(loan * sf / 2^64) rounds up to the
-        // loan itself — the ceiling never understates repayment.
-        let fee = calculate_flash_fee_raw(1_000_000_000, u64::MAX).unwrap();
+    fn flash_fee_fails_closed_on_disabled_and_borrow_too_small() {
+        // sf == u64::MAX is klend's "flash loans disabled" sentinel; the fee
+        // helper must refuse rather than return a plausible number.
+        assert!(calculate_flash_fee_raw(1_000_000_000, u64::MAX).is_err());
+
+        // sf == 2^60 is a rate of exactly 1.0 -> origination fee == principal,
+        // which klend rejects with BorrowTooSmall.
+        assert!(calculate_flash_fee_raw(1_000_000_000, 1u64 << 60).is_err());
+
+        // sf = 2^60 - 1 is a rate just under 1.0. It is *not* BorrowTooSmall,
+        // and round-to-nearest of amount * (1 - 2^-60) rounds back up to the
+        // principal itself — so the fee can equal (but never exceed) the loan.
+        let sf_almost_one: u64 = (1u64 << 60) - 1;
+        let fee = calculate_flash_fee_raw(1_000_000_000, sf_almost_one).unwrap();
         assert_eq!(fee, 1_000_000_000);
     }
 

@@ -1,5 +1,11 @@
 //! Core Domain Types (Newtypes) and Canonical Primitives for Solana Arbitrage.
 
+pub mod currency;
+pub mod dimensional;
+pub use currency::*;
+
+pub use arb_constants::{DEFAULT_HOP_SLIPPAGE_BPS, HOP_SLIPPAGE_MAX_BPS};
+
 use serde::{Deserialize, Serialize};
 use solana_pubkey::Pubkey;
 use std::fmt;
@@ -33,6 +39,10 @@ impl Lamports {
 
     pub fn as_u64(self) -> u64 {
         self.0
+    }
+
+    pub fn as_u128(self) -> u128 {
+        self.0 as u128
     }
 }
 
@@ -69,6 +79,10 @@ impl TokenAmount {
 
     pub fn as_u64(self) -> u64 {
         self.0
+    }
+
+    pub fn as_u128(self) -> u128 {
+        self.0 as u128
     }
 }
 
@@ -268,6 +282,10 @@ pub enum DexProtocol {
     OrcaWhirlpool,
     /// Meteora DLMM (discrete bin ladder with volatility-scaled fees).
     MeteoraDlmm,
+    /// Meteora DAMM v2 (`cp_amm`, `cpamdp…`): configurable constant/concentrated AMM.
+    MeteoraDammV2,
+    /// Raydium LaunchLab (`LanMV9…`): bonding curve launchpad.
+    RaydiumLaunchLab,
     /// Pump.fun bonding curve constant-product AMM.
     PumpFun,
     /// PumpSwap post-graduation constant-product AMM.
@@ -275,17 +293,242 @@ pub enum DexProtocol {
 }
 
 impl DexProtocol {
+    /// Canonical protocol name used by the route monitor, web API and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RaydiumV4 => "raydium_v4",
+            Self::RaydiumCpmm => "raydium_cpmm",
+            Self::RaydiumClmm => "raydium_clmm",
+            Self::OrcaWhirlpool => "orca_whirlpool",
+            Self::MeteoraDlmm => "meteora_dlmm",
+            Self::MeteoraDammV2 => "meteora_damm_v2",
+            Self::RaydiumLaunchLab => "raydium_launchlab",
+            Self::PumpFun => "pump_fun",
+            Self::PumpSwap => "pump_swap",
+        }
+    }
+
     /// Pricing family. Determines which curve the quote model must use.
     ///
     /// Program ids live only in `arb-constants` (single source of truth); this
     /// crate deliberately carries no copy of them.
     pub const fn family(self) -> PoolKind {
         match self {
-            Self::RaydiumV4 | Self::RaydiumCpmm | Self::PumpFun | Self::PumpSwap => PoolKind::Cpmm,
+            Self::RaydiumV4
+            | Self::RaydiumCpmm
+            | Self::MeteoraDammV2
+            | Self::RaydiumLaunchLab
+            | Self::PumpFun
+            | Self::PumpSwap => PoolKind::Cpmm,
             Self::RaydiumClmm | Self::OrcaWhirlpool => PoolKind::Clmm,
             Self::MeteoraDlmm => PoolKind::Dlmm,
         }
     }
+}
+
+/// Token program owning a given mint/token account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum TokenProgramKind {
+    #[default]
+    SplToken,
+    Token2022,
+}
+
+impl TokenProgramKind {
+    pub fn program_id(self) -> solana_pubkey::Pubkey {
+        use std::str::FromStr;
+        match self {
+            Self::SplToken => solana_pubkey::Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)
+                .expect("valid SPL token program id"),
+            Self::Token2022 => {
+                solana_pubkey::Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID)
+                    .expect("valid Token-2022 program id")
+            }
+        }
+    }
+}
+
+/// Raydium AMM V4 swap instruction schema.
+///
+/// Raydium added `SwapBaseInV2` (opcode 16, 8 accounts, no OpenBook/Serum
+/// dependencies) after the original `SwapBaseIn` (opcode 9, 18 accounts). The
+/// V2 schema is the default for every pool that supports it. V1 remains an
+/// explicit, opt-in compatibility path for older pools; it is never selected
+/// silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RaydiumV4SwapVersion {
+    /// Canonical `SwapBaseInV2` — opcode 16, 8 accounts.
+    #[default]
+    V2,
+    /// Legacy `SwapBaseIn` — opcode 9, 18 accounts (OpenBook/Serum required).
+    V1,
+}
+
+impl RaydiumV4SwapVersion {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V2 => "v2",
+            Self::V1 => "v1",
+        }
+    }
+}
+
+/// PumpSwap instruction generation supported by a pool.
+///
+/// V2 is the canonical schema for current pools (17 accounts, `*_v2`
+/// discriminators). V1 is the legacy schema (16 accounts, `buy`/`sell`
+/// discriminators, requires the Pump Fees `fee_config` account). A pool is only
+/// built with V1 when it is explicitly marked as such; V2 never silently
+/// degrades to V1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PumpSwapPoolVersion {
+    /// Current `buy_v2` / `sell_v2` / `buy_exact_quote_in_v2` schema.
+    #[default]
+    V2,
+    /// Legacy `buy` / `sell` schema with `fee_config`.
+    V1Legacy,
+}
+
+impl PumpSwapPoolVersion {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V2 => "v2",
+            Self::V1Legacy => "v1_legacy",
+        }
+    }
+}
+
+/// PumpSwap swap direction intent — whether the hop spends an exact input
+/// amount or requires an exact output amount.
+///
+/// `ExactIn` is the canonical default (spend exactly `amount_in`, receive at
+/// least `min_amount_out`). `ExactOutBase` requires exactly `min_amount_out`
+/// base tokens and spends at most `amount_in` quote tokens.
+///
+/// Sell + ExactOutBase is not supported by PumpSwap and must fail closed — the
+/// program only offers `buy`/`sell` (exact-in) and `buy_exact_base_out_v2`
+/// (buy exact-out) discriminators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PumpSwapTradeIntent {
+    /// Spend exact input, receive minimum output (canonical path).
+    #[default]
+    ExactIn,
+    /// Receive exact base output, spend at most the given quote input.
+    ExactOutBase,
+}
+
+/// Verified per-pool on-chain execution accounts resolved during ingestion/decoding.
+/// Eliminates hardcoded SOL-USDC account fallbacks and invalid PDA guesses in `arb-tx`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PoolExecutionAccounts {
+    RaydiumV4 {
+        amm_authority: Pubkey,
+        open_orders: Pubkey,
+        target_orders: Pubkey,
+        base_vault: Pubkey,
+        quote_vault: Pubkey,
+        serum_program: Pubkey,
+        serum_market: Pubkey,
+        serum_bids: Pubkey,
+        serum_asks: Pubkey,
+        serum_event_queue: Pubkey,
+        serum_coin_vault: Pubkey,
+        serum_pc_vault: Pubkey,
+        serum_vault_signer: Pubkey,
+        /// Which instruction schema this pool must use. Defaults to V2.
+        #[serde(default)]
+        swap_version: RaydiumV4SwapVersion,
+    },
+    RaydiumCpmm {
+        amm_config: Pubkey,
+        authority: Pubkey,
+        vault_0: Pubkey,
+        vault_1: Pubkey,
+        observation_state: Pubkey,
+    },
+    RaydiumClmm {
+        amm_config: Pubkey,
+        vault_0: Pubkey,
+        vault_1: Pubkey,
+        observation_state: Pubkey,
+        tick_array_pdas: Vec<Pubkey>,
+        bitmap_extension: Option<Pubkey>,
+        /// On-chain `token_mint_0` (@73..105). Defines swap direction:
+        /// `zero_for_one = (mint_in == pool_mint_0)`. Raydium does NOT enforce
+        /// `mint_0 < mint_1` on live pools (probe-verified), so lexicographic
+        /// ordering is not a valid direction rule. `#[serde(default)]` keeps
+        /// previously persisted routes deserializable; default pubkey is
+        /// rejected fail-closed at construction time.
+        #[serde(default)]
+        pool_mint_0: Pubkey,
+    },
+    OrcaWhirlpool {
+        vault_a: Pubkey,
+        vault_b: Pubkey,
+        oracle: Pubkey,
+        tick_array_pdas: Vec<Pubkey>,
+        /// On-chain `token_mint_a` (@101..133). Defines swap direction:
+        /// `a_to_b = (mint_in == pool_mint_a)`. Orca does NOT enforce
+        /// `mint_a < mint_b` on live pools (probe-verified). `#[serde(default)]`
+        /// keeps previously persisted routes deserializable; default pubkey is
+        /// rejected fail-closed at construction time.
+        #[serde(default)]
+        pool_mint_a: Pubkey,
+    },
+    MeteoraDlmm {
+        reserve_x: Pubkey,
+        reserve_y: Pubkey,
+        oracle: Pubkey,
+        bin_array_pdas: Vec<Pubkey>,
+        bitmap_extension: Option<Pubkey>,
+        /// On-chain LbPair `token_x_mint` (@88..120) and `token_y_mint`
+        /// (@120..152). The DLMM program validates these accounts against the
+        /// pair (official SDK always passes `pool.tokenX/tokenY` in the fixed
+        /// x/y slots, never `inToken/outToken`), so passing the hop's
+        /// `mint_in` as `token_x_mint` fails for any Y->X direction.
+        /// `#[serde(default)]` keeps previously persisted routes
+        /// deserializable; default pubkeys are rejected fail-closed at build
+        /// time.
+        #[serde(default)]
+        pool_token_x: Pubkey,
+        #[serde(default)]
+        pool_token_y: Pubkey,
+    },
+    MeteoraDammV2 {
+        config: Pubkey,
+        authority: Pubkey,
+        vault_a: Pubkey,
+        vault_b: Pubkey,
+        event_authority: Pubkey,
+    },
+    RaydiumLaunchLab {
+        authority: Pubkey,
+        global_config: Pubkey,
+        platform_config: Pubkey,
+        base_vault: Pubkey,
+        quote_vault: Pubkey,
+        event_authority: Pubkey,
+    },
+    PumpFun {
+        creator: Pubkey,
+        fee_recipient: Pubkey,
+    },
+    PumpSwap {
+        global_config: Pubkey,
+        pool_base_vault: Pubkey,
+        pool_quote_vault: Pubkey,
+        protocol_fee_recipient: Pubkey,
+        protocol_fee_recipient_ata: Pubkey,
+        coin_creator_vault_authority: Pubkey,
+        coin_creator_vault_ata: Pubkey,
+        fee_config: Pubkey,
+        /// Which PumpSwap instruction generation the pool supports.
+        #[serde(default)]
+        pool_version: PumpSwapPoolVersion,
+    },
 }
 
 /// Signed USD value in micro-dollars (1 unit = 1e-6 USD). Negative means a loss.
@@ -541,16 +784,21 @@ pub struct MintInfo {
     pub is_token_2022: bool,
     pub has_transfer_hook: bool,
     pub has_permanent_delegate: bool,
+    #[serde(default)]
+    pub has_confidential_transfer: bool,
     pub freeze_authority_active: bool,
 }
 
 impl MintInfo {
     /// True when the mint is safe to route through.
+    /// Transfer fees are permitted when accounted for in quotes; hooks, permanent
+    /// delegates, confidential transfers, and active freeze authorities are rejected.
     pub fn is_tradeable(&self) -> bool {
         !self.has_transfer_hook
             && !self.has_permanent_delegate
+            && !self.has_confidential_transfer
             && !self.freeze_authority_active
-            && self.transfer_fee_bps == 0
+            && self.transfer_fee_bps < 10_000
     }
 }
 
@@ -612,7 +860,7 @@ pub struct ClmmTickArray {
 }
 
 /// Verified fee configuration of a Meteora DLMM `LbPair`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DlmmFeeParams {
     pub base_factor: u16,
     pub filter_period: u16,
@@ -622,6 +870,13 @@ pub struct DlmmFeeParams {
     pub max_volatility_accumulator: u32,
     pub protocol_share: u16,
     pub base_fee_power_factor: u8,
+    /// `ConcreteFunctionType` at StaticParameters.function_type (0 = Spot).
+    #[serde(default)]
+    pub function_type: u8,
+    /// `CollectFeeMode`: 0 = InputOnly, 1 = OnlyY. Determines the mint in
+    /// which the swap fee is denominated.
+    #[serde(default)]
+    pub collect_fee_mode: u8,
 }
 
 /// Discrete-bin state (Meteora DLMM).
@@ -631,6 +886,9 @@ pub struct DlmmState {
     /// Active bin ID.
     #[serde(default)]
     pub active_bin_id: i32,
+    /// On-chain LbPair status (0 = enabled; non-zero = disabled).
+    #[serde(default)]
+    pub status: u8,
     /// Bin step in basis points.
     #[serde(default)]
     pub bin_step_bps: u16,
@@ -646,6 +904,10 @@ pub struct DlmmState {
     pub volatility_accumulator: u32,
     #[serde(default)]
     pub volatility_reference: u32,
+    /// On-chain `index_reference`: the bin the volatility accumulator is measured
+    /// against. It is *not* the active bin and must not be substituted by it.
+    #[serde(default)]
+    pub index_reference: i32,
     #[serde(default)]
     pub last_update_timestamp: i64,
 }
@@ -745,6 +1007,12 @@ pub struct PoolState {
     /// basis points. 0 when the mints are legacy SPL Token.
     #[serde(default)]
     pub transfer_fee_bps: u16,
+    /// Token programs for `(base_mint, quote_mint)`.
+    #[serde(default)]
+    pub token_programs: [TokenProgramKind; 2],
+    /// Resolved on-chain execution accounts (vaults, configs, ticks/bins, etc.).
+    #[serde(default)]
+    pub execution_accounts: Option<PoolExecutionAccounts>,
     /// Monitor freshness tracking (P2 #11)
     #[serde(default)]
     pub last_update_slot: u64,
@@ -886,6 +1154,16 @@ pub struct SwapHop {
     /// layer from the LbPair account; None for CPMM/CLMM pools.
     #[serde(default)]
     pub active_bin_id: Option<i32>,
+    /// Token programs for `(mint_in, mint_out)`.
+    #[serde(default)]
+    pub token_programs: [TokenProgramKind; 2],
+    /// PumpSwap trade intent: exact-in (default) or exact-out base.
+    /// Only meaningful for PumpSwap hops; ignored by other protocols.
+    #[serde(default)]
+    pub trade_intent: PumpSwapTradeIntent,
+    /// Verified on-chain execution accounts resolved for this pool.
+    #[serde(default)]
+    pub execution_accounts: Option<PoolExecutionAccounts>,
 }
 
 impl SwapHop {
@@ -946,6 +1224,31 @@ pub struct ExecutionOpportunity {
     pub base_decimals: u8,
     pub price_impact_bps: Bps,
     pub hops: Vec<SwapHop>,
+    /// Conservative slippage-floor final output carried by pipelines that
+    /// compute one (e.g. the 3-leg DLMM pipeline). `0` means unknown; repayment
+    /// gates then fall back to `expected_out` alone.
+    #[serde(default)]
+    pub expected_min_final_output: u64,
+    /// Per-hop min-out floor slippage (bps) used by tx builders when deriving
+    /// each swap leg's `min_amount_out`. Defaults to
+    /// `DEFAULT_HOP_SLIPPAGE_BPS`; the supervisor overrides it from strategy
+    /// config before dispatch so config is the single source of truth.
+    #[serde(default = "default_hop_slippage_bps")]
+    pub hop_slippage_bps: u64,
+}
+
+fn default_hop_slippage_bps() -> u64 {
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+}
+
+impl ExecutionOpportunity {
+    /// Effective per-hop slippage floor, clamped to `HOP_SLIPPAGE_MAX_BPS`.
+    /// Builders MUST use this instead of the raw field so an operator
+    /// misconfiguration can never disable the min-out protection entirely.
+    pub fn effective_hop_slippage_bps(&self) -> u64 {
+        self.hop_slippage_bps
+            .min(arb_constants::HOP_SLIPPAGE_MAX_BPS)
+    }
 }
 
 // ============================================================================
@@ -1309,6 +1612,9 @@ pub enum ArbError {
     #[error("deserialization error: {0}")]
     DeserializationError(String),
 
+    #[error("dimensional arithmetic error: {0}")]
+    DimensionalArithmetic(#[from] currency::DimensionalArithmeticError),
+
     #[error("pump.fun bonding curve complete/migrated")]
     PumpFunComplete,
 
@@ -1406,6 +1712,8 @@ mod address_conflict_regression_tests {
                 dlmm: None,
                 pump_fun: None,
                 transfer_fee_bps: 0,
+                token_programs: [TokenProgramKind::SplToken; 2],
+                execution_accounts: None,
                 last_update_slot: 1,
                 last_update_ms: 0,
             }

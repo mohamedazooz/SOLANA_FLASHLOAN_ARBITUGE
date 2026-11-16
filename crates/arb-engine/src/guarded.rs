@@ -1,9 +1,7 @@
 //! End-to-end state gate around pure route pricing and dispatch.
 //! This is an opt-in safe entry point; callers must migrate every live path to it.
 use crate::{HopRequest, RouteQuote, quote_route};
-use arb_ingest::{
-    AccountSnapshot, DependencyManifestRegistry, QuoteReadinessError, YellowstoneClient,
-};
+use arb_ingest::{AccountSnapshot, DependencyManifestRegistry, IngestClient, QuoteReadinessError};
 use arb_types::{PoolId, PoolState, Result};
 use solana_pubkey::Pubkey;
 
@@ -52,7 +50,7 @@ pub struct GuardedRouteQuote {
 /// Validate all route dependencies and decode PoolState from those exact account bytes
 /// before running the pure quote calculation.
 pub fn quote_route_guarded(
-    client: &YellowstoneClient,
+    client: &IngestClient,
     manifests: &DependencyManifestRegistry,
     pool_ids: &[PoolId],
     pools: &mut [PoolState],
@@ -130,7 +128,7 @@ pub fn quote_route_guarded(
 /// Must be called immediately before transaction submission. Any account version,
 /// bank, provider, generation or stream-watermark change invalidates the quote.
 pub fn revalidate_before_dispatch(
-    client: &YellowstoneClient,
+    client: &IngestClient,
     manifests: &DependencyManifestRegistry,
     guarded: &GuardedRouteQuote,
     max_age_slots: u64,

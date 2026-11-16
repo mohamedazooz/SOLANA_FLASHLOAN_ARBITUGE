@@ -36,8 +36,43 @@ fn create_test_signer(seed_byte: u8) -> KeypairSigner {
     KeypairSigner::from_bytes(&keypair_bytes).unwrap()
 }
 
+fn mock_raydium_v4_exec_accounts() -> arb_types::PoolExecutionAccounts {
+    let m = arb_tx::RaydiumV4Accounts::mainnet_sol_usdc();
+    arb_types::PoolExecutionAccounts::RaydiumV4 {
+        amm_authority: m.amm_authority,
+        open_orders: m.amm_open_orders,
+        target_orders: m.amm_target_orders,
+        base_vault: m.pool_coin_vault,
+        quote_vault: m.pool_pc_vault,
+        serum_program: m.serum_program,
+        serum_market: m.serum_market,
+        serum_bids: m.serum_bids,
+        serum_asks: m.serum_asks,
+        serum_event_queue: m.serum_event_queue,
+        serum_coin_vault: m.serum_coin_vault,
+        serum_pc_vault: m.serum_pc_vault,
+        serum_vault_signer: m.serum_vault_signer,
+        swap_version: arb_types::RaydiumV4SwapVersion::V2,
+    }
+}
+
+fn mock_orca_whirlpool_exec_accounts() -> arb_types::PoolExecutionAccounts {
+    arb_types::PoolExecutionAccounts::OrcaWhirlpool {
+        vault_a: Pubkey::new_unique(),
+        vault_b: Pubkey::new_unique(),
+        oracle: Pubkey::new_unique(),
+        tick_array_pdas: vec![
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        ],
+        pool_mint_a: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap(),
+    }
+}
+
 fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> ExecutionOpportunity {
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(201),
         slot: Slot(1000),
         size_in: TokenAmount(size_lamports),
@@ -59,6 +94,9 @@ fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> Ex
                 mint_out: MintId(usdc),
                 fee_bps: 25,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId(Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap()),
@@ -67,8 +105,12 @@ fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> Ex
                 mint_out: MintId(wsol),
                 fee_bps: 5,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
             },
         ],
+        expected_min_final_output: 0,
     }
 }
 
@@ -79,6 +121,7 @@ fn create_3hop_opportunity(
     size_lamports: u64,
 ) -> ExecutionOpportunity {
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(301),
         slot: Slot(1001),
         size_in: TokenAmount(size_lamports),
@@ -101,6 +144,9 @@ fn create_3hop_opportunity(
                 mint_out: MintId(usdc),
                 fee_bps: 25,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId(Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap()),
@@ -109,6 +155,9 @@ fn create_3hop_opportunity(
                 mint_out: MintId(bonk),
                 fee_bps: 5,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId::new([3; 32]),
@@ -117,8 +166,12 @@ fn create_3hop_opportunity(
                 mint_out: MintId(wsol),
                 fee_bps: 25,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
         ],
+        expected_min_final_output: 0,
     }
 }
 
@@ -149,6 +202,7 @@ fn challenge_boundary_value_patch_and_sign_2hop() {
         kamino_params: &kamino_params,
         recent_blockhash: initial_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
@@ -161,7 +215,6 @@ fn challenge_boundary_value_patch_and_sign_2hop() {
     let bh_offset = template.blockhash_offset;
     let sig_offset = template.signature_offset;
     let msg_offset = template.message_offset;
-    let fee_sf = template.fee_sf;
 
     let test_borrow_values = [0u64, 1u64, 10_000_000_000u64, u64::MAX - 100, u64::MAX];
     let test_tip_values = [0u64, 1u64, 50_000u64, u64::MAX - 1, u64::MAX];
@@ -199,14 +252,14 @@ fn challenge_boundary_value_patch_and_sign_2hop() {
                     "Borrow amount must match exactly at target offset"
                 );
 
-                // Invariant 3: Repay amount at exact offset (verified Q64.64 fee sf)
+                // Invariant 3: Repay amount at exact offset. klend's repay
+                // argument MUST equal the borrow principal; the origination fee
+                // is collected separately at repay time.
                 let written_repay =
                     u64::from_le_bytes(wire_tx[r_offset..r_offset + 8].try_into().unwrap());
-                let fee = calculate_kamino_flash_fee(borrow, fee_sf);
-                let expected_repay = borrow.saturating_add(fee);
                 assert_eq!(
-                    written_repay, expected_repay,
-                    "Repay amount must match expected saturating fee calculation"
+                    written_repay, borrow,
+                    "Repay argument must equal the borrow principal exactly"
                 );
 
                 // Invariant 4: Tip lamports at exact offset
@@ -261,6 +314,7 @@ fn challenge_boundary_value_patch_and_sign_3hop() {
         kamino_params: &kamino_params,
         recent_blockhash: initial_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
@@ -320,6 +374,7 @@ fn challenge_non_target_bytes_untouched_during_patch() {
         kamino_params: &kamino_params,
         recent_blockhash: initial_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
@@ -387,6 +442,7 @@ fn challenge_cryptographic_signature_tamper_detection() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x33; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
@@ -460,6 +516,7 @@ fn challenge_sequential_rapid_mutation_without_drift() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x55; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
@@ -530,28 +587,29 @@ fn challenge_sequential_rapid_mutation_without_drift() {
 
 #[test]
 fn challenge_fee_bearing_reserve_overflow_and_saturation() {
-    // calculate_kamino_flash_fee takes the raw Q64.64 on-chain `flash_loan_fee_sf`.
+    // calculate_kamino_flash_fee takes the raw U68F60 on-chain `flash_loan_fee_sf`
+    // (klend's `Fraction` = `fixed::types::U68F60`, 60 fractional bits).
     assert_eq!(calculate_kamino_flash_fee(0, 0), 0);
     assert_eq!(calculate_kamino_flash_fee(0, 100), 0);
     assert_eq!(calculate_kamino_flash_fee(10_000_000, 0), 0);
 
-    // Any non-zero sf on a non-zero loan rounds up to at least 1 lamport.
+    // Any non-zero sf on a non-zero loan rounds up to at least 1 unit.
     assert_eq!(calculate_kamino_flash_fee(1, 1), 1);
 
-    // Mainnet WSOL/USDC reserve sf: ceil(1e9 * 6.25e-7) = 625 lamports on 1 SOL.
+    // Mainnet WSOL reserve sf = 1e-5: round(1e9 * 1e-5) = 10_000 lamports on 1 SOL.
     assert_eq!(
         calculate_kamino_flash_fee(1_000_000_000, 11_529_215_046_068),
-        625
+        10_000
     );
 
-    // u64::MAX loan with a small sf saturates on repay without panicking.
+    // u64::MAX loan with a small sf computes a wide fee without panicking.
     let max_loan = u64::MAX;
     let fee_max = calculate_kamino_flash_fee(max_loan, 11_529_215_046_068);
     assert!(fee_max > 0);
     let repay = max_loan.saturating_add(fee_max);
     assert_eq!(repay, u64::MAX);
 
-    // Template initialized with a non-zero verified sf (5% in Q64.64).
+    // Template initialized with a non-zero verified sf (5% in U68F60).
     let signer = create_test_signer(15);
     let payer = signer.pubkey();
     let tip_acc = Pubkey::from_str(JITO_TIP_ACCOUNTS[5]).unwrap();
@@ -571,6 +629,7 @@ fn challenge_fee_bearing_reserve_overflow_and_saturation() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x77; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let v0_tx = TxBuilder::build_kamino_bundle(&bundle_params).unwrap();
@@ -579,19 +638,20 @@ fn challenge_fee_bearing_reserve_overflow_and_saturation() {
         v0_tx.wire_bytes,
         &bundle_params.recent_blockhash,
         50_000,
-        11_529_215_046_068, // mainnet Q64.64 sf
+        11_529_215_046_068, // mainnet U68F60 sf
     )
     .unwrap();
 
     let r_offset = template.repay_amount_offset;
 
-    // Patch with u64::MAX: fee is tiny, repay saturates cleanly.
+    // Patch with u64::MAX: the repay argument equals the principal exactly, so
+    // the written value is u64::MAX with no overflow.
     let wire_tx = template.patch_and_sign(u64::MAX, 10_000, [0x88; 32], &signer);
     let written_repay = u64::from_le_bytes(wire_tx[r_offset..r_offset + 8].try_into().unwrap());
     assert_eq!(
         written_repay,
         u64::MAX,
-        "Repay with u64::MAX loan must saturate to u64::MAX without overflow"
+        "Repay argument must equal the borrow principal (u64::MAX) without overflow"
     );
 }
 
@@ -622,6 +682,7 @@ fn challenge_wire_mtu_size_limit_and_high_account_count() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x11; 32],
         lookup_tables: std::slice::from_ref(&alt),
+        flash_loan_fee_sf: 0,
     };
     let tx_2hop = TxBuilder::build_kamino_bundle(&params_2hop).unwrap();
     println!(
@@ -647,6 +708,7 @@ fn challenge_wire_mtu_size_limit_and_high_account_count() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x22; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
     let tx_3hop = TxBuilder::build_kamino_bundle(&params_3hop).unwrap();
     println!(
@@ -671,6 +733,7 @@ fn challenge_wire_mtu_size_limit_and_high_account_count() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x33; 32],
         lookup_tables: &[], // No ALT: forces all accounts to be stored as full 32-byte static keys
+        flash_loan_fee_sf: 0,
     };
     let result_no_alt = TxBuilder::build_kamino_bundle(&params_no_alt);
     match result_no_alt {
@@ -743,6 +806,7 @@ fn challenge_blockhash_locator_behavior_with_zero_blockhash() {
         kamino_params: &kamino_params,
         recent_blockhash: zero_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
     let v0_tx_with_alt = TxBuilder::build_kamino_bundle(&bundle_params_with_alt).unwrap();
     let (msg_off, bh_off, _, _, _, _) =
@@ -766,6 +830,7 @@ fn challenge_blockhash_locator_behavior_with_zero_blockhash() {
         kamino_params: &kamino_params,
         recent_blockhash: zero_blockhash,
         lookup_tables: &[], // No ALT: SystemProgram is in static_account_keys
+        flash_loan_fee_sf: 0,
     };
     if let Ok(v0_tx_no_alt) = TxBuilder::build_kamino_bundle(&bundle_params_no_alt) {
         let (no_alt_msg_off, no_alt_bh_off, _, _, _, _) =
@@ -814,6 +879,7 @@ fn challenge_zero_initial_tip_template_rejection() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x88; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let result = PreWarmedTxTemplate::from_bundle_params(&bundle_params_zero_tip, 9223372036854775);

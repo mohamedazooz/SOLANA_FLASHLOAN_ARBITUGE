@@ -118,6 +118,10 @@ impl AdaptiveBidder {
     /// the aggressive 30,000+ lamport global hurdle floor used for crowded meme-token pools.
     /// Instead, the floor is relaxed to 10,000 lamports (covering 5k base fee + 1k min tip + min keep),
     /// while still respecting the keep_share fraction.
+    /// Contention-aware hurdle that adapts to pool heat (write-lock contention) and CUs.
+    ///
+    /// Strictly guarantees that the hurdle is AT LEAST profit_floor + contingency_buffer
+    /// so that net retained profit P_net is strictly >= 0.20 USD after all costs and tip.
     pub fn calculate_contention_hurdle(
         &self,
         edge: Lamports,

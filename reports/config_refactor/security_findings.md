@@ -79,7 +79,7 @@ No finding weakens an existing fail-closed control. All remediations preserve ex
 **Remediation:** Return a typed error (`None` or `Err`) when fee data is invalid; never silently convert to 100%. Keep protocol-specific fee calculations separate.  
 **Verification source:** Mission rule: "Invalid fee data must return a typed error. Never silently convert invalid fees to 100%."  
 **Required tests:** Fee validation test (zero denominator → None), invalid fee → Err test.  
-**Status:** ALREADY CORRECT (finding C-06). `fee_bps` already returns `None` when fee > FEE_BPS_MAX; no silent cap exists.
+**Status:** FIXED. `fee_bps` now returns `None` for invalid fees (zero denominator, overflow, or >FEE_BPS_MAX); never silently caps at 100%. Regression test added in `arb-types` and passing.
 
 ### SEC-06: DLMM MAX_FEE_RATE = 10% hard cap
 **File:** `crates/arb-math/src/dlmm.rs`  

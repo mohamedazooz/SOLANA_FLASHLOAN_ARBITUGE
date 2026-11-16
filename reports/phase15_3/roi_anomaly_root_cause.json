@@ -1,0 +1,61 @@
+{
+  "schema": "sentinel.phase15_3.roi_anomaly_root_cause.v1",
+  "phase": "15.3",
+  "generated_at_utc": "2026-11-11T12:30:00Z",
+  "anomaly": {
+    "size_raw": 3415629,
+    "real_net_profit_raw": 32985083,
+    "roi_percent": 965.7,
+    "reported_as": "SOL",
+    "actual_mint": "USDC (EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v)"
+  },
+  "root_cause": {
+    "category": "DENOMINATION_CONFUSION",
+    "description": "Base-mint raw units were incorrectly cast to Lamports type, then displayed as SOL without conversion.",
+    "primary_defect": "crates/arb-bot/src/supervisor/run.rs line 847 (original): `let real_net_profit = Lamports(real_net_raw);`",
+    "defect_explanation": [
+      "calculate_net_profit_raw() returns net profit in BASE MINT RAW UNITS (e.g., USDC raw units, 6 decimals).",
+      "The return value was wrapped in `Lamports()` type, falsely implying SOL lamports (9 decimals).",
+      "profit_sol = real_net_profit.as_u64() / scale divided by base_decimals scale (10^6 for USDC) but labeled as 'SOL'.",
+      "roi_pct = real_net_profit / size_in * 100 compared base-mint raw with input raw — mathematically valid only for same-mint, but misleadingly labeled as '% ROI'.",
+      "initial_loan_sol = size_in / 1e9 divided by SOL decimals (1e9) even though size_in may be USDC raw units (6 decimals)."
+    ],
+    "affected_locations": [
+      "crates/arb-bot/src/supervisor/run.rs:847 (original Lamports cast)",
+      "crates/arb-bot/src/supervisor/run.rs:1333-1334 (original profit_sol calculation)",
+      "crates/arb-bot/src/supervisor/run.rs:1345 (original initial_loan_sol calculation)",
+      "crates/arb-bot/src/supervisor/run.rs:1346 (original gross_rev_sol calculation)",
+      "crates/arb-bot/src/supervisor/run.rs:1347-1351 (original deductions_sol calculation)",
+      "crates/arb-bot/src/supervisor/run.rs:1352-1353 (original roi_pct calculation)"
+    ],
+    "reproduction": {
+      "input": "size_in = 3,415,629 raw USDC (6 decimals = ~$3,416)",
+      "expected_out": "36,400,712 raw USDC (6 decimals = ~$36,400)",
+      "real_net_raw": "32,985,083 raw USDC (after all costs)",
+      "incorrect_display": "profit_sol = 32,985,083 / 10^6 = 32.985 'SOL' (actually USDC)",
+      "incorrect_roi": "roi_pct = 32,985,083 / 3,415,629 * 100 = 965.7%",
+      "correct_display": "profit_usdc = 32,985,083 / 10^6 = 32.985 USDC (~$32.99)",
+      "correct_roi": "roi_pct = 32,985,083 / 3,415,629 * 100 = 965.7% (valid for same-mint ratio, but misleading label)"
+    },
+    "severity": "P0 — Economic correctness defect",
+    "impact": "All profit/ROI displays are denominationaly incorrect when base_mint is not SOL. ROI anomaly is a display/labeling error, not an actual 965% return."
+  },
+  "fix_applied": {
+    "file": "crates/arb-bot/src/supervisor/run.rs",
+    "changes": [
+      "Renamed `real_net_raw` to `real_net_base_raw` to clarify denomination.",
+      "Removed `Lamports(real_net_raw)` cast — value stays in base mint raw units.",
+      "Min profit floor converted from lamports to base mint raw units using verified rate before comparison.",
+      "Profit displayed using base mint decimals scale, not hardcoded 1e9.",
+      "SOL-denominated display uses `base_raw_to_lamports_checked()` with verified rate.",
+      "ROI calculation uses same-mint raw units (base mint raw / input raw).",
+      "All info! macro labels use `opp.base_mint` instead of hardcoded 'SOL'."
+    ]
+  },
+  "secondary_defect": {
+    "category": "GRAPH_AGE_FAIL_OPEN",
+    "location": "crates/arb-bot/src/supervisor/run.rs (original lines 502-510)",
+    "description": "When `fresh_pools` is empty after slot-window filtering, ALL active pools (including stale ones) are retained, bypassing freshness validation.",
+    "fix": "Replaced with fail-closed `continue` — no stale pool may enter a candidate route."
+  }
+}

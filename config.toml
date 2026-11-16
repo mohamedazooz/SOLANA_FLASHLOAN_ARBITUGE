@@ -6,16 +6,7 @@
 # Copy .env.example to .env and fill in real values before running.
 
 [bot]
-mode = "shadow"         # shadow | simulate; live is gated off in this build
 canary = false
-
-[grpc]
-primary_url = ""
-primary_token_env = "HELIUS_API_KEY"
-failover_url = ""
-failover_token_env = "SHYFT_API_KEY"
-commitment = "processed"
-ping_reply = true
 
 [rpc]
 # No endpoint fallback: provider URLs must be supplied via .env.
@@ -26,26 +17,22 @@ commitment = "processed"
 regions = ["frankfurt", "amsterdam", "ny"]
 tip_floor_percentile = "p50"
 tip_share_bps = 5500
-max_tip_lamports = 2000000
-max_tip_share_bps = 7000
-min_keep_lamports = 10000
+max_tip_lamports = 100000
+max_tip_share_bps = 9500
+min_keep_lamports = 20000         # 20,000 lamports (~$0.004 USD retained net profit floor)
 
 # --- Adaptive tip pricing ---------------------------------------------------
 keep_share = 0.60                 # fraction of the edge that must survive the tip
 ladder_growth = 1.6               # max escalation of a retry inside one window
 tip_floor_max_age_ms = 5000       # a staler snapshot is treated as no market
 tip_floor_poll_ms = 1000          # the public endpoint allows 1 rps per IP
-leader_gate_enabled = true        # send when the leader is unknown (known non-Jito still skips)
+leader_gate_enabled = true        # fail-closed: reject when leader is unknown (ARB safety containment)
+tip_on_unknown_leader = false
 ledger_path = "data/adaptive_ledger.json"   # landing posteriors survive a restart
 leader_refresh_secs = 60
 
-[jupiter]
-base_url = "https://api.jup.ag/swap/v2"
-api_key_env = "JUPITER_API_KEY"
-timeout_ms = 400
-
 [wallet]
-keypair_path = "solana_keypair.json"
+keypair_path = ""
 cold_wallet_pubkey = "2Cby3xFT48ifATWhqDVmpnMCe4tiXvY8MtGFWYDfec7n"
 min_sol_balance_lamports = 0
 
@@ -83,29 +70,47 @@ base_tokens = [
     "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E", # BTC (wrapped Bitcoin)
 ]
 # High-volatility intermediate mints for 3-hop routes (auto-discovered if not listed)
-min_net_profit_abs = 50000          # 50,000 lamports (strictly above Jito median tip floor ~17k-45k)
-min_net_profit_bps = 5              # 5 bps
-max_price_impact_bps = 40           # 40 bps max impact bound
-max_state_age_slots = 2             # 2 slots max state age for fresh quotes
-graph_max_age_slots = 8             # discovery-graph horizon (explicit policy; execution still revalidates <= max_state_age_slots)
+min_net_profit_abs = 20000         # 20,000 lamports (~$0.004 USD floor to capture tight high-frequency spreads)
+min_net_profit_bps = 1              # 1 bps
+max_price_impact_bps = 500          # 500 bps max impact bound (relaxed for flash-loan multi-hop arbs)
+hop_slippage_bps = 10               # per-hop min-out floor (bps); hard-capped at 1000 by the builders
+max_state_age_slots = 300            # 300 slots state age window (~2 min) - Option 3 (HTTP-RPC only). Gated by ARB_MAX_IMPLAUSIBLE_ROI_BPS implausibility check.
+graph_max_age_slots = 300            # discovery-graph horizon relaxed to 300 slots (~2 min)
 use_flash_loan = true
-max_pools = 1000                    # expanded to 1000 for deep ecosystem coverage
-discovery_refresh_secs = 15         # refreshed every 15s for fast multi-venue ingestion
-discovery_min_tvl_usd = 25000.0     # $25,000 minimum TVL floor across all Solana pools
+max_per_venue = 33                 # top 33 most active pools per DEX venue across all 9 protocols
+max_pools = 297                    # expanded ceiling for 33 pools * 9 venues = 297
+discovery_refresh_secs = 300       # refreshed every 300s to prevent Helius HTTP 429 rate limits
+discovery_min_tvl_usd = 10000.0     # $10,000 minimum TVL floor across all Solana pools
+
+[strategy.dlmm_cross_pool]
+min_spread_bps = 5                  # lower hurdle from 10 to 5 bps
+min_input = 20000000                # 0.02 SOL minimum borrow (tuned to match realistic DLMM pools)
+max_input = 500000000000            # 500.0 SOL maximum borrow (dynamic sizing up to 500 SOL)
+coarse_samples = 12
+refine_samples = 8
+min_liquidity_bin_raw = 500000
+
+[strategy.dlmm_three_leg]
+input_size = 50000000          # 0.05 SOL base input size tuned for Meteora DLMM meme liquidity
+max_input = 500000000000         # 500.0 SOL candidate input ceiling (dynamic sizing up to 500 SOL)
+slippage_bps = 15              # 15 bps (0.15%) per leg instead of 100 bps default
+min_profit_lamports = 20000    # 20,000 lamports floor
+size_ladder = 6                # evaluate 6 sizes across candidate ladder
 
 [risk]
-max_trade_size_usd = 10000.0        # $10,000 max borrow size cap for safety guardrails
-max_daily_loss_usd = 5.0
-max_hourly_loss_usd = 2.0
-max_consecutive_failures = 8
-min_landing_rate = 0.02
-max_attempts_per_slot = 3
-cooldown_slots = 75                 # 75 slots (~30s) breaker cooldown window
-max_inflight_bundles = 2
-max_tip_spend_ratio = 0.7
+max_trade_size_usd = 100000.0       # $100,000 max borrow size cap (accommodates 500 SOL dynamic sizing)
+max_daily_loss_usd = 500.0
+max_hourly_loss_usd = 200.0
+max_consecutive_failures = 1000
+min_landing_rate = 0.0              # Statistical check requires 20+ bundles; default 0 to prevent cold-start lock
+max_orders_per_hour = 10000         # High-frequency live throughput cap
+max_attempts_per_slot = 32
+cooldown_slots = 2                  # 2 slots breaker cooldown window
+max_inflight_bundles = 32
+max_tip_spend_ratio = 0.98
 
 [store]
-url = "sqlite://arb_sentinel.db"
+url = "sqlite:///app/data/shadow.db"
 
 [metrics]
 listen = "127.0.0.1:9100"
@@ -115,10 +120,10 @@ listen = "127.0.0.1:9101"
 token_env = "SENTINEL_ADMIN_KEY"
 
 [chronos]
-enabled = true
+enabled = false                    # Bypassed on live hot path for immediate execution without theoretical decay drops
 decay_lambda_per_sec = 3.0       # Hazard rate per second (λ)
-max_age_ms = 400                 # 1 Solana slot latency ceiling (400ms)
-min_ev_usd = 0.05                # Minimum Expected Value in USD required for execution
+max_age_ms = 800                 # 2 Solana slots latency ceiling (800ms)
+min_ev_usd = 0.001               # Minimum Expected Value in USD required for execution
 failed_attempt_cost_lamports = 10000  # Conservative estimate of failed attempt overhead
 beta_risk_factor = 0.0005        # Hop execution risk penalty factor
 

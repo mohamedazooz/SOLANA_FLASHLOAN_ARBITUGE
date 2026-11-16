@@ -19,6 +19,15 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY config ./config
+COPY dashboard ./dashboard
+
+# --- Web application (React + Vite build output served by the Rust API) ----
+FROM node:22-slim AS web-builder
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
@@ -38,7 +47,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/arb-bot /usr/local/bin/arb-bot
+<<<<<<< HEAD
 COPY --from=builder /app/target/release/alchemy-webhook /usr/local/bin/alchemy-webhook
+=======
+COPY --from=web-builder /web/dist /app/web/dist
+>>>>>>> origin/main
 
 # The repository ships config/config.example.toml only; real deployments mount
 # a populated config at /app/config/config.toml (compose does this read-only).

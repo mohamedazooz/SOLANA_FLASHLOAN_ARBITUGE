@@ -1,0 +1,91 @@
+{
+  "audit": "Phase 16 — Production Readiness & Mainnet Execution Verification",
+  "date_utc": "2026-11-13",
+  "baseline_commit": "093b20e",
+  "pr13_head": "b01b0c4",
+  "audit_branch": "vibe/phase16-production-readiness-9d81d9",
+  "host": {
+    "os": "Windows 11",
+    "cargo": "1.99.1",
+    "rustc": "1.99.1",
+    "wsl_ubuntu_cargo": false
+  },
+  "static_gates": {
+    "cargo_check_workspace_all_targets": "PASS",
+    "cargo_fmt_check": "PASS",
+    "cargo_clippy_deny_warnings": "PASS"
+  },
+  "test_suite": {
+    "command": "cargo test --workspace --all-targets --locked",
+    "unique_suites": 64,
+    "passed": 962,
+    "failed": 2,
+    "ignored": 2,
+    "executed_non_ignored": 964,
+    "note": "The PR body's '964 tests' equals the number of executed non-ignored tests, not the number that passed.",
+    "failures": [
+      {
+        "binary": "arb-tx --test mainnet_non_broadcast_simulation",
+        "tests": [
+          "test_mainnet_non_broadcast_simulation_raydium_v4_v2",
+          "test_mainnet_non_broadcast_simulation_orca_whirlpool"
+        ],
+        "error": "InvalidAccountForFee; logs empty",
+        "cause": "no SOLANA_PRIVATE_KEY; test falls back to unfunded KeypairSigner::from_seed([99u8;32])",
+        "classification": "BLOCKED_ENVIRONMENT (funded simulation payer missing), not a DEX/execution defect",
+        "blocker": "B-3"
+      }
+    ],
+    "ignored": [
+      "arb-tx --test mainnet_alt_integration_tests: test_live_alt_compiles_v0_and_measures_bytes",
+      "arb-tx --test mainnet_alt_integration_tests: test_live_alt_validates_and_warmup"
+    ],
+    "reconciliation": "831 passed in the aborted full run + 118 remaining arb-tx + 13 arb-types = 962"
+  },
+  "v1_size_ladder": {
+    "artifact": "reports/phase15_5/V1_SIZE_LADDER.json",
+    "instrument_real_routes": "real_three_pool_dlmm_route (synthetic bin-array pubkeys; not mainnet-executable as written)",
+    "real_route_rungs": [
+      {"bins_per_leg": 1, "accounts": 38, "bytes": 1574, "compiled": true},
+      {"bins_per_leg": 2, "accounts": 41, "bytes": 1673, "compiled": true},
+      {"bins_per_leg": 3, "accounts": 44, "bytes": 1772, "compiled": true},
+      {"bins_per_leg": 4, "accounts": 47, "bytes": 1871, "compiled": true},
+      {"bins_per_leg": 5, "accounts": 50, "bytes": 1970, "compiled": true},
+      {"bins_per_leg": 6, "accounts": 53, "bytes": 2069, "compiled": true},
+      {"bins_per_leg": 7, "accounts": 56, "bytes": 2168, "compiled": true},
+      {"bins_per_leg": 8, "accounts": 59, "bytes": 2267, "compiled": true},
+      {"bins_per_leg": 9, "accounts": 62, "bytes": 2366, "compiled": true},
+      {"bins_per_leg": 10, "accounts": 65, "bytes": 2465, "compiled": true},
+      {"bins_per_leg": 11, "accounts": 67, "bytes": null, "compiled": false,
+       "failure": "SIMD-0385 address limit exceeded: 67 > 64"}
+    ],
+    "capacity_rungs": [1232, 1500, 2000, 3000, 3500, 4000],
+    "mtu_rejection": {"bytes": 4097, "error": "Transaction size exceeds Solana MTU: 4097 bytes > 4096 bytes limit"},
+    "simd_0385_enforced": true
+  },
+  "live_probe_cited": {
+    "artifact": "reports/v1_mainnet_probe/probe_report_2026-11-13.json",
+    "status": "CITED_NOT_RERUN",
+    "solana_core": "4.4.0",
+    "wss_connected": true,
+    "v1_simulate_accepted": true,
+    "units_consumed": 62596,
+    "kamino_fee_sf_live": 115292150460684,
+    "kamino_fee_sf_matches_constant": true,
+    "kamino_wsol_flash_liquidity_sol": 230166.40668151
+  },
+  "shadow_soak": {
+    "status": "NOT_RUN",
+    "reason": "no >=24h host, no repo .env, no funded key",
+    "metrics_persisted": false,
+    "blockers": ["B-1", "B-4"]
+  },
+  "mainnet_broadcast": {
+    "status": "NOT_PERFORMED",
+    "authorized": false,
+    "signature": null,
+    "onchain_evidence": null,
+    "blocker": "B-2"
+  },
+  "verdict": "NOT PRODUCTION READY"
+}

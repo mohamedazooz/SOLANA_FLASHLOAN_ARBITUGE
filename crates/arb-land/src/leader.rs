@@ -103,6 +103,53 @@ impl LeaderSchedule {
         })
     }
 
+    /// Build a partial schedule from a lightweight `getSlotLeaders` array.
+    ///
+    /// Accepts a list of string identities starting at `start_slot`.
+    pub fn from_slot_leaders_slice(
+        leaders: &[String],
+        start_slot: u64,
+        epoch: u64,
+        epoch_start_slot: u64,
+        slots_in_epoch: u64,
+    ) -> ArbResult<Self> {
+        let mut entries = Vec::with_capacity(leaders.len());
+        for (idx, raw_identity) in leaders.iter().enumerate() {
+            let slot = start_slot.saturating_add(idx as u64);
+            let offset = slot.saturating_sub(epoch_start_slot);
+            if offset < slots_in_epoch {
+                if let Ok(identity) = Pubkey::from_str(raw_identity) {
+                    if let Ok(offset_u32) = u32::try_from(offset) {
+                        entries.push(LeaderSlot {
+                            offset: offset_u32,
+                            identity,
+                        });
+                    }
+                }
+            }
+        }
+        entries.sort_unstable_by_key(|entry| entry.offset);
+        Ok(Self {
+            epoch,
+            epoch_start_slot,
+            slots_in_epoch,
+            entries,
+        })
+    }
+
+    /// Merge upcoming slot leaders into this schedule.
+    pub fn merge_slot_leaders(&mut self, other: LeaderSchedule) {
+        for entry in other.entries {
+            match self
+                .entries
+                .binary_search_by_key(&entry.offset, |e| e.offset)
+            {
+                Ok(idx) => self.entries[idx] = entry,
+                Err(idx) => self.entries.insert(idx, entry),
+            }
+        }
+    }
+
     /// Epoch this schedule describes.
     pub fn epoch(&self) -> u64 {
         self.epoch

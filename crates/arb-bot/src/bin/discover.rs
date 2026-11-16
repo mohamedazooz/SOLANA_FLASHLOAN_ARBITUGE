@@ -3,7 +3,7 @@
 //! Prints the pool watch set the bot would build right now — how many pools per
 //! venue, their TVL, fee tier and mint pair. No keypair, no signing, no orders.
 //!
-//! Usage: `cargo run -p arb-bot --bin discover [min_tvl_usd] [max_pools]`
+//! Usage: `cargo run -p arb-bot --bin discover [min_tvl_usd] [max_pools] [max_per_venue]`
 
 use arb_ingest::{DiscoveryConfig, PoolDiscovery, RpcPool};
 use std::collections::HashMap;
@@ -25,6 +25,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(v) = args.next() {
         cfg.max_pools = v.parse().unwrap_or(cfg.max_pools);
+    }
+    if let Some(v) = args.next() {
+        cfg.max_per_venue = v.parse().unwrap_or(cfg.max_per_venue);
     }
 
     let discovery = PoolDiscovery::new(RpcPool::from_env());

@@ -1,0 +1,55 @@
+{
+  "schema": "sentinel.phase15_3.graph_freshness_audit.v1",
+  "phase": "15.3",
+  "generated_at_utc": "2026-11-11T12:30:00Z",
+  "audit_target": "crates/arb-bot/src/supervisor/run.rs pool freshness filtering",
+  "config_values": {
+    "max_state_age_slots": 60,
+    "graph_max_age_slots": 300,
+    "max_allowed_slot_lag": 2
+  },
+  "original_behavior": {
+    "code_location": "crates/arb-bot/src/supervisor/run.rs (original lines 502-510)",
+    "description": "Fail-open fallback: when fresh_pools is empty after slot-window filtering, ALL active non-zero reserve pools are retained regardless of age.",
+    "risk": "Stale pools (price divergence against frozen/unupdated pools) enter the candidate graph, enabling phantom arbitrage cycles and incorrect profit calculations.",
+    "freshness_bypass": "Yes — slot window is bypassed when no pools are fresh enough."
+  },
+  "fixed_behavior": {
+    "code_location": "crates/arb-bot/src/supervisor/run.rs (current)",
+    "description": "Fail-closed: when fresh_pools is empty, the tick is skipped with `continue`. No stale pool may enter a candidate route.",
+    "freshness_bypass": "No — strict slot window enforced, no fallback."
+  },
+  "freshness_validation_points": [
+    {
+      "name": "Pool state age filter",
+      "location": "run.rs lines ~453-458",
+      "check": "current_slot - p.last_update_slot <= max_state_age_slots",
+      "enforced": true
+    },
+    {
+      "name": "Graph age filter",
+      "location": "run.rs lines ~488-500",
+      "check": "current_slot - p.slot.0 <= max_graph_age_slots",
+      "enforced": true
+    },
+    {
+      "name": "Simulation freshness gate",
+      "location": "crates/arb-sim/src/meteora_simulation_harness.rs",
+      "check": "simulation_slot - quote_slot <= max_allowed_slot_lag",
+      "enforced": true,
+      "max_allowed_slot_lag": 2
+    },
+    {
+      "name": "Economic invariant gate (Phase 15.3)",
+      "location": "run.rs validate_economic_invariants()",
+      "check": "route state age <= max_state_age_slots",
+      "enforced": true
+    }
+  ],
+  "stale_pool_sources": [
+    "Discovery catalog entries that haven't been updated via Yellowstone gRPC",
+    "Pools removed from the network but still in local cache",
+    "Price divergence between cached and on-chain state"
+  ],
+  "recommendation": "Always fail closed on freshness. Never retain stale pools as fallback. Add per-pool freshness re-check immediately before simulation."
+}

@@ -1,121 +1,70 @@
-# Repository Baseline
+# PHASE 1 — Repository Baseline
 
-Captured: 2026-11-07 17:12 (+02:00), using GitHub API and the local Windows
-workspace. This is an evidence snapshot, not a Phase 15 acceptance report.
-Secrets and credential values are intentionally not reproduced here.
+**Audit branch:** `vibe/forensic-audit-3adf0b` · **Base commit (main):** `f82c837` (Merge PR #17)
+**Date:** 2026-11-13 · **Auditor:** independent forensic pass, evidence-mandatory rules.
 
-## Source of truth and workspace state
+## Git state at audit start
 
-| Item | Observed value |
+| Item | Value |
 |---|---|
-| Repository | `https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE` |
-| GitHub default branch | `main` |
-| Latest GitHub `main` SHA | `c42c38777b23080a67630d4ca730d5df0a7913f1` |
-| Latest `main` commit date | 2026-11-07 12:48:37 UTC |
-| Local checked-out branch | `feature/ci-bootstrap` |
-| Local HEAD | `8e1b3ea5225179503ae724c6805ae73cbbcc8a54` |
-| Local HEAD subject/date | `ci: add GitHub Actions workflow for Rust CI`, 2026-11-07 15:02:28 +02:00 |
-| Remote refs | `origin/main` = latest `main`; `origin/feature/ci-bootstrap` = local HEAD |
-| Pull request | #1, open; CI bootstrap branch |
-| Tags / submodules | No tags returned; no configured submodules observed |
-| Worktree | Dirty: 23 tracked files modified and two untracked files (`PROMPET.MD`, `re.md`) at inspection time |
+| Branch | `main` (fresh, up to date with origin) |
+| Head | `f82c837` — Merge pull request #17 |
+| Working tree | clean (audit branch created from it) |
+| Recent merges | #17 (WS coverage + DLMM/CLMM orientation + collect_fee_mode), #16, #15, #14, #13 |
 
-The local `main` ref matches GitHub `main`, but the active branch is a separate
-feature branch and the working tree already contains substantial user changes.
-No checkout, reset, merge, or fetch that would rewrite the worktree was done.
-The locally modified files are:
+## Workspace inventory (measured, not estimated)
 
-`crates/arb-bot/src/supervisor.rs`, `crates/arb-bot/src/verified_config.rs`,
-`crates/arb-dex/src/pump_swap.rs`, `crates/arb-engine/src/adapters.rs`,
-`crates/arb-engine/src/guarded.rs`, `crates/arb-engine/src/lib.rs`,
-`crates/arb-ingest/src/dependency_manifest.rs`, `crates/arb-ingest/src/lib.rs`,
-`crates/arb-ingest/src/provider_supervisor.rs`,
-`crates/arb-ingest/src/pump_state.rs`,
-`crates/arb-ingest/src/pump_state_tests.rs`,
-`crates/arb-ingest/src/quote_readiness.rs`, `crates/arb-ingest/src/rpc_pool.rs`,
-`crates/arb-ingest/src/rpc_reconcile.rs`,
-`crates/arb-ingest/src/slot_integrity.rs`,
-`crates/arb-ingest/src/yellowstone.rs`, `crates/arb-math/src/clmm.rs`,
-`crates/arb-math/src/economic.rs`, `crates/arb-mcp/src/tools.rs`,
-`crates/arb-risk/src/lib.rs`, `crates/arb-store/src/lib.rs`,
-`crates/arb-store/src/postgres_store.rs`, and `crates/arb-tx/src/kamino.rs`.
+13 crates, edition 2024, `rust-version = "1.99"` (validated on 1.99.1 via `rust-toolchain.toml`).
 
-The repository root's `README.md` was inaccurate about crate names and live
-capabilities; it has been corrected in this change. A missing `can_edit_creator_fee`
-field assignment in the locally modified PumpSwap decoder was also fixed and
-covered by its existing layout test. Neither change alters the GitHub `main`
-commit or the other pre-existing working-tree changes.
+| Crate | src LOC | Role |
+|---|---|---|
+| arb-bot | 12,219 | Supervisor, strategy, dispatch, control service, Telegram |
+| arb-ingest | 13,237 | Registry, discovery, WS, RPC pool, DLMM/CLMM decoding |
+| arb-tx | 17,008 | Flash loan, primitives, transport (V0+ALT, V1), Jito, SWQoS |
+| arb-engine | 8,600 | Adapters, quoting, cycle finders, flash arbitrage engines |
+| arb-math | 7,529 | CPMM/CLMM/DLMM fixed-point math |
+| arb-dex | 4,913 | DEX protocol bindings |
+| arb-sim | 2,641 | LiteSVM / RPC simulation |
+| arb-types | 2,678 | Shared state types |
+| arb-land | 2,545 | Jito landing / tip strategy |
+| arb-store | 1,381 | Persistence |
+| arb-risk | 918 | Risk gates |
+| arb-constants | 465 | Program IDs, seeds, anchors |
+| arb-metrics | 308 | Counters |
+| **Total (src)** | **74,442** | |
 
-## Toolchain and workspace inventory
+### Files > 1000 lines (17 — maintainability P4 finding)
 
-- Host: Windows, `x86_64-pc-windows-msvc`.
-- `rust-toolchain.toml`: `stable`, minimal profile, `rustfmt` and `clippy`.
-- Selected local versions: `rustc 1.99.0`, `cargo 1.99.0`; Rust 1.85.0 is also
-  installed locally.
-- Workspace: Cargo resolver 2, Rust edition 2024, declared `rust-version = 1.85`.
-- `cargo metadata --no-deps --format-version 1`: 14 workspace packages. The
-  separately maintained `webhook-service` is explicitly excluded.
-- The only declared opt-in package feature found in the initial manifest scan is
-  `arb-sim/litesvm`; its default feature set is empty. It is not enabled by
-  default.
-- Dockerfile builder base is `rust:1.85-slim-bookworm`; because the repository
-  toolchain file requests `stable`, the container synchronizes the stable
-  channel rather than pinning an exact compiler release.
-- Locked dependency versions include `yellowstone-grpc-client 16.0.1`,
-  `yellowstone-grpc-proto 14.0.1`; `solana-pubkey` resolves to 2.4.0 from the
-  workspace's 2.2-compatible requirement. No Anchor dependency was found in the
-  workspace manifests.
+registry.rs (2362), rpc_pool.rs (1595), arb-types/lib.rs (1521), arb-math/dlmm.rs (1515),
+arb-tx/flash/compiler.rs (1490), arb-engine/lib.rs (1437), transport/master_alt.rs (1417),
+arb-math/clmm.rs (1242), discovery.rs (1227), helius_ws.rs (1193), arb-ingest/lib.rs (1187),
+supervisor/opportunity.rs (1177), dlmm_flash_arbitrage.rs (1144), adapters.rs (1125),
+transport/adaptive.rs (1114), primitives/builder.rs (1012), arb-tx/lib.rs (1010).
 
-Workspace packages and intended responsibility:
+## Entry points
 
-| Crate | Observed responsibility |
-|---|---|
-| `arb-bot` | Runtime, configuration, supervisor, admin/Telegram surfaces, binaries |
-| `arb-constants` | Shared program constants |
-| `arb-types` | Shared domain types |
-| `arb-dex` | DEX adapters and token/account decoding helpers |
-| `arb-math` | AMM, CLMM, DLMM, and economics math |
-| `arb-engine` | Candidate routes, graph/search, sizing, quote interfaces |
-| `arb-ingest` | Yellowstone and other ingest code, account/provider state |
-| `arb-land` | Sender/landing and fee-floor integrations |
-| `arb-metrics` | Metrics |
-| `arb-risk` | Risk gates |
-| `arb-sim` | Simulation interfaces |
-| `arb-store` | SQLite/Postgres persistence |
-| `arb-tx` | Transaction and instruction builders |
-| `arb-mcp` | Separate MCP library and binary |
+- `arb-bot` bin `arb-bot` (main supervisor) and bin `alchemy-webhook`.
+- Mode gating: `ARB_MODE` / `ARB_LIVE` / `DRY_RUN` / `ARB_CANARY`; live requires explicit
+  truthy `ARB_LIVE=1` (main.rs:349 bails otherwise; control_service.rs:535 double-refuses).
+- `shadow-only` cargo feature: compile-time containment that removes the broadcast path
+  entirely (verified: `cfg(feature = "shadow-only")` blocks in dispatch.rs:77/93/162).
 
-`arb-bot` explicitly declares `arb-bot`, `alchemy-webhook`, `live-scanner`,
-`validate`, `discover`, `latency-bench`, and `replay` binaries. The existence of
-these targets does not establish that they share the same production guards.
+## CI
 
-## Runtime topology and phase status (initial inspection)
+`.github/workflows/rust-ci.yml`: fmt check, check, test, `clippy --workspace --all-targets -- -D warnings`.
+Web app build workflow (React + Vite) — both green on PR #17.
 
-The documented intended flow is Yellowstone gRPC and configured provider inputs
-to account/state ingestion, dependency resolution, protocol adapters and route
-search, then economics/risk, transaction construction, simulation, sender
-integration, persistence, and metrics/alerts. These are crate and document
-responsibilities; this baseline has **not** proven every edge is wired in one
-end-to-end production path.
+## Test suites
 
-The existing release-readiness documentation and README state that the bot is
-shadow-oriented and not live-ready. They describe the following important
-limitations; revalidation against current runtime wiring is still required:
+839 test results collected this audit: **837 passed, 2 failed** — both are
+live-mainnet integration tests requiring a funded `SOLANA_PRIVATE_KEY`
+(mainnet_non_broadcast_simulation ×2, `InvalidAccountForFee` = unfunded payer).
+Classified **BLOCKED (environmental)**, not regressions. No production key may be
+used in automated tests (audit rule 16).
 
-- Yellowstone account ingestion exists, but account promotion and protocol
-  decoder parity are incomplete.
-- HTTP JSON-RPC runtime fallback is documented as disabled; configured
-  generic WebSocket provider failover is not complete.
-- Guarded quote and dependency-manifest interfaces exist, but older quote APIs
-  and executors still require universal enforcement proof.
-- Exact Raydium CLMM / Meteora DLMM traversal, Pump migration/fee semantics,
-  and differential protocol fixtures remain acceptance work.
-- Local LiteSVM is optional and disabled by default.
-- Durable Jito bundle/signature/finality reconciliation, persistent kill switch,
-  operator authorization, risk budgets, and a connected truthful dashboard have
-  not been shown to pass acceptance tests.
-- No live transaction was submitted as part of this inspection.
+## External integrations verified present in code (not assumed)
 
+<<<<<<< HEAD
 Accordingly, Phase 12.1–12.12 are **documented but not re-certified here**;
 12.13–12.16 and Phase 13–15 are **not accepted as complete** based on this
 baseline. Files, APIs, and documentation alone are not runtime evidence.
@@ -236,3 +185,15 @@ Baseline commands on this snapshot:
 This pass did **not** run the workspace test suite, Clippy, `cargo audit`,
 `cargo deny`, or any runtime/shadow session. Nothing in this section is a
 release or Phase-15 acceptance claim, and no live transaction was submitted.
+=======
+| Integration | Where | Verified |
+|---|---|---|
+| Meteora DLMM | arb-ingest (decoders), arb-math (bin math), arb-dex | probe + oracle, this audit |
+| Orca Whirlpools | arb-ingest (decoders @101/@133/@181/@213), arb-math (orca_whirlpools_core 2.1.1) | live probe slot 468876781 |
+| Raydium V4/CPMM/CLMM | arb-ingest, arb-tx, arb-math | probe (CLMM) + discriminators |
+| Kamino flash loan | arb-tx/src/flash/kamino.rs | discriminators verified earlier session |
+| Jito | arb-land, arb-bot dispatch | submission path only; live landing UNPROVEN |
+| WS (publicnode/Helius) | arb-ingest/helius_ws.rs | soak16: 3-min clean run |
+| Yellowstone gRPC | IngestClient plumbing | present; provider exposure NOT VERIFIED |
+| Telegram | arb-bot/telegram.rs | present, auth-gated |
+>>>>>>> origin/main

@@ -52,6 +52,8 @@ pub struct HopRequest {
 pub struct HopQuote {
     pub pool_id: PoolId,
     pub protocol: DexProtocol,
+    pub mint_in: MintId,
+    pub mint_out: MintId,
     pub family: AmmFamily,
     pub amount_in: u64,
     pub amount_out: u64,
@@ -66,6 +68,8 @@ pub struct HopQuote {
 #[derive(Debug, Clone)]
 pub struct RouteQuote {
     pub hops: Vec<HopQuote>,
+    pub input_mint: MintId,
+    pub output_mint: MintId,
     pub amount_in: u64,
     pub amount_out: u64,
     pub price_impact_bps: u16,
@@ -81,6 +85,8 @@ pub const fn cu_estimate(protocol: DexProtocol) -> u64 {
         DexProtocol::RaydiumClmm => 55_000,
         DexProtocol::OrcaWhirlpool => 50_000,
         DexProtocol::MeteoraDlmm => 60_000,
+        DexProtocol::MeteoraDammV2 => 70_000,
+        DexProtocol::RaydiumLaunchLab => 60_000,
         DexProtocol::PumpFun => 40_000,
         DexProtocol::PumpSwap => 48_000,
     }
@@ -94,7 +100,9 @@ pub const fn accounts_required(protocol: DexProtocol) -> u8 {
         DexProtocol::RaydiumClmm => 15,
         DexProtocol::OrcaWhirlpool => 11,
         DexProtocol::MeteoraDlmm => 15,
-        DexProtocol::PumpFun => 12,
+        DexProtocol::MeteoraDammV2 => 13,
+        DexProtocol::RaydiumLaunchLab => 14,
+        DexProtocol::PumpFun => 16,
         DexProtocol::PumpSwap => 16,
     }
 }
@@ -121,11 +129,25 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Raydium CPMM missing on-chain fee or reserves")
             }
         }
-        DexProtocol::PumpFun => Err(
-            "Pump.fun remains quote-only until current on-chain instruction accounts and fee config are verified",
+        DexProtocol::MeteoraDammV2 => Err(
+            "Meteora DAMM v2 remains quote-only until its dedicated fee/curve adapter is accepted",
         ),
+        DexProtocol::RaydiumLaunchLab => {
+            Err("Raydium LaunchLab remains quote-only until its dedicated fee adapter is accepted")
+        }
+        DexProtocol::PumpFun => {
+            if let Some(ref pf) = pool.pump_fun {
+                if pf.is_tradeable() {
+                    Ok(())
+                } else {
+                    Err("Pump.fun bonding curve not tradeable or complete")
+                }
+            } else {
+                Err("Pump.fun pool missing bonding curve state")
+            }
+        }
         DexProtocol::PumpSwap => Err(
-            "PumpSwap remains quote-only until pool + vault + global fee config are joined at one slot",
+            "PumpSwap remains quote-only until its dedicated fee/creator-fee quote adapter is accepted",
         ),
         DexProtocol::RaydiumClmm => {
             if pool.clmm.is_some() {
@@ -136,6 +158,7 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
         }
         DexProtocol::MeteoraDlmm => {
             if pool.dlmm.is_some()
+                && pool.dlmm.as_ref().unwrap().status == 0
                 && !pool.dlmm.as_ref().unwrap().bins.is_empty()
                 && pool.dlmm.as_ref().unwrap().params.is_some()
             {
@@ -144,6 +167,160 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Meteora DLMM bin arrays or params not ingested")
             }
         }
+    }
+}
+
+/// Protocol-specific quote adapter contract. Each venue gets an explicit adapter;
+/// adapters may share low-level math primitives, but protocol state, fee semantics,
+/// direction, and execution readiness are never inferred from the AMM family alone.
+pub trait ProtocolQuoteAdapter: Sync {
+    fn protocol(&self) -> DexProtocol;
+    fn quote_curve(
+        &self,
+        pool: &mut PoolState,
+        amount_in: u64,
+        a_to_b: bool,
+    ) -> Result<(u64, u64, u16)>;
+}
+
+macro_rules! cpmm_adapter {
+    ($name:ident, $protocol:expr) => {
+        pub struct $name;
+        impl ProtocolQuoteAdapter for $name {
+            fn protocol(&self) -> DexProtocol {
+                $protocol
+            }
+            fn quote_curve(
+                &self,
+                pool: &mut PoolState,
+                amount_in: u64,
+                a_to_b: bool,
+            ) -> Result<(u64, u64, u16)> {
+                if pool.kind != PoolKind::Cpmm {
+                    return Err(ArbError::InvalidInput(
+                        "protocol/pool family mismatch".into(),
+                    ));
+                }
+                quote_cpmm_hop(pool, amount_in, a_to_b, $protocol)
+            }
+        }
+    };
+}
+
+macro_rules! clmm_adapter {
+    ($name:ident, $protocol:expr) => {
+        pub struct $name;
+        impl ProtocolQuoteAdapter for $name {
+            fn protocol(&self) -> DexProtocol {
+                $protocol
+            }
+            fn quote_curve(
+                &self,
+                pool: &mut PoolState,
+                amount_in: u64,
+                a_to_b: bool,
+            ) -> Result<(u64, u64, u16)> {
+                if pool.kind != PoolKind::Clmm {
+                    return Err(ArbError::InvalidInput(
+                        "protocol/pool family mismatch".into(),
+                    ));
+                }
+                quote_clmm_hop(pool, amount_in, a_to_b)
+            }
+        }
+    };
+}
+
+cpmm_adapter!(RaydiumV4QuoteAdapter, DexProtocol::RaydiumV4);
+cpmm_adapter!(RaydiumCpmmQuoteAdapter, DexProtocol::RaydiumCpmm);
+clmm_adapter!(RaydiumClmmQuoteAdapter, DexProtocol::RaydiumClmm);
+clmm_adapter!(OrcaWhirlpoolQuoteAdapter, DexProtocol::OrcaWhirlpool);
+
+pub struct MeteoraDlmmQuoteAdapter;
+impl ProtocolQuoteAdapter for MeteoraDlmmQuoteAdapter {
+    fn protocol(&self) -> DexProtocol {
+        DexProtocol::MeteoraDlmm
+    }
+    fn quote_curve(
+        &self,
+        pool: &mut PoolState,
+        amount_in: u64,
+        a_to_b: bool,
+    ) -> Result<(u64, u64, u16)> {
+        if pool.kind != PoolKind::Dlmm {
+            return Err(ArbError::InvalidInput(
+                "Meteora DLMM family mismatch".into(),
+            ));
+        }
+        quote_dlmm_hop(pool, amount_in, a_to_b)
+    }
+}
+
+pub struct PumpFunQuoteAdapter;
+impl ProtocolQuoteAdapter for PumpFunQuoteAdapter {
+    fn protocol(&self) -> DexProtocol {
+        DexProtocol::PumpFun
+    }
+    fn quote_curve(
+        &self,
+        pool: &mut PoolState,
+        amount_in: u64,
+        a_to_b: bool,
+    ) -> Result<(u64, u64, u16)> {
+        quote_pump_fun_hop(pool, amount_in, a_to_b)
+    }
+}
+
+/// Explicit quote-only adapters for venues whose full per-pool state is not yet
+/// represented in `PoolState`. They intentionally refuse family-level fallback.
+pub struct QuoteOnlyAdapter {
+    pub venue: DexProtocol,
+    pub reason: &'static str,
+}
+impl ProtocolQuoteAdapter for QuoteOnlyAdapter {
+    fn protocol(&self) -> DexProtocol {
+        self.venue
+    }
+    fn quote_curve(
+        &self,
+        _pool: &mut PoolState,
+        _amount_in: u64,
+        _a_to_b: bool,
+    ) -> Result<(u64, u64, u16)> {
+        Err(ArbError::InvalidInput(self.reason.into()))
+    }
+}
+
+static RAYDIUM_V4_ADAPTER: RaydiumV4QuoteAdapter = RaydiumV4QuoteAdapter;
+static RAYDIUM_CPMM_ADAPTER: RaydiumCpmmQuoteAdapter = RaydiumCpmmQuoteAdapter;
+static RAYDIUM_CLMM_ADAPTER: RaydiumClmmQuoteAdapter = RaydiumClmmQuoteAdapter;
+static ORCA_ADAPTER: OrcaWhirlpoolQuoteAdapter = OrcaWhirlpoolQuoteAdapter;
+static METEORA_DLMM_ADAPTER: MeteoraDlmmQuoteAdapter = MeteoraDlmmQuoteAdapter;
+static PUMP_FUN_ADAPTER: PumpFunQuoteAdapter = PumpFunQuoteAdapter;
+static METEORA_DAMM_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
+    venue: DexProtocol::MeteoraDammV2,
+    reason: "Meteora DAMM v2 requires its own layout-version, liquidity-handler, and compounding-fee state adapter",
+};
+static RAYDIUM_LAUNCHLAB_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
+    venue: DexProtocol::RaydiumLaunchLab,
+    reason: "Raydium LaunchLab requires its own platform/global config and bonding-curve state adapter",
+};
+static PUMP_SWAP_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
+    venue: DexProtocol::PumpSwap,
+    reason: "PumpSwap requires its own creator/protocol/LP fee and v2 reserve-accounting adapter",
+};
+
+pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuoteAdapter {
+    match protocol {
+        DexProtocol::RaydiumV4 => &RAYDIUM_V4_ADAPTER,
+        DexProtocol::RaydiumCpmm => &RAYDIUM_CPMM_ADAPTER,
+        DexProtocol::RaydiumClmm => &RAYDIUM_CLMM_ADAPTER,
+        DexProtocol::OrcaWhirlpool => &ORCA_ADAPTER,
+        DexProtocol::MeteoraDlmm => &METEORA_DLMM_ADAPTER,
+        DexProtocol::MeteoraDammV2 => &METEORA_DAMM_ADAPTER,
+        DexProtocol::RaydiumLaunchLab => &RAYDIUM_LAUNCHLAB_ADAPTER,
+        DexProtocol::PumpFun => &PUMP_FUN_ADAPTER,
+        DexProtocol::PumpSwap => &PUMP_SWAP_ADAPTER,
     }
 }
 
@@ -162,6 +339,10 @@ pub fn quote_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<H
         ));
     }
 
+    if let Err(reason) = execution_capability(pool) {
+        return Err(ArbError::InvalidInput(reason.into()));
+    }
+
     // A BPS-only approximation cannot model Token-2022's epoch schedule,
     // maximum fee, or per-mint transfer semantics. Never price it as a swap.
     if pool.has_risky_token || pool.transfer_fee_bps != 0 {
@@ -173,19 +354,23 @@ pub fn quote_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<H
     let transfer_fee = 0u64;
 
     let protocol = pool.protocol;
-    let (amount_out, fee_paid, impact) = match protocol {
-        DexProtocol::PumpFun => quote_pump_fun_hop(pool, effective_in, a_to_b)?,
-        DexProtocol::PumpSwap => {
-            return Err(ArbError::InvalidInput(
-                "PumpSwap requires its dedicated quote adapter with live PPM fee components and effective quote reserves".into(),
-            ));
-        }
-        _ => match pool.kind {
-            PoolKind::Cpmm => quote_cpmm_hop(pool, effective_in, pool.protocol)?,
-            PoolKind::Clmm => quote_clmm_hop(pool, effective_in, a_to_b)?,
-            PoolKind::Dlmm => quote_dlmm_hop(pool, effective_in, a_to_b)?,
-        },
+    let adapter = protocol_quote_adapter(protocol);
+    if adapter.protocol() != protocol {
+        return Err(ArbError::InvalidInput(
+            "protocol adapter registry mismatch".into(),
+        ));
+    }
+    let mint_in = if a_to_b {
+        pool.base_mint
+    } else {
+        pool.quote_mint
     };
+    let mint_out = if a_to_b {
+        pool.quote_mint
+    } else {
+        pool.base_mint
+    };
+    let (amount_out, fee_paid, impact) = adapter.quote_curve(pool, effective_in, a_to_b)?;
 
     // Token-2022 mints are rejected above until both transfer boundaries are
     // quoted from verified mint schedules.
@@ -194,13 +379,20 @@ pub fn quote_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<H
 
     // Advance reserves for non-PumpFun constant-product pools (PumpFun hop updates its own reserves).
     if pool.kind == PoolKind::Cpmm && pool.protocol != DexProtocol::PumpFun {
-        pool.reserve_in = pool.reserve_in.saturating_add(effective_in as u128);
-        pool.reserve_out = pool.reserve_out.saturating_sub(amount_out as u128);
+        if a_to_b {
+            pool.reserve_in = pool.reserve_in.saturating_add(effective_in as u128);
+            pool.reserve_out = pool.reserve_out.saturating_sub(amount_out as u128);
+        } else {
+            pool.reserve_out = pool.reserve_out.saturating_add(effective_in as u128);
+            pool.reserve_in = pool.reserve_in.saturating_sub(amount_out as u128);
+        }
     }
 
     Ok(HopQuote {
         pool_id: pool.pool_id,
         protocol,
+        mint_in,
+        mint_out,
         family: AmmFamily::from(pool.kind),
         amount_in,
         amount_out: received,
@@ -212,8 +404,9 @@ pub fn quote_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<H
     })
 }
 
-/// Price a complete route. Pools are mutated sequentially; a pool used twice
-/// (or by two hops) is quoted against its already-advanced state.
+/// Price a complete route. Pools are mutated sequentially on a private route-local
+/// view. A pool may appear only once in a route candidate; mint continuity is
+/// checked between every adjacent hop.
 pub fn quote_route(
     pools: &mut [PoolState],
     hops: &[HopRequest],
@@ -222,27 +415,45 @@ pub fn quote_route(
     if hops.is_empty() {
         return Err(ArbError::InvalidInput("empty route".into()));
     }
+    let input_mint = hops[0].mint_in;
+    let mut current_mint = input_mint;
     let mut current = amount_in;
     let mut hop_quotes = Vec::with_capacity(hops.len());
     let mut total_cu = 0u64;
     let mut total_accounts = 0u64;
+    let mut used_pools = std::collections::HashSet::with_capacity(hops.len());
 
     for hop in hops {
+        if hop.mint_in != current_mint {
+            return Err(ArbError::InvalidInput(
+                "route mint discontinuity: next hop input does not equal previous hop output"
+                    .into(),
+            ));
+        }
+        if !used_pools.insert(hop.pool_id) {
+            return Err(ArbError::InvalidInput(
+                "route reuses a pool; cyclic pool reuse is not accepted by the route planner"
+                    .into(),
+            ));
+        }
         let pool = pools
             .iter_mut()
             .find(|p| p.pool_id == hop.pool_id)
             .ok_or(ArbError::PoolNotFound(hop.pool_id))?;
 
-        let a_to_b = pool.base_mint == hop.mint_in;
-        // mint continuity check
-        if !a_to_b && pool.quote_mint != hop.mint_in {
+        let a_to_b = if pool.base_mint == current_mint {
+            true
+        } else if pool.quote_mint == current_mint {
+            false
+        } else {
             return Err(ArbError::InvalidInput(
-                "hop input mint does not match pool".into(),
+                "hop input mint does not belong to selected pool".into(),
             ));
-        }
+        };
 
         let q = quote_hop(pool, current, a_to_b)?;
         current = q.amount_out;
+        current_mint = q.mint_out;
         total_cu = total_cu.saturating_add(q.cu_estimate);
         total_accounts = total_accounts.saturating_add(q.accounts_required as u64);
         hop_quotes.push(q);
@@ -259,6 +470,8 @@ pub fn quote_route(
 
     Ok(RouteQuote {
         hops: hop_quotes,
+        input_mint,
+        output_mint: current_mint,
         amount_in,
         amount_out: current,
         price_impact_bps: compounded_bps,
@@ -374,38 +587,35 @@ fn quote_pump_fun_hop(
 fn quote_cpmm_hop(
     pool: &mut PoolState,
     amount_in: u64,
-    protocol: DexProtocol,
+    a_to_b: bool,
+    _protocol: DexProtocol,
 ) -> Result<(u64, u64, u16)> {
-    if pool.reserve_in == 0 || pool.reserve_out == 0 {
+    let (reserve_in, reserve_out) = if a_to_b {
+        (pool.reserve_in, pool.reserve_out)
+    } else {
+        (pool.reserve_out, pool.reserve_in)
+    };
+    if reserve_in == 0 || reserve_out == 0 {
         return Err(ArbError::InvalidInput("empty reserves".into()));
     }
-    // Fee rounding differs by program.
-    let fee = match protocol {
-        // Raydium CPMM: ceil(amount * trade_fee_rate / 1e6).
-        DexProtocol::RaydiumCpmm => {
-            let Some(fee_bps) = pool.fee_bps() else {
-                return Err(ArbError::InvalidInput("invalid pool fee".into()));
-            };
-            let rate = fee_bps as u64 * 100;
-            (amount_in as u128 * rate as u128).div_ceil(1_000_000)
-        }
-        // Raydium V4: ceil(amount * fee_bps / 1e4).
-        _ => {
-            let Some(fee_bps) = pool.fee_bps() else {
-                return Err(ArbError::InvalidInput("invalid pool fee".into()));
-            };
-            let rate = fee_bps as u64;
-            (amount_in as u128 * rate as u128).div_ceil(10_000)
-        }
-    } as u64;
+    // Use the pool's native integer numerator/denominator. Converting to BPS
+    // first truncates fractional fees (and can undercharge Raydium CPMM).
+    if pool.fee_denominator == 0 || pool.fee_numerator as u128 > pool.fee_denominator as u128 {
+        return Err(ArbError::InvalidInput("invalid CPMM fee ratio".into()));
+    }
+    let fee = (amount_in as u128)
+        .checked_mul(pool.fee_numerator as u128)
+        .ok_or_else(|| ArbError::InvalidInput("CPMM fee multiplication overflow".into()))?
+        .div_ceil(pool.fee_denominator as u128);
+    let fee =
+        u64::try_from(fee).map_err(|_| ArbError::InvalidInput("CPMM fee exceeds u64".into()))?;
     let input_after_fee = amount_in.saturating_sub(fee);
-    let out =
-        (pool.reserve_out * input_after_fee as u128) / (pool.reserve_in + input_after_fee as u128);
-    if out == 0 || out >= pool.reserve_out {
+    let out = (reserve_out * input_after_fee as u128) / (reserve_in + input_after_fee as u128);
+    if out == 0 || out >= reserve_out {
         return Err(ArbError::InvalidInput("insufficient liquidity".into()));
     }
     // Price impact excluding fee: compare fee-free constant-product output to actual.
-    let no_fee_out = (pool.reserve_out * amount_in as u128) / (pool.reserve_in + amount_in as u128);
+    let no_fee_out = (reserve_out * amount_in as u128) / (reserve_in + amount_in as u128);
     let impact = if no_fee_out == 0 {
         10_000u16
     } else {
@@ -502,13 +712,23 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     let params = d0.params.clone().ok_or(ArbError::InvalidInput(
         "DLMM fee config not ingested".into(),
     ))?;
+    if params.function_type != 0 {
+        return Err(ArbError::InvalidInput(
+            "unsupported Meteora DLMM function type; spot-only quote engine cannot price it".into(),
+        ));
+    }
+    if d0.status != 0 {
+        return Err(ArbError::InvalidInput(
+            "Meteora DLMM pool status is disabled".into(),
+        ));
+    }
     if d0.bins.is_empty() {
         return Err(ArbError::InvalidInput("DLMM bins not ingested".into()));
     }
     let pool_state = DlmmPoolState {
         active_id: d0.active_bin_id,
         bin_step: d0.bin_step_bps,
-        status: 0,
+        status: d0.status,
         parameters: DlmmParameters {
             bin_step: d0.bin_step_bps,
             base_factor: params.base_factor,
@@ -519,11 +739,12 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
             max_volatility_accumulator: params.max_volatility_accumulator,
             protocol_share: params.protocol_share,
             base_fee_power_factor: params.base_fee_power_factor,
+            collect_fee_mode: params.collect_fee_mode,
         },
         v_parameters: dlmm::DlmmVariableParameters {
             volatility_accumulator: d0.volatility_accumulator,
             volatility_reference: d0.volatility_reference,
-            index_reference: d0.active_bin_id,
+            index_reference: d0.index_reference,
             last_update_timestamp: d0.last_update_timestamp,
         },
     };
@@ -591,6 +812,8 @@ mod tests {
             dlmm: None,
             pump_fun: None,
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
         }
@@ -637,6 +860,8 @@ mod tests {
             dlmm: None,
             pump_fun: None,
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
         }
@@ -668,8 +893,10 @@ mod tests {
     }
 
     #[test]
-    fn repeated_pool_dependency_updates_state() {
-        // Same CPMM pool used twice (base->quote then quote->base) must lose to fees.
+    fn repeated_pool_reuse_is_rejected() {
+        // The unified planner is acyclic: reusing one pool for both legs is
+        // rejected instead of being quoted as a round-trip that can only lose
+        // to fees.
         let mut pools = vec![cpmm_pool(1, 1_000_000, 1_000_000, 25)];
         let hops = vec![
             HopRequest {
@@ -681,11 +908,31 @@ mod tests {
                 mint_in: MintId(Pubkey::new_from_array([2; 32])),
             },
         ];
-        let q = quote_route(&mut pools, &hops, 10_000).unwrap();
+        let err = quote_route(&mut pools, &hops, 10_000).unwrap_err();
         assert!(
-            q.amount_out < 10_000,
-            "round-trip through same pool must lose to fees"
+            matches!(err, ArbError::InvalidInput(_)),
+            "expected InvalidInput for pool reuse, got {err:?}"
         );
+    }
+
+    #[test]
+    fn reverse_cpmm_hop_uses_quote_reserve_as_input_reserve() {
+        let mut p = cpmm_pool(1, 1_000_000, 2_000_000, 25);
+        let quote_mint = p.quote_mint;
+        let q = quote_hop(&mut p, 10_000, false).unwrap();
+        assert!(
+            q.amount_out < 6_000,
+            "reverse direction must use 2m input / 1m output reserves"
+        );
+        assert!(
+            p.reserve_out > 2_000_000,
+            "reverse input reserve must increase"
+        );
+        assert!(
+            p.reserve_in < 1_000_000,
+            "reverse output reserve must decrease"
+        );
+        assert_eq!(quote_mint, MintId(Pubkey::new_from_array([2; 32])));
     }
 
     #[test]
@@ -746,6 +993,7 @@ mod tests {
             clmm: None,
             dlmm: Some(arb_types::DlmmState {
                 active_bin_id: 0,
+                status: 0,
                 bin_step_bps: 25,
                 bins: vec![arb_types::DlmmBin {
                     bin_id: 0,
@@ -755,15 +1003,127 @@ mod tests {
                 params: None,
                 volatility_accumulator: 0,
                 volatility_reference: 0,
+                index_reference: 0,
                 last_update_timestamp: 0,
             }),
             pump_fun: None,
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
         };
         // Without params, quoting must refuse (honest).
         assert!(quote_hop(&mut p, 10_000, true).is_err());
+    }
+
+    /// Regression: `quote_dlmm_hop` must forward the ingested on-chain
+    /// `collect_fee_mode` (LbPair byte @36) into the quote engine instead of
+    /// hardcoding `0` (InputOnly).
+    ///
+    /// Discriminator: single bin priced 4x (bin_step=10000 bps, active_id=2),
+    /// 1% base fee (base_factor=100, power=0), input 10^9 X-raw:
+    /// - InputOnly  -> fee charged on input  ~ 10^7 (X raw)
+    /// - OnlyY      -> fee charged on output ~ 4x10^7 (Y raw, = gross_out * 1%)
+    ///
+    /// `amount_out` is algebraically identical in both modes (fee deduction
+    /// commutes with the per-bin price multiplication); only the fee
+    /// denomination differs. This is why the hardcode never corrupted profit
+    /// gating but did mislabel every OnlyY fee line.
+    fn dlmm_mode_pool(collect_fee_mode: u8) -> PoolState {
+        PoolState {
+            pool_id: PoolId::new([7; 32]),
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(1),
+            write_version: 1,
+            base_mint: MintId(Pubkey::new_from_array([1; 32])),
+            quote_mint: MintId(Pubkey::new_from_array([2; 32])),
+            decimals_a: 6,
+            decimals_b: 9,
+            reserve_in: 0,
+            reserve_out: 0,
+            fee_numerator: 0,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Dlmm,
+            clmm: None,
+            dlmm: Some(arb_types::DlmmState {
+                active_bin_id: 2,
+                status: 0,
+                bin_step_bps: 10_000,
+                bins: vec![arb_types::DlmmBin {
+                    bin_id: 2,
+                    amount_x: 10u128.pow(12),
+                    amount_y: 4 * 10u128.pow(12),
+                }],
+                params: Some(arb_types::DlmmFeeParams {
+                    base_factor: 100,
+                    filter_period: 30,
+                    decay_period: 600,
+                    reduction_factor: 5000,
+                    variable_fee_control: 0,
+                    max_volatility_accumulator: 0,
+                    protocol_share: 0,
+                    base_fee_power_factor: 0,
+                    function_type: 0,
+                    collect_fee_mode,
+                }),
+                volatility_accumulator: 0,
+                volatility_reference: 0,
+                index_reference: 2,
+                last_update_timestamp: 0,
+            }),
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            last_update_slot: 1,
+            last_update_ms: 0,
+        }
+    }
+
+    #[test]
+    fn dlmm_quote_honors_ingested_collect_fee_mode() {
+        let mut input_only = dlmm_mode_pool(0);
+        let mut only_y = dlmm_mode_pool(1);
+
+        let (out_input_only, fee_input_only) = {
+            let q =
+                quote_hop(&mut input_only, 10u64.pow(9), true).expect("InputOnly pool must quote");
+            (q.amount_out, q.fee_paid)
+        };
+        let (out_only_y, fee_only_y) = {
+            let q = quote_hop(&mut only_y, 10u64.pow(9), true).expect("OnlyY pool must quote");
+            (q.amount_out, q.fee_paid)
+        };
+
+        // Fee denomination: OnlyY charges 1% on the gross OUTPUT (4x price)
+        // => ~4x10^7; InputOnly charges 1% on the input => ~10^7.
+        assert!(
+            fee_only_y >= 35_000_000,
+            "OnlyY fee must be output-denominated (~4x10^7), got {fee_only_y}"
+        );
+        assert!(
+            fee_input_only < 20_000_000,
+            "InputOnly fee must be input-denominated (~10^7), got {fee_input_only}"
+        );
+
+        // Net output is identical in both modes up to rounding dust.
+        let diff = out_input_only.abs_diff(out_only_y);
+        assert!(
+            diff <= 1_000,
+            "amount_out must be mode-invariant up to rounding dust: {out_input_only} vs {out_only_y}"
+        );
+    }
+
+    #[test]
+    fn dlmm_quote_rejects_invalid_collect_fee_mode() {
+        let mut p = dlmm_mode_pool(2);
+        assert!(
+            quote_hop(&mut p, 10u64.pow(9), true).is_err(),
+            "invalid on-chain collect_fee_mode must fail closed, not silently quote as InputOnly"
+        );
     }
 
     #[test]
@@ -811,6 +1171,8 @@ mod tests {
                 mode_flags_present: true,
             }),
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
         };
@@ -829,5 +1191,44 @@ mod tests {
         assert!(q_sell.fee_paid > 0); // sell fee is denominated in quote output
         // Roundtrip must lose value due to fees on both legs
         assert!(q_sell.amount_out < sol_in);
+    }
+
+    #[test]
+    fn route_rejects_mint_discontinuity_before_second_quote() {
+        let first = cpmm_pool(101, 1_000_000, 2_000_000, 25);
+        let mut second = cpmm_pool(102, 1_000_000, 2_000_000, 25);
+        second.base_mint = MintId(Pubkey::new_from_array([3; 32]));
+        second.quote_mint = MintId(Pubkey::new_from_array([4; 32]));
+        let wrong_next_mint = second.base_mint;
+        let hops = [
+            HopRequest {
+                pool_id: first.pool_id,
+                mint_in: first.base_mint,
+            },
+            HopRequest {
+                pool_id: second.pool_id,
+                mint_in: wrong_next_mint,
+            },
+        ];
+        let err = quote_route(&mut [first.clone(), second], &hops, 10_000).unwrap_err();
+        assert!(err.to_string().contains("mint discontinuity"));
+    }
+
+    #[test]
+    fn every_protocol_has_an_explicit_adapter_registration() {
+        let protocols = [
+            DexProtocol::RaydiumV4,
+            DexProtocol::RaydiumCpmm,
+            DexProtocol::RaydiumClmm,
+            DexProtocol::OrcaWhirlpool,
+            DexProtocol::MeteoraDlmm,
+            DexProtocol::MeteoraDammV2,
+            DexProtocol::RaydiumLaunchLab,
+            DexProtocol::PumpFun,
+            DexProtocol::PumpSwap,
+        ];
+        for protocol in protocols {
+            assert_eq!(protocol_quote_adapter(protocol).protocol(), protocol);
+        }
     }
 }

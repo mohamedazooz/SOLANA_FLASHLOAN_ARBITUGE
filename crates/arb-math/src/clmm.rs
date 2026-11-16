@@ -21,8 +21,12 @@ pub const Q64: u128 = 1u128 << 64;
 
 pub const FEE_RATE_DENOMINATOR: u64 = 1_000_000;
 pub const TICK_ARRAY_SIZE: usize = 88;
+pub const ORCA_WHIRLPOOL_TICK_ARRAY_SIZE: usize = 88;
+pub const RAYDIUM_CLMM_TICK_ARRAY_SIZE: usize = 60;
 pub const WHIRLPOOL_TICK_ARRAY_SIZE: usize = 9988;
+pub const RAYDIUM_CLMM_TICK_ARRAY_ACCOUNT_SIZE: usize = 10240;
 pub const TICK_STRUCT_SIZE: usize = 113;
+pub const RAYDIUM_CLMM_TICK_STRUCT_SIZE: usize = 168;
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ClmmMathError {
@@ -586,7 +590,16 @@ pub struct TickArrayFacade {
 
 /// Calculate the start tick index for a tick given Whirlpool tick spacing.
 pub fn get_start_tick_index(tick: i32, tick_spacing: u16) -> i32 {
-    let ticks_per_array = (TICK_ARRAY_SIZE as i32) * i32::from(tick_spacing.max(1));
+    get_start_tick_index_with_size(tick, tick_spacing, TICK_ARRAY_SIZE)
+}
+
+/// Calculate the start tick index for a tick given custom ticks per array (e.g. 88 for Whirlpool, 60 for Raydium CLMM).
+pub fn get_start_tick_index_with_size(
+    tick: i32,
+    tick_spacing: u16,
+    ticks_per_array_count: usize,
+) -> i32 {
+    let ticks_per_array = (ticks_per_array_count as i32) * i32::from(tick_spacing.max(1));
     tick.div_euclid(ticks_per_array) * ticks_per_array
 }
 
@@ -662,6 +675,70 @@ pub fn parse_tick_array_account(
     })
 }
 
+/// Parse an on-chain Raydium CLMM TickArrayState account (10,240 bytes, 60 ticks of 168 bytes).
+pub fn parse_raydium_clmm_tick_array_account(
+    data: &[u8],
+    tick_spacing: u16,
+) -> Result<TickArrayFacade, ClmmMathError> {
+    if data.len() < RAYDIUM_CLMM_TICK_ARRAY_ACCOUNT_SIZE {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+    let start_tick_bytes: [u8; 4] = data[40..44]
+        .try_into()
+        .map_err(|_| ClmmMathError::InvalidAccountData)?;
+    if tick_spacing == 0 {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+    let start_tick_index = i32::from_le_bytes(start_tick_bytes);
+
+    let mut ticks = Vec::with_capacity(RAYDIUM_CLMM_TICK_ARRAY_SIZE);
+    let spacing = i32::from(tick_spacing);
+    let ticks_per_array = (RAYDIUM_CLMM_TICK_ARRAY_SIZE as i32)
+        .checked_mul(spacing)
+        .ok_or(ClmmMathError::IntegerOverflow)?;
+    if start_tick_index.rem_euclid(ticks_per_array) != 0 {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+
+    for i in 0..RAYDIUM_CLMM_TICK_ARRAY_SIZE {
+        let offset = 44 + i * RAYDIUM_CLMM_TICK_STRUCT_SIZE;
+        let tick_bytes: [u8; 4] = data
+            .get(offset..offset + 4)
+            .ok_or(ClmmMathError::InvalidAccountData)?
+            .try_into()
+            .map_err(|_| ClmmMathError::InvalidAccountData)?;
+        let tick_index = i32::from_le_bytes(tick_bytes);
+
+        let net_bytes: [u8; 16] = data
+            .get(offset + 4..offset + 20)
+            .ok_or(ClmmMathError::InvalidAccountData)?
+            .try_into()
+            .map_err(|_| ClmmMathError::InvalidAccountData)?;
+        let liquidity_net = i128::from_le_bytes(net_bytes);
+
+        let gross_bytes: [u8; 16] = data
+            .get(offset + 20..offset + 36)
+            .ok_or(ClmmMathError::InvalidAccountData)?
+            .try_into()
+            .map_err(|_| ClmmMathError::InvalidAccountData)?;
+        let liquidity_gross = u128::from_le_bytes(gross_bytes);
+
+        let initialized = liquidity_gross > 0;
+
+        ticks.push(TickFacade {
+            tick_index,
+            initialized,
+            liquidity_net,
+            liquidity_gross,
+        });
+    }
+
+    Ok(TickArrayFacade {
+        start_tick_index,
+        ticks,
+    })
+}
+
 /// Find the next initialized tick within the covered array, or advance to its edge.
 /// Missing array coverage is an explicit error; no synthetic spacing-boundary fallback exists.
 pub fn find_next_tick_boundary(
@@ -670,20 +747,38 @@ pub fn find_next_tick_boundary(
     a_to_b: bool,
     tick_arrays: &[TickArrayFacade],
 ) -> Result<(i32, Option<TickFacade>), ClmmMathError> {
+    find_next_tick_boundary_with_size(
+        tick_current,
+        tick_spacing,
+        a_to_b,
+        tick_arrays,
+        TICK_ARRAY_SIZE,
+    )
+}
+
+/// Find next tick boundary with custom ticks_per_array_count (e.g. 88 for Whirlpool, 60 for Raydium).
+pub fn find_next_tick_boundary_with_size(
+    tick_current: i32,
+    tick_spacing: u16,
+    a_to_b: bool,
+    tick_arrays: &[TickArrayFacade],
+    ticks_per_array_count: usize,
+) -> Result<(i32, Option<TickFacade>), ClmmMathError> {
     if tick_spacing == 0 {
         return Err(ClmmMathError::InvalidAccountData);
     }
     if tick_arrays.is_empty() {
         return Err(ClmmMathError::MissingTickArrayCoverage(
-            get_start_tick_index(tick_current, tick_spacing),
+            get_start_tick_index_with_size(tick_current, tick_spacing, ticks_per_array_count),
         ));
     }
 
     let spacing = i32::from(tick_spacing);
-    let ticks_per_array = (TICK_ARRAY_SIZE as i32)
+    let ticks_per_array = (ticks_per_array_count as i32)
         .checked_mul(spacing)
         .ok_or(ClmmMathError::IntegerOverflow)?;
-    let mut current_array_start = get_start_tick_index(tick_current, tick_spacing);
+    let mut current_array_start =
+        get_start_tick_index_with_size(tick_current, tick_spacing, ticks_per_array_count);
     if a_to_b && tick_current == current_array_start {
         current_array_start = current_array_start
             .checked_sub(ticks_per_array)
@@ -769,9 +864,34 @@ pub struct WhirlpoolQuote {
     pub steps_taken: usize,
 }
 
-/// Compute exact swap quote traversing initialized ticks in local memory.
+/// Compute exact swap quote traversing initialized ticks in local memory (defaulting to Whirlpool 88 ticks/array).
 #[allow(clippy::too_many_arguments)]
 pub fn compute_swap(
+    sqrt_price_current_x64: u128,
+    tick_current_index: i32,
+    liquidity: u128,
+    tick_spacing: u16,
+    fee_rate: u16,
+    amount_specified: u64,
+    a_to_b: bool,
+    tick_arrays: &[TickArrayFacade],
+) -> Result<WhirlpoolQuote, ClmmMathError> {
+    compute_swap_with_ticks_per_array(
+        sqrt_price_current_x64,
+        tick_current_index,
+        liquidity,
+        tick_spacing,
+        fee_rate,
+        amount_specified,
+        a_to_b,
+        tick_arrays,
+        TICK_ARRAY_SIZE,
+    )
+}
+
+/// Compute exact swap quote with custom ticks per array count (88 for Orca, 60 for Raydium CLMM).
+#[allow(clippy::too_many_arguments)]
+pub fn compute_swap_with_ticks_per_array(
     mut sqrt_price_current_x64: u128,
     mut tick_current_index: i32,
     mut liquidity: u128,
@@ -780,6 +900,7 @@ pub fn compute_swap(
     amount_specified: u64,
     a_to_b: bool,
     tick_arrays: &[TickArrayFacade],
+    ticks_per_array_count: usize,
 ) -> Result<WhirlpoolQuote, ClmmMathError> {
     let mut amount_remaining = amount_specified;
     let mut total_amount_in = 0u64;
@@ -788,7 +909,7 @@ pub fn compute_swap(
     let mut steps_taken = 0usize;
     let max_steps = tick_arrays
         .len()
-        .checked_mul(TICK_ARRAY_SIZE + 1)
+        .checked_mul(ticks_per_array_count + 1)
         .and_then(|n| n.checked_add(tick_arrays.len()))
         .ok_or(ClmmMathError::IntegerOverflow)?
         .max(1);
@@ -797,8 +918,13 @@ pub fn compute_swap(
         if steps_taken >= max_steps {
             return Err(ClmmMathError::IterationLimitExceeded);
         }
-        let (next_tick, next_initialized_tick) =
-            find_next_tick_boundary(tick_current_index, tick_spacing, a_to_b, tick_arrays)?;
+        let (next_tick, next_initialized_tick) = find_next_tick_boundary_with_size(
+            tick_current_index,
+            tick_spacing,
+            a_to_b,
+            tick_arrays,
+            ticks_per_array_count,
+        )?;
 
         let target_sqrt_price = tick_index_to_sqrt_price_x64(next_tick)?;
         let previous_sqrt_price = sqrt_price_current_x64;
@@ -864,7 +990,7 @@ pub fn compute_swap(
     })
 }
 
-/// Convenient helper matching Whirlpool quote interface.
+/// Convenient helper matching Whirlpool quote interface (88 ticks/array).
 #[allow(clippy::too_many_arguments)]
 pub fn quote_clmm(
     amount_in: u64,
@@ -876,7 +1002,33 @@ pub fn quote_clmm(
     a_to_b: bool,
     tick_arrays: &[TickArrayFacade],
 ) -> Result<u64, ClmmMathError> {
-    let quote = compute_swap(
+    quote_clmm_with_ticks_per_array(
+        amount_in,
+        sqrt_price,
+        tick,
+        liquidity,
+        tick_spacing,
+        fee_rate,
+        a_to_b,
+        tick_arrays,
+        TICK_ARRAY_SIZE,
+    )
+}
+
+/// General CLMM quote helper supporting custom ticks per array (e.g. 60 for Raydium CLMM).
+#[allow(clippy::too_many_arguments)]
+pub fn quote_clmm_with_ticks_per_array(
+    amount_in: u64,
+    sqrt_price: u128,
+    tick: i32,
+    liquidity: u128,
+    tick_spacing: u16,
+    fee_rate: u16,
+    a_to_b: bool,
+    tick_arrays: &[TickArrayFacade],
+    ticks_per_array_count: usize,
+) -> Result<u64, ClmmMathError> {
+    let quote = compute_swap_with_ticks_per_array(
         sqrt_price,
         tick,
         liquidity,
@@ -885,6 +1037,7 @@ pub fn quote_clmm(
         amount_in,
         a_to_b,
         tick_arrays,
+        ticks_per_array_count,
     )?;
     Ok(quote.amount_out_received)
 }

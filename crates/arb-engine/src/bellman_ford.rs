@@ -46,11 +46,20 @@ pub struct BfEdge {
     pub kind: PoolKind,
     pub from_mint: MintId,
     pub to_mint: MintId,
+    pub pool_base: MintId,
+    pub pool_quote: MintId,
     pub reserve_in: u128,
     pub reserve_out: u128,
     pub fee_bps: u16,
     /// -ln(rate × gamma) — negative when the edge is favourable (output > input)
     pub weight: f64,
+    pub clmm: Option<arb_types::ClmmState>,
+    pub dlmm: Option<arb_types::DlmmState>,
+    pub pump_fun: Option<arb_types::PumpFunState>,
+    pub transfer_fee_bps: u16,
+    pub token_programs: [arb_types::TokenProgramKind; 2],
+    pub execution_accounts: Option<arb_types::PoolExecutionAccounts>,
+    pub active_bin_id: Option<i32>,
 }
 
 impl BfEdge {
@@ -69,16 +78,48 @@ impl BfEdge {
         // weight = -ln(rate × gamma). If rate × gamma > 1, weight is negative (favourable).
         let rg = (rate * gamma).max(1e-18);
         let weight = -rg.ln();
+        let active_bin_id = p.dlmm.as_ref().map(|d| d.active_bin_id);
         Self {
             pool_id: p.pool_id,
             protocol: p.protocol,
             kind: p.kind,
             from_mint: p.base_mint,
             to_mint: p.quote_mint,
+            pool_base: p.base_mint,
+            pool_quote: p.quote_mint,
             reserve_in: p.reserve_in,
             reserve_out: p.reserve_out,
             fee_bps: fee,
             weight,
+            clmm: p.clmm.clone(),
+            dlmm: p.dlmm.clone(),
+            pump_fun: p.pump_fun.clone(),
+            transfer_fee_bps: p.transfer_fee_bps,
+            token_programs: p.token_programs,
+            execution_accounts: p.execution_accounts.clone(),
+            active_bin_id,
+        }
+    }
+
+    pub fn to_market_edge(&self) -> crate::MarketEdge {
+        crate::MarketEdge {
+            pool_id: self.pool_id,
+            protocol: self.protocol,
+            kind: self.kind,
+            from_mint: self.from_mint,
+            to_mint: self.to_mint,
+            pool_base: self.pool_base,
+            pool_quote: self.pool_quote,
+            reserve_in: self.reserve_in,
+            reserve_out: self.reserve_out,
+            fee_bps: self.fee_bps,
+            clmm: self.clmm.clone(),
+            dlmm: self.dlmm.clone(),
+            pump_fun: self.pump_fun.clone(),
+            transfer_fee_bps: self.transfer_fee_bps,
+            token_programs: self.token_programs,
+            execution_accounts: self.execution_accounts.clone(),
+            active_bin_id: self.active_bin_id,
         }
     }
 }
@@ -149,10 +190,19 @@ impl BellmanFordEngine {
                 kind: p.kind,
                 from_mint: p.quote_mint,
                 to_mint: p.base_mint,
+                pool_base: p.base_mint,
+                pool_quote: p.quote_mint,
                 reserve_in: p.reserve_out,
                 reserve_out: p.reserve_in,
                 fee_bps: fee,
                 weight: rev_weight,
+                clmm: p.clmm.clone(),
+                dlmm: p.dlmm.clone(),
+                pump_fun: p.pump_fun.clone(),
+                transfer_fee_bps: p.transfer_fee_bps,
+                token_programs: [p.token_programs[1], p.token_programs[0]],
+                execution_accounts: p.execution_accounts.clone(),
+                active_bin_id: fwd.active_bin_id,
             };
             graph.entry(rev.from_mint).or_default().push(rev);
         }
@@ -354,6 +404,12 @@ impl BellmanFordEngine {
 
     /// Evaluates profitability, optimal trade size, and fills the ExecutionOpportunity
     /// using closed-form mathematical equations and CostLedger economic modeling.
+    ///
+    /// ACCOUNTING PRECEDENCE: all profit/size decisions here come from
+    /// `build_economic_quote` (the official integer CostLedger model) and u128
+    /// integer sizing. The `f64` product computed by the caller is ONLY an
+    /// initial screening signal to skip obviously unprofitable cycles before
+    /// exact evaluation; it is never used for pricing, sizing, or gating.
     fn evaluate_cycle(
         &self,
         cycle: &[BfEdge],
@@ -397,7 +453,10 @@ impl BellmanFordEngine {
                 mint_in: e.from_mint,
                 mint_out: e.to_mint,
                 fee_bps: e.fee_bps,
-                active_bin_id: None,
+                active_bin_id: e.active_bin_id,
+                token_programs: e.token_programs,
+                trade_intent: Default::default(),
+                execution_accounts: e.execution_accounts.clone(),
             })
             .collect();
 
@@ -405,7 +464,8 @@ impl BellmanFordEngine {
         let mut curr = best_size as u128;
         for e in cycle {
             let gamma = 10_000u128.saturating_sub(e.fee_bps as u128);
-            curr = crate::quote_pool(e.kind, curr, e.reserve_in, e.reserve_out, gamma, None);
+            let me = e.to_market_edge();
+            curr = crate::quote_pool(e.kind, curr, e.reserve_in, e.reserve_out, gamma, Some(&me));
             hop_inputs.push(curr as u64);
         }
         let final_out = curr as u64;
@@ -468,6 +528,7 @@ impl BellmanFordEngine {
         };
 
         Some(ExecutionOpportunity {
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(route_counter),
             slot: current_slot,
             size_in: TokenAmount(best_size),
@@ -478,6 +539,8 @@ impl BellmanFordEngine {
             base_decimals: config.base_decimals,
             price_impact_bps: impact,
             hops,
+
+            expected_min_final_output: 0,
         })
     }
 }
@@ -522,15 +585,18 @@ fn compute_cycle_profit(
                 if clamped_size == 0 {
                     return (0, 0);
                 }
+                let me0 = path[0].to_market_edge();
+                let me1 = path[1].to_market_edge();
                 let out1 = crate::quote_pool(
                     path[0].kind,
                     clamped_size as u128,
                     l1.r_in,
                     l1.r_out,
                     l1.gamma,
-                    None,
+                    Some(&me0),
                 );
-                let out2 = crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, None);
+                let out2 =
+                    crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, Some(&me1));
                 if out2 > clamped_size as u128 {
                     (clamped_size, (out2 - clamped_size as u128) as u64)
                 } else {
@@ -561,6 +627,9 @@ fn compute_cycle_profit(
                 if size_in == 0 {
                     return (0, 0);
                 }
+                let me0 = path[0].to_market_edge();
+                let me1 = path[1].to_market_edge();
+                let me2 = path[2].to_market_edge();
                 // For 3-hop, use a heuristic clamp: if flash fee > 50% of gross profit, halve
                 let flash_fee_raw =
                     calculate_flash_fee_raw(size_in, flash_loan_fee_sf).unwrap_or(0);
@@ -571,12 +640,24 @@ fn compute_cycle_profit(
                         l1.r_in,
                         l1.r_out,
                         l1.gamma,
-                        None,
+                        Some(&me0),
                     );
-                    let out2 =
-                        crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, None);
-                    let out3 =
-                        crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, None);
+                    let out2 = crate::quote_pool(
+                        path[1].kind,
+                        out1,
+                        l2.r_in,
+                        l2.r_out,
+                        l2.gamma,
+                        Some(&me1),
+                    );
+                    let out3 = crate::quote_pool(
+                        path[2].kind,
+                        out2,
+                        l3.r_in,
+                        l3.r_out,
+                        l3.gamma,
+                        Some(&me2),
+                    );
                     let gross_profit = if out3 > size_in as u128 {
                         out3 - size_in as u128
                     } else {
@@ -597,10 +678,12 @@ fn compute_cycle_profit(
                     l1.r_in,
                     l1.r_out,
                     l1.gamma,
-                    None,
+                    Some(&me0),
                 );
-                let out2 = crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, None);
-                let out3 = crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, None);
+                let out2 =
+                    crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, Some(&me1));
+                let out3 =
+                    crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, Some(&me2));
                 if out3 > clamped_size as u128 {
                     (clamped_size, (out3 - clamped_size as u128) as u64)
                 } else {
@@ -636,17 +719,24 @@ fn compute_cycle_profit(
                 if size_in == 0 {
                     return (0, 0);
                 }
+                let me0 = path[0].to_market_edge();
+                let me1 = path[1].to_market_edge();
+                let me2 = path[2].to_market_edge();
+                let me3 = path[3].to_market_edge();
                 let out1 = crate::quote_pool(
                     path[0].kind,
                     size_in as u128,
                     l1.r_in,
                     l1.r_out,
                     l1.gamma,
-                    None,
+                    Some(&me0),
                 );
-                let out2 = crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, None);
-                let out3 = crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, None);
-                let out4 = crate::quote_pool(path[3].kind, out3, l4.r_in, l4.r_out, l4.gamma, None);
+                let out2 =
+                    crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, Some(&me1));
+                let out3 =
+                    crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, Some(&me2));
+                let out4 =
+                    crate::quote_pool(path[3].kind, out3, l4.r_in, l4.r_out, l4.gamma, Some(&me3));
                 if out4 > size_in as u128 {
                     (size_in, (out4 - size_in as u128) as u64)
                 } else {
@@ -662,14 +752,21 @@ fn compute_cycle_profit(
             let mut high = max_trade_size;
             let mut best_size = 0u64;
             let mut best_profit = 0u64;
+            let mes: Vec<crate::MarketEdge> = path.iter().map(|e| e.to_market_edge()).collect();
 
             for _ in 0..16 {
                 let mid = low + (high - low) / 2;
                 let mut curr = mid as u128;
-                for e in path {
+                for (i, e) in path.iter().enumerate() {
                     let gamma = 10_000u128.saturating_sub(e.fee_bps as u128);
-                    curr =
-                        crate::quote_pool(e.kind, curr, e.reserve_in, e.reserve_out, gamma, None);
+                    curr = crate::quote_pool(
+                        e.kind,
+                        curr,
+                        e.reserve_in,
+                        e.reserve_out,
+                        gamma,
+                        Some(&mes[i]),
+                    );
                 }
                 if curr > mid as u128 {
                     let profit = (curr - mid as u128) as u64;
@@ -730,6 +827,8 @@ mod tests {
             dlmm: None,
             pump_fun: None,
             transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
         }
     }
 

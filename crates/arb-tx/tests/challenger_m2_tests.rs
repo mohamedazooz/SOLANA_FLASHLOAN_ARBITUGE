@@ -40,6 +40,26 @@ fn create_test_signer(seed_byte: u8) -> KeypairSigner {
     KeypairSigner::from_bytes(&keypair_bytes).unwrap()
 }
 
+fn mock_raydium_v4_exec_accounts() -> arb_types::PoolExecutionAccounts {
+    let m = arb_tx::RaydiumV4Accounts::mainnet_sol_usdc();
+    arb_types::PoolExecutionAccounts::RaydiumV4 {
+        amm_authority: m.amm_authority,
+        open_orders: m.amm_open_orders,
+        target_orders: m.amm_target_orders,
+        base_vault: m.pool_coin_vault,
+        quote_vault: m.pool_pc_vault,
+        serum_program: m.serum_program,
+        serum_market: m.serum_market,
+        serum_bids: m.serum_bids,
+        serum_asks: m.serum_asks,
+        serum_event_queue: m.serum_event_queue,
+        serum_coin_vault: m.serum_coin_vault,
+        serum_pc_vault: m.serum_pc_vault,
+        serum_vault_signer: m.serum_vault_signer,
+        swap_version: arb_types::RaydiumV4SwapVersion::V2,
+    }
+}
+
 fn create_n_hop_opportunity(hops_count: usize, size_lamports: u64) -> ExecutionOpportunity {
     let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
     let usdc = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
@@ -62,10 +82,14 @@ fn create_n_hop_opportunity(hops_count: usize, size_lamports: u64) -> ExecutionO
             mint_out: MintId(mint_out),
             fee_bps: 25,
             active_bin_id: None,
+            token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+            trade_intent: Default::default(),
+            execution_accounts: Some(mock_raydium_v4_exec_accounts()),
         });
     }
 
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(777),
         slot: Slot(2000),
         size_in: TokenAmount(size_lamports),
@@ -83,6 +107,7 @@ fn create_n_hop_opportunity(hops_count: usize, size_lamports: u64) -> ExecutionO
         base_decimals: 9,
         price_impact_bps: Bps(5),
         hops,
+        expected_min_final_output: 0,
     }
 }
 
@@ -105,7 +130,7 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
         1_000,
         &opp_2hop,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .expect("2-hop bundle assembly must succeed");
@@ -145,7 +170,7 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
         2_500,
         &opp_3hop,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .expect("3-hop bundle assembly must succeed");
@@ -196,7 +221,7 @@ fn test_instruction_indexing_with_zero_priority_fee_and_zero_tip() {
         0, // 0 priority fee
         &opp,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .expect("assembly with 0 priority fee should succeed");
@@ -216,7 +241,7 @@ fn test_instruction_indexing_with_zero_priority_fee_and_zero_tip() {
         1000,
         &opp,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .expect("assembly with 0 tip should succeed");
@@ -377,7 +402,7 @@ fn test_adversarial_cu_budget_enforcement() {
         1_000,
         &opp_2hop,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap();
@@ -393,7 +418,7 @@ fn test_adversarial_cu_budget_enforcement() {
         1_000,
         &opp_3hop,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap();
@@ -410,7 +435,7 @@ fn test_adversarial_cu_budget_enforcement() {
             1_000,
             &opp_invalid,
             &kamino_params,
-            9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+            576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
             TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
         )
         .unwrap_err();
@@ -522,7 +547,7 @@ fn test_oracle_verification_of_atomic_bundles() {
         1_000,
         &opp_2hop,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap();
@@ -541,7 +566,7 @@ fn test_oracle_verification_of_atomic_bundles() {
         1_000,
         &opp_3hop,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        576_460_752_303_423, // fee_sf: 5 bps in U68F60 (test fixture)
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap();
@@ -599,10 +624,11 @@ fn test_prewarmed_template_fuzzing_and_cryptographic_soundness() {
         kamino_params: &kamino_params,
         recent_blockhash: [0x11; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
-        PreWarmedTxTemplate::from_bundle_params(&bundle_params, 9223372036854775).unwrap();
+        PreWarmedTxTemplate::from_bundle_params(&bundle_params, 576_460_752_303_423).unwrap();
     assert!(template.raw_bytes.len() <= SOLANA_PACKET_MTU_LIMIT);
 
     let borrow_offset = template.borrow_amount_offset;
@@ -677,10 +703,11 @@ fn test_prewarmed_template_hotpath_sub_microsecond_benchmark() {
         kamino_params: &kamino_params,
         recent_blockhash: [0xEE; 32],
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let mut template =
-        PreWarmedTxTemplate::from_bundle_params(&bundle_params, 9223372036854775).unwrap();
+        PreWarmedTxTemplate::from_bundle_params(&bundle_params, 576_460_752_303_423).unwrap();
 
     // Warm up CPU cache
     for i in 0..100 {

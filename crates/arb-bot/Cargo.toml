@@ -5,6 +5,15 @@ version = "0.1.0"
 edition = "2024"
 autobins = false
 
+[features]
+default = []
+split-routing = ["arb-engine/split-routing"]
+extra-ingest = ["arb-ingest/extra-ingest"]
+
+[lib]
+name = "arb_bot"
+path = "src/lib.rs"
+
 [[bin]]
 name = "arb-bot"
 path = "src/main.rs"
@@ -66,8 +75,12 @@ dotenvy = "0.15"
 base64 = "0.22"
 bs58 = "0.5"
 hex = { workspace = true }
+rand = "0.8"
 hmac = { workspace = true }
 sha2 = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tower = "0.5"

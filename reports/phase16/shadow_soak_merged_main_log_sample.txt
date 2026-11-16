@@ -1,0 +1,71 @@
+2026-11-13T06:04:05.971706Z  INFO arb_bot: Detailed event logging active: console + file 'logs/arb_events.log'
+2026-11-13T06:04:05.971893Z  INFO arb_bot: Starting arb-bot in mode: shadow
+2026-11-13T06:04:05.973159Z  INFO arb_bot::config: ⚡ Flash Loan enabled — zero-risk atomic flash loan execution active
+2026-11-13T06:04:05.973291Z  INFO arb_bot: Configuration loaded — RPC: 
+2026-11-13T06:04:05.973536Z  INFO arb_bot: Max trade size: 25000 USD
+2026-11-13T06:04:05.973712Z  INFO arb_bot: Min net profit: 1000000 lamports (1 bps)
+2026-11-13T06:04:05.973926Z  INFO arb_bot: Running in safe mode (dry-run / shadow). No live transactions will be submitted.
+2026-11-13T06:04:05.974337Z  INFO arb_bot: 📈 Prometheus Metrics Server running on http://127.0.0.1:9100/metrics
+2026-11-13T06:04:05.974460Z  INFO arb_bot: TRACE MAIN 1: before Supervisor::new
+2026-11-13T06:04:05.974590Z  INFO arb_bot::supervisor: TRACE SUP 1: start
+2026-11-13T06:04:05.977311Z  INFO arb_bot::supervisor: TRACE SUP 2: before store
+2026-11-13T06:04:05.991806Z  INFO arb_store: SQLite database initialized with WAL pragmas at /tmp/soak3/sentinel.db
+2026-11-13T06:04:05.992053Z  INFO arb_bot::supervisor: TRACE SUP 3: after store
+2026-11-13T06:04:05.992422Z DEBUG arb_bot::telegram: Telegram credentials not fully configured — notifications disabled
+2026-11-13T06:04:05.993127Z  INFO arb_bot::supervisor: TRACE SUP 4: after jito_service
+2026-11-13T06:04:05.993260Z  INFO arb_bot::supervisor: Heartbeat writer active: pid=53077 path=data/heartbeat.json
+2026-11-13T06:04:05.993378Z  INFO arb_store::redis_cache: Initialized In-Memory Short-TTL Cache with active space reclamation
+2026-11-13T06:04:05.993492Z  WARN arb_bot: Admin HTTP API disabled: env var 'SENTINEL_ADMIN_KEY' is missing or a placeholder; /pause and /resume stay unavailable (fail closed)
+2026-11-13T06:04:05.993945Z  INFO arb_bot: TRACE MAIN 2: after Supervisor::new, before run
+2026-11-13T06:04:05.994259Z  INFO arb_bot::telegram_control: Telegram control listener disabled (no TELEGRAM_BOT_TOKEN)
+2026-11-13T06:04:05.994292Z  INFO arb_bot::supervisor::run: Starting Supervisor — Mode: shadow
+2026-11-13T06:04:05.994615Z  WARN arb_bot: Web API server stopped on 127.0.0.1:8080: WEB_ADMIN_PASSWORD is not set — the web API refuses to start (fail-closed)
+2026-11-13T06:04:05.996850Z  INFO arb_bot::supervisor::run: Monitored Base Token: So11111111111111111111111111111111111111112
+2026-11-13T06:04:05.996988Z  INFO arb_bot::supervisor::run: Monitored Base Token: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
+2026-11-13T06:04:05.997121Z  INFO arb_bot::supervisor::run: Monitored Base Token: Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB
+2026-11-13T06:04:05.997244Z  INFO arb_bot::supervisor::run: Monitored Base Token: 7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr
+2026-11-13T06:04:05.997357Z  INFO arb_bot::supervisor::run: Monitored Base Token: EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm
+2026-11-13T06:04:05.997469Z  INFO arb_bot::supervisor::run: Monitored Base Token: JUPyiwrYJFngUPXSiqZFkKHMXkGs3WEXKaJE1agWK
+2026-11-13T06:04:05.997582Z  INFO arb_bot::supervisor::run: Monitored Base Token: jtojtomepa8beP8uL5qyNtYQgwwJjA72yS6JwTL9CZq
+2026-11-13T06:04:05.997753Z  INFO arb_bot::supervisor::run: Monitored Base Token: DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB268
+2026-11-13T06:04:05.997865Z  INFO arb_bot::supervisor::run: Monitored Base Token: 9MCPRCn3cpWFdSmV93hJ1kVXVVdjPpEqfnfYkaZ4TLws
+2026-11-13T06:04:05.997977Z  INFO arb_bot::supervisor::run: Monitored Base Token: 4k3Dyjzvzp8eMZWUXbBCjEvwSkkU59Y5j3uYBqZ3e5pV
+2026-11-13T06:04:05.998096Z  INFO arb_bot::supervisor::run: Monitored Base Token: orcaEKTdK7LKz57AYAYr5viVzNQZfBDyQ7wglX42j56
+2026-11-13T06:04:05.998228Z  INFO arb_bot::supervisor::run: Monitored Base Token: 6p6xgHyF7AeQHydaKVtRNVUjCAWoTeZwXHnkTXQKpump
+2026-11-13T06:04:05.998345Z  INFO arb_bot::supervisor::run: Monitored Base Token: 9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump
+2026-11-13T06:04:05.998466Z  INFO arb_bot::supervisor::run: Monitored Base Token: HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC
+2026-11-13T06:04:05.999300Z  INFO arb_bot::supervisor::run: Monitored Base Token: A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump
+2026-11-13T06:04:05.999464Z  INFO arb_bot::supervisor::run: Monitored Base Token: ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY
+2026-11-13T06:04:05.999582Z  INFO arb_bot::supervisor::run: Monitored Base Token: 2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv
+2026-11-13T06:04:05.999772Z  INFO arb_bot::supervisor::run: Monitored Base Token: rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof
+... [6,195 HTTP-429 cooldown/rotate WARN lines from api.mainnet-beta omitted] ...
+2026-11-13T06:07:57.377800Z DEBUG arb_bot::health_monitor: health sweep: all checks ok (rpc=ok stream_ingest=ok disk=ok telegram=ok)
+2026-11-13T06:07:57.792596Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820403 (previous: 468820402)
+2026-11-13T06:07:58.123543Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820405 (previous: 468820404)
+2026-11-13T06:07:59.212223Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820410 (previous: 468820409)
+2026-11-13T06:08:01.686166Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820422 (previous: 468820421)
+2026-11-13T06:08:02.058697Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820423 (previous: 468820422)
+2026-11-13T06:08:03.849439Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820431 (previous: 468820429)
+2026-11-13T06:08:04.494739Z DEBUG arb_bot::health_monitor: health sweep: all checks ok (rpc=ok stream_ingest=ok disk=ok telegram=ok)
+2026-11-13T06:08:04.860086Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820436 (previous: 468820435)
+2026-11-13T06:08:05.227964Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820438 (previous: 468820436)
+2026-11-13T06:08:05.669035Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820440 (previous: 468820438)
+2026-11-13T06:08:06.037486Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820442 (previous: 468820440)
+2026-11-13T06:08:06.412191Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820443 (previous: 468820442)
+2026-11-13T06:08:06.549421Z  INFO arb_bot::jito_service: leader schedule refreshed epoch=1085 indexed_slots=432000 jito_keys=1270
+2026-11-13T06:08:06.720403Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820445 (previous: 468820444)
+2026-11-13T06:08:07.532026Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820448 (previous: 468820446)
+2026-11-13T06:08:07.860161Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820450 (previous: 468820449)
+2026-11-13T06:08:10.659531Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820462 (previous: 468820460)
+2026-11-13T06:08:11.449267Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820465 (previous: 468820463)
+2026-11-13T06:08:11.825944Z DEBUG arb_bot::health_monitor: health sweep: all checks ok (rpc=ok stream_ingest=ok disk=ok telegram=ok)
+2026-11-13T06:08:12.605730Z  INFO arb_ingest::discovery:   Raydium v3 catalog: 30 pools above TVL floor
+2026-11-13T06:08:13.538168Z  INFO arb_ingest::discovery:   Meteora DLMM search discovered 34 candidate pools
+2026-11-13T06:08:13.583634Z  WARN arb_ingest::pumpfun_discovery: Pump.fun recent coins API returned status: 403 Forbidden
+2026-11-13T06:08:13.583857Z  INFO arb_ingest::pumpfun_discovery: Pump.fun discovery selected 0 high-priority bonding curves for surveillance (requested up to 33)
+2026-11-13T06:08:13.584302Z  INFO arb_ingest::discovery:   Pump.fun multi-venue bonding curves paired: 36
+2026-11-13T06:08:13.601604Z  INFO arb_ingest::discovery: 🔍 Discovery done: 121 pools registered for live monitoring (top <= 33 per venue): {RaydiumV4: 5, RaydiumCpmm: 3, OrcaWhirlpool: 33, MeteoraDlmm: 33, RaydiumClmm: 22, PumpFun: 25}
+2026-11-13T06:08:13.601912Z  INFO arb_ingest::discovery: 🔍 Discovery: min_tvl=$15000 max_per_venue=33 cap=297 hubs=24
+2026-11-13T06:08:13.924394Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820476 (previous: 468820475)
+2026-11-13T06:08:14.606362Z  INFO arb_ingest::discovery:   Orca catalog: 297 pools above TVL floor
+2026-11-13T06:08:15.563412Z DEBUG arb_bot::supervisor::run: Advancing slot from RPC slot stream fallback: 468820484 (previous: 468820482)

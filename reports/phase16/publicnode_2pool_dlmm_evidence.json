@@ -1,0 +1,942 @@
+{
+  "execution": {
+    "compute_units_consumed": 0,
+    "error_status": "\"InvalidAccountForFee\"",
+    "inner_instructions_count": 0,
+    "loaded_accounts_data_size": 0,
+    "profitability_cleared": false,
+    "program_logs": [],
+    "rejection_reason": "SimulationError(\"\\\"InvalidAccountForFee\\\"\")",
+    "return_data": null,
+    "simulation_success": false,
+    "transaction_size_bytes": 1008
+  },
+  "fees": {
+    "base_fee_lamports": 5000,
+    "conversion_source": "ExecutionCostBreakdown::standard (lamports native; no SOL/USDC conversion applied here)",
+    "denomination_note": "DLMM charges its fee on the swap input side (fee_on_input true) in that hop's input mint; these raw fee amounts are NOT comparable to lamport costs.",
+    "dex_fees_lamports": 0,
+    "flash_borrow_fee_lamports": 0,
+    "hop1_collect_fee_mode": 0,
+    "hop1_fee_denomination_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "hop1_fee_on_input": true,
+    "hop1_fee_raw": "43",
+    "hop2_collect_fee_mode": 0,
+    "hop2_fee_denomination_mint": "So11111111111111111111111111111111111111112",
+    "hop2_fee_on_input": true,
+    "hop2_fee_raw": "2566",
+    "jito_tip_lamports": 0,
+    "priority_fee_lamports": 10000,
+    "rent_lamports": 0,
+    "sol_usd_price": 180,
+    "sol_usd_source": "DlmmOptimizerConfig.sol_usd_price (configured, not live oracle)",
+    "transfer_fees_lamports": 0
+  },
+  "final": {
+    "amount_raw": "99718",
+    "decimals": 6,
+    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  },
+  "generated_at_unix": 1794548890,
+  "generated_at_utc": "1794548890.028Z",
+  "input": {
+    "amount_raw": "100000",
+    "decimals": 6,
+    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  },
+  "intermediate": {
+    "amount_raw": "1268806",
+    "decimals": 9,
+    "mint": "So11111111111111111111111111111111111111112"
+  },
+  "lamport_balances": {
+    "fee_payer_delta": "0",
+    "post": [
+      953520,
+      1565602565,
+      71437440,
+      1488440,
+      23385700,
+      71437440,
+      2039283,
+      23385600,
+      71437440,
+      8222713,
+      2039396,
+      42109854170958,
+      71437440,
+      22662832157654,
+      1488440,
+      1,
+      1,
+      106028466,
+      523015235,
+      1867571316542,
+      240130698,
+      3388612899,
+      5987435,
+      561454659986
+    ],
+    "pre": [
+      953520,
+      1565602565,
+      71437440,
+      1488440,
+      23385700,
+      71437440,
+      2039283,
+      23385600,
+      71437440,
+      8222713,
+      2039396,
+      42109854170958,
+      71437440,
+      22662832157654,
+      1488440,
+      1,
+      1,
+      106028466,
+      523015235,
+      1867571316542,
+      240130698,
+      3388612899,
+      5987435,
+      561454659986
+    ]
+  },
+  "mode": {
+    "ARB_LIVE": "0",
+    "DRY_RUN": "true",
+    "EXECUTE_LIVE": "false",
+    "LIVE": "false",
+    "alt_deployed": false,
+    "broadcast": false,
+    "jito_bundle": false,
+    "signed_material_persisted": false
+  },
+  "outcome": {
+    "classification": "RPC_OR_SIMULATION_FAILURE",
+    "detail": null,
+    "is_stale_quote_rejection": false,
+    "is_successful_swap_simulation": false,
+    "simulation_executed_on_chain": false
+  },
+  "pools": {
+    "pool_a": {
+      "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+      "snapshot": {
+        "context_slot": 468814886,
+        "data_len": 904,
+        "encoding": "base64->bytes",
+        "exists": true,
+        "lamports": 1565602565,
+        "owner": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+        "pubkey": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+        "sha256": "547052b42aee23c1be6692a835d78635b909bc964bcf9947783b532acd6bf4c6"
+      },
+      "snapshot_context_slot": 468814886,
+      "state_slot": 468814886
+    },
+    "pool_b": {
+      "address": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+      "snapshot": {
+        "context_slot": 468814887,
+        "data_len": 904,
+        "encoding": "base64->bytes",
+        "exists": true,
+        "lamports": 8222713,
+        "owner": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+        "pubkey": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+        "sha256": "e27386b8a8c77662e1131cf739e5c4efb81bb95ddab5b13cdf5e5f6ab630a278"
+      },
+      "snapshot_context_slot": 468814887,
+      "state_slot": 468814886
+    }
+  },
+  "quotes": {
+    "direction_a": {
+      "gross_profit": -2818,
+      "hop1_amount_out": 12688076,
+      "hop1_bins_traversed": 0,
+      "hop1_fee": 429,
+      "hop1_swap_for_y": false,
+      "hop2_bins_traversed": 1,
+      "hop2_fee": 25658,
+      "hop2_final_amount_out": 997182,
+      "hop2_swap_for_y": true,
+      "initial_amount_in": 1000000,
+      "spread_bps": 0
+    },
+    "direction_b": {
+      "gross_profit": -4515,
+      "hop1_amount_out": 12646775,
+      "hop1_bins_traversed": 0,
+      "hop1_fee": 2057,
+      "hop1_swap_for_y": false,
+      "hop2_bins_traversed": 1,
+      "hop2_fee": 5620,
+      "hop2_final_amount_out": 995485,
+      "hop2_swap_for_y": true,
+      "initial_amount_in": 1000000,
+      "spread_bps": 0
+    },
+    "hop1_bins_traversed": 0,
+    "hop2_bins_traversed": 1,
+    "optimizer_best": {
+      "bounded_early": false,
+      "candidate_basins": [
+        [
+          100000,
+          150000
+        ]
+      ],
+      "coarse_points": [
+        100000,
+        150000,
+        225000,
+        337500,
+        506250,
+        759375,
+        1139062,
+        1337500,
+        1708593,
+        2562889,
+        2575000,
+        3812500,
+        3844333,
+        5050000,
+        5766499,
+        6287500,
+        7525000,
+        8649748,
+        8762500,
+        10000000
+      ],
+      "coarse_sample_count": 8,
+      "direction": "DirectionA",
+      "estimated_cu": 95000,
+      "evaluation_count": 25,
+      "expected_final_out": 99718,
+      "expected_gross_profit": -282,
+      "expected_hop1_out": 1268806,
+      "expected_net_profit": -2982,
+      "fine_search_intervals": [
+        [
+          100000,
+          150000
+        ]
+      ],
+      "hop1_bins_traversed": 0,
+      "hop2_bins_traversed": 1,
+      "is_profitable": false,
+      "net_profit_bps": -298,
+      "optimal_amount_in": 100000,
+      "quote": {
+        "gross_profit": -282,
+        "hop1_amount_out": 1268806,
+        "hop1_bins_traversed": 0,
+        "hop1_fee": 43,
+        "hop1_swap_for_y": false,
+        "hop2_bins_traversed": 1,
+        "hop2_fee": 2566,
+        "hop2_final_amount_out": 99718,
+        "hop2_swap_for_y": true,
+        "initial_amount_in": 100000,
+        "spread_bps": 0
+      },
+      "required_bin_arrays": 2,
+      "result_kind": "best_observed_candidate",
+      "search_lower_bound": 100000,
+      "search_upper_bound": 10000000,
+      "spread_bps": 0,
+      "stopping_condition": "coarse logarithmic+linear grid, multi-basin local maxima, bounded fine sweep; best observed candidate selected",
+      "tested_evaluations": [
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 43,
+          "fees_hop2_raw": 2566,
+          "hop1_out": 1268806,
+          "hop2_out": 99718,
+          "net_profit_bps": -298,
+          "net_profit_quote_raw": -2982,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 2609,
+          "trade_size": 100000
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 47,
+          "fees_hop2_raw": 2780,
+          "hop1_out": 1374530,
+          "hop2_out": 108027,
+          "net_profit_bps": -277,
+          "net_profit_quote_raw": -3006,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 2827,
+          "trade_size": 108333
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 50,
+          "fees_hop2_raw": 2994,
+          "hop1_out": 1480267,
+          "hop2_out": 116337,
+          "net_profit_bps": -259,
+          "net_profit_quote_raw": -3029,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 3044,
+          "trade_size": 116666
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 54,
+          "fees_hop2_raw": 3208,
+          "hop1_out": 1585992,
+          "hop2_out": 124646,
+          "net_profit_bps": -244,
+          "net_profit_quote_raw": -3053,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 3262,
+          "trade_size": 124999
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 58,
+          "fees_hop2_raw": 3421,
+          "hop1_out": 1691716,
+          "hop2_out": 132955,
+          "net_profit_bps": -230,
+          "net_profit_quote_raw": -3077,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 3479,
+          "trade_size": 133332
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 61,
+          "fees_hop2_raw": 3635,
+          "hop1_out": 1797453,
+          "hop2_out": 141265,
+          "net_profit_bps": -218,
+          "net_profit_quote_raw": -3100,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 3696,
+          "trade_size": 141665
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 65,
+          "fees_hop2_raw": 3849,
+          "hop1_out": 1903203,
+          "hop2_out": 149576,
+          "net_profit_bps": -208,
+          "net_profit_quote_raw": -3124,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 3914,
+          "trade_size": 150000
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 97,
+          "fees_hop2_raw": 5773,
+          "hop1_out": 2854811,
+          "hop2_out": 224365,
+          "net_profit_bps": -148,
+          "net_profit_quote_raw": -3335,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 5870,
+          "trade_size": 225000
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 145,
+          "fees_hop2_raw": 8660,
+          "hop1_out": 4282223,
+          "hop2_out": 336549,
+          "net_profit_bps": -108,
+          "net_profit_quote_raw": -3651,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 8805,
+          "trade_size": 337500
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 217,
+          "fees_hop2_raw": 12990,
+          "hop1_out": 6423341,
+          "hop2_out": 504824,
+          "net_profit_bps": -81,
+          "net_profit_quote_raw": -4126,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 13207,
+          "trade_size": 506250
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 326,
+          "fees_hop2_raw": 19484,
+          "hop1_out": 9635005,
+          "hop2_out": 757235,
+          "net_profit_bps": -63,
+          "net_profit_quote_raw": -4840,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 19810,
+          "trade_size": 759375
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 488,
+          "fees_hop2_raw": 29226,
+          "hop1_out": 14452514,
+          "hop2_out": 1135853,
+          "net_profit_bps": -51,
+          "net_profit_quote_raw": -5909,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 29714,
+          "trade_size": 1139062
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 573,
+          "fees_hop2_raw": 34317,
+          "hop1_out": 16970312,
+          "hop2_out": 1333733,
+          "net_profit_bps": -48,
+          "net_profit_quote_raw": -6467,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 34890,
+          "trade_size": 1337500
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 732,
+          "fees_hop2_raw": 43839,
+          "hop1_out": 21678771,
+          "hop2_out": 1703780,
+          "net_profit_bps": -43,
+          "net_profit_quote_raw": -7513,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 44571,
+          "trade_size": 1708593
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 1098,
+          "fees_hop2_raw": 65758,
+          "hop1_out": 32518151,
+          "hop2_out": 2555670,
+          "net_profit_bps": -38,
+          "net_profit_quote_raw": -9919,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 66856,
+          "trade_size": 2562889
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 1103,
+          "fees_hop2_raw": 66068,
+          "hop1_out": 32671819,
+          "hop2_out": 2567748,
+          "net_profit_bps": -38,
+          "net_profit_quote_raw": -9952,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 67171,
+          "trade_size": 2575000
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 1633,
+          "fees_hop2_raw": 97820,
+          "hop1_out": 48373325,
+          "hop2_out": 3801762,
+          "net_profit_bps": -35,
+          "net_profit_quote_raw": -13438,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 99453,
+          "trade_size": 3812500
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 1646,
+          "fees_hop2_raw": 98636,
+          "hop1_out": 48777233,
+          "hop2_out": 3833507,
+          "net_profit_bps": -35,
+          "net_profit_quote_raw": -13526,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 100282,
+          "trade_size": 3844333
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 2162,
+          "fees_hop2_raw": 129571,
+          "hop1_out": 64074844,
+          "hop2_out": 5035778,
+          "net_profit_bps": -33,
+          "net_profit_quote_raw": -16922,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 131733,
+          "trade_size": 5050000
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 2469,
+          "fees_hop2_raw": 147954,
+          "hop1_out": 73165843,
+          "hop2_out": 5750260,
+          "net_profit_bps": -32,
+          "net_profit_quote_raw": -18939,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 150423,
+          "trade_size": 5766499
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 2692,
+          "fees_hop2_raw": 161322,
+          "hop1_out": 79776351,
+          "hop2_out": 6269793,
+          "net_profit_bps": -32,
+          "net_profit_quote_raw": -20407,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 164014,
+          "trade_size": 6287500
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 3222,
+          "fees_hop2_raw": 193073,
+          "hop1_out": 95477857,
+          "hop2_out": 7503808,
+          "net_profit_bps": -31,
+          "net_profit_quote_raw": -23892,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 196295,
+          "trade_size": 7525000
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 3703,
+          "fees_hop2_raw": 221931,
+          "hop1_out": 109748765,
+          "hop2_out": 8625390,
+          "net_profit_bps": -31,
+          "net_profit_quote_raw": -27058,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 225634,
+          "trade_size": 8649748
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 3752,
+          "fees_hop2_raw": 224824,
+          "hop1_out": 111179363,
+          "hop2_out": 8737823,
+          "net_profit_bps": -31,
+          "net_profit_quote_raw": -27377,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 228576,
+          "trade_size": 8762500
+        },
+        {
+          "compute_units": 95000,
+          "direction": "DirectionA",
+          "fees_hop1_raw": 4281,
+          "fees_hop2_raw": 256575,
+          "hop1_out": 126880882,
+          "hop2_out": 9971839,
+          "net_profit_bps": -30,
+          "net_profit_quote_raw": -30861,
+          "network_costs_quote_raw": 2700,
+          "required_bin_arrays_hop1": 1,
+          "required_bin_arrays_hop2": 1,
+          "total_bin_arrays": 2,
+          "total_fees_raw": 260856,
+          "trade_size": 10000000
+        }
+      ]
+    }
+  },
+  "realized": {
+    "assessment": "BREAK_EVEN",
+    "expected_final_out_raw": "99718",
+    "expected_net_in_input_mint_raw": "-282",
+    "fee_payer_lamport_delta": "0",
+    "input_and_output_mint_same": true,
+    "min_final_out_slippage_floor_raw": "98720",
+    "net_matches_quote": false,
+    "realized_equals_slippage_floor": false,
+    "realized_final_out_raw": "100000",
+    "realized_net_in_input_mint_raw": "0",
+    "user_delta_by_mint": {
+      "input": "0",
+      "intermediate": "0",
+      "output": "0"
+    }
+  },
+  "schema": "sentinel.phase15_2.mainnet_simulation_evidence.v2",
+  "slots": {
+    "account_snapshot_fetch_order": "after simulation — this is a provenance record of the pool accounts, not the state the quote used",
+    "account_snapshot_slots": [
+      468814886,
+      468814887
+    ],
+    "freshness_policy_relaxed": false,
+    "gate_is_conservative": true,
+    "gate_lag_slots": 7,
+    "gate_quote_slot": 468814879,
+    "gate_quote_slot_source": "the slot passed to the simulation harness (the requested slot), NOT the state slot",
+    "max_allowed_slot_lag": 2,
+    "pool_a_lag_vs_gate": 0,
+    "pool_a_state_slot": 468814886,
+    "pool_b_lag_vs_gate": 0,
+    "pool_b_state_slot": 468814886,
+    "quote_basis_slot": 468814886,
+    "quote_basis_source": "min(pool_a_state.slot, pool_b_state.slot) — the slot every quoted pool state is at or after",
+    "requested_slot": 468814879,
+    "simulation_slot": 468814886,
+    "snapshot_lag_vs_quote_basis": 0,
+    "true_lag_slots": 0
+  },
+  "token_balances": {
+    "all_mints_conserved": true,
+    "deltas": [
+      {
+        "account_index": 3,
+        "decimals": 9,
+        "delta_raw": "0",
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m",
+        "post_raw": "0",
+        "pre_raw": "0"
+      },
+      {
+        "account_index": 6,
+        "decimals": 6,
+        "delta_raw": "0",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+        "post_raw": "114738166164",
+        "pre_raw": "114738166164"
+      },
+      {
+        "account_index": 10,
+        "decimals": 6,
+        "delta_raw": "0",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+        "post_raw": "463257752903",
+        "pre_raw": "463257752903"
+      },
+      {
+        "account_index": 11,
+        "decimals": 9,
+        "delta_raw": "0",
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+        "post_raw": "42109838500885",
+        "pre_raw": "42109838500885"
+      },
+      {
+        "account_index": 13,
+        "decimals": 9,
+        "delta_raw": "0",
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+        "post_raw": "22662829202861",
+        "pre_raw": "22662829202861"
+      },
+      {
+        "account_index": 14,
+        "decimals": 6,
+        "delta_raw": "0",
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m",
+        "post_raw": "0",
+        "pre_raw": "0"
+      }
+    ],
+    "post": [
+      {
+        "account_index": 3,
+        "amount": "0",
+        "decimals": 9,
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m"
+      },
+      {
+        "account_index": 6,
+        "amount": "114738166164",
+        "decimals": 6,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"
+      },
+      {
+        "account_index": 10,
+        "amount": "463257752903",
+        "decimals": 6,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6"
+      },
+      {
+        "account_index": 11,
+        "amount": "42109838500885",
+        "decimals": 9,
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6"
+      },
+      {
+        "account_index": 13,
+        "amount": "22662829202861",
+        "decimals": 9,
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"
+      },
+      {
+        "account_index": 14,
+        "amount": "0",
+        "decimals": 6,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m"
+      }
+    ],
+    "pre": [
+      {
+        "account_index": 3,
+        "amount": "0",
+        "decimals": 9,
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m"
+      },
+      {
+        "account_index": 6,
+        "amount": "114738166164",
+        "decimals": 6,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"
+      },
+      {
+        "account_index": 10,
+        "amount": "463257752903",
+        "decimals": 6,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6"
+      },
+      {
+        "account_index": 11,
+        "amount": "42109838500885",
+        "decimals": 9,
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6"
+      },
+      {
+        "account_index": 13,
+        "amount": "22662829202861",
+        "decimals": 9,
+        "mint": "So11111111111111111111111111111111111111112",
+        "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"
+      },
+      {
+        "account_index": 14,
+        "amount": "0",
+        "decimals": 6,
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m"
+      }
+    ],
+    "reconciliation": [
+      {
+        "accounts_observed": 3,
+        "conserved": true,
+        "decimals": 9,
+        "entries": [
+          {
+            "account_index": 3,
+            "decimals": 9,
+            "delta_raw": "0",
+            "mint": "So11111111111111111111111111111111111111112",
+            "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m",
+            "post_raw": "0",
+            "pre_raw": "0"
+          },
+          {
+            "account_index": 11,
+            "decimals": 9,
+            "delta_raw": "0",
+            "mint": "So11111111111111111111111111111111111111112",
+            "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+            "post_raw": "42109838500885",
+            "pre_raw": "42109838500885"
+          },
+          {
+            "account_index": 13,
+            "decimals": 9,
+            "delta_raw": "0",
+            "mint": "So11111111111111111111111111111111111111112",
+            "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+            "post_raw": "22662829202861",
+            "pre_raw": "22662829202861"
+          }
+        ],
+        "mint": "So11111111111111111111111111111111111111112",
+        "residual_raw": "0",
+        "sum_delta_raw": "0"
+      },
+      {
+        "accounts_observed": 3,
+        "conserved": true,
+        "decimals": 6,
+        "entries": [
+          {
+            "account_index": 6,
+            "decimals": 6,
+            "delta_raw": "0",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh",
+            "post_raw": "114738166164",
+            "pre_raw": "114738166164"
+          },
+          {
+            "account_index": 10,
+            "decimals": 6,
+            "delta_raw": "0",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+            "post_raw": "463257752903",
+            "pre_raw": "463257752903"
+          },
+          {
+            "account_index": 14,
+            "decimals": 6,
+            "delta_raw": "0",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+            "owner": "ELit4ctWZzaD5SUTfZ8L2D12oyXSuWSoTBiKjBAiQv6m",
+            "post_raw": "0",
+            "pre_raw": "0"
+          }
+        ],
+        "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "residual_raw": "0",
+        "sum_delta_raw": "0"
+      }
+    ]
+  },
+  "token_programs": [
+    {
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "program": "spl_token"
+    },
+    {
+      "mint": "So11111111111111111111111111111111111111112",
+      "program": "spl_token"
+    }
+  ],
+  "transfer_fee": {
+    "accounted_lamports": 0,
+    "applicable": false,
+    "note": "All mints are SPL Token; Token-2022 transfer fee cannot apply to this route."
+  },
+  "user_token_accounts": {
+    "final": "H6oE5XN3Gr4rDELUg47nMnsF7jPb9rApCfhrmgasK7D2",
+    "input": "H6oE5XN3Gr4rDELUg47nMnsF7jPb9rApCfhrmgasK7D2",
+    "intermediate": "3m7bvPmXj92e5AMXdDi9eiyT7t764hviW1YoG6P6axdE",
+    "payer": "3znAGhp6Tk4kmebhXnk9K3jaTMffu82PJfEG91AeRkq2"
+  }
+}

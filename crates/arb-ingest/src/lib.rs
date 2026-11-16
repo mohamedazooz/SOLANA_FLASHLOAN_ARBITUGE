@@ -1,19 +1,21 @@
-//! Yellowstone gRPC ingestion with per-account snapshots and update-only market state.
+//! Market-state ingestion (WebSocket + RPC only). gRPC transport removed.
+//! Per-account snapshots and update-only market state.
 
 pub mod gmgn;
 pub use gmgn::{GmgnClient, TrendingToken};
 pub mod dependency_manifest;
+#[cfg(feature = "extra-ingest")]
 pub mod dexscreener;
 pub mod provider_supervisor;
 pub mod quote_readiness;
 pub mod rpc_reconcile;
 pub mod slot_integrity;
-pub mod yellowstone;
 pub use dependency_manifest::{
     AccountDependency, AccountRole, DependencyManifestError, DependencyManifestRegistry,
     PoolDependencyManifest, ProtocolDependencyError, ProtocolDependencyInput,
     resolve_protocol_dependencies,
 };
+#[cfg(feature = "extra-ingest")]
 pub use dexscreener::{DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken};
 pub use provider_supervisor::{
     CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus,
@@ -26,17 +28,27 @@ pub use quote_readiness::{
 pub use rpc_reconcile::{RpcSnapshotClient, RpcSnapshotConfig, RpcSnapshotReport};
 pub use slot_integrity::{ReconcileError, SlotIntegrity, SlotUpdateOutcome, SnapshotReconciler};
 pub mod rpc_pool;
-pub use rpc_pool::{RpcPool, SignatureStatus};
+pub use rpc_pool::{ProviderHealthReport, RpcPool, RpcPoolHealth, SignatureStatus};
 pub mod registry;
 pub use registry::{
-    DecodedPoolInfo, MultiDexRegistry, RegisteredPool, decode_account_data, decode_orca_fee_bps,
-    decode_orca_vaults, decode_pool_info, decode_raydium_cpmm_fee_bps, decode_raydium_cpmm_vaults,
-    decode_raydium_fee_bps, decode_raydium_vaults, fetch_accounts_chunked, resolve_mints_decimals,
+    DecodedPoolInfo, MultiDexRegistry, RegisteredPool, clmm_onchain_mints,
+    clmm_tick_array_covers_tick, compute_clmm_virtual_reserves, compute_dlmm_reserves,
+    decode_account_data, decode_clmm_state, decode_dlmm_fee_bps, decode_dlmm_state,
+    decode_orca_fee_bps, decode_orca_vaults, decode_pool_info, decode_raydium_clmm_state,
+    decode_raydium_clmm_vaults, decode_raydium_cpmm_fee_bps, decode_raydium_cpmm_vaults,
+    decode_raydium_fee_bps, decode_raydium_vaults, decode_spl_token_amount_bytes,
+    fetch_accounts_chunked, next_pool_write_version, raydium_clmm_tick_array_pdas,
+    resolve_mints_decimals,
 };
+#[cfg(feature = "extra-ingest")]
+pub mod dual_ingest;
+#[cfg(feature = "extra-ingest")]
+pub use dual_ingest::{DualIngestShadow, PoolConsistencyCheck, StreamingPoolCache};
 pub mod discovery;
 pub use discovery::{
     DiscoveredPoolState, DiscoveryConfig, PoolDiscovery, register_discovered,
-    select_dual_30_watch_set,
+    select_dual_30_watch_set, select_top_33_per_venue, select_watch_set,
+    select_watch_set_per_venue,
 };
 pub mod pump_state;
 pub use pump_state::{
@@ -50,18 +62,35 @@ pub mod oxylabs;
 pub use oxylabs::{OxylabsClient, OxylabsConfig, OxylabsError, ScrapeResult, SearchResult};
 pub mod pumpdev_stream;
 pub use pumpdev_stream::{PumpDevEvent, PumpDevWebSocketClient};
+pub mod capability;
+pub use capability::{
+    AccountDataEncoding, CapabilityError, CommitmentLevel, ProviderCapabilities,
+    ProviderCapabilityRegistry, ProviderTransport, RateLimitPolicy, ReconnectPolicy,
+    SubscriptionMethod,
+};
+pub mod solami_blur;
+pub use solami_blur::{
+    SolamiBlurClient, SolamiBlurConfig, SolamiBlurEvent, SolamiBlurFilterMessage,
+};
+pub mod solami_mirage;
+pub use solami_mirage::{MirageUpdate, SolamiMirageClient, SolamiMirageConfig};
+#[cfg(feature = "extra-ingest")]
 pub mod solami_stream;
+#[cfg(feature = "extra-ingest")]
 pub use solami_stream::{
     SolamiFilterMessage, SolamiStreamClient, SolamiStreamConfig, SolamiStreamEvent,
 };
+#[cfg(feature = "extra-ingest")]
 pub mod bitquery;
+#[cfg(feature = "extra-ingest")]
 pub use bitquery::{
     BitqueryClient, BitqueryConfig, BitqueryTradeEntry, BitqueryWsClient, BitqueryWsMessage,
 };
+pub mod helius_ws;
+pub use helius_ws::HeliusWsClient;
 
 use arb_dex::traits::AmmPool;
 use arb_types::{AccountUpdate, ArbError, PoolId, PoolState, Result, Slot};
-use async_trait::async_trait;
 use parking_lot::RwLock;
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
@@ -310,6 +339,13 @@ impl MarketStateCache {
     pub fn pool_count(&self) -> usize {
         self.pools.read().len()
     }
+
+    /// Insert a pool state directly into the cache. Used by benchmarks and
+    /// tests to pre-populate the HTTP-polling cache for read-latency comparison.
+    pub fn set_pool_for_testing(&self, state: PoolState) {
+        self.pools.write().insert(state.pool_id, state);
+        self.version.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 /// Slot-bounded ring buffer deduplicator to prevent unbounded memory growth.
@@ -345,17 +381,10 @@ impl BoundedDedupeBuffer {
     }
 }
 
-/// Common trait for Yellowstone market streaming sources.
-#[async_trait]
-pub trait StateSource: Send + Sync {
-    async fn subscribe_pool_updates(&self, owner_programs: &[Pubkey]) -> Result<()>;
-    async fn get_latest_slot(&self) -> Result<Slot>;
-}
-
-/// Yellowstone Geyser Streaming Client.
-pub struct YellowstoneClient {
-    pub endpoint_url: String,
-    pub token: String,
+/// Ingest client: central market-state container used by WebSocket + RPC paths.
+/// gRPC transport has been removed; this holds `MarketStateCache`,
+/// `AccountSnapshotStore`, slot watermarks and stream-generation tracking.
+pub struct IngestClient {
     cache: Arc<MarketStateCache>,
     latest_slot: Arc<AtomicU64>,
     dedupe: parking_lot::Mutex<BoundedDedupeBuffer>,
@@ -366,15 +395,27 @@ pub struct YellowstoneClient {
     slot_integrity: parking_lot::Mutex<SlotIntegrity>,
     stream_generation: AtomicU64,
     stream_connected: std::sync::atomic::AtomicBool,
+    helius_connected: std::sync::atomic::AtomicBool,
+    helius_slot: Arc<AtomicU64>,
     provider_id: ProviderId,
+    /// Optional streaming-only pool cache for dual-ingestion shadow mode.
+    /// When set, account updates are decoded into PoolState and written here
+    /// instead of (or in addition to) the shared MarketStateCache, enabling
+    /// comparison against the HTTP-polling path.
+    #[cfg(feature = "extra-ingest")]
+    streaming_cache: parking_lot::Mutex<Option<Arc<StreamingPoolCache>>>,
 }
 
-impl YellowstoneClient {
-    pub fn new(endpoint_url: String, token: String) -> Self {
+impl Default for IngestClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IngestClient {
+    pub fn new() -> Self {
         let (tracked_accounts_tx, _) = tokio::sync::watch::channel(Vec::new());
         Self {
-            endpoint_url,
-            token,
             cache: Arc::new(MarketStateCache::default()),
             latest_slot: Arc::new(AtomicU64::new(0)),
             dedupe: parking_lot::Mutex::new(BoundedDedupeBuffer::new()),
@@ -385,7 +426,11 @@ impl YellowstoneClient {
             slot_integrity: parking_lot::Mutex::new(SlotIntegrity::default()),
             stream_generation: AtomicU64::new(0),
             stream_connected: std::sync::atomic::AtomicBool::new(false),
+            helius_connected: std::sync::atomic::AtomicBool::new(false),
+            helius_slot: Arc::new(AtomicU64::new(0)),
             provider_id: ProviderId(1),
+            #[cfg(feature = "extra-ingest")]
+            streaming_cache: parking_lot::Mutex::new(None),
         }
     }
 
@@ -401,17 +446,53 @@ impl YellowstoneClient {
     }
     pub fn stream_connected(&self) -> bool {
         self.stream_connected.load(Ordering::Acquire)
+            || self.helius_connected.load(Ordering::Acquire)
+    }
+
+    pub fn helius_connected(&self) -> bool {
+        self.helius_connected.load(Ordering::Acquire)
+    }
+
+    pub fn mark_helius_connected(&self) {
+        self.helius_connected.store(true, Ordering::Release);
+        if self.stream_generation.load(Ordering::Acquire) == 0 {
+            self.stream_generation.store(1, Ordering::Release);
+        }
+    }
+
+    pub fn mark_helius_disconnected(&self) {
+        self.helius_connected.store(false, Ordering::Release);
+    }
+
+    pub fn helius_slot(&self) -> u64 {
+        self.helius_slot.load(Ordering::Relaxed)
+    }
+
+    pub fn record_helius_slot(&self, slot: u64) {
+        self.helius_slot.fetch_max(slot, Ordering::Relaxed);
+        self.latest_slot.fetch_max(slot, Ordering::Relaxed);
+        self.cache.latest_slot.fetch_max(slot, Ordering::Relaxed);
+    }
+
+    pub fn subscribe_tracked_accounts(&self) -> tokio::sync::watch::Receiver<Vec<String>> {
+        self.tracked_accounts_tx.subscribe()
+    }
+
+    pub fn tracked_accounts(&self) -> Vec<String> {
+        self.tracked_accounts_cache.read().clone()
     }
 
     /// Begin a fresh source epoch. Old account/pool state is discarded before accepting data.
     pub fn begin_stream_generation(&self) -> u64 {
         self.stream_connected.store(false, Ordering::Release);
-        self.account_store.clear();
-        self.cache.pools.write().clear();
-        self.cache.latest_slot.store(0, Ordering::Release);
-        self.latest_slot.store(0, Ordering::Release);
-        self.cache.version.fetch_add(1, Ordering::AcqRel);
-        self.dedupe.lock().clear();
+        if !self.helius_connected.load(Ordering::Acquire) {
+            self.account_store.clear();
+            self.cache.pools.write().clear();
+            self.cache.latest_slot.store(0, Ordering::Release);
+            self.latest_slot.store(0, Ordering::Release);
+            self.cache.version.fetch_add(1, Ordering::AcqRel);
+            self.dedupe.lock().clear();
+        }
         self.stream_generation
             .fetch_add(1, Ordering::AcqRel)
             .saturating_add(1)
@@ -424,12 +505,14 @@ impl YellowstoneClient {
     /// Fail closed on disconnect: no stale quote state remains eligible.
     pub fn mark_stream_disconnected(&self) {
         self.stream_connected.store(false, Ordering::Release);
-        self.account_store.clear();
-        self.cache.pools.write().clear();
-        self.cache.latest_slot.store(0, Ordering::Release);
-        self.latest_slot.store(0, Ordering::Release);
-        self.cache.version.fetch_add(1, Ordering::AcqRel);
-        self.dedupe.lock().clear();
+        if !self.helius_connected.load(Ordering::Acquire) {
+            self.account_store.clear();
+            self.cache.pools.write().clear();
+            self.cache.latest_slot.store(0, Ordering::Release);
+            self.latest_slot.store(0, Ordering::Release);
+            self.cache.version.fetch_add(1, Ordering::AcqRel);
+            self.dedupe.lock().clear();
+        }
     }
 
     /// Replace the explicitly tracked account set. Yellowstone requests are full-state
@@ -664,6 +747,8 @@ impl YellowstoneClient {
             clmm,
             dlmm,
             pump_fun: pool.pump_fun_state(),
+            token_programs: Default::default(),
+            execution_accounts: None,
         };
 
         self.apply_pool_update(state)
@@ -718,6 +803,22 @@ impl YellowstoneClient {
         Ok(snapshots)
     }
 
+    /// Attach a streaming-only pool cache for dual-ingestion shadow mode.
+    /// When set, Yellowstone account updates are decoded into PoolState and
+    /// written to this cache instead of the shared MarketStateCache, enabling
+    /// comparison against the HTTP-polling path.
+    #[cfg(feature = "extra-ingest")]
+    pub fn with_streaming_cache(self, cache: Arc<StreamingPoolCache>) -> Self {
+        *self.streaming_cache.lock() = Some(cache);
+        self
+    }
+
+    /// Get the streaming cache if attached.
+    #[cfg(feature = "extra-ingest")]
+    pub fn streaming_cache(&self) -> Option<Arc<StreamingPoolCache>> {
+        self.streaming_cache.lock().clone()
+    }
+
     /// Resolve route-specific account dependencies from the manifest, then apply the
     /// same fail-closed quote readiness checks used by direct dependency callers.
     pub fn quote_dependencies_for_route(
@@ -736,7 +837,7 @@ impl YellowstoneClient {
 
     /// Handle keepalive ping/pong.
     pub async fn handle_ping(&self) -> Result<()> {
-        debug!("Ping/Pong keepalive exchanged on {}", self.endpoint_url);
+        debug!("Ping/Pong keepalive exchanged (WebSocket/RPC ingestion)");
         Ok(())
     }
 
@@ -749,28 +850,6 @@ impl YellowstoneClient {
         let mut dedupe = self.dedupe.lock();
         dedupe.clear();
         Ok(())
-    }
-}
-
-#[async_trait]
-impl StateSource for YellowstoneClient {
-    async fn subscribe_pool_updates(&self, owner_programs: &[Pubkey]) -> Result<()> {
-        if owner_programs.is_empty() {
-            return Err(ArbError::InvalidInput(
-                "No owner programs provided for subscription".into(),
-            ));
-        }
-        debug!(
-            "Subscribing to Yellowstone stream on {} for {} programs",
-            self.endpoint_url,
-            owner_programs.len()
-        );
-        Ok(())
-    }
-
-    async fn get_latest_slot(&self) -> Result<Slot> {
-        let val = self.latest_slot.load(Ordering::Relaxed);
-        Ok(Slot(val))
     }
 }
 
@@ -802,6 +881,8 @@ mod tests {
             clmm: None,
             dlmm: None,
             pump_fun: None,
+            token_programs: Default::default(),
+            execution_accounts: None,
         }
     }
 
@@ -833,7 +914,7 @@ mod tests {
 
     #[test]
     fn market_update_changes_one_pool_without_replacing_cache_handle() {
-        let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let handle_before = client.snapshot();
         assert!(client.apply_pool_update(make_test_pool(10, 1)).unwrap());
         assert!(client.apply_pool_update(make_test_pool(11, 2)).unwrap());
@@ -871,7 +952,7 @@ mod tests {
 
     #[tokio::test]
     async fn atomic_cache_update() {
-        let client = YellowstoneClient::new("https://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let pool = make_test_pool(50, 1);
         assert!(client.apply_pool_update(pool).unwrap());
 
@@ -928,7 +1009,7 @@ mod tests {
 
     #[test]
     fn stream_generation_discards_stale_state_and_requires_new_connection() {
-        let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let generation = client.begin_stream_generation();
         assert_eq!(generation, 1);
         client.mark_stream_connected();
@@ -941,7 +1022,7 @@ mod tests {
 
     #[test]
     fn quote_dependency_gate_requires_live_current_generation_data() {
-        let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let generation = client.begin_stream_generation();
         client.record_slot_update(100, Some(99), slot_integrity::SLOT_PROCESSED);
         client.mark_stream_connected();
@@ -977,7 +1058,7 @@ mod tests {
 
     #[test]
     fn entry_update_parent_invalidates_only_cleared_bank_snapshot() {
-        let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let key = Pubkey::new_from_array([17; 32]);
         let owner = Pubkey::new_from_array([18; 32]);
         let snapshot = AccountSnapshot {
@@ -1014,7 +1095,7 @@ mod tests {
 
     #[test]
     fn recreated_bank_reopens_slot_but_old_bank_remains_rejected() {
-        let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let key = Pubkey::new_from_array([27; 32]);
         let owner = Pubkey::new_from_array([28; 32]);
         client.record_slot_update_with_bank(
@@ -1073,7 +1154,7 @@ mod tests {
 
     #[test]
     fn dead_slot_invalidates_account_and_pool_cache_and_rejects_late_pool_update() {
-        let client = YellowstoneClient::new("grpcs://grpc.test".into(), "token".into());
+        let client = IngestClient::new();
         let key = Pubkey::new_from_array([7; 32]);
         let owner = Pubkey::new_from_array([8; 32]);
         assert!(client.account_store.apply(AccountSnapshot {

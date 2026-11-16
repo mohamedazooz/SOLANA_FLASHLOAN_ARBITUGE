@@ -200,6 +200,7 @@ fn test_dlmm_discrete_bin_traversal_and_variable_fee() {
         max_volatility_accumulator: 350_000,
         protocol_share: 0,
         base_fee_power_factor: 0,
+        collect_fee_mode: 0,
     };
     let pool = DlmmPoolState {
         active_id: 0,

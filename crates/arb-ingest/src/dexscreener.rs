@@ -41,6 +41,7 @@ pub struct DexPair {
     #[serde(rename = "priceUsd")]
     pub price_usd: Option<String>,
     pub liquidity: Option<DexLiquidity>,
+    pub labels: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,8 +167,21 @@ impl DexScreenerClient {
             }
 
             let protocol = match pair.dex_id.to_lowercase().as_str() {
-                "raydium" => DexProtocol::RaydiumV4,
+                "raydium" => {
+                    if let Some(ref labels) = pair.labels {
+                        if labels.iter().any(|l| l.eq_ignore_ascii_case("cpmm")) {
+                            DexProtocol::RaydiumCpmm
+                        } else if labels.iter().any(|l| l.eq_ignore_ascii_case("clmm")) {
+                            DexProtocol::RaydiumClmm
+                        } else {
+                            DexProtocol::RaydiumV4
+                        }
+                    } else {
+                        DexProtocol::RaydiumV4
+                    }
+                }
                 "raydium-clmm" | "raydium_clmm" => DexProtocol::RaydiumClmm,
+                "raydium-cpmm" | "raydium_cpmm" => DexProtocol::RaydiumCpmm,
                 "orca" | "whirlpool" => DexProtocol::OrcaWhirlpool,
                 "meteora" | "meteora-dlmm" | "dlmm" => DexProtocol::MeteoraDlmm,
                 "pumpfun" | "pump.fun" | "pump" => DexProtocol::PumpFun,

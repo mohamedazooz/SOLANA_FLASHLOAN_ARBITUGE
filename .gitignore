@@ -4,11 +4,17 @@
 .env
 .env.*
 !.env.example
+!.env.shadow.example
 .env_fixed
 .env.master
 secrets/
+files/
+/files/
+files/*
+*keypair*
 solana_keypair.json
 *.keypair.json
+*.keypair
 tls/
 
 # ==============================================================================
@@ -19,10 +25,12 @@ tls/
 target/
 target_cli/
 target_linux/
+target_check/
 *.tar.gz
 arb-bot-linux
 node_modules/
-
+helius-probe
+solami-probe
 # ==============================================================================
 # Runtime State & Logs
 # ==============================================================================
@@ -47,3 +55,13 @@ config/config.toml
 .kilocode/
 .DS_Store
 Thumbs.db
+
+*.zip
+
+
+# =============================================================================
+# Web app build output (served by the Rust backend; built in CI/Docker)
+# =============================================================================
+web/dist/
+web/node_modules/
+web/tsconfig.tsbuildinfo

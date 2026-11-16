@@ -95,7 +95,10 @@ pub struct JitoServiceConfig {
 impl Default for JitoServiceConfig {
     fn default() -> Self {
         Self {
-            regions: Vec::new(),
+            regions: arb_land::DEFAULT_JITO_REGIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             bidder: BidderConfig::default(),
             tip_floor_max_age_ms: arb_land::DEFAULT_MAX_AGE_MS,
             tip_floor_poll_ms: 1_000,
@@ -181,6 +184,16 @@ impl JitoService {
             .read()
             .as_ref()
             .and_then(|s| s.leader_at(slot))
+    }
+
+    /// Retrieve the recommended Jito tip account for the target slot based on the leader schedule.
+    ///
+    /// Deterministically resolves the leader identity for the given slot from the inverted
+    /// schedule, then maps that identity to one of the 8 verified Jito tip accounts.
+    /// If the leader is unknown, falls back to deterministic slot-based indexing.
+    pub fn tip_account_for_slot(&self, slot: Slot) -> Pubkey {
+        let leader = self.leader_for(slot);
+        arb_constants::jito_tip_account_for_slot(slot.0, leader.as_ref())
     }
 
     /// Price one opportunity and choose its route.
@@ -319,24 +332,45 @@ impl JitoService {
         // method is called with no epoch argument. Asking for the epoch we just
         // read is still correct — but a null answer must fall back, not treat the
         // leader gate as broken forever.
-        let schedule_json = match rpc
+        let schedule = match rpc
             .call(
                 "getLeaderSchedule",
                 json!([epoch, { "commitment": "confirmed" }]),
             )
             .await
         {
-            Ok(v) if !v.is_null() => v,
-            Ok(_) => rpc
-                .call("getLeaderSchedule", json!([]))
-                .await
-                .context("getLeaderSchedule (current epoch fallback)")?,
+            Ok(v) if !v.is_null() => {
+                LeaderSchedule::from_rpc_json(&v, epoch, epoch_start_slot, slots_in_epoch)?
+            }
+            Ok(_) => match rpc.call("getLeaderSchedule", json!([])).await {
+                Ok(v) if !v.is_null() => {
+                    LeaderSchedule::from_rpc_json(&v, epoch, epoch_start_slot, slots_in_epoch)?
+                }
+                _ => {
+                    self.fetch_slot_leaders_fallback(
+                        rpc,
+                        absolute_slot,
+                        epoch,
+                        epoch_start_slot,
+                        slots_in_epoch,
+                    )
+                    .await?
+                }
+            },
             Err(e) => {
-                return Err(e).context("getLeaderSchedule");
+                warn!(
+                    "getLeaderSchedule rate-limited or failed ({e:#}); using lightweight getSlotLeaders fallback"
+                );
+                self.fetch_slot_leaders_fallback(
+                    rpc,
+                    absolute_slot,
+                    epoch,
+                    epoch_start_slot,
+                    slots_in_epoch,
+                )
+                .await?
             }
         };
-        let schedule =
-            LeaderSchedule::from_rpc_json(&schedule_json, epoch, epoch_start_slot, slots_in_epoch)?;
 
         let validators = self.fetch_validators().await?;
 
@@ -355,6 +389,36 @@ impl JitoService {
             "leader schedule refreshed"
         );
         Ok(())
+    }
+
+    /// Fallback when `getLeaderSchedule` fails or is rate-limited: queries the next 128 slot leaders via `getSlotLeaders`.
+    async fn fetch_slot_leaders_fallback(
+        &self,
+        rpc: &RpcPool,
+        start_slot: u64,
+        epoch: u64,
+        epoch_start_slot: u64,
+        slots_in_epoch: u64,
+    ) -> Result<LeaderSchedule> {
+        let resp = rpc
+            .call("getSlotLeaders", json!([start_slot, 128]))
+            .await
+            .context("getSlotLeaders fallback")?;
+        let arr = resp
+            .as_array()
+            .context("getSlotLeaders response is not an array")?;
+        let leader_strs: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        LeaderSchedule::from_slot_leaders_slice(
+            &leader_strs,
+            start_slot,
+            epoch,
+            epoch_start_slot,
+            slots_in_epoch,
+        )
+        .context("LeaderSchedule from getSlotLeaders")
     }
 
     /// Fetch the Jito validator registry.
@@ -400,6 +464,270 @@ impl JitoService {
             }
         }
         InflightStatus::Pending
+    }
+
+    /// Comprehensive landing verification loop combining Jito `getBundleStatuses` and
+    /// Solana RPC `getSignatureStatuses`.
+    ///
+    /// Cross-checks:
+    /// - If Jito reports Landed, verifies on-chain execution with Solana RPC to confirm no revert.
+    /// - If Jito API lags or drops bundle status from cache, checks Solana RPC directly via signature.
+    /// - If Jito reports Dropped, double-checks RPC so confirmed on-chain transactions are not misclassified.
+    pub async fn verify_landing(
+        &self,
+        rpc: &RpcPool,
+        bundle_id: &str,
+        tx_signature: Option<&str>,
+        attempts: u32,
+        interval: Duration,
+    ) -> (arb_land::LandStatus, Option<u64>, Option<String>) {
+        let mut landed_slot = None;
+        let mut observed_err = None;
+
+        for _ in 0..attempts {
+            tokio::time::sleep(interval).await;
+
+            // Track 1: Jito Block Engine getBundleStatuses
+            if let Ok(records) = self.lander.get_bundle_statuses_detailed(bundle_id).await {
+                if let Some(record) = records.first() {
+                    if let Some(slot) = record.slot {
+                        landed_slot = Some(slot);
+                    }
+                    if let Some(ref err) = record.err {
+                        observed_err = Some(err.clone());
+                    }
+
+                    match record.status {
+                        arb_land::LandStatus::Landed => {
+                            // Cross-verify on-chain execution with Solana RPC if signature is available
+                            let sig = tx_signature
+                                .or_else(|| record.transactions.first().map(String::as_str));
+                            if let Some(s) = sig {
+                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                                    if sig_status == arb_ingest::SignatureStatus::Failed {
+                                        return (
+                                            arb_land::LandStatus::Failed,
+                                            landed_slot,
+                                            observed_err.or_else(|| {
+                                                Some("transaction reverted on chain".into())
+                                            }),
+                                        );
+                                    }
+                                }
+                            }
+                            return (arb_land::LandStatus::Landed, landed_slot, None);
+                        }
+                        arb_land::LandStatus::Failed => {
+                            return (arb_land::LandStatus::Failed, landed_slot, observed_err);
+                        }
+                        arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
+                            // Before accepting drop/expiration, check if transaction landed on chain anyway
+                            if let Some(s) = tx_signature {
+                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                                    if sig_status.is_landed() {
+                                        return (arb_land::LandStatus::Landed, landed_slot, None);
+                                    }
+                                }
+                            }
+                            return (record.status.clone(), landed_slot, observed_err);
+                        }
+                        arb_land::LandStatus::Sent => {}
+                    }
+                }
+            }
+
+            // Track 2: Direct on-chain verification via RPC getSignatureStatuses
+            if let Some(s) = tx_signature {
+                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                    match sig_status {
+                        arb_ingest::SignatureStatus::Confirmed
+                        | arb_ingest::SignatureStatus::Finalized => {
+                            return (arb_land::LandStatus::Landed, landed_slot, None);
+                        }
+                        arb_ingest::SignatureStatus::Failed => {
+                            return (
+                                arb_land::LandStatus::Failed,
+                                landed_slot,
+                                Some("transaction failed on chain".into()),
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Processed
+                        | arb_ingest::SignatureStatus::Pending => {}
+                    }
+                }
+            }
+        }
+
+        // Final check via RPC with history search
+        if let Some(s) = tx_signature {
+            if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                if sig_status.is_landed() {
+                    return (arb_land::LandStatus::Landed, landed_slot, None);
+                }
+            }
+        }
+
+        // Never mark expired without positive block height proof
+        let current_height = rpc.get_block_height().await.unwrap_or(0);
+        let (lifecycle, reason) = arb_land::evaluate_lifecycle_with_block_height(
+            None,
+            false,
+            None,
+            current_height,
+            0, // fallback without explicit last_valid_block_height
+        );
+        match lifecycle {
+            arb_land::TransactionLifecycle::Expired => {
+                (arb_land::LandStatus::Expired, landed_slot, observed_err.or(reason))
+            }
+            _ => (
+                arb_land::LandStatus::Sent,
+                landed_slot,
+                Some("Polling timeout elapsed without terminal landing; transaction remains in-flight".into()),
+            ),
+        }
+    }
+
+    /// Extended landing verification incorporating lastValidBlockHeight validation.
+    pub async fn verify_landing_with_height(
+        &self,
+        rpc: &RpcPool,
+        bundle_id: &str,
+        tx_signature: Option<&str>,
+        attempts: u32,
+        interval: Duration,
+        last_valid_block_height: u64,
+    ) -> (arb_land::TransactionLifecycle, Option<u64>, Option<String>) {
+        let mut landed_slot = None;
+        let mut observed_err = None;
+
+        for _ in 0..attempts {
+            tokio::time::sleep(interval).await;
+
+            // Track 1: Jito Block Engine getBundleStatuses
+            if let Ok(records) = self.lander.get_bundle_statuses_detailed(bundle_id).await {
+                if let Some(record) = records.first() {
+                    if let Some(slot) = record.slot {
+                        landed_slot = Some(slot);
+                    }
+                    if let Some(ref err) = record.err {
+                        observed_err = Some(err.clone());
+                    }
+
+                    match record.status {
+                        arb_land::LandStatus::Landed => {
+                            let sig = tx_signature
+                                .or_else(|| record.transactions.first().map(String::as_str));
+                            if let Some(s) = sig {
+                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                                    if sig_status == arb_ingest::SignatureStatus::Failed {
+                                        return (
+                                            arb_land::TransactionLifecycle::Failed,
+                                            landed_slot,
+                                            observed_err.or_else(|| {
+                                                Some("transaction reverted on chain".into())
+                                            }),
+                                        );
+                                    }
+                                }
+                            }
+                            return (arb_land::TransactionLifecycle::Confirmed, landed_slot, None);
+                        }
+                        arb_land::LandStatus::Failed => {
+                            return (
+                                arb_land::TransactionLifecycle::Failed,
+                                landed_slot,
+                                observed_err,
+                            );
+                        }
+                        arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
+                            if let Some(s) = tx_signature {
+                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
+                                    if sig_status.is_landed() {
+                                        return (
+                                            arb_land::TransactionLifecycle::Confirmed,
+                                            landed_slot,
+                                            None,
+                                        );
+                                    }
+                                }
+                            }
+                            let current_height = rpc.get_block_height().await.unwrap_or(0);
+                            let (lc, reason) = arb_land::evaluate_lifecycle_with_block_height(
+                                None,
+                                false,
+                                observed_err.as_deref(),
+                                current_height,
+                                last_valid_block_height,
+                            );
+                            return (lc, landed_slot, reason);
+                        }
+                        arb_land::LandStatus::Sent => {}
+                    }
+                }
+            }
+
+            // Track 2: Direct on-chain verification via RPC getSignatureStatuses
+            if let Some(s) = tx_signature {
+                if let Ok((sig_status, slot, err)) = rpc.get_signature_status_detailed(s).await {
+                    match sig_status {
+                        arb_ingest::SignatureStatus::Finalized => {
+                            return (
+                                arb_land::TransactionLifecycle::Finalized,
+                                slot.or(landed_slot),
+                                None,
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Confirmed => {
+                            return (
+                                arb_land::TransactionLifecycle::Confirmed,
+                                slot.or(landed_slot),
+                                None,
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Processed => {
+                            return (
+                                arb_land::TransactionLifecycle::Processed,
+                                slot.or(landed_slot),
+                                None,
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Failed => {
+                            return (
+                                arb_land::TransactionLifecycle::Failed,
+                                slot.or(landed_slot),
+                                err.or(Some("transaction failed on chain".into())),
+                            );
+                        }
+                        arb_ingest::SignatureStatus::Pending => {}
+                    }
+                }
+            }
+        }
+
+        // Final check via RPC with history search
+        if let Some(s) = tx_signature {
+            if let Ok((sig_status, slot, _)) = rpc.get_signature_status_detailed(s).await {
+                if sig_status.is_landed() {
+                    return (
+                        arb_land::TransactionLifecycle::Confirmed,
+                        slot.or(landed_slot),
+                        None,
+                    );
+                }
+            }
+        }
+
+        // Verify current block height against lastValidBlockHeight
+        let current_height = rpc.get_block_height().await.unwrap_or(0);
+        let (lifecycle, reason) = arb_land::evaluate_lifecycle_with_block_height(
+            None,
+            false,
+            observed_err.as_deref(),
+            current_height,
+            last_valid_block_height,
+        );
+        (lifecycle, landed_slot, reason)
     }
 
     /// Run the background refreshers until the task is dropped.
@@ -661,8 +989,9 @@ mod tests {
 
     #[test]
     fn ledger_survives_a_restart() {
-        let dir = std::env::temp_dir().join("arb-jito-ledger-test");
+        let dir = std::env::temp_dir().join(format!("arb-jito-ledger-test-{}", std::process::id()));
         let path = dir.join("ledger.json");
+        let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::remove_file(&path);
 
         {
@@ -687,5 +1016,20 @@ mod tests {
         .expect("service");
         assert_eq!(restored.observations(), 10);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn default_config_has_multi_region_endpoints() {
+        let config = JitoServiceConfig::default();
+        assert_eq!(config.regions, vec!["amsterdam", "frankfurt", "ny"]);
+    }
+
+    #[test]
+    fn tip_account_for_slot_determines_account_consistently() {
+        let service = JitoService::new(JitoServiceConfig::default()).expect("service");
+        let tip1 = service.tip_account_for_slot(Slot(100));
+        let tip2 = service.tip_account_for_slot(Slot(100));
+        assert_eq!(tip1, tip2);
+        assert_ne!(tip1, Pubkey::new_from_array([0; 32]));
     }
 }

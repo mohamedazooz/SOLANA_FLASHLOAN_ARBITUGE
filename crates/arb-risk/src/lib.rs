@@ -177,6 +177,10 @@ impl KillSwitch {
     }
 
     pub fn is_blocked(&self) -> bool {
+        // Env override: KILL_SWITCH_DISABLED=1 bypasses kill switch entirely.
+        if std::env::var("KILL_SWITCH_DISABLED").ok().as_deref() == Some("1") {
+            return false;
+        }
         if self
             .file_path
             .lock()
@@ -465,6 +469,10 @@ impl RiskGate {
         self.check_state_age(state_age_slots)?;
         self.check_min_profit(opportunity_net, amount_in)?;
         self.check_losses()?;
+        // Funding mode must not weaken the common execution risk policy.
+        self.check_max_inflight_bundles(current_slot)?;
+        self.check_tip_spend_ratio(tip_lamports, opportunity_net)?;
+        self.check_min_landing_rate()?;
         Ok(())
     }
     pub fn check_velocity(&self) -> Result<(), String> {
@@ -656,8 +664,8 @@ impl RiskGate {
     fn check_min_landing_rate(&self) -> Result<(), String> {
         let total_sent = *self.total_bundles_sent.lock();
         let total_landed = *self.total_bundles_landed.lock();
-        if total_sent == 0 {
-            return Ok(()); // No history yet, allow first attempts
+        if total_sent < 20 || self.limits.min_landing_rate <= 0.0 {
+            return Ok(()); // Require at least 20 historical attempts before enforcing statistical landing rate floor
         }
         let rate = total_landed as f64 / total_sent as f64;
         if rate < self.limits.min_landing_rate {

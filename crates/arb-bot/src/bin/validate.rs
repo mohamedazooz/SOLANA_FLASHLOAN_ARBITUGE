@@ -22,8 +22,7 @@ use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use tracing::{info, warn};
 
-#[path = "../verified_config.rs"]
-mod verified_config;
+use arb_bot::verified_config;
 
 #[tokio::main]
 async fn main() -> Result<()> {

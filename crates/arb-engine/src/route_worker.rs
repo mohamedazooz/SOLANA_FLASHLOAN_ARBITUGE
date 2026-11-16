@@ -5,7 +5,9 @@
 //! to completely eliminate slippage and maximize net atomic profit.
 
 use arb_ingest::RpcPool;
-use arb_types::{DexProtocol, ExecutionOpportunity, Lamports, PoolId, PoolState};
+#[cfg(feature = "split-routing")]
+use arb_types::ExecutionOpportunity;
+use arb_types::{DexProtocol, Lamports, PoolId, PoolState};
 use base64::prelude::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -71,6 +73,7 @@ impl RouteArchitectWorker {
     /// Calculate the closed-form Equal Marginal Price Impact split for a loan X
     /// across two parallel AMM liquidity pools (e.g. Raydium and Orca).
     /// Maximizes combined output Y = y1(x1) + y2(x2) where x1 + x2 = X.
+    #[cfg(feature = "split-routing")]
     pub fn calculate_optimal_split_two_pools(
         pool1: &PoolDepth,
         pool2: &PoolDepth,
@@ -135,6 +138,7 @@ impl RouteArchitectWorker {
     /// `Σ x_i(C)` decreases monotonically in `C`, so `C` is found by bisection.
     ///
     /// Returns the per-pool allocation; the sum equals `total_loan` exactly.
+    #[cfg(feature = "split-routing")]
     pub fn calculate_optimal_split_n_pools(pools: &[PoolDepth], total_loan: u64) -> Vec<u64> {
         let n = pools.len();
         if n == 0 || total_loan == 0 {
@@ -237,6 +241,7 @@ impl RouteArchitectWorker {
     /// and compute the optimal two-pool equal-marginal-price-impact split allocation
     /// using the closed-form `calculate_optimal_split_two_pools` solver. Returns the
     /// sized split if a viable parallel pool is found, otherwise `None`.
+    #[cfg(feature = "split-routing")]
     pub fn maybe_split_allocation(
         active_pools: &[PoolState],
         opp: &ExecutionOpportunity,
@@ -306,7 +311,7 @@ impl RouteArchitectWorker {
     /// DISABLED: the original body synthesized opportunities with a hardcoded 5 bps
     /// Kamino fee and a 50%-of-profit Jito tip (FIN-01 / FIN-03) - exactly the
     /// fabricated economics the remediation forbids. The signature is kept so no
-    /// caller breaks, but the loop does nothing. See docs/PRODUCTION_READINESS.md.
+    /// caller breaks, but the loop does nothing. See docs/quality/PRODUCTION_READINESS_2026-11-13.md.
     pub async fn start_worker_loop(
         self: Arc<Self>,
         _tx_opportunity: UnboundedSender<SplitOpportunity>,
@@ -328,7 +333,7 @@ fn decode_account_data(acc: &serde_json::Value) -> Option<Vec<u8>> {
     BASE64_STANDARD.decode(data_str).ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "split-routing"))]
 mod tests {
     use super::*;
     use solana_pubkey::Pubkey;

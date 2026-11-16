@@ -1,0 +1,17 @@
+{
+ "provider": "https://solana-rpc.publicnode.com",
+ "provider_version": {
+  "feature-set": 2681577653,
+  "solana-core": "4.4.1"
+ },
+ "baseline_base64": {
+  "err": null,
+  "units_consumed": 0,
+  "n_logs": 0
+ },
+ "roundtrip_base64": {
+  "err": null,
+  "units_consumed": 63005,
+  "n_logs": 26
+ }
+}

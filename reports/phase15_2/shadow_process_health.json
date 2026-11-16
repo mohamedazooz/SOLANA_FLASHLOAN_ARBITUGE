@@ -1,0 +1,154 @@
+{
+  "schema": "sentinel.phase15_2.shadow_process_health.v1",
+  "verified_at_utc": "2026-11-11T09:27:20Z",
+  "heartbeat_path": "D:\\work_new\\data\\heartbeat.json",
+  "checks": [
+    {
+      "name": "heartbeat_json_valid",
+      "pass": true,
+      "detail": "heartbeat.json parsed successfully",
+      "blocking": true
+    },
+    {
+      "name": "heartbeat_schema",
+      "pass": true,
+      "detail": "schema=sentinel.heartbeat.v1",
+      "blocking": false
+    },
+    {
+      "name": "heartbeat_has_pid",
+      "pass": true,
+      "detail": "pid=13964",
+      "blocking": true
+    },
+    {
+      "name": "process_alive",
+      "pass": true,
+      "detail": "PID 13964 found in WMI",
+      "blocking": true
+    },
+    {
+      "name": "process_name",
+      "pass": true,
+      "detail": "Name=arb-bot.exe",
+      "blocking": false
+    },
+    {
+      "name": "command_line_contains_shadow",
+      "pass": true,
+      "detail": "CommandLine=\"D:\\work_new\\target\\debug\\arb-bot.exe\" --mode shadow ",
+      "blocking": true
+    },
+    {
+      "name": "command_line_arb_bot",
+      "pass": true,
+      "detail": "CommandLine=\"D:\\work_new\\target\\debug\\arb-bot.exe\" --mode shadow ",
+      "blocking": true
+    },
+    {
+      "name": "heartbeat_has_start_time",
+      "pass": true,
+      "detail": "started_utc=2026-11-11T09:24:41Z, started_unix=1794389081",
+      "blocking": true
+    },
+    {
+      "name": "process_start_matches_heartbeat",
+      "pass": true,
+      "detail": "heartbeat=2026-11-11T09:24:41Z wmi_utc=2026-11-11T09:24:41.241000+00:00 skew_s=0.2",
+      "blocking": true
+    },
+    {
+      "name": "heartbeat_has_uptime",
+      "pass": true,
+      "detail": "uptime_ms=158029 uptime_s=158",
+      "blocking": false
+    },
+    {
+      "name": "uptime_consistent_with_start",
+      "pass": false,
+      "detail": "implied=173.4s recorded=158.0s",
+      "blocking": false
+    },
+    {
+      "name": "heartbeat_seq_positive",
+      "pass": true,
+      "detail": "heartbeat_seq=2",
+      "blocking": false
+    },
+    {
+      "name": "heartbeat_has_written_time",
+      "pass": true,
+      "detail": "written=2026-11-11T09:27:19Z",
+      "blocking": false
+    },
+    {
+      "name": "heartbeat_status_not_stalled",
+      "pass": true,
+      "detail": "status=OK (loop_started=True)",
+      "blocking": false
+    },
+    {
+      "name": "heartbeat_tick_fresh",
+      "pass": true,
+      "detail": "last_tick_age_ms=2686",
+      "blocking": false
+    },
+    {
+      "name": "heartbeat_seq_advanced_since_last_run",
+      "pass": true,
+      "detail": "prev_seq=1 current_seq=2",
+      "blocking": false
+    },
+    {
+      "name": "safety_flags_correct",
+      "pass": true,
+      "detail": "safety={'ARB_LIVE': '0', 'DRY_RUN': 'true', 'EXECUTE_LIVE': 'false', 'LIVE': 'false'}",
+      "blocking": true
+    }
+  ],
+  "overall": "PASS",
+  "process": {
+    "pid": 13964,
+    "parent_pid": 15876,
+    "name": "arb-bot.exe",
+    "command_line": "\"D:\\work_new\\target\\debug\\arb-bot.exe\" --mode shadow ",
+    "path": "D:\\work_new\\target\\debug\\arb-bot.exe",
+    "creation_date_raw": "/Date(1794389081241)/"
+  },
+  "start_cross_check": {
+    "heartbeat_started_utc": "2026-11-11T09:24:41Z",
+    "heartbeat_started_unix": 1794389081,
+    "wmi_creation_date": "/Date(1794389081241)/",
+    "wmi_creation_utc": "2026-11-11T09:24:41.241000+00:00",
+    "skew_seconds": 0.24,
+    "match": true
+  },
+  "heartbeat_seq_last_seen": 2,
+  "heartbeat": {
+    "pid": 13964,
+    "binary": "arb-bot.exe",
+    "version": "0.1.0",
+    "mode": "shadow",
+    "heartbeat_seq": 2,
+    "loop_started": true,
+    "status": "OK",
+    "uptime_secs": 158,
+    "current_slot": 0,
+    "last_tick_age_ms": 2686,
+    "heartbeat_written_utc": "2026-11-11T09:27:19Z",
+    "process_started_utc": "2026-11-11T09:24:41Z"
+  },
+  "safety": {
+    "ARB_LIVE": "0",
+    "DRY_RUN": "true",
+    "EXECUTE_LIVE": "false",
+    "LIVE": "false"
+  },
+  "rpc_health": {
+    "total": 9,
+    "healthy_count": 0,
+    "quota_exhausted_count": 1,
+    "in_cooldown": 0
+  },
+  "verdict": "PASS"
+}

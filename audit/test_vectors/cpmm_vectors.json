@@ -1,0 +1,133 @@
+{
+ "function": "cpmm_out_upfront_fee_ceil / cpmm_out_fee",
+ "module": "arb_math::cpmm",
+ "vectors": [
+  {
+   "dx": 1000,
+   "x": 500000000,
+   "y": 400000000,
+   "fee_num": 25,
+   "fee_den": 10000,
+   "gamma": 9975,
+   "out_upfront_fee_ceil": 797,
+   "out_gamma_folded": 797
+  },
+  {
+   "dx": 1000,
+   "x": 500000000,
+   "y": 400000000,
+   "fee_num": 2500,
+   "fee_den": 1000000,
+   "gamma": 997500,
+   "out_upfront_fee_ceil": 797,
+   "out_gamma_folded": 797
+  },
+  {
+   "dx": 10000000,
+   "x": 82260000000,
+   "y": 6570000000,
+   "fee_num": 30,
+   "fee_den": 10000,
+   "gamma": 9970,
+   "out_upfront_fee_ceil": 796194,
+   "out_gamma_folded": 796194
+  },
+  {
+   "dx": 10000000,
+   "x": 82260000000,
+   "y": 6570000000,
+   "fee_num": 3000,
+   "fee_den": 1000000,
+   "gamma": 997000,
+   "out_upfront_fee_ceil": 796194,
+   "out_gamma_folded": 796194
+  },
+  {
+   "dx": 999999999,
+   "x": 1000000000000000,
+   "y": 1000000000000000,
+   "fee_num": 1,
+   "fee_den": 10000,
+   "gamma": 9999,
+   "out_upfront_fee_ceil": 999898999,
+   "out_gamma_folded": 999898999
+  },
+  {
+   "dx": 999999999,
+   "x": 1000000000000000,
+   "y": 1000000000000000,
+   "fee_num": 100,
+   "fee_den": 1000000,
+   "gamma": 999900,
+   "out_upfront_fee_ceil": 999898999,
+   "out_gamma_folded": 999898999
+  },
+  {
+   "dx": 1000000000000,
+   "x": 1000000000000000000,
+   "y": 300000000000000000,
+   "fee_num": 250,
+   "fee_den": 10000,
+   "gamma": 9750,
+   "out_upfront_fee_ceil": 292499714812,
+   "out_gamma_folded": 292499714812
+  },
+  {
+   "dx": 1000000000000,
+   "x": 1000000000000000000,
+   "y": 300000000000000000,
+   "fee_num": 25000,
+   "fee_den": 1000000,
+   "gamma": 975000,
+   "out_upfront_fee_ceil": 292499714812,
+   "out_gamma_folded": 292499714812
+  },
+  {
+   "dx": 7998,
+   "x": 65700000,
+   "y": 8226000000,
+   "fee_num": 20,
+   "fee_den": 10000,
+   "gamma": 9980,
+   "out_upfront_fee_ceil": 999268,
+   "out_gamma_folded": 999269
+  },
+  {
+   "dx": 7998,
+   "x": 65700000,
+   "y": 8226000000,
+   "fee_num": 2000,
+   "fee_den": 1000000,
+   "gamma": 998000,
+   "out_upfront_fee_ceil": 999268,
+   "out_gamma_folded": 999269
+  },
+  {
+   "dx": 0,
+   "x": 1,
+   "y": 1,
+   "fee_num": 25,
+   "fee_den": 10000,
+   "out_upfront_fee_ceil": null,
+   "out_gamma_folded": null
+  },
+  {
+   "dx": 1000,
+   "x": 0,
+   "y": 1,
+   "fee_num": 25,
+   "fee_den": 10000,
+   "out_upfront_fee_ceil": null,
+   "out_gamma_folded": null
+  },
+  {
+   "dx": 1000,
+   "x": 1,
+   "y": 1,
+   "fee_num": 10000,
+   "fee_den": 10000,
+   "out_upfront_fee_ceil": null,
+   "out_gamma_folded": null
+  }
+ ]
+}

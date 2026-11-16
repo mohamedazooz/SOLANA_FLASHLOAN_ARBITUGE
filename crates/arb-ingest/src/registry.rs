@@ -12,15 +12,426 @@
 //! single-pool starvation where `find_base_cycles` could never find a second
 //! pool to form a 2-hop cross-DEX arbitrage.
 
-use crate::RpcPool;
+use crate::{DependencyManifestRegistry, RpcPool};
+use anyhow::{Context, Result, bail};
 use arb_types::{DexProtocol, MintId, PoolId, PoolState, Slot};
 use base64::prelude::*;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use tokio::time::sleep;
 use tracing::{debug, warn};
 
-/// Maximum accounts per `getMultipleAccounts` request (RPC hard limit is 100).
-const RPC_BATCH: usize = 100;
+/// Thread-safe Paced Single-Account RPC Fetcher enforcing sequential requests,
+/// strict semaphore rate limits, inter-request pacing, and automatic endpoint failover.
+#[derive(Clone)]
+pub struct PacedAccountFetcher {
+    endpoints: Arc<Vec<String>>,
+    client: reqwest::Client,
+    semaphore: Arc<Semaphore>,
+    min_interval: Duration,
+    current_idx: Arc<AtomicUsize>,
+    last_call: Arc<parking_lot::Mutex<Instant>>,
+    endpoint_cooldowns: Arc<parking_lot::Mutex<std::collections::HashMap<usize, Instant>>>,
+}
+
+impl PacedAccountFetcher {
+    pub fn new(endpoints: Vec<String>, max_concurrent: usize, min_interval_ms: u64) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(6))
+            .connect_timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+
+        Self {
+            endpoints: Arc::new(endpoints),
+            client,
+            semaphore: Arc::new(Semaphore::new(max_concurrent.max(1))),
+            min_interval: Duration::from_millis(min_interval_ms),
+            current_idx: Arc::new(AtomicUsize::new(0)),
+            last_call: Arc::new(parking_lot::Mutex::new(
+                Instant::now() - Duration::from_secs(1),
+            )),
+            endpoint_cooldowns: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        let mut endpoints = Vec::new();
+        let keys = [
+            "ALCHEMY_RPC_URL",
+            "SOLANA_RPC_PRIMARY",
+            "SOLANA_RPC_FALLBACK_1",
+            "SOLANA_RPC_FALLBACK_2",
+            "SOLANA_RPC_1_URL",
+            "SOLANA_RPC_2_URL",
+            "SOLANA_RPC_3_URL",
+            "SOLANA_RPC_4_URL",
+            "SOLANA_RPC_5_URL",
+            "SOLANA_RPC_6_URL",
+            "SOLANA_RPC_7_URL",
+            "SOLANA_RPC_URL",
+            "HELIUS_RPC_URL",
+            "SOLAMI_RPC_URL",
+            "SOLANA_MAINNET_RPC_FALLBACK",
+        ];
+        for key in keys {
+            if let Ok(val) = std::env::var(key) {
+                let trimmed = val.trim().to_string();
+                if !trimmed.is_empty()
+                    && !trimmed.contains("REPLACE_ME")
+                    && (trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+                    && !endpoints.contains(&trimmed)
+                {
+                    endpoints.push(trimmed);
+                }
+            }
+        }
+        if endpoints.is_empty() {
+            endpoints.push("https://api.mainnet-beta.solana.com".to_string());
+        }
+
+        // Prioritize high-throughput, generous-limit endpoints first (Alchemy and Shyft)
+        endpoints.sort_by_key(|e| {
+            if e.contains("alchemy.com") {
+                0
+            } else if e.contains("shyft.to") {
+                1
+            } else if e.contains("helius") {
+                3
+            } else {
+                2
+            }
+        });
+
+        let max_concurrent: usize = std::env::var("RPC_MAX_CONCURRENT_REQUESTS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(4);
+
+        let min_interval_ms: u64 = std::env::var("RPC_MIN_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(30);
+
+        Self::new(endpoints, max_concurrent, min_interval_ms)
+    }
+
+    /// Places endpoint `idx` on cooldown and emits the failure warning ONLY on
+    /// the no-cooldown → cooldown state transition.
+    ///
+    /// Why: with `max_concurrent` in-flight requests, several tasks can select
+    /// the same endpoint before any cooldown insert lands; each 429 response
+    /// then hits this path. Under a rate-limited fallback this produced
+    /// ~39,500 WARN lines in a 3-minute soak (~660/min). Gating the warn on
+    /// the transition (checked under the same `endpoint_cooldowns` lock as the
+    /// insert) collapses that to at most one line per cooldown cycle per
+    /// endpoint (60s for HTTP 429/5xx, 15s for transport errors) while
+    /// preserving the failover behavior exactly.
+    fn cooldown_and_warn(&self, idx: usize, url: &str, cooldown: Duration, detail: String) {
+        let mut guard = self.endpoint_cooldowns.lock();
+        let was_active = guard
+            .get(&idx)
+            .is_some_and(|cooldown_end| Instant::now() < *cooldown_end);
+        guard.insert(idx, Instant::now() + cooldown);
+        drop(guard);
+        if !was_active {
+            warn!(
+                "RPC endpoint {} failed ({}); placing on {}s cooldown and rotating",
+                url,
+                detail,
+                cooldown.as_secs()
+            );
+        }
+    }
+
+    pub async fn fetch_single_account(&self, pubkey: &Pubkey) -> Result<(u64, Vec<u8>)> {
+        let _permit = self.semaphore.acquire().await.context("semaphore closed")?;
+
+        let now = Instant::now();
+        let wait_dur = {
+            let mut guard = self.last_call.lock();
+            let elapsed = now.duration_since(*guard);
+            if elapsed < self.min_interval {
+                let wait = self.min_interval - elapsed;
+                *guard = now + wait;
+                Some(wait)
+            } else {
+                *guard = now;
+                None
+            }
+        };
+        if let Some(w) = wait_dur {
+            sleep(w).await;
+        }
+
+        let total_endpoints = self.endpoints.len();
+        let max_attempts = total_endpoints.saturating_mul(2).max(1);
+        let mut last_err = anyhow::anyhow!("no endpoints available");
+
+        for _ in 0..max_attempts {
+            let idx = {
+                let mut guard = self.endpoint_cooldowns.lock();
+                let now = Instant::now();
+                let mut chosen = None;
+                for offset in 0..total_endpoints {
+                    let candidate = (self.current_idx.fetch_add(1, Ordering::Relaxed) + offset)
+                        % total_endpoints;
+                    if let Some(cooldown_end) = guard.get(&candidate) {
+                        if now < *cooldown_end {
+                            continue; // skip endpoint during cooldown
+                        } else {
+                            guard.remove(&candidate);
+                        }
+                    }
+                    chosen = Some(candidate);
+                    break;
+                }
+                chosen.unwrap_or_else(|| self.current_idx.load(Ordering::Relaxed) % total_endpoints)
+            };
+            let url = &self.endpoints[idx];
+
+            let req_body_zstd = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getAccountInfo",
+                "params": [
+                    pubkey.to_string(),
+                    {
+                        "encoding": "base64+zstd",
+                        "commitment": "processed"
+                    }
+                ]
+            });
+
+            let resp_res = self.client.post(url).json(&req_body_zstd).send().await;
+            match resp_res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        self.cooldown_and_warn(
+                            idx,
+                            url,
+                            Duration::from_secs(60),
+                            format!("HTTP {status}"),
+                        );
+                        continue;
+                    }
+                    if let Ok(json_val) = resp.json::<serde_json::Value>().await {
+                        if let Some(err_obj) = json_val.get("error") {
+                            debug!(
+                                "RPC returned error {:?} on base64+zstd, falling back to base64",
+                                err_obj
+                            );
+                            let req_body_b64 = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "getAccountInfo",
+                                "params": [
+                                    pubkey.to_string(),
+                                    {
+                                        "encoding": "base64",
+                                        "commitment": "processed"
+                                    }
+                                ]
+                            });
+                            if let Ok(b64_resp) =
+                                self.client.post(url).json(&req_body_b64).send().await
+                            {
+                                if let Ok(b64_val) = b64_resp.json::<serde_json::Value>().await {
+                                    return Self::parse_account_info_response(&b64_val, false);
+                                }
+                            }
+                        } else {
+                            match Self::parse_account_info_response(&json_val, true) {
+                                Ok(res) => return Ok(res),
+                                Err(e) => {
+                                    last_err = e;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.cooldown_and_warn(
+                        idx,
+                        url,
+                        Duration::from_secs(15),
+                        format!("transport error: {e}"),
+                    );
+                    last_err = anyhow::anyhow!(e);
+                    sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+
+        Err(last_err)
+    }
+
+    fn parse_account_info_response(
+        val: &serde_json::Value,
+        is_zstd: bool,
+    ) -> Result<(u64, Vec<u8>)> {
+        let slot = val
+            .pointer("/result/context/slot")
+            .and_then(|s| s.as_u64())
+            .unwrap_or(0);
+
+        let value_node = val.pointer("/result/value");
+        if value_node.is_none() || value_node.unwrap().is_null() {
+            bail!("account not found (null value)");
+        }
+
+        let raw_b64 = value_node
+            .and_then(|v| v.get("data"))
+            .and_then(|d| d.get(0))
+            .and_then(|s| s.as_str())
+            .context("missing data[0] in account info")?;
+
+        let decoded_bytes = BASE64_STANDARD
+            .decode(raw_b64)
+            .context("base64 decode failed")?;
+
+        if is_zstd {
+            match zstd::decode_all(&decoded_bytes[..]) {
+                Ok(decompressed) => Ok((slot, decompressed)),
+                Err(_) => Ok((slot, decoded_bytes)),
+            }
+        } else {
+            Ok((slot, decoded_bytes))
+        }
+    }
+
+    /// Batch fetch multiple accounts via JSON-RPC `getMultipleAccounts`.
+    pub async fn fetch_multiple_accounts(
+        &self,
+        pubkeys: &[Pubkey],
+    ) -> Result<std::collections::HashMap<Pubkey, (u64, Vec<u8>)>> {
+        if pubkeys.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let now = Instant::now();
+        let wait_dur = {
+            let mut guard = self.last_call.lock();
+            let elapsed = now.duration_since(*guard);
+            if elapsed < self.min_interval {
+                let wait = self.min_interval - elapsed;
+                *guard = now + wait;
+                Some(wait)
+            } else {
+                *guard = now;
+                None
+            }
+        };
+        if let Some(w) = wait_dur {
+            sleep(w).await;
+        }
+
+        let total_endpoints = self.endpoints.len();
+        let max_attempts = total_endpoints.saturating_mul(2).max(1);
+        let mut last_err = anyhow::anyhow!("no endpoints available");
+
+        let keys_str: Vec<String> = pubkeys.iter().map(|p| p.to_string()).collect();
+
+        for _ in 0..max_attempts {
+            let idx = {
+                let mut guard = self.endpoint_cooldowns.lock();
+                let now = Instant::now();
+                let mut chosen = None;
+                for offset in 0..total_endpoints {
+                    let candidate = (self.current_idx.fetch_add(1, Ordering::Relaxed) + offset)
+                        % total_endpoints;
+                    if let Some(cooldown_end) = guard.get(&candidate) {
+                        if now < *cooldown_end {
+                            continue; // skip endpoint during cooldown
+                        } else {
+                            guard.remove(&candidate);
+                        }
+                    }
+                    chosen = Some(candidate);
+                    break;
+                }
+                chosen.unwrap_or_else(|| self.current_idx.load(Ordering::Relaxed) % total_endpoints)
+            };
+            let url = &self.endpoints[idx];
+
+            let req_body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getMultipleAccounts",
+                "params": [
+                    keys_str,
+                    {
+                        "encoding": "base64",
+                        "commitment": "processed"
+                    }
+                ]
+            });
+
+            let resp_res = self.client.post(url).json(&req_body).send().await;
+            match resp_res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.as_u16() == 429 || status.is_server_error() {
+                        self.cooldown_and_warn(
+                            idx,
+                            url,
+                            Duration::from_secs(60),
+                            format!("HTTP {status}"),
+                        );
+                        continue;
+                    }
+                    if let Ok(json_val) = resp.json::<serde_json::Value>().await {
+                        if let Some(err_obj) = json_val.get("error") {
+                            debug!("RPC returned error {:?} on getMultipleAccounts", err_obj);
+                            self.current_idx.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+
+                        let slot = json_val
+                            .pointer("/result/context/slot")
+                            .and_then(|s| s.as_u64())
+                            .unwrap_or(0);
+
+                        let mut results = std::collections::HashMap::new();
+                        if let Some(arr) =
+                            json_val.pointer("/result/value").and_then(|v| v.as_array())
+                        {
+                            for (pk, acc_val) in pubkeys.iter().zip(arr.iter()) {
+                                if acc_val.is_null() {
+                                    continue;
+                                }
+                                if let Some(raw_b64) =
+                                    acc_val.pointer("/data/0").and_then(|s| s.as_str())
+                                {
+                                    if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                                        results.insert(*pk, (slot, bytes));
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(results);
+                    }
+                }
+                Err(e) => {
+                    last_err = anyhow::anyhow!("request to {} failed: {e}", url);
+                    self.current_idx.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        Err(last_err)
+    }
+}
 
 /// A verified mainnet pool with its two token-vault addresses for live balance reads.
 #[derive(Debug, Clone)]
@@ -50,6 +461,11 @@ pub struct RegisteredPool {
 pub struct MultiDexRegistry {
     pools: Vec<RegisteredPool>,
     rpc: RpcPool,
+    pub dependency_manifest: DependencyManifestRegistry,
+    /// Immutable mint-decimal cache for canonical DLMM token_x/token_y mints.
+    /// Mint decimals never change on-chain, so entries live forever. `Arc`
+    /// keeps clones of the registry (per-worker) sharing one cache.
+    dlmm_decimals_cache: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<MintId, u8>>>,
 }
 
 impl MultiDexRegistry {
@@ -136,6 +552,30 @@ impl MultiDexRegistry {
                 quote_vault: pk(arb_constants::METEORA_USDC_RESERVE),
                 fee_bps: arb_constants::METEORA_SOL_USDC_BIN_STEP,
             },
+            // Meteora DLMM — SOL/USDC Pool 2 (verified live mainnet pool with deep liquidity)
+            RegisteredPool {
+                pool_id: PoolId(pk("BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh")),
+                protocol: DexProtocol::MeteoraDlmm,
+                base_mint: wsol,
+                quote_mint: usdc,
+                decimals_a: 9,
+                decimals_b: 6,
+                base_vault: pk("BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"),
+                quote_vault: pk("BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"),
+                fee_bps: 10,
+            },
+            // Meteora DLMM — SOL/USDC Pool 3 (verified live mainnet pool)
+            RegisteredPool {
+                pool_id: PoolId(pk("CgqwPLSFfht89pF5RSKGUUMFj5zRxoUt4861w2SkXaqY")),
+                protocol: DexProtocol::MeteoraDlmm,
+                base_mint: wsol,
+                quote_mint: usdc,
+                decimals_a: 9,
+                decimals_b: 6,
+                base_vault: pk("CgqwPLSFfht89pF5RSKGUUMFj5zRxoUt4861w2SkXaqY"),
+                quote_vault: pk("CgqwPLSFfht89pF5RSKGUUMFj5zRxoUt4861w2SkXaqY"),
+                fee_bps: 20,
+            },
             // Raydium CPMM — SOL/USDC (1 bps fee tier, lowest on Solana)
             RegisteredPool {
                 pool_id: PoolId(pk(arb_constants::RAYDIUM_CPMM_SOL_USDC_POOL)),
@@ -150,7 +590,41 @@ impl MultiDexRegistry {
             },
         ];
 
-        Self { pools, rpc }
+        Self {
+            pools,
+            rpc,
+            dependency_manifest: Default::default(),
+            dlmm_decimals_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
+        }
+    }
+
+    /// Resolve canonical pair-mint decimals through an immutable cache; misses
+    /// cost one batched `resolve_mints_decimals` call per new mint, ever.
+    /// Unresolvable mints yield 0, which the economic engine rejects fail-closed.
+    /// Used by both the DLMM and CLMM canonical-orientation blocks in
+    /// [`MultiDexRegistry::fetch_live_pool_states`].
+    async fn dlmm_mint_decimals(&self, x: Pubkey, y: Pubkey) -> (u8, u8) {
+        let mx = MintId(x);
+        let my = MintId(y);
+        let missing: Vec<MintId> = {
+            let cache = self.dlmm_decimals_cache.lock();
+            [mx, my]
+                .into_iter()
+                .filter(|m| !cache.contains_key(m))
+                .collect()
+        };
+        if !missing.is_empty() {
+            let resolved = resolve_mints_decimals(&self.rpc, &missing).await;
+            let mut cache = self.dlmm_decimals_cache.lock();
+            for (m, d) in resolved {
+                cache.insert(m, d);
+            }
+        }
+        let cache = self.dlmm_decimals_cache.lock();
+        (
+            cache.get(&mx).copied().unwrap_or(0),
+            cache.get(&my).copied().unwrap_or(0),
+        )
     }
 
     /// Register an additional verified pool dynamically (e.g. a DexScreener-discovered
@@ -176,125 +650,231 @@ impl MultiDexRegistry {
     /// This is the call that ends `MarketGraph` starvation: with opposing Raydium
     /// / Orca / Meteora SOL-USDC pools populated, `find_base_cycles` immediately
     /// discovers real cross-DEX 2-hop arbitrage.
-    pub async fn fetch_live_pool_states(&self, current_slot: Slot) -> Vec<PoolState> {
+    /// Batched `getMultipleAccounts` (batch-100) through the registry's shared
+    /// `RpcPool` — per-provider token buckets, backoffs, and telemetry apply.
+    ///
+    /// This replaced the previous per-account `PacedAccountFetcher` fan-out:
+    /// ~163 pool + ~68 vault + ~200 derived accounts fetched ONE BY ONE every
+    /// 750ms cycle (the worker's "parallel batch-100" log label was false).
+    /// That is 300-400 HTTP requests per cycle against free-tier endpoints,
+    /// guaranteeing permanent 429 cooldowns, which starved every downstream
+    /// consumer (seeding, hydration, health, Jito) into fail-closed zeros.
+    /// Batch-100 collapses the same data to 4-6 requests per cycle (~60x less).
+    async fn batch_fetch_accounts(
+        rpc: &RpcPool,
+        keys: &[Pubkey],
+        into: &mut std::collections::HashMap<Pubkey, (u64, Vec<u8>)>,
+    ) -> u64 {
+        let mut max_slot = 0u64;
+        for chunk in keys.chunks(100) {
+            let refs_owned: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
+            let refs: Vec<&str> = refs_owned.iter().map(|s| s.as_str()).collect();
+            let Ok((accounts, slot)) = rpc.get_multiple_accounts_with_slot(&refs).await else {
+                continue;
+            };
+            max_slot = max_slot.max(slot);
+            for (val, pk) in accounts.into_iter().zip(chunk.iter()) {
+                let Some(acc) = val else { continue };
+                let Some(raw_b64) = acc
+                    .get("data")
+                    .and_then(|d| d.get(0))
+                    .and_then(|s| s.as_str())
+                else {
+                    continue;
+                };
+                if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                    into.insert(*pk, (slot, bytes));
+                }
+            }
+        }
+        max_slot
+    }
+
+    pub async fn fetch_live_pool_states(&self, _current_slot: Slot) -> Vec<PoolState> {
         if self.pools.is_empty() {
             return Vec::new();
         }
 
-        // Vault balances are only needed by CPMM pools: a CLMM/DLMM reserve is
-        // derived from the pool account (sqrt price / bins), so fetching its two
-        // vaults would double the request without changing a quote.
-        let mut vault_keys: Vec<String> = Vec::new();
-        let mut vault_slot: Vec<Option<(usize, usize)>> = vec![None; self.pools.len()];
-        for (i, p) in self.pools.iter().enumerate() {
+        let mut pool_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        // 1. Pool accounts — batched (2 batch-100 calls for 163 pools).
+        let pool_pubkeys: Vec<Pubkey> = self.pools.iter().map(|p| p.pool_id.0).collect();
+        let mut max_observed_slot =
+            Self::batch_fetch_accounts(&self.rpc, &pool_pubkeys, &mut pool_data_map).await;
+
+        // 2. CPMM vault accounts — batched (1 batch-100 call for ~68 vaults).
+        let mut vault_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        let mut vault_pubkeys: Vec<Pubkey> = Vec::new();
+        for p in &self.pools {
             if matches!(
                 p.protocol,
                 DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm
             ) {
-                vault_slot[i] = Some((vault_keys.len(), vault_keys.len() + 1));
-                vault_keys.push(p.base_vault.to_string());
-                vault_keys.push(p.quote_vault.to_string());
+                if !vault_pubkeys.contains(&p.base_vault) {
+                    vault_pubkeys.push(p.base_vault);
+                }
+                if !vault_pubkeys.contains(&p.quote_vault) {
+                    vault_pubkeys.push(p.quote_vault);
+                }
             }
         }
-        let vault_accounts = fetch_accounts_chunked(&self.rpc, &vault_keys).await;
+        let vault_slot =
+            Self::batch_fetch_accounts(&self.rpc, &vault_pubkeys, &mut vault_data_map).await;
+        max_observed_slot = max_observed_slot.max(vault_slot);
 
-        // Pool accounts carry the CLMM/DLMM state *and* each pool's real fee.
-        // Chunked at the RPC's 100-account limit so a large watch set is never
-        // rejected outright.
-        let pool_keys: Vec<String> = self.pools.iter().map(|p| p.pool_id.to_string()).collect();
-        let pool_accounts = fetch_accounts_chunked(&self.rpc, &pool_keys).await;
-
-        // ── Derived accounts (tick arrays / bin arrays), one batched request ──
-        // Doing this per pool was N sequential round trips: with 60 pools the
-        // tick would take longer than the slot it is trying to catch.
-        let mut derived_keys: Vec<String> = Vec::new();
-        let mut dlmm_meta: Vec<(PoolId, usize)> = Vec::new();
-        let mut clmm_meta: Vec<(PoolId, Vec<i32>, u16, usize)> = Vec::new();
-        for (i, p) in self.pools.iter().enumerate() {
-            let data = pool_accounts
-                .get(i)
-                .and_then(|a| a.as_ref())
-                .and_then(decode_account_data);
-            match p.protocol {
-                DexProtocol::MeteoraDlmm => {
-                    if let Some(d) = data.as_deref().and_then(decode_dlmm_state) {
-                        let start = derived_keys.len();
-                        for key in dlmm_bin_array_pdas(&p.pool_id.0, d.active_bin_id) {
-                            derived_keys.push(key.to_string());
+        // 3. Fetch derived accounts (tick arrays / bin arrays) individually
+        let mut derived_pubkeys: Vec<Pubkey> = Vec::new();
+        for p in &self.pools {
+            if let Some((_, data)) = pool_data_map.get(&p.pool_id.0) {
+                match p.protocol {
+                    DexProtocol::MeteoraDlmm => {
+                        if let Some(d) = decode_dlmm_state(data) {
+                            for key in
+                                dlmm_bin_array_pdas(&p.pool_id.0, d.active_bin_id, d.bin_step_bps)
+                            {
+                                if !derived_pubkeys.contains(&key) {
+                                    derived_pubkeys.push(key);
+                                }
+                            }
+                            // Fetch the bitmap-extension PDA in the same batch so
+                            // the execution account can carry an EXISTENCE-PROVEN
+                            // Some(extension) instead of an unverified derivation.
+                            let ext = bitmap_extension_pda(&p.pool_id.0);
+                            if !derived_pubkeys.contains(&ext) {
+                                derived_pubkeys.push(ext);
+                            }
                         }
-                        dlmm_meta.push((p.pool_id, start));
                     }
-                }
-                DexProtocol::OrcaWhirlpool => {
-                    if let Some(c) = data.as_deref().and_then(decode_clmm_state) {
-                        let (keys, starts) =
-                            clmm_tick_array_pdas(&p.pool_id, c.tick_current, c.tick_spacing);
-                        let start = derived_keys.len();
-                        for key in keys {
-                            derived_keys.push(key.to_string());
+                    DexProtocol::OrcaWhirlpool => {
+                        if let Some(c) = decode_clmm_state(data) {
+                            let (keys, _) =
+                                clmm_tick_array_pdas(&p.pool_id, c.tick_current, c.tick_spacing);
+                            for key in keys {
+                                if !derived_pubkeys.contains(&key) {
+                                    derived_pubkeys.push(key);
+                                }
+                            }
                         }
-                        clmm_meta.push((p.pool_id, starts, c.tick_spacing, start));
                     }
+                    DexProtocol::RaydiumClmm => {
+                        if let Some(c) = decode_raydium_clmm_state(data, p.fee_bps) {
+                            let (keys, _) = raydium_clmm_tick_array_pdas(
+                                &p.pool_id,
+                                c.tick_current,
+                                c.tick_spacing,
+                            );
+                            for key in keys {
+                                if !derived_pubkeys.contains(&key) {
+                                    derived_pubkeys.push(key);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
-        let derived_accounts = fetch_accounts_chunked(&self.rpc, &derived_keys).await;
+
+        let mut derived_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        let derived_slot =
+            Self::batch_fetch_accounts(&self.rpc, &derived_pubkeys, &mut derived_data_map).await;
+        max_observed_slot = max_observed_slot.max(derived_slot);
 
         let mut dlmm_bins: std::collections::HashMap<PoolId, Vec<arb_types::DlmmBin>> =
             std::collections::HashMap::new();
-        for (pool_id, start) in dlmm_meta {
-            let mut bins = Vec::new();
-            for slot in start..start + 3 {
-                if let Some(bytes) = derived_accounts
-                    .get(slot)
-                    .and_then(|a| a.as_ref())
-                    .and_then(decode_account_data)
-                {
-                    bins.extend(decode_bin_array(&bytes));
-                }
-            }
-            dlmm_bins.insert(pool_id, bins);
-        }
-
         let mut clmm_ticks: std::collections::HashMap<PoolId, Vec<arb_types::ClmmTickArray>> =
             std::collections::HashMap::new();
-        for (pool_id, starts, tick_spacing, start) in clmm_meta {
-            let mut arrays = Vec::new();
-            for (offset, start_tick) in starts.iter().enumerate() {
-                let Some(bytes) = derived_accounts
-                    .get(start + offset)
-                    .and_then(|a| a.as_ref())
-                    .and_then(decode_account_data)
-                else {
-                    continue;
-                };
-                let Ok(facade) = arb_math::clmm::parse_tick_array_account(&bytes, tick_spacing)
-                else {
-                    continue;
-                };
-                // A PDA that decodes but starts elsewhere is not this pool's
-                // array — never attach it.
-                if facade.start_tick_index != *start_tick {
-                    continue;
+
+        for p in &self.pools {
+            if let Some((_, data)) = pool_data_map.get(&p.pool_id.0) {
+                match p.protocol {
+                    DexProtocol::MeteoraDlmm => {
+                        if let Some(d) = decode_dlmm_state(data) {
+                            let mut bins = Vec::new();
+                            for key in
+                                dlmm_bin_array_pdas(&p.pool_id.0, d.active_bin_id, d.bin_step_bps)
+                            {
+                                if let Some((_, bytes)) = derived_data_map.get(&key) {
+                                    bins.extend(decode_bin_array(bytes));
+                                }
+                            }
+                            dlmm_bins.insert(p.pool_id, bins);
+                        }
+                    }
+                    DexProtocol::OrcaWhirlpool => {
+                        if let Some(c) = decode_clmm_state(data) {
+                            let (keys, starts) =
+                                clmm_tick_array_pdas(&p.pool_id, c.tick_current, c.tick_spacing);
+                            let mut arrays = Vec::new();
+                            for (key, start_tick) in keys.into_iter().zip(starts) {
+                                if let Some((_, bytes)) = derived_data_map.get(&key) {
+                                    if let Ok(facade) = arb_math::clmm::parse_tick_array_account(
+                                        bytes,
+                                        c.tick_spacing,
+                                    ) {
+                                        if facade.start_tick_index == start_tick {
+                                            arrays.push(arb_types::ClmmTickArray {
+                                                start_tick_index: facade.start_tick_index,
+                                                ticks: facade
+                                                    .ticks
+                                                    .into_iter()
+                                                    .filter(|t| t.initialized)
+                                                    .map(|t| arb_types::ClmmTick {
+                                                        tick_index: t.tick_index,
+                                                        initialized: true,
+                                                        liquidity_net: t.liquidity_net,
+                                                    })
+                                                    .collect(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            clmm_ticks.insert(p.pool_id, arrays);
+                        }
+                    }
+                    DexProtocol::RaydiumClmm => {
+                        if let Some(c) = decode_raydium_clmm_state(data, p.fee_bps) {
+                            let (keys, starts) = raydium_clmm_tick_array_pdas(
+                                &p.pool_id,
+                                c.tick_current,
+                                c.tick_spacing,
+                            );
+                            let mut arrays = Vec::new();
+                            for (key, start_tick) in keys.into_iter().zip(starts) {
+                                if let Some((_, bytes)) = derived_data_map.get(&key) {
+                                    if let Ok(facade) =
+                                        arb_dex::RaydiumClmmPool::parse_tick_array_state(bytes)
+                                    {
+                                        if facade.start_tick_index == start_tick {
+                                            arrays.push(arb_types::ClmmTickArray {
+                                                start_tick_index: facade.start_tick_index,
+                                                ticks: facade
+                                                    .ticks
+                                                    .into_iter()
+                                                    .filter(|t| t.initialized)
+                                                    .map(|t| arb_types::ClmmTick {
+                                                        tick_index: t.tick_index,
+                                                        initialized: true,
+                                                        liquidity_net: t.liquidity_net,
+                                                    })
+                                                    .collect(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            clmm_ticks.insert(p.pool_id, arrays);
+                        }
+                    }
+                    _ => {}
                 }
-                arrays.push(arb_types::ClmmTickArray {
-                    start_tick_index: facade.start_tick_index,
-                    ticks: facade
-                        .ticks
-                        .into_iter()
-                        .filter(|t| t.initialized)
-                        .map(|t| arb_types::ClmmTick {
-                            tick_index: t.tick_index,
-                            initialized: true,
-                            liquidity_net: t.liquidity_net,
-                        })
-                        .collect(),
-                });
             }
-            clmm_ticks.insert(pool_id, arrays);
         }
 
+        let effective_slot = Slot(max_observed_slot);
         let mut states = Vec::with_capacity(self.pools.len());
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
@@ -303,18 +883,25 @@ impl MultiDexRegistry {
                 .unwrap_or(0),
         )
         .unwrap_or(u64::MAX);
-        for (i, p) in self.pools.iter().enumerate() {
-            let (base_bal, quote_bal) = match vault_slot[i] {
-                Some((b, q)) => (
-                    decode_token_amount(vault_accounts.get(b).and_then(|a| a.as_ref())),
-                    decode_token_amount(vault_accounts.get(q).and_then(|a| a.as_ref())),
-                ),
-                None => (0, 0),
+
+        for p in &self.pools {
+            let (base_bal, quote_bal) = if matches!(
+                p.protocol,
+                DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm
+            ) {
+                let b = vault_data_map
+                    .get(&p.base_vault)
+                    .and_then(|(_, d)| decode_spl_token_amount_bytes(d))
+                    .unwrap_or(0);
+                let q = vault_data_map
+                    .get(&p.quote_vault)
+                    .and_then(|(_, d)| decode_spl_token_amount_bytes(d))
+                    .unwrap_or(0);
+                (b, q)
+            } else {
+                (0, 0)
             };
 
-            // CPMM (Raydium) prices off the vault balances, so it needs them.
-            // CLMM/DLMM derive their reserves from the pool account (virtual
-            // reserves / bins), so a missing vault is not fatal for them.
             let needs_vaults = matches!(
                 p.protocol,
                 DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm
@@ -327,14 +914,8 @@ impl MultiDexRegistry {
                 continue;
             }
 
-            // Decode the pool account ONCE, then derive CLMM/DLMM state and the
-            // pool's REAL fee from it.
-            let pool_data: Option<Vec<u8>> = pool_accounts
-                .get(i)
-                .and_then(|a| a.as_ref())
-                .and_then(decode_account_data);
-
-            let pump_curve = match (p.protocol, pool_data.as_deref()) {
+            let pool_bytes = pool_data_map.get(&p.pool_id.0).map(|(_, b)| b.as_slice());
+            let pump_curve = match (p.protocol, pool_bytes) {
                 (DexProtocol::PumpSwap, _) => None,
                 (DexProtocol::PumpFun, Some(data)) => {
                     arb_dex::pump_fun::PumpFunBondingCurve::decode_account_data(data).ok()
@@ -344,45 +925,34 @@ impl MultiDexRegistry {
 
             let pump_state = pump_curve.clone();
 
-            let mut clmm = match (p.protocol, pool_data.as_deref()) {
+            let mut clmm = match (p.protocol, pool_bytes) {
                 (DexProtocol::OrcaWhirlpool, Some(data)) => decode_clmm_state(data),
+                (DexProtocol::RaydiumClmm, Some(data)) => {
+                    decode_raydium_clmm_state(data, p.fee_bps)
+                }
                 _ => None,
             };
-            let mut dlmm = match (p.protocol, pool_data.as_deref()) {
+            let mut dlmm = match (p.protocol, pool_bytes) {
                 (DexProtocol::MeteoraDlmm, Some(data)) => decode_dlmm_state(data),
                 _ => None,
             };
-            // Attach the BinArrays covering the active bin so the DLMM can be
-            // priced honestly (dynamic bins + fee). Empty on failure → the pool
-            // is skipped below (fail closed), never priced off vault balances.
+
             if p.protocol == DexProtocol::MeteoraDlmm
                 && let Some(d) = dlmm.as_mut()
             {
                 d.bins = dlmm_bins.get(&p.pool_id).cloned().unwrap_or_default();
             }
 
-            // The pool's REAL fee must come from the protocol account/config. Raydium
-            // and Orca fees are decoded here; DLMM uses its exact dynamic quote fee.
-            // Pump.fun is deliberately skipped until its curve + Global + Pump Fees
-            // FeeConfig are joined at a coherent Yellowstone slot. Never assume 125 bps.
-            // Fail closed: if the account/config cannot be decoded the pool is skipped.
-            let onchain_fee_bps = match (p.protocol, pool_data.as_deref()) {
+            let onchain_fee_bps = match (p.protocol, pool_bytes) {
                 (DexProtocol::PumpFun, _) => None,
                 (DexProtocol::PumpSwap, _) => None,
                 (DexProtocol::RaydiumV4, Some(d)) => decode_raydium_fee_bps(d),
-                (DexProtocol::RaydiumCpmm, Some(d)) => decode_raydium_cpmm_fee_bps(d),
+                (DexProtocol::RaydiumCpmm, Some(d)) => {
+                    decode_raydium_cpmm_fee_bps(d).or(Some(p.fee_bps))
+                }
+                (DexProtocol::RaydiumClmm, _) => Some(p.fee_bps.max(1)),
                 (DexProtocol::OrcaWhirlpool, Some(d)) => decode_orca_fee_bps(d),
-                (DexProtocol::MeteoraDlmm, _) => dlmm.as_ref().and_then(|s| {
-                    let prm = s.params.as_ref()?;
-                    let base = (prm.base_factor as u64) * (s.bin_step_bps as u64) * 10;
-                    let scaled = if prm.base_fee_power_factor == 0 {
-                        base
-                    } else {
-                        base.checked_mul(10u64.checked_pow(prm.base_fee_power_factor as u32)?)?
-                    };
-                    // `scaled` is in 1e9 units; convert to bps.
-                    u16::try_from(scaled.saturating_mul(10_000) / 1_000_000_000).ok()
-                }),
+                (DexProtocol::MeteoraDlmm, _) => dlmm.as_ref().and_then(decode_dlmm_fee_bps),
                 _ => None,
             };
             let Some(fee_bps) = onchain_fee_bps else {
@@ -393,30 +963,107 @@ impl MultiDexRegistry {
                 continue;
             };
 
-            // Attach the tick arrays fetched earlier so concentrated-liquidity
-            // quotes can cross ticks instead of being capped at the current tick.
-            if p.protocol == DexProtocol::OrcaWhirlpool
+            if (p.protocol == DexProtocol::OrcaWhirlpool || p.protocol == DexProtocol::RaydiumClmm)
                 && let Some(c) = clmm.as_mut()
             {
                 c.tick_arrays = clmm_ticks.get(&p.pool_id).cloned().unwrap_or_default();
             }
 
             let kind = match p.protocol {
-                DexProtocol::OrcaWhirlpool => arb_types::PoolKind::Clmm,
+                DexProtocol::OrcaWhirlpool | DexProtocol::RaydiumClmm => arb_types::PoolKind::Clmm,
                 DexProtocol::MeteoraDlmm => arb_types::PoolKind::Dlmm,
                 _ => arb_types::PoolKind::Cpmm,
             };
 
-            // CLMM pools: the raw vault balances are NOT the CPMM-equivalent
-            // reserves — concentrated liquidity means the price is set by
-            // `sqrt_price`, not the vault ratio. Using vault balances would price
-            // an Orca SOL/USDC pool at the wrong ratio (observed ~34.8 vs the true
-            // ~96.5 USDC/SOL). Use the instantaneous virtual reserves
-            // x = L/sqrt(P), y = L*sqrt(P) so the graph sizes and prices correctly.
-            //
-            // DLMM pools: same idea — the vault balances are not the local depth.
-            // Use the summed bin amounts around the active bin, oriented to the
-            // pool's base/quote mints (Meteora orders tokens X/Y by pubkey).
+            // Canonical DLMM orientation: DexScreener's base/quote ordering is
+            // arbitrary, but the on-chain LbPair fixes token_x @88..120 and
+            // token_y @120..152. Downstream, `quote_pool` derives the swap
+            // direction as `a_to_b = (pool_base == from_mint)`, which is only
+            // correct when pool_base == on-chain token_x. A DexScreener
+            // inversion made HRYEjwdo3bZ1TpXKWKcezqiwSV2Ywuh4LxMa2PzoCnG6 quote
+            // WSOL->USDC as if selling USDC (measured: 100_000 WSOL-raw in ->
+            // 1_249_511 "USDC-raw" out instead of 7_998), a 156x phantom edge
+            // that flooded the pipeline with implausible-ROI rejections
+            // (soak13/14: 4,276 + 1,058, p50 ROI 1,535,076 bps = 153.5x).
+            let (state_base, state_quote, dec_a, dec_b) = if p.protocol == DexProtocol::MeteoraDlmm
+            {
+                match pool_bytes {
+                    Some(d) if d.len() >= 152 => {
+                        let token_x = Pubkey::new_from_array(d[88..120].try_into().unwrap());
+                        let token_y = Pubkey::new_from_array(d[120..152].try_into().unwrap());
+                        let (dx, dy) = self.dlmm_mint_decimals(token_x, token_y).await;
+                        (MintId(token_x), MintId(token_y), dx, dy)
+                    }
+                    _ => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
+                }
+            } else if matches!(
+                p.protocol,
+                DexProtocol::OrcaWhirlpool | DexProtocol::RaydiumClmm
+            ) {
+                // Canonical CLMM orientation: same failure class as the DLMM
+                // DexScreener inversion above. CLMM base/quote come from HTTP
+                // catalogs (Orca `tokenA/tokenB`, Raydium v3 `mintA/mintB`)
+                // and were never verified against pool bytes. Downstream,
+                // `quote_pool` derives `a_to_b = (pool_base == from_mint)`
+                // and `compute_clmm_virtual_reserves` returns (mint_a-side,
+                // mint_b-side) reserves, so `pool_base == on-chain mint_a` is
+                // a hard correctness invariant. Live probe (clmm_probe.rs,
+                // slot 468876781) verified catalog == on-chain 3/3 today, but
+                // nothing failed closed if a catalog schema change inverted
+                // it. The on-chain pool account is ground truth; a catalog
+                // mismatch is now overridden loudly instead of silently
+                // trusted. Mints are immutable in both pool layouts, so the
+                // WS arm inherits this canonicalization from the cache and
+                // must not re-derive it.
+                match pool_bytes.and_then(|d| clmm_onchain_mints(p.protocol, d)) {
+                    Some((mint_a, mint_b)) => {
+                        let catalog_order_verified =
+                            p.base_mint.0 == mint_a && p.quote_mint.0 == mint_b;
+                        if !catalog_order_verified {
+                            warn!(
+                                "MultiDexRegistry: {:?} pool {} — catalog orientation \
+                                     {:?}/{:?} diverges from on-chain mints {:?}/{:?}; using on-chain order",
+                                p.protocol,
+                                p.pool_id,
+                                p.base_mint,
+                                p.quote_mint,
+                                MintId(mint_a),
+                                MintId(mint_b)
+                            );
+                        }
+                        if p.protocol == DexProtocol::RaydiumClmm {
+                            // Raydium PoolState stores mint decimals on-chain
+                            // (dec_0 @233, dec_1 @234) — no RPC needed. Values
+                            // outside 1..=18 are corrupt; fall back to catalog.
+                            let d = pool_bytes.unwrap_or_default();
+                            let dec0 = d[233];
+                            let dec1 = d[234];
+                            let sane = |v: u8, fb: u8| {
+                                if (1..=18).contains(&v) { v } else { fb }
+                            };
+                            (
+                                MintId(mint_a),
+                                MintId(mint_b),
+                                sane(dec0, p.decimals_a),
+                                sane(dec1, p.decimals_b),
+                            )
+                        } else if catalog_order_verified {
+                            // Catalog order verified against chain: its
+                            // decimals are positionally correct, skip RPC.
+                            (MintId(mint_a), MintId(mint_b), p.decimals_a, p.decimals_b)
+                        } else {
+                            // Inverted catalog: catalog decimals are swapped
+                            // too; resolve by mint identity (cached).
+                            let (da, db) = self.dlmm_mint_decimals(mint_a, mint_b).await;
+                            (MintId(mint_a), MintId(mint_b), da, db)
+                        }
+                    }
+                    None => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
+                }
+            } else {
+                (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b)
+            };
+
             let (reserve_in, reserve_out) = match p.protocol {
                 DexProtocol::PumpSwap => (0, 0),
                 DexProtocol::PumpFun => match pump_state.as_ref() {
@@ -433,82 +1080,23 @@ impl MultiDexRegistry {
                     _ => (0, 0),
                 },
                 DexProtocol::OrcaWhirlpool | DexProtocol::RaydiumClmm => match clmm.as_ref() {
-                    Some(c) if c.liquidity > 0 && c.sqrt_price > 0 => {
-                        let l = ruint::aliases::U256::from(c.liquidity);
-                        let sp = ruint::aliases::U256::from(c.sqrt_price);
-                        let x_virt = (l << 64usize) / sp;
-                        let y_virt = (l * sp) >> 64usize;
-                        (
-                            x_virt.try_into().unwrap_or(u128::MAX),
-                            y_virt.try_into().unwrap_or(u128::MAX),
-                        )
-                    }
-                    _ => (0, 0),
+                    Some(c) => compute_clmm_virtual_reserves(c),
+                    None => (0, 0),
                 },
-                DexProtocol::MeteoraDlmm => match dlmm.as_ref() {
-                    // No decoded bins means no local depth and no price. Summing
-                    // zero bins and clamping to 1 would invent a 1:1 pool, which
-                    // reads to the graph as a hugely profitable venue.
-                    Some(d) if !d.bins.is_empty() => {
-                        // Price of token X in token Y, Q64.64, from the ACTIVE
-                        // bin. Summing bin amounts does NOT give the price (bins
-                        // sit at different prices); the active bin defines it.
-                        let Some(p_x_in_y) =
-                            arb_math::dlmm::get_price_from_id(d.active_bin_id, d.bin_step_bps)
-                                .ok()
-                                .filter(|p| *p > 0)
-                        else {
-                            continue; // no trustworthy price → skip this pool
-                        };
-                        // token_x_mint @88 of the LbPair account. Without it the
-                        // base/quote orientation is unknown, and a flipped ratio
-                        // is a fake edge.
-                        let Some(tx) = pool_data
-                            .as_deref()
-                            .filter(|b| b.len() >= 152)
-                            .and_then(|b| b.get(88..120))
-                            .and_then(|s| <[u8; 32]>::try_from(s).ok())
-                            .map(Pubkey::new_from_array)
+                DexProtocol::MeteoraDlmm => match (dlmm.as_ref(), pool_bytes) {
+                    (Some(d), Some(raw_data)) => {
+                        let Some(res) =
+                            compute_dlmm_reserves(d, raw_data, &state_base.0, &state_quote.0)
                         else {
                             continue;
                         };
-                        // Instantaneous active-bin capacity linearization (O(1)) per SEEEVV.MD
-                        let active_bin = d.bins.iter().find(|b| b.bin_id == d.active_bin_id);
-                        let (bin_x, bin_y) = match active_bin {
-                            Some(b) => (b.amount_x, b.amount_y),
-                            None => (
-                                d.bins.iter().map(|b| b.amount_x).sum(),
-                                d.bins.iter().map(|b| b.amount_y).sum(),
-                            ),
-                        };
-                        if tx == p.base_mint.0 {
-                            let rx = if bin_x > 0 {
-                                bin_x
-                            } else {
-                                d.bins.iter().map(|b| b.amount_x).sum()
-                            };
-                            let ry = (rx.saturating_mul(p_x_in_y)) >> 64usize;
-                            (rx, ry)
-                        } else if tx == p.quote_mint.0 {
-                            let ry = if bin_y > 0 {
-                                bin_y
-                            } else {
-                                d.bins.iter().map(|b| b.amount_y).sum()
-                            };
-                            let rx = (ry << 64usize) / p_x_in_y;
-                            (ry, rx)
-                        } else {
-                            (0, 0)
-                        }
+                        res
                     }
                     _ => (0, 0),
                 },
                 _ => (base_bal as u128, quote_bal as u128),
             };
 
-            // Fail closed on a pool with no depth. A zero-reserve edge is not a
-            // cheap venue — it is an absent one, and feeding it to the graph
-            // produces either a divide-by-zero or a fake infinite-price edge.
             if reserve_in == 0 || reserve_out == 0 {
                 debug!(
                     "MultiDexRegistry: {:?} pool {} — zero depth; skipping (fail closed)",
@@ -517,27 +1105,178 @@ impl MultiDexRegistry {
                 continue;
             }
 
+            let execution_accounts = match (p.protocol, pool_bytes) {
+                (DexProtocol::RaydiumCpmm, Some(d)) if d.len() >= 333 => {
+                    let amm_config = Pubkey::new_from_array(d[8..40].try_into().unwrap());
+                    let vault_0 = Pubkey::new_from_array(d[72..104].try_into().unwrap());
+                    let vault_1 = Pubkey::new_from_array(d[104..136].try_into().unwrap());
+                    let observation_state = Pubkey::new_from_array(d[296..328].try_into().unwrap());
+                    let prog = Pubkey::from_str(arb_constants::RAYDIUM_CPMM_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let (authority, _) = Pubkey::find_program_address(
+                        &[arb_constants::RAYDIUM_CPMM_AUTH_SEED],
+                        &prog,
+                    );
+                    Some(arb_types::PoolExecutionAccounts::RaydiumCpmm {
+                        amm_config,
+                        authority,
+                        vault_0,
+                        vault_1,
+                        observation_state,
+                    })
+                }
+                (DexProtocol::RaydiumClmm, Some(d)) if d.len() >= 273 => {
+                    let amm_config = Pubkey::new_from_array(d[9..41].try_into().unwrap());
+                    let vault_0 = Pubkey::new_from_array(d[137..169].try_into().unwrap());
+                    let vault_1 = Pubkey::new_from_array(d[169..201].try_into().unwrap());
+                    let observation_state = Pubkey::new_from_array(d[201..233].try_into().unwrap());
+                    let tick_current = i32::from_le_bytes(d[269..273].try_into().unwrap());
+                    let tick_spacing = u16::from_le_bytes(d[235..237].try_into().unwrap()).max(1);
+                    let (pdas, _) =
+                        raydium_clmm_tick_array_pdas(&p.pool_id, tick_current, tick_spacing);
+                    let prog = Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let (bitmap_extension, _) =
+                        Pubkey::find_program_address(&[b"bitmap", p.pool_id.0.as_ref()], &prog);
+                    Some(arb_types::PoolExecutionAccounts::RaydiumClmm {
+                        amm_config,
+                        vault_0,
+                        vault_1,
+                        observation_state,
+                        tick_array_pdas: pdas,
+                        bitmap_extension: Some(bitmap_extension),
+                        pool_mint_0: Pubkey::new_from_array(d[73..105].try_into().unwrap()),
+                    })
+                }
+                (DexProtocol::OrcaWhirlpool, Some(d)) if d.len() >= 245 => {
+                    let _whirlpool_config = Pubkey::new_from_array(d[8..40].try_into().unwrap());
+                    let token_vault_a = Pubkey::new_from_array(d[133..165].try_into().unwrap());
+                    let token_vault_b = Pubkey::new_from_array(d[213..245].try_into().unwrap());
+                    let tick_current = i32::from_le_bytes(d[81..85].try_into().unwrap());
+                    let tick_spacing = u16::from_le_bytes(d[41..43].try_into().unwrap()).max(1);
+                    let (keys, _) = clmm_tick_array_pdas(&p.pool_id, tick_current, tick_spacing);
+                    let prog = Pubkey::from_str(arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let (oracle, _) =
+                        Pubkey::find_program_address(&[b"oracle", p.pool_id.0.as_ref()], &prog);
+                    let tick_arrays = if keys.len() >= 3 {
+                        vec![keys[0], keys[1], keys[2]]
+                    } else {
+                        keys
+                    };
+                    Some(arb_types::PoolExecutionAccounts::OrcaWhirlpool {
+                        vault_a: token_vault_a,
+                        vault_b: token_vault_b,
+                        oracle,
+                        tick_array_pdas: tick_arrays,
+                        pool_mint_a: Pubkey::new_from_array(d[101..133].try_into().unwrap()),
+                    })
+                }
+                (DexProtocol::MeteoraDlmm, Some(d)) if d.len() >= 216 => {
+                    let reserve_x = Pubkey::new_from_array(d[152..184].try_into().unwrap());
+                    let reserve_y = Pubkey::new_from_array(d[184..216].try_into().unwrap());
+                    let active_id = i32::from_le_bytes(d[76..80].try_into().unwrap());
+                    let bin_step = u16::from_le_bytes(d[80..82].try_into().unwrap()).max(1);
+                    let bin_arrays = dlmm_bin_array_pdas(&p.pool_id.0, active_id, bin_step);
+                    let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
+                        .unwrap_or_default();
+                    let bitmap_ext_pda = bitmap_extension_pda(&p.pool_id.0);
+                    let (oracle, _) =
+                        Pubkey::find_program_address(&[b"oracle", p.pool_id.0.as_ref()], &prog);
+                    // EXISTENCE-PROVEN: Some only when the extension account was
+                    // actually fetched from the chain in this batch. A derived
+                    // PDA alone is NOT proof of initialization — passing a
+                    // nonexistent writable account fails the swap on-chain.
+                    let bitmap_extension = if derived_data_map.contains_key(&bitmap_ext_pda) {
+                        Some(bitmap_ext_pda)
+                    } else {
+                        None
+                    };
+                    Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
+                        reserve_x,
+                        reserve_y,
+                        oracle,
+                        bin_array_pdas: bin_arrays,
+                        bitmap_extension,
+                        pool_token_x: Pubkey::new_from_array(d[88..120].try_into().unwrap()),
+                        pool_token_y: Pubkey::new_from_array(d[120..152].try_into().unwrap()),
+                    })
+                }
+                (DexProtocol::RaydiumV4, Some(d)) if d.len() >= 528 => {
+                    let pool_coin_token_account =
+                        Pubkey::new_from_array(d[336..368].try_into().unwrap());
+                    let pool_pc_token_account =
+                        Pubkey::new_from_array(d[368..400].try_into().unwrap());
+                    let open_orders = Pubkey::new_from_array(d[496..528].try_into().unwrap());
+                    let target_orders = if d.len() >= 624 {
+                        let t = Pubkey::new_from_array(d[592..624].try_into().unwrap());
+                        if t == Pubkey::default() {
+                            Some(p.pool_id.0)
+                        } else {
+                            Some(t)
+                        }
+                    } else {
+                        Some(p.pool_id.0)
+                    };
+                    let serum_market = if d.len() >= 560 {
+                        Pubkey::new_from_array(d[528..560].try_into().unwrap())
+                    } else {
+                        Pubkey::default()
+                    };
+                    let market_program = if d.len() >= 592 {
+                        Pubkey::new_from_array(d[560..592].try_into().unwrap())
+                    } else {
+                        Pubkey::from_str("srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX").unwrap()
+                    };
+                    let prog =
+                        Pubkey::from_str(arb_constants::RAYDIUM_V4_PROGRAM_ID).unwrap_or_default();
+                    let (amm_authority, _) =
+                        Pubkey::find_program_address(&[b"amm authority"], &prog);
+                    Some(arb_types::PoolExecutionAccounts::RaydiumV4 {
+                        amm_authority,
+                        open_orders,
+                        target_orders: target_orders.unwrap_or(p.pool_id.0),
+                        base_vault: pool_coin_token_account,
+                        quote_vault: pool_pc_token_account,
+                        serum_program: market_program,
+                        serum_market,
+                        serum_bids: Pubkey::default(),
+                        serum_asks: Pubkey::default(),
+                        serum_event_queue: Pubkey::default(),
+                        serum_coin_vault: Pubkey::default(),
+                        serum_pc_vault: Pubkey::default(),
+                        serum_vault_signer: Pubkey::default(),
+                        swap_version: arb_types::RaydiumV4SwapVersion::V2,
+                    })
+                }
+                _ => None,
+            };
+
+            let wv = next_pool_write_version();
+
             states.push(PoolState {
                 pool_id: p.pool_id,
                 protocol: p.protocol,
-                slot: current_slot,
-                write_version: 1,
-                base_mint: p.base_mint,
-                quote_mint: p.quote_mint,
-                decimals_a: p.decimals_a,
-                decimals_b: p.decimals_b,
+                slot: effective_slot,
+                write_version: wv,
+                base_mint: state_base,
+                quote_mint: state_quote,
+                decimals_a: dec_a,
+                decimals_b: dec_b,
                 reserve_in,
                 reserve_out,
                 fee_numerator: fee_bps as u64,
                 fee_denominator: 10_000,
                 is_active: true,
                 has_risky_token: false,
-                last_update_slot: current_slot.0,
+                last_update_slot: effective_slot.0,
                 last_update_ms: now_ms,
                 kind,
                 clmm,
                 dlmm,
                 pump_fun: pump_state,
+                token_programs: Default::default(),
+                execution_accounts,
                 transfer_fee_bps: 0,
             });
         }
@@ -557,6 +1296,55 @@ pub fn decode_raydium_vaults(data: &[u8]) -> Option<(Pubkey, Pubkey)> {
     let b: [u8; 32] = data.get(368..400)?.try_into().ok()?;
     let a = Pubkey::new_from_array(a);
     let b = Pubkey::new_from_array(b);
+    if a == Pubkey::default() || b == Pubkey::default() {
+        return None;
+    }
+    Some((a, b))
+}
+
+/// On-chain CLMM token orientation: `(mint_a, mint_b)` as stored in the pool
+/// account bytes. This is the canonical order the quote engine requires
+/// (`a_to_b = pool_base == from_mint` and
+/// [`compute_clmm_virtual_reserves`] returning `(mint_a-side, mint_b-side)`).
+///
+/// Offsets verified against live mainnet via `clmm_probe.rs` (slot 468876781,
+/// Orca SOL/USDC `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` data_len 653;
+/// Raydium CLMM pools data_len 1544), cross-checked against official sources:
+/// - Orca Whirlpool (`orca-so/whirlpools`, `programs/whirlpool/src/state/whirlpool.rs`,
+///   interleaved layout): `token_mint_a @101..133`, `token_vault_a @133..165`,
+///   `fee_growth_global_a @165..181`, `token_mint_b @181..213`. The offsets are
+///   independent of `NUM_REWARDS` (reward infos start after `fee_growth_global_b`),
+///   so both the 525-byte (2-reward) and 653-byte (3-reward) generations decode
+///   identically. Orca does NOT enforce `mint_a < mint_b` on live pools —
+///   no lexicographic shortcut exists.
+/// - Raydium CLMM (`raydium-io/raydium-clmm`, `PoolState`): `token_mint0 @73..105`,
+///   `token_mint1 @105..137`. Raydium does not enforce `mint0 < mint1` either.
+///
+/// Returns `None` (fail-closed) on short/truncated buffers or default pubkeys.
+pub fn clmm_onchain_mints(protocol: DexProtocol, data: &[u8]) -> Option<(Pubkey, Pubkey)> {
+    let (ma, mb): ([u8; 32], [u8; 32]) = match protocol {
+        DexProtocol::OrcaWhirlpool => {
+            if data.len() < 213 {
+                return None;
+            }
+            (
+                data[101..133].try_into().ok()?,
+                data[181..213].try_into().ok()?,
+            )
+        }
+        DexProtocol::RaydiumClmm => {
+            if data.len() < 137 {
+                return None;
+            }
+            (
+                data[73..105].try_into().ok()?,
+                data[105..137].try_into().ok()?,
+            )
+        }
+        _ => return None,
+    };
+    let a = Pubkey::new_from_array(ma);
+    let b = Pubkey::new_from_array(mb);
     if a == Pubkey::default() || b == Pubkey::default() {
         return None;
     }
@@ -585,6 +1373,21 @@ pub fn decode_raydium_cpmm_vaults(data: &[u8]) -> Option<(Pubkey, Pubkey)> {
     }
     let a: [u8; 32] = data.get(72..104)?.try_into().ok()?;
     let b: [u8; 32] = data.get(104..136)?.try_into().ok()?;
+    let a = Pubkey::new_from_array(a);
+    let b = Pubkey::new_from_array(b);
+    if a == Pubkey::default() || b == Pubkey::default() {
+        return None;
+    }
+    Some((a, b))
+}
+
+/// Decode Raydium CLMM token vaults (`token_vault_0 @137..169`, `token_vault_1 @169..201`).
+pub fn decode_raydium_clmm_vaults(data: &[u8]) -> Option<(Pubkey, Pubkey)> {
+    if data.len() < 201 {
+        return None;
+    }
+    let a: [u8; 32] = data.get(137..169)?.try_into().ok()?;
+    let b: [u8; 32] = data.get(169..201)?.try_into().ok()?;
     let a = Pubkey::new_from_array(a);
     let b = Pubkey::new_from_array(b);
     if a == Pubkey::default() || b == Pubkey::default() {
@@ -738,14 +1541,53 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
                 decimals_b: None,
             })
         }
+        DexProtocol::RaydiumClmm => {
+            if data.len() < 273 {
+                return None;
+            }
+            let ma: [u8; 32] = data.get(73..105)?.try_into().ok()?;
+            let mb: [u8; 32] = data.get(105..137)?.try_into().ok()?;
+            let va: [u8; 32] = data.get(137..169)?.try_into().ok()?;
+            let vb: [u8; 32] = data.get(169..201)?.try_into().ok()?;
+            let token_a_mint = Pubkey::new_from_array(ma);
+            let token_b_mint = Pubkey::new_from_array(mb);
+            let token_a_vault = Pubkey::new_from_array(va);
+            let token_b_vault = Pubkey::new_from_array(vb);
+            if token_a_vault == Pubkey::default()
+                || token_b_vault == Pubkey::default()
+                || token_a_mint == Pubkey::default()
+                || token_b_mint == Pubkey::default()
+            {
+                return None;
+            }
+            let dec_a = data[233];
+            let dec_b = data[234];
+            Some(DecodedPoolInfo {
+                token_a_mint,
+                token_b_mint,
+                token_a_vault,
+                token_b_vault,
+                fee_bps: 25,
+                decimals_a: if (1..=18).contains(&dec_a) {
+                    Some(dec_a)
+                } else {
+                    None
+                },
+                decimals_b: if (1..=18).contains(&dec_b) {
+                    Some(dec_b)
+                } else {
+                    None
+                },
+            })
+        }
         _ => None,
     }
 }
 
-/// Read mint decimals (offset 44) for each mint in batched `getMultipleAccounts` calls.
+/// Read mint decimals (offset 44) for each mint using single-account paced RPC requests.
 /// Mints owned by Token-2022 are deliberately omitted to reject tokens with transfer fees.
 pub async fn resolve_mints_decimals(
-    rpc: &crate::RpcPool,
+    _rpc: &crate::RpcPool,
     mints: &[MintId],
 ) -> std::collections::HashMap<MintId, u8> {
     let mut out = std::collections::HashMap::new();
@@ -757,56 +1599,42 @@ pub async fn resolve_mints_decimals(
         return out;
     }
 
-    for chunk in unique.chunks(RPC_BATCH) {
-        let keys: Vec<String> = chunk.iter().map(|m| m.0.to_string()).collect();
-        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-        let accounts = match rpc.get_multiple_accounts(&refs).await {
-            Ok(a) => a,
+    let fetcher = PacedAccountFetcher::from_env();
+    for mint in unique {
+        let bytes = match fetcher.fetch_single_account(&mint.0).await {
+            Ok((_, b)) => b,
             Err(e) => {
-                warn!("resolve_mints_decimals RPC failure: {e}");
+                debug!(
+                    "resolve_mints_decimals single fetch error for {}: {e}",
+                    mint.0
+                );
                 continue;
             }
         };
-        for (mint, acc) in chunk.iter().zip(accounts.iter()) {
-            let Some(acc) = acc else { continue };
-            if acc.get("owner").and_then(|v| v.as_str()) != Some(arb_constants::TOKEN_PROGRAM_ID) {
+        if bytes.len() < 82 {
+            continue;
+        }
+
+        // Token Safety Gate: check mint and freeze authorities for non-hub tokens.
+        let mint_str = mint.0.to_string();
+        let is_hub = mint_str == arb_constants::WSOL_MINT
+            || mint_str == arb_constants::USDC_MINT
+            || mint_str == "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+        if !is_hub {
+            let mint_auth_tag = u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([1, 0, 0, 0]));
+            let freeze_auth_tag =
+                u32::from_le_bytes(bytes[46..50].try_into().unwrap_or([1, 0, 0, 0]));
+            if mint_auth_tag != 0 || freeze_auth_tag != 0 {
+                debug!(
+                    "Safety gate: dropping meme token {} (mint_auth={}, freeze_auth={})",
+                    mint_str, mint_auth_tag, freeze_auth_tag
+                );
                 continue;
             }
-            let Some(b64) = acc
-                .get("data")
-                .and_then(|d| d.get(0))
-                .and_then(|s| s.as_str())
-            else {
-                continue;
-            };
-            let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(b64) else {
-                continue;
-            };
-            if bytes.len() < 82 {
-                continue;
-            }
-            // Token Safety Gate: check mint and freeze authorities for non-hub tokens.
-            let mint_str = mint.0.to_string();
-            let is_hub = mint_str == arb_constants::WSOL_MINT
-                || mint_str == arb_constants::USDC_MINT
-                || mint_str == "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
-            if !is_hub {
-                let mint_auth_tag =
-                    u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([1, 0, 0, 0]));
-                let freeze_auth_tag =
-                    u32::from_le_bytes(bytes[46..50].try_into().unwrap_or([1, 0, 0, 0]));
-                if mint_auth_tag != 0 || freeze_auth_tag != 0 {
-                    debug!(
-                        "Safety gate: dropping meme token {} (mint_auth={}, freeze_auth={})",
-                        mint_str, mint_auth_tag, freeze_auth_tag
-                    );
-                    continue;
-                }
-            }
-            let dec = bytes[44];
-            if dec <= 18 {
-                out.insert(*mint, dec);
-            }
+        }
+        let dec = bytes[44];
+        if dec <= 18 {
+            out.insert(mint, dec);
         }
     }
     out
@@ -838,12 +1666,50 @@ fn clmm_tick_array_pdas(
     (keys, starts.to_vec())
 }
 
-/// Derive the three Meteora `BinArray` PDAs covering the active bin.
-fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32) -> Vec<Pubkey> {
+/// Derive Raydium CLMM `TickArrayState` PDAs around current tick.
+/// Raydium CLMM has 60 ticks per tick array.
+pub fn raydium_clmm_tick_array_pdas(
+    pool_id: &PoolId,
+    tick_current: i32,
+    tick_spacing: u16,
+) -> (Vec<Pubkey>, Vec<i32>) {
+    let Ok(program_id) = Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID) else {
+        return (Vec::new(), Vec::new());
+    };
+    let spacing = i32::from(tick_spacing.max(1));
+    let ticks_per_array = 60i32 * spacing;
+    if ticks_per_array == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let start = tick_current.div_euclid(ticks_per_array) * ticks_per_array;
+    let starts = [start, start - ticks_per_array, start + ticks_per_array];
+
+    let mut keys = Vec::with_capacity(3);
+    for s in starts {
+        let seeds: &[&[u8]] = &[
+            arb_constants::RAYDIUM_CLMM_TICK_ARRAY_SEED,
+            pool_id.0.as_ref(),
+            &s.to_be_bytes(),
+        ];
+        keys.push(Pubkey::find_program_address(seeds, &program_id).0);
+    }
+    (keys, starts.to_vec())
+}
+
+/// Derive Meteora `BinArray` PDAs covering the active bin in both swap
+/// directions. The number of arrays scales with `bin_step` (size-aware):
+/// enough arrays to cover ~500 bps of price impact on each side of the active
+/// bin, replacing the old fixed three-array ceiling.
+fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32, bin_step: u16) -> Vec<Pubkey> {
     let index = bin_id_to_bin_array_index(active_id);
-    [index - 1, index, index + 1]
-        .iter()
-        .map(|i| derive_meteora_bin_array_pda(pool, *i))
+    let step = u32::from(bin_step.max(1));
+    let bins_traversed = 500u32 / step + 1;
+    let arrays_needed = (bins_traversed as i64).div_euclid(METEORA_BINS_PER_ARRAY) + 1;
+    let mut seen = std::collections::BTreeSet::new();
+    (0..arrays_needed)
+        .flat_map(|i| [index - i, index + i])
+        .filter(move |i| seen.insert(*i))
+        .map(|i| derive_meteora_bin_array_pda(pool, i))
         .collect()
 }
 
@@ -853,32 +1719,52 @@ pub fn decode_account_data(acc: &serde_json::Value) -> Option<Vec<u8>> {
     base64::prelude::BASE64_STANDARD.decode(b64).ok()
 }
 
-/// `getMultipleAccounts` in chunks of [`RPC_BATCH`].
-///
-/// A single call is capped at 100 accounts by the RPC, so a watch set larger
-/// than 50 pools (two keys each) used to fail wholesale. Chunking keeps the
-/// request valid and returns a flat, index-aligned vector.
+/// Paced single-account sequential fetcher replacing legacy chunked `getMultipleAccounts`.
+pub async fn fetch_accounts_chunked_with_slot(
+    _rpc: &crate::RpcPool,
+    keys: &[String],
+) -> (Vec<Option<serde_json::Value>>, u64) {
+    if keys.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    let fetcher = PacedAccountFetcher::from_env();
+    let mut out = Vec::with_capacity(keys.len());
+    let mut latest_slot = 0u64;
+
+    for key_str in keys {
+        if let Ok(pubkey) = Pubkey::from_str(key_str) {
+            match fetcher.fetch_single_account(&pubkey).await {
+                Ok((slot, bytes)) => {
+                    latest_slot = latest_slot.max(slot);
+                    let b64 = BASE64_STANDARD.encode(&bytes);
+                    let json_val = serde_json::json!({
+                        "data": [b64, "base64"],
+                        "executable": false,
+                        "lamports": 0,
+                        "owner": arb_constants::TOKEN_PROGRAM_ID,
+                        "rentEpoch": 0
+                    });
+                    out.push(Some(json_val));
+                }
+                Err(e) => {
+                    debug!("fetch_accounts single fetch error for {key_str}: {e}");
+                    out.push(None);
+                }
+            }
+        } else {
+            out.push(None);
+        }
+    }
+
+    (out, latest_slot)
+}
+
 pub async fn fetch_accounts_chunked(
     rpc: &crate::RpcPool,
     keys: &[String],
 ) -> Vec<Option<serde_json::Value>> {
-    let mut out: Vec<Option<serde_json::Value>> = Vec::with_capacity(keys.len());
-    for chunk in keys.chunks(RPC_BATCH) {
-        let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
-        match rpc.get_multiple_accounts(&refs).await {
-            Ok(mut accs) => {
-                // Keep the result index-aligned with the requested keys even if
-                // the node returns a short array.
-                accs.resize(chunk.len(), None);
-                out.extend(accs);
-            }
-            Err(e) => {
-                warn!("fetch_accounts_chunked: getMultipleAccounts failed: {e}");
-                out.extend(std::iter::repeat_n(None, chunk.len()));
-            }
-        }
-    }
-    out
+    fetch_accounts_chunked_with_slot(rpc, keys).await.0
 }
 
 /// Decode the Raydium v4 swap fee in basis points from the AMM account.
@@ -1057,6 +1943,33 @@ pub fn decode_clmm_state(data: &[u8]) -> Option<arb_types::ClmmState> {
     })
 }
 
+/// Decode Raydium CLMM PoolState layout.
+pub fn decode_raydium_clmm_state(data: &[u8], fee_bps: u16) -> Option<arb_types::ClmmState> {
+    if data.len() < 273 {
+        return None;
+    }
+    let tick_spacing = u16::from_le_bytes(data[235..237].try_into().ok()?).max(1);
+    let liquidity = u128::from_le_bytes(data[237..253].try_into().ok()?);
+    let sqrt_price = u128::from_le_bytes(data[253..269].try_into().ok()?);
+    let tick_current = i32::from_le_bytes(data[269..273].try_into().ok()?);
+
+    if liquidity == 0 || sqrt_price == 0 {
+        return None;
+    }
+
+    // Raydium CLMM's SwapMath fee unit is millionths (1e6), not BPS.
+    // 25 bps must become 2,500 ppm; passing 25 undercharged fees by 100x.
+    let fee_rate = fee_bps.checked_mul(100)?;
+    Some(arb_types::ClmmState {
+        sqrt_price,
+        liquidity,
+        tick_current,
+        tick_spacing,
+        fee_rate,
+        tick_arrays: Vec::new(),
+    })
+}
+
 /// Decode DLMM state (Meteora `LbPair` layout, verified against the live
 /// SOL/USDC pool `5rCf1DM8...`) from raw account bytes.
 ///
@@ -1091,6 +2004,7 @@ pub fn decode_dlmm_state(data: &[u8]) -> Option<arb_types::DlmmState> {
 
     Some(arb_types::DlmmState {
         active_bin_id,
+        status,
         bin_step_bps,
         bins: Vec::new(), // attached separately from BinArray accounts
         params: Some(arb_types::DlmmFeeParams {
@@ -1102,9 +2016,12 @@ pub fn decode_dlmm_state(data: &[u8]) -> Option<arb_types::DlmmState> {
             max_volatility_accumulator,
             protocol_share,
             base_fee_power_factor,
+            function_type: if data.len() > 35 { data[35] } else { 0 },
+            collect_fee_mode: if data.len() > 36 { data[36] } else { 0 },
         }),
         volatility_accumulator,
         volatility_reference,
+        index_reference: i32::from_le_bytes(data[48..52].try_into().ok()?),
         last_update_timestamp,
     })
 }
@@ -1130,6 +2047,14 @@ pub fn derive_meteora_bin_array_pda(pool: &Pubkey, index: i64) -> Pubkey {
         &program_id,
     )
     .0
+}
+
+/// Derive the `BinArrayBitmapExtension` PDA for a pool:
+/// seeds = `[b"bitmap", lb_pair]` (official dlmm-sdk seeds).
+pub fn bitmap_extension_pda(pool: &Pubkey) -> Pubkey {
+    let program_id = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
+        .expect("valid Meteora program id constant");
+    Pubkey::find_program_address(&[b"bitmap", pool.as_ref()], &program_id).0
 }
 
 /// Bin-array index that contains `bin_id` (floor division, correct for negatives).
@@ -1211,12 +2136,161 @@ pub fn resolve_fee_bps(protocol: DexProtocol, pool_account_data: &[u8]) -> Optio
         DexProtocol::RaydiumCpmm => decode_raydium_cpmm_fee_bps(pool_account_data),
         DexProtocol::PumpFun => None,
         DexProtocol::PumpSwap => None,
+        DexProtocol::MeteoraDammV2 => None,
+        DexProtocol::RaydiumLaunchLab => None,
     }
+}
+
+static POOL_WRITE_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Monotonic write version shared between HTTP registry refreshes and live WS pool updates.
+pub fn next_pool_write_version() -> u64 {
+    POOL_WRITE_VERSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Instantaneous virtual reserves for CLMM pools: `x = L / sqrt(P)`, `y = L * sqrt(P)`.
+pub fn compute_clmm_virtual_reserves(c: &arb_types::ClmmState) -> (u128, u128) {
+    if c.liquidity == 0 || c.sqrt_price == 0 {
+        return (0, 0);
+    }
+    let l = ruint::aliases::U256::from(c.liquidity);
+    let sp = ruint::aliases::U256::from(c.sqrt_price);
+    let x_virt = (l << 64usize) / sp;
+    let y_virt = (l * sp) >> 64usize;
+    (
+        x_virt.try_into().unwrap_or(u128::MAX),
+        y_virt.try_into().unwrap_or(u128::MAX),
+    )
+}
+
+/// True when cached CLMM tick arrays contain the array holding `tick_current`.
+pub fn clmm_tick_array_covers_tick(
+    arrays: &[arb_types::ClmmTickArray],
+    tick_current: i32,
+    tick_spacing: u16,
+) -> bool {
+    let spacing = tick_spacing.max(1) as i32;
+    let ticks_per_array = 88i32.saturating_mul(spacing);
+    if ticks_per_array == 0 {
+        return false;
+    }
+    let start = tick_current.div_euclid(ticks_per_array) * ticks_per_array;
+    arrays.iter().any(|ta| ta.start_tick_index == start)
+}
+
+/// Decode Meteora DLMM dynamic base fee in basis points.
+pub fn decode_dlmm_fee_bps(s: &arb_types::DlmmState) -> Option<u16> {
+    let prm = s.params.as_ref()?;
+    let base = (prm.base_factor as u64) * (s.bin_step_bps as u64) * 10;
+    let scaled = if prm.base_fee_power_factor == 0 {
+        base
+    } else {
+        base.checked_mul(10u64.checked_pow(prm.base_fee_power_factor as u32)?)?
+    };
+    u16::try_from(scaled.saturating_mul(10_000) / 1_000_000_000).ok()
+}
+
+/// Compute effective base/quote reserves for Meteora DLMM from decoded `DlmmState` bins and raw `LbPair` bytes.
+///
+/// DLMM semantics (verified against the Meteora DLMM program layout): bins with
+/// `bin_id > active_id` hold only token X; bins with `bin_id < active_id` hold
+/// only token Y; the active bin can hold both. The honest two-sided CPMM
+/// approximation for the graph edge is therefore:
+///
+/// - `x_depth = \u{03a3} amount_x` over bins `bin_id >= active_id` (X the pool can sell)
+/// - `y_depth = \u{03a3} amount_y` over bins `bin_id <= active_id` (Y the pool can sell)
+///
+/// Fail-closed rules (each returns `None`, dropping the pool from the graph):
+/// - no bins attached, or the ACTIVE bin itself is missing from the attached
+///   BinArrays (hydration incomplete \u{2014} never guess its contents);
+/// - either side depth is zero (one-sided book: no honest two-sided quote);
+/// - implied price `y_depth / x_depth` diverges from the active-bin price by
+///   more than [`DLMM_RESERVE_PRICE_TOLERANCE`] (corrupt/inconsistent bin data).
+///
+/// The previous implementation derived one side from the other via the active
+/// price whenever the active bin missed one token (`rx else sum` fallbacks).
+/// Measured on mainnet pool HRYEjwdo3bZ1TpXKWKcezqiwSV2Ywuh4LxMa2PzoCnG6
+/// (USDC/WSOL, bin_step=2): active bin held `amount_x=0`, so the fallback
+/// summed 210 bins into `rx=6.57e9 USDC-raw` and derived
+/// `ry=82.26 WSOL` \u{2014} a fake book that produced ~4,134 phantom-arbitrage
+/// rejections per 3-minute soak (implied ROI 1.3M\u{2013}1.5M bps vs the 1500 bps
+/// implausibility ceiling).
+pub fn compute_dlmm_reserves(
+    d: &arb_types::DlmmState,
+    pool_data: &[u8],
+    base_mint: &Pubkey,
+    quote_mint: &Pubkey,
+) -> Option<(u128, u128)> {
+    if d.bins.is_empty() {
+        return None;
+    }
+    let p_x_in_y = arb_math::dlmm::get_price_from_id(d.active_bin_id, d.bin_step_bps)
+        .ok()
+        .filter(|p| *p > 0)?;
+    let tx = pool_data
+        .get(88..120)
+        .filter(|_| pool_data.len() >= 152)
+        .and_then(|s| <[u8; 32]>::try_from(s).ok())
+        .map(Pubkey::new_from_array)?;
+    // The active bin must be present: it anchors both side sums and the
+    // price-consistency check. Missing active bin = incomplete hydration.
+    d.bins.iter().find(|b| b.bin_id == d.active_bin_id)?;
+    let x_depth: u128 = d
+        .bins
+        .iter()
+        .filter(|b| b.bin_id >= d.active_bin_id)
+        .map(|b| b.amount_x)
+        .sum();
+    let y_depth: u128 = d
+        .bins
+        .iter()
+        .filter(|b| b.bin_id <= d.active_bin_id)
+        .map(|b| b.amount_y)
+        .sum();
+    if x_depth == 0 || y_depth == 0 {
+        return None;
+    }
+    // Price-consistency invariant: the side sums must imply a price within a
+    // sane band of the active-bin price. With correctly attached arrays this
+    // holds by construction (bins within \u{00b1}70 bins of active); a violation
+    // means corrupt or mismatched bin data, never a real market state.
+    let implied_q64 =
+        (ruint::aliases::U256::from(y_depth) << 64usize) / ruint::aliases::U256::from(x_depth);
+    let p_u256 = ruint::aliases::U256::from(p_x_in_y);
+    let band = p_u256 * ruint::aliases::U256::from(DLMM_RESERVE_PRICE_TOLERANCE);
+    if implied_q64 > band
+        || implied_q64 < p_u256 / ruint::aliases::U256::from(DLMM_RESERVE_PRICE_TOLERANCE)
+    {
+        return None;
+    }
+    if tx == *base_mint {
+        Some((x_depth, y_depth))
+    } else if tx == *quote_mint {
+        Some((y_depth, x_depth))
+    } else {
+        Some((0, 0))
+    }
+}
+
+/// Max allowed ratio between the bin-sum implied price and the active-bin
+/// price. 4x is far outside any correctly-hydrated \u{00b1}1-bin-array window
+/// (\u{00b1}70 bins * 0.02% \u{2248} \u{00b1}1.4% for the tightest bin_step=2 pools) yet
+/// still catches grossly corrupt data.
+const DLMM_RESERVE_PRICE_TOLERANCE: u64 = 4;
+
+/// Decode a u64 token amount from raw SPL token account bytes (offset 64..72).
+pub fn decode_spl_token_amount_bytes(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 72 {
+        return None;
+    }
+    let arr: [u8; 8] = bytes.get(64..72)?.try_into().ok()?;
+    Some(u64::from_le_bytes(arr))
 }
 
 /// Decode a u64 token amount from an SPL token account JSON value.
 /// SPL token accounts store the amount as a little-endian u64 at byte offset 64,
 /// base64-encoded in the `data[0]` field of the RPC response.
+#[allow(dead_code)]
 fn decode_token_amount(acc: Option<&serde_json::Value>) -> u64 {
     let Some(acc) = acc else {
         return 0;
@@ -1231,10 +2305,7 @@ fn decode_token_amount(acc: Option<&serde_json::Value>) -> u64 {
     let Ok(bytes) = BASE64_STANDARD.decode(data_str) else {
         return 0;
     };
-    if bytes.len() < 72 {
-        return 0;
-    }
-    u64::from_le_bytes(bytes[64..72].try_into().unwrap_or([0; 8]))
+    decode_spl_token_amount_bytes(&bytes).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1245,8 +2316,8 @@ mod tests {
     fn mainnet_default_registers_all_venues() {
         let rpc = RpcPool::new(vec!["https://example.test".to_string()]);
         let reg = MultiDexRegistry::mainnet_default(rpc);
-        // 1 Raydium v4 + 1 Raydium CPMM + 4 Orca Whirlpool fee tiers + 1 Meteora DLMM.
-        assert_eq!(reg.pool_count(), 7);
+        // 1 Raydium v4 + 1 Raydium CPMM + 4 Orca Whirlpool fee tiers + 3 Meteora DLMM.
+        assert_eq!(reg.pool_count(), 9);
         let protocols: Vec<_> = reg.pools().iter().map(|p| p.protocol).collect();
         assert!(protocols.contains(&DexProtocol::RaydiumV4));
         assert!(protocols.contains(&DexProtocol::RaydiumCpmm));
@@ -1422,5 +2493,276 @@ mod tests {
         assert_eq!(info.token_a_vault, va);
         assert_eq!(info.token_b_vault, vb);
         assert_eq!(info.fee_bps, 4);
+    }
+
+    #[test]
+    fn test_decode_pool_info_raydium_clmm() {
+        let mut data = vec![0u8; 350];
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        let va = Pubkey::new_unique();
+        let vb = Pubkey::new_unique();
+        data[73..105].copy_from_slice(&ma.to_bytes());
+        data[105..137].copy_from_slice(&mb.to_bytes());
+        data[137..169].copy_from_slice(&va.to_bytes());
+        data[169..201].copy_from_slice(&vb.to_bytes());
+        data[233] = 9;
+        data[234] = 6;
+        data[235..237].copy_from_slice(&60u16.to_le_bytes()); // tick_spacing
+
+        let info = decode_pool_info(DexProtocol::RaydiumClmm, &data).expect("valid Raydium CLMM");
+        assert_eq!(info.token_a_mint, ma);
+        assert_eq!(info.token_b_mint, mb);
+        assert_eq!(info.token_a_vault, va);
+        assert_eq!(info.token_b_vault, vb);
+        assert_eq!(info.decimals_a, Some(9));
+        assert_eq!(info.decimals_b, Some(6));
+        assert_eq!(info.fee_bps, 25);
+    }
+
+    #[test]
+    fn test_decode_raydium_clmm_vaults() {
+        let mut data = vec![0u8; 250];
+        let va = Pubkey::new_unique();
+        let vb = Pubkey::new_unique();
+        data[137..169].copy_from_slice(&va.to_bytes());
+        data[169..201].copy_from_slice(&vb.to_bytes());
+
+        let vaults = decode_raydium_clmm_vaults(&data).expect("valid clmm vaults");
+        assert_eq!(vaults.0, va);
+        assert_eq!(vaults.1, vb);
+
+        assert_eq!(decode_raydium_clmm_vaults(&[0u8; 100]), None);
+    }
+
+    fn orca_whirlpool_bytes(len: usize, mint_a: Pubkey, mint_b: Pubkey) -> Vec<u8> {
+        let mut data = vec![0u8; len];
+        data[101..133].copy_from_slice(mint_a.as_ref());
+        data[181..213].copy_from_slice(mint_b.as_ref());
+        data
+    }
+
+    #[test]
+    fn clmm_onchain_mints_orca_interleaved_layout() {
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        for len in [525usize, 653] {
+            let data = orca_whirlpool_bytes(len, ma, mb);
+            let got =
+                clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &data).expect("valid whirlpool");
+            assert_eq!(got, (ma, mb), "len={len}");
+        }
+    }
+
+    #[test]
+    fn clmm_onchain_mints_raydium_layout() {
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        let mut data = vec![0u8; 1544];
+        data[73..105].copy_from_slice(ma.as_ref());
+        data[105..137].copy_from_slice(mb.as_ref());
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::RaydiumClmm, &data).expect("valid clmm"),
+            (ma, mb)
+        );
+    }
+
+    #[test]
+    fn clmm_onchain_mints_fail_closed() {
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &[0u8; 100]),
+            None
+        );
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::RaydiumClmm, &[0u8; 100]),
+            None
+        );
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &[0u8; 245]),
+            None,
+            "default pubkeys must be rejected"
+        );
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::MeteoraDlmm, &orca_whirlpool_bytes(653, ma, mb)),
+            None,
+            "non-CLMM protocols must be rejected"
+        );
+    }
+
+    #[test]
+    fn clmm_onchain_mints_rejects_swapped_layout_bytes() {
+        // A pool account whose @181..213 window is a vault (not a mint) must not
+        // be silently accepted as orientation truth when the catalog disagrees;
+        // the helper returns the raw on-chain order and the registry logs the
+        // divergence. Here we only pin that the helper reads exactly @101/@181.
+        let ma = Pubkey::new_unique();
+        let mb = Pubkey::new_unique();
+        let mut data = orca_whirlpool_bytes(653, ma, mb);
+        let intruder = Pubkey::new_unique();
+        data[133..165].copy_from_slice(intruder.as_ref()); // vault_a slot
+        assert_eq!(
+            clmm_onchain_mints(DexProtocol::OrcaWhirlpool, &data).expect("valid"),
+            (ma, mb),
+            "vault_a bytes @133..165 must not leak into the mint read"
+        );
+    }
+
+    #[test]
+    fn test_decode_raydium_clmm_state() {
+        let mut data = vec![0u8; 300];
+        data[235..237].copy_from_slice(&60u16.to_le_bytes()); // tick_spacing
+        data[237..253].copy_from_slice(&5_000_000u128.to_le_bytes()); // liquidity
+        data[253..269].copy_from_slice(&(1u128 << 64).to_le_bytes()); // sqrt_price
+        data[269..273].copy_from_slice(&120i32.to_le_bytes()); // tick_current
+
+        let state = decode_raydium_clmm_state(&data, 25).expect("valid clmm state");
+        assert_eq!(state.tick_spacing, 60);
+        assert_eq!(state.liquidity, 5_000_000);
+        assert_eq!(state.sqrt_price, 1u128 << 64);
+        assert_eq!(state.tick_current, 120);
+        assert_eq!(state.fee_rate, 2_500);
+    }
+
+    #[test]
+    fn test_raydium_clmm_tick_array_pdas() {
+        let pool = PoolId(Pubkey::new_unique());
+        let (keys, starts) = raydium_clmm_tick_array_pdas(&pool, 120, 60);
+        assert_eq!(keys.len(), 3);
+        assert_eq!(starts.len(), 3);
+        // tick_spacing=60, ticks_per_array = 60 * 60 = 3600
+        // tick_current=120, start = 120.div_euclid(3600) * 3600 = 0
+        assert_eq!(starts[0], 0);
+        assert_eq!(starts[1], -3600);
+        assert_eq!(starts[2], 3600);
+        // All 3 PDAs must be distinct and non-default
+        assert_ne!(keys[0], keys[1]);
+        assert_ne!(keys[1], keys[2]);
+        assert_ne!(keys[0], Pubkey::default());
+    }
+
+    #[test]
+    fn test_resolve_fee_bps_raydium_cpmm() {
+        let mut data = vec![0u8; 300];
+        data[290..298].copy_from_slice(&100u64.to_le_bytes()); // 1 bps
+        assert_eq!(resolve_fee_bps(DexProtocol::RaydiumCpmm, &data), Some(1));
+    }
+
+    // ---- compute_dlmm_reserves fail-closed forensics (soak10/11 phantom ROI) ----
+
+    fn dlmm_probe_state(active_id: i32, mut bins: Vec<arb_types::DlmmBin>) -> arb_types::DlmmState {
+        bins.sort_by_key(|b| b.bin_id);
+        arb_types::DlmmState {
+            active_bin_id: active_id,
+            status: 0,
+            bin_step_bps: 10,
+            bins,
+            params: None,
+            volatility_accumulator: 0,
+            volatility_reference: 0,
+            index_reference: active_id,
+            last_update_timestamp: 0,
+        }
+    }
+
+    fn dlmm_probe_pool_bytes(token_x: Pubkey, token_y: Pubkey) -> Vec<u8> {
+        let mut data = vec![0u8; 152];
+        data[88..120].copy_from_slice(token_x.as_ref());
+        data[120..152].copy_from_slice(token_y.as_ref());
+        data
+    }
+
+    #[test]
+    fn dlmm_reserves_fail_closed_when_active_bin_missing() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        let d = dlmm_probe_state(
+            1000,
+            vec![
+                arb_types::DlmmBin {
+                    bin_id: 998,
+                    amount_x: 0,
+                    amount_y: 1_000_000,
+                },
+                arb_types::DlmmBin {
+                    bin_id: 1002,
+                    amount_x: 1_000_000,
+                    amount_y: 0,
+                },
+            ],
+        );
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
+    }
+
+    #[test]
+    fn dlmm_reserves_fail_closed_on_one_sided_book() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        // HRYEjw mainnet shape: active bin holds only Y (amount_x=0) and no
+        // bin at/above active holds X. The old fallback summed distant bins
+        // into a fake x-side and derived y from price — producing the
+        // ~130x phantom ROI. Must now fail closed.
+        let d = dlmm_probe_state(
+            1000,
+            vec![arb_types::DlmmBin {
+                bin_id: 1000,
+                amount_x: 0,
+                amount_y: 1_444_908_165,
+            }],
+        );
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
+    }
+
+    #[test]
+    fn dlmm_reserves_sum_correct_sides_both_directions() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        let d = dlmm_probe_state(
+            1000,
+            vec![
+                arb_types::DlmmBin {
+                    bin_id: 998,
+                    amount_x: 0,
+                    amount_y: 500,
+                },
+                arb_types::DlmmBin {
+                    bin_id: 1000,
+                    amount_x: 1_000,
+                    amount_y: 2_700,
+                },
+                arb_types::DlmmBin {
+                    bin_id: 1002,
+                    amount_x: 3_000,
+                    amount_y: 0,
+                },
+            ],
+        );
+        // x_depth = bins >= 1000 => 1000 + 3000 = 4000
+        // y_depth = bins <= 1000 => 500 + 2700 = 3200
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), Some((4000, 3200)));
+        // Flipped pool orientation (token_x is the quote mint): reserves swap.
+        assert_eq!(compute_dlmm_reserves(&d, &data, &y, &x), Some((3200, 4000)));
+    }
+
+    #[test]
+    fn dlmm_reserves_reject_price_inconsistent_bins() {
+        let x = Pubkey::new_unique();
+        let y = Pubkey::new_unique();
+        let data = dlmm_probe_pool_bytes(x, y);
+        // active_id=1000, step=10bps => p ~ 2.717 y-raw per x-raw. A book
+        // implying 0.1 y-raw per x-raw is >4x below p: corrupt data.
+        let d = dlmm_probe_state(
+            1000,
+            vec![arb_types::DlmmBin {
+                bin_id: 1000,
+                amount_x: 1_000_000,
+                amount_y: 100_000,
+            }],
+        );
+        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
     }
 }

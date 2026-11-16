@@ -2,7 +2,7 @@
 //! logs the exact reason whenever something goes down.
 //!
 //! Checks:
-//!   * Solami Yellowstone gRPC — at least one live slot watermark must be observed.
+//!   * WebSocket/RPC ingestion — at least one live slot watermark must be observed.
 //!   * Pipeline Latency — alert if processing age exceeds acceptable bounds (>1000ms).
 //!   * Disk space — data directory must not fill up (logs + state DB grow).
 //!   * Telegram — best-effort ping; never blocks trading.
@@ -43,22 +43,25 @@ struct CheckState {
 /// The monitor. Cheap to clone (Arc internally).
 #[derive(Clone)]
 pub struct HealthMonitor {
-    ingest: Arc<arb_ingest::YellowstoneClient>,
+    ingest: Arc<arb_ingest::IngestClient>,
     data_dir: PathBuf,
     telegram: crate::telegram::TelegramNotifier,
+    rpc: arb_ingest::RpcPool,
     checks: Arc<Mutex<HashMap<&'static str, CheckState>>>,
 }
 
 impl HealthMonitor {
     pub fn new(
-        ingest: Arc<arb_ingest::YellowstoneClient>,
+        ingest: Arc<arb_ingest::IngestClient>,
         data_dir: PathBuf,
         telegram: crate::telegram::TelegramNotifier,
+        rpc: arb_ingest::RpcPool,
     ) -> Self {
         Self {
             ingest,
             data_dir,
             telegram,
+            rpc,
             checks: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -68,7 +71,8 @@ impl HealthMonitor {
     pub async fn sweep(&self, slot: u64) -> String {
         let mut results: Vec<(&'static str, CheckStatus, Option<String>)> = Vec::new();
 
-        results.push(self.check_yellowstone().await);
+        results.push(self.check_rpc().await);
+        results.push(self.check_stream_ingest().await);
         results.push(self.check_disk().await);
         results.push(self.check_telegram().await);
 
@@ -115,16 +119,35 @@ impl HealthMonitor {
         }
     }
 
-    /// Yellowstone gRPC must have produced a real slot watermark. No HTTP RPC probe/fallback.
-    async fn check_yellowstone(&self) -> (&'static str, CheckStatus, Option<String>) {
-        let slot = self.ingest.current_slot();
+    /// RPC pool must be responsive and capable of fetching slot without rate-limiting.
+    async fn check_rpc(&self) -> (&'static str, CheckStatus, Option<String>) {
+        if self.rpc.endpoints_count() == 0 {
+            return (
+                "rpc",
+                CheckStatus::Fail,
+                Some("لا توجد روابط RPC مفعلة في التجمع".to_string()),
+            );
+        }
+        match self.rpc.get_slot().await {
+            Ok(_) => ("rpc", CheckStatus::Ok, None),
+            Err(e) => (
+                "rpc",
+                CheckStatus::Fail,
+                Some(format!("فشل قراءة السلوت من RPC Pool: {e}")),
+            ),
+        }
+    }
+
+    /// Stream ingestion must have produced a real slot watermark.
+    async fn check_stream_ingest(&self) -> (&'static str, CheckStatus, Option<String>) {
+        let slot = self.ingest.current_slot().max(self.ingest.helius_slot());
         if slot > 0 {
-            ("yellowstone_grpc", CheckStatus::Ok, None)
+            ("stream_ingest", CheckStatus::Ok, None)
         } else {
             (
-                "yellowstone_grpc",
+                "stream_ingest",
                 CheckStatus::Fail,
-                Some("no slot watermark received from Solami Yellowstone gRPC".to_string()),
+                Some("no slot watermark received from stream ingestion".to_string()),
             )
         }
     }

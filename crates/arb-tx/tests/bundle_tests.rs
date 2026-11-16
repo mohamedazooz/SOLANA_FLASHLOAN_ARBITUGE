@@ -30,6 +30,15 @@ use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use std::time::Instant;
 
+/// Exact U68F60 encoding of a 5 bps flash-loan rate — the on-chain unit of klend's
+/// `ReserveConfig.fees.flash_loan_fee_sf`.
+///
+/// `0.0005 * 2^60 = 576_460_752_303_423.488`, truncated to `576_460_752_303_423`,
+/// which prices a 10 SOL borrow at exactly 5,000,000 lamports. The previous fixture
+/// `9_223_372_036_854_775` is `0.0005 * 2^64` (Q64.64): read as U68F60 it means 0.8 %,
+/// a 16x overcharge that made the profit-floor assertions in this file wrong.
+const KAMINO_FEE_SF_5_BPS: u64 = 576_460_752_303_423;
+
 fn create_test_signer(seed_byte: u8) -> KeypairSigner {
     let mut seed = [seed_byte; 32];
     seed[0] = seed_byte;
@@ -41,8 +50,43 @@ fn create_test_signer(seed_byte: u8) -> KeypairSigner {
     KeypairSigner::from_bytes(&keypair_bytes).unwrap()
 }
 
+fn mock_raydium_v4_exec_accounts() -> arb_types::PoolExecutionAccounts {
+    let m = arb_tx::RaydiumV4Accounts::mainnet_sol_usdc();
+    arb_types::PoolExecutionAccounts::RaydiumV4 {
+        amm_authority: m.amm_authority,
+        open_orders: m.amm_open_orders,
+        target_orders: m.amm_target_orders,
+        base_vault: m.pool_coin_vault,
+        quote_vault: m.pool_pc_vault,
+        serum_program: m.serum_program,
+        serum_market: m.serum_market,
+        serum_bids: m.serum_bids,
+        serum_asks: m.serum_asks,
+        serum_event_queue: m.serum_event_queue,
+        serum_coin_vault: m.serum_coin_vault,
+        serum_pc_vault: m.serum_pc_vault,
+        serum_vault_signer: m.serum_vault_signer,
+        swap_version: arb_types::RaydiumV4SwapVersion::V2,
+    }
+}
+
+fn mock_orca_whirlpool_exec_accounts() -> arb_types::PoolExecutionAccounts {
+    arb_types::PoolExecutionAccounts::OrcaWhirlpool {
+        vault_a: Pubkey::new_unique(),
+        vault_b: Pubkey::new_unique(),
+        oracle: Pubkey::new_unique(),
+        tick_array_pdas: vec![
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+        ],
+        pool_mint_a: Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap(),
+    }
+}
+
 fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> ExecutionOpportunity {
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(201),
         slot: Slot(1000),
         size_in: TokenAmount(size_lamports),
@@ -64,6 +108,9 @@ fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> Ex
                 mint_out: MintId(usdc),
                 fee_bps: 25,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId(Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap()),
@@ -72,8 +119,12 @@ fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> Ex
                 mint_out: MintId(wsol),
                 fee_bps: 5,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
             },
         ],
+        expected_min_final_output: 0,
     }
 }
 
@@ -84,6 +135,7 @@ fn create_3hop_opportunity(
     size_lamports: u64,
 ) -> ExecutionOpportunity {
     ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(301),
         slot: Slot(1001),
         size_in: TokenAmount(size_lamports),
@@ -106,6 +158,9 @@ fn create_3hop_opportunity(
                 mint_out: MintId(usdc),
                 fee_bps: 25,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId(Pubkey::from_str(ORCA_SOL_USDC_POOL).unwrap()),
@@ -114,6 +169,9 @@ fn create_3hop_opportunity(
                 mint_out: MintId(bonk),
                 fee_bps: 5,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_orca_whirlpool_exec_accounts()),
             },
             SwapHop {
                 pool_id: PoolId::new([3; 32]),
@@ -122,8 +180,12 @@ fn create_3hop_opportunity(
                 mint_out: MintId(wsol),
                 fee_bps: 25,
                 active_bin_id: None,
+                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                trade_intent: Default::default(),
+                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
             },
         ],
+        expected_min_final_output: 0,
     }
 }
 
@@ -149,6 +211,7 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         kamino_params: &kamino_params,
         recent_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     // 1. Verify assemble_atomic_bundle outputs EXACTLY 7 instructions
@@ -159,7 +222,7 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         1_000,
         &opp,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        KAMINO_FEE_SF_5_BPS, // fee_sf: exact U68F60 encoding of 5 bps
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap();
@@ -231,7 +294,9 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         "Repay data must be strictly 17 bytes"
     );
     assert_eq!(&ixs[5].data[0..8], &FLASH_REPAY_DISCRIMINATOR);
-    assert_eq!(&ixs[5].data[8..16], &10_005_000_000u64.to_le_bytes());
+    // Repay `amount` == borrow principal; the origination fee is collected
+    // separately, on top, from the same source ATA at repay time.
+    assert_eq!(&ixs[5].data[8..16], &10_000_000_000u64.to_le_bytes());
     assert_eq!(
         ixs[5].data[16], 2,
         "borrow_instruction_index must be strictly 2"
@@ -292,6 +357,7 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
         kamino_params: &kamino_params,
         recent_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     let ixs = TxBuilder::assemble_atomic_bundle(
@@ -301,7 +367,7 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
         2_000,
         &opp,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        KAMINO_FEE_SF_5_BPS, // fee_sf: exact U68F60 encoding of 5 bps
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap();
@@ -420,11 +486,12 @@ fn test_prewarmed_template_patch_and_verify() {
         kamino_params: &kamino_params,
         recent_blockhash: initial_blockhash,
         lookup_tables: &[alt],
+        flash_loan_fee_sf: 0,
     };
 
     // Pre-warm the transaction template ahead of time
     let mut template =
-        PreWarmedTxTemplate::from_bundle_params(&bundle_params, 9223372036854775).unwrap();
+        PreWarmedTxTemplate::from_bundle_params(&bundle_params, KAMINO_FEE_SF_5_BPS).unwrap();
 
     // Verify initial wire size fits within MTU limit
     assert!(template.raw_bytes.len() <= SOLANA_PACKET_MTU_LIMIT);
@@ -451,10 +518,14 @@ fn test_prewarmed_template_patch_and_verify() {
     assert_eq!(u64::from_le_bytes(borrow_bytes), new_d_star);
 
     let repay_bytes: [u8; 8] = wire_tx[repay_offset..repay_offset + 8].try_into().unwrap();
+    // klend's repay argument is the borrowed principal only; the origination fee is
+    // collected separately, on top, at repay time, so it must never be added here.
+    assert_eq!(u64::from_le_bytes(repay_bytes), new_d_star);
     assert_eq!(
-        u64::from_le_bytes(repay_bytes),
-        new_d_star + new_d_star * 5 / 10_000
-    ); // 5 bps Kamino fee
+        arb_tx::kamino::calculate_kamino_flash_fee(new_d_star, KAMINO_FEE_SF_5_BPS),
+        7_500_000,
+        "the stored fee_sf must still price 5 bps on 15 SOL for ATA funding"
+    );
 
     let tip_bytes: [u8; 8] = wire_tx[tip_offset..tip_offset + 8].try_into().unwrap();
     assert_eq!(u64::from_le_bytes(tip_bytes), new_tip);
@@ -509,7 +580,7 @@ fn test_zero_borrow_amount_rejected() {
         1_000,
         &zero_opp,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        KAMINO_FEE_SF_5_BPS, // fee_sf: exact U68F60 encoding of 5 bps
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap_err();
@@ -531,6 +602,7 @@ fn test_invalid_hop_count_rejected() {
 
     // 1-hop opportunity (invalid)
     let one_hop_opp = ExecutionOpportunity {
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         route_id: RouteId(101),
         slot: Slot(100),
         size_in: TokenAmount(1_000_000),
@@ -547,7 +619,12 @@ fn test_invalid_hop_count_rejected() {
             mint_out: MintId(usdc),
             fee_bps: 25,
             active_bin_id: None,
+            token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+            trade_intent: Default::default(),
+            execution_accounts: None,
         }],
+
+        expected_min_final_output: 0,
     };
 
     let err = TxBuilder::assemble_atomic_bundle(
@@ -557,7 +634,7 @@ fn test_invalid_hop_count_rejected() {
         1_000,
         &one_hop_opp,
         &kamino_params,
-        9223372036854775,    // fee_sf: 5 bps in Q64.64 (test fixture)
+        KAMINO_FEE_SF_5_BPS, // fee_sf: exact U68F60 encoding of 5 bps
         TokenAmount(30_000), // min_profit_raw in base-mint (WSOL) units
     )
     .unwrap_err();
@@ -566,4 +643,103 @@ fn test_invalid_hop_count_rejected() {
         TxError::InvalidHopCount(1) => (),
         _ => panic!("Expected InvalidHopCount(1), got: {:?}", err),
     }
+}
+
+#[test]
+fn test_validate_jito_bundle_is_version_aware() {
+    let signer = KeypairSigner::new_random();
+    let blockhash = [7u8; 32];
+    let empty_ixs: Vec<arb_tx::CompiledInstruction> = Vec::new();
+
+    // A small legacy transaction is always accepted.
+    let legacy = TxBuilder::build_signed_transaction(&signer, &empty_ixs, blockhash).unwrap();
+    assert!(arb_tx::validate_jito_bundle(std::slice::from_ref(&legacy)).is_ok());
+
+    // A V1 transaction that exceeds the legacy 1,232-byte MTU must now pass
+    // the Jito size gate (SIMD-0296 / SIMD-0385: v1 may reach 4,096 bytes),
+    // while a legacy envelope of the same size must still be rejected.
+    let v1 = arb_tx::AdaptiveTxCompiler::build_signed_v1_transaction(
+        &signer,
+        &empty_ixs,
+        blockhash,
+        arb_tx::V1ConfigParams {
+            compute_unit_limit: Some(200_000),
+            loaded_accounts_data_size_limit: Some(65_536),
+            ..Default::default()
+        },
+        arb_tx::FormatSelectionReason::ExplicitRequested(arb_tx::TransactionVersion::V1),
+    )
+    .unwrap();
+    assert_eq!(v1.wire_bytes[0], 0x81);
+    // Message: 1 (version) + 3 (header) + 4 (mask) + 32 (blockhash) + 1 + 1
+    //          + 32 (1 address) + 8 (CU 4 + loaded-data 4; no priority fee)
+    //          + 64 (trailing signature) = 146 bytes.
+    assert_eq!(v1.wire_size(), 146);
+    assert!(arb_tx::validate_jito_bundle(std::slice::from_ref(&v1.wire_bytes)).is_ok());
+
+    // Pad the legacy envelope past 1,232 bytes: version detection sees a
+    // legacy/unknown envelope and holds it to the tighter bound.
+    let mut oversized_legacy = legacy;
+    oversized_legacy.resize(2000, 0);
+    let err = arb_tx::validate_jito_bundle(&[oversized_legacy]).unwrap_err();
+    match err {
+        TxError::TransactionTooLarge { size, limit } => {
+            assert_eq!(size, 2000);
+            assert_eq!(limit, SOLANA_PACKET_MTU_LIMIT);
+        }
+        other => panic!("Expected TransactionTooLarge, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_rpc_max_supported_version_from_wire() {
+    let signer = KeypairSigner::new_random();
+    let blockhash = [7u8; 32];
+    let empty_ixs: Vec<arb_tx::CompiledInstruction> = Vec::new();
+
+    let legacy = TxBuilder::build_signed_transaction(&signer, &empty_ixs, blockhash).unwrap();
+    assert_eq!(
+        arb_tx::rpc_max_supported_version_from_wire(&legacy).unwrap(),
+        None,
+        "legacy transactions need no RPC version hint"
+    );
+
+    let v0 = arb_tx::AdaptiveTxCompiler::build_signed_v0_transaction(
+        &signer,
+        &empty_ixs,
+        blockhash,
+        &[],
+        arb_tx::FormatSelectionReason::ExplicitRequested(arb_tx::TransactionVersion::V0),
+    )
+    .unwrap();
+    assert_eq!(v0.wire_bytes[65], 0x80);
+    assert_eq!(
+        arb_tx::rpc_max_supported_version_from_wire(&v0.wire_bytes).unwrap(),
+        Some(0),
+        "v0 maps to RPC version 0"
+    );
+
+    let v1 = arb_tx::AdaptiveTxCompiler::build_signed_v1_transaction(
+        &signer,
+        &empty_ixs,
+        blockhash,
+        arb_tx::V1ConfigParams {
+            compute_unit_limit: Some(200_000),
+            loaded_accounts_data_size_limit: Some(65_536),
+            ..Default::default()
+        },
+        arb_tx::FormatSelectionReason::ExplicitRequested(arb_tx::TransactionVersion::V1),
+    )
+    .unwrap();
+    assert_eq!(v1.wire_bytes[0], 0x81);
+    assert_eq!(
+        arb_tx::rpc_max_supported_version_from_wire(&v1.wire_bytes).unwrap(),
+        Some(1),
+        "v1 (SIMD-0385) maps to RPC version 1"
+    );
+
+    // Malformed wire bytes fail closed.
+    assert!(arb_tx::rpc_max_supported_version_from_wire(&[]).is_err());
+    assert!(arb_tx::rpc_max_supported_version_from_wire(&[0x01, 0x02]).is_err());
+    assert!(arb_tx::rpc_max_supported_version_from_wire(&[0xFF, 0x00, 0x00]).is_err());
 }

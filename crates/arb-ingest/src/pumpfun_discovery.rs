@@ -78,7 +78,7 @@ impl PumpFunDiscoveryClient {
 
     /// Fetch the top active coins from Pump.fun using both recent trade activity and market cap.
     pub async fn fetch_top_coins(&self, limit: usize) -> Result<Vec<PumpFunCoin>> {
-        let fetch_limit = limit.clamp(10, 50);
+        let fetch_limit = limit.clamp(10, 100);
 
         // Fetch two cohorts:
         // 1. Most recently active (by last_trade_timestamp)
@@ -143,6 +143,12 @@ impl PumpFunDiscoveryClient {
     /// Convert raw PumpFunCoin metadata to DiscoveredPoolState instances,
     /// ranking by liquidity and filtering for the top 30 active curves.
     pub fn select_top_30(&self, coins: &[PumpFunCoin]) -> Vec<DiscoveredPoolState> {
+        self.select_top_n(coins, 30)
+    }
+
+    /// Convert raw PumpFunCoin metadata to DiscoveredPoolState instances,
+    /// ranking by liquidity and filtering for the top N active curves.
+    pub fn select_top_n(&self, coins: &[PumpFunCoin], n: usize) -> Vec<DiscoveredPoolState> {
         let mut scored_pools: Vec<(f64, DiscoveredPoolState)> = Vec::new();
 
         for coin in coins {
@@ -205,19 +211,20 @@ impl PumpFunDiscoveryClient {
         // Sort descending by score
         scored_pools.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Take top 30
-        let top_30: Vec<DiscoveredPoolState> = scored_pools
+        // Take top n
+        let top_n: Vec<DiscoveredPoolState> = scored_pools
             .into_iter()
-            .take(30)
+            .take(n)
             .map(|(_, pool)| pool)
             .collect();
 
         info!(
-            "Pump.fun discovery selected {} high-priority bonding curves for surveillance",
-            top_30.len()
+            "Pump.fun discovery selected {} high-priority bonding curves for surveillance (requested up to {})",
+            top_n.len(),
+            n
         );
 
-        top_30
+        top_n
     }
 }
 

@@ -374,6 +374,11 @@ impl PumpSwapPool {
                 .checked_sub(protocol)
                 .and_then(|v| v.checked_sub(creator))
                 .ok_or_else(|| ArbError::InvalidInput("PumpSwap fees exceed sell output".into()))?;
+            if (self.real_quote_reserve as u128) < out {
+                return Err(ArbError::InvalidInput(
+                    "PumpSwap insufficient real quote reserves".into(),
+                ));
+            }
             u64::try_from(out).map_err(|_| ArbError::Overflow)?
         } else {
             let input = amount_in as u128;
@@ -401,9 +406,11 @@ impl PumpSwapPool {
             let swap_input = net
                 .checked_sub(1)
                 .filter(|value| *value > 0)
-                .ok_or_else(|| ArbError::InvalidInput("PumpSwap buy input is dust".into()))?;
+                .ok_or_else(|| {
+                    ArbError::InvalidInput("PumpSwap exact-in fees consume input".into())
+                })?;
             let out = cpmm_out_fee(
-                swap_input,
+                net,
                 self.quote_reserve as u128,
                 self.base_reserve as u128,
                 scale,
@@ -520,7 +527,7 @@ mod tests {
         let sell_out = pool.quote_exact_in(100, true).unwrap();
         let buy_out = pool.quote_exact_in(100, false).unwrap();
         assert_eq!(sell_out, 195);
-        assert_eq!(buy_out, 47);
+        assert_eq!(buy_out, 48);
     }
 
     #[test]

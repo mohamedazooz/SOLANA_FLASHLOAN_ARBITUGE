@@ -1,0 +1,34 @@
+{
+  "schema": "sentinel.phase15_3.two_pool_same_dex_evidence.v1",
+  "phase": "15.3",
+  "generated_at_utc": "2026-11-11T12:30:00Z",
+  "test_type": "INTEGRATION_TEST",
+  "test_file": "crates/arb-engine/tests/meteora_cross_pool_vertical_slice.rs",
+  "route": "USDC → WSOL → USDC",
+  "dex": "Meteora DLMM (two distinct pools)",
+  "pools": {
+    "pool_a": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+    "pool_b": "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh"
+  },
+  "validation_results": {
+    "both_pools_same_token_pair": true,
+    "pool_a_output_equals_pool_b_input": true,
+    "final_output_mint_equals_input_mint": true,
+    "independent_bin_array_traversal": true,
+    "directional_fees_correct": true,
+    "intermediate_balance_isolation": true,
+    "final_profit_correct": true,
+    "minimum_output_constraints_enforced": true
+  },
+  "directions_tested": [
+    "Direction A: Pool A (USDC→WSOL) → Pool B (WSOL→USDC)",
+    "Direction B: Pool B (USDC→WSOL) → Pool A (WSOL→USDC)"
+  ],
+  "sdk_differential": {
+    "sdk_version": "@meteora-ag/dlmm@1.9.14",
+    "cases_tested": 16,
+    "max_diff_raw_units": 0,
+    "all_cases_pass": true
+  },
+  "conclusion": "Two-pool same-DEX cycle accounting verified. Both directions produce consistent results matching official SDK within 0 raw units."
+}

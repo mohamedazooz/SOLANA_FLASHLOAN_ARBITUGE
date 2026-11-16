@@ -267,7 +267,7 @@ The baseline audit (`SAFETY_AND_HARDCODED_AUDIT.md`) claims 60+ safety guards, 8
 | C-03 Zero blockhash fallback | `execution.rs::fetch_recent_blockhash` returns `Option<[u8;32]>`, `None` on failure; callers skip submission. | Fixed |
 | C-04 Risk velocity contradiction (`MAX_VELOCITY_ORDERS_PER_HOUR=10` vs `max_orders_per_hour=120`) | Dead `MAX_VELOCITY` const removed; single authoritative `RiskLimits.max_orders_per_hour = 120`. | Fixed |
 | C-05 DLMM 92% safety factor | `dlmm.rs:305` still applies `(bottleneck_in * 92) / 100`. | **UNRESOLVED** — P1 |
-| C-06 `fee_bps` silent 10,000 cap | `arb-types` `PoolState::fee_bps` caps invalid fees at 100%. | **UNRESOLVED** — P1 |
+| C-06 `fee_bps` silent 10,000 cap | `arb-types` `PoolState::fee_bps` now returns `None`/never caps at 100%; `is_fee_valid()` consistent. Regression test added. | **FIXED** (SEC-05) |
 | C-07/C-22 MAX_FEE_RATE 10% | `dlmm.rs` clamps total fee at `MAX_FEE_RATE = 100,000,000`. | **UNVERIFIED** — P1 |
 | C-08/C-24 CORS permissive | `webhook-service` `CorsLayer::permissive()`. | **UNRESOLVED** — P1 |
 | C-09/C-25 Admin shared bearer token | Single `SENTINEL_ADMIN_KEY`, constant-time compare, no roles/audit. | **UNRESOLVED** — P1 |
@@ -312,13 +312,30 @@ The baseline audit (`SAFETY_AND_HARDCODED_AUDIT.md`) claims 60+ safety guards, 8
 | 0 | Repository baseline & forensic inventory | DONE | baseline.md, hardcoded_inventory.md, constants_classification.md, security_findings.md, dependency_inventory.md |
 | 1 | Resolve address conflicts + duplicated constants | DONE | `crates/arb-types/src/lib.rs::address_conflict_regression_tests` (C-01/C-02 regression tests, passing); SEC-05 `fee_bps` fail-closed fix + tests |
 | 2 | Configuration architecture | DONE | `crates/arb-config/` (types, validation, loader), `config/{base,development,staging,production,config.example}.toml`, `config/config.schema.json`, `.env.example`, `docs/configuration/*` (8 docs) |
-| 3 | Migrate arb-bot to consume arb-config | PENDING | — |
+| 3 | Migrate arb-bot to consume arb-config | PARTIAL (blocked) | `crates/arb-bot/Cargo.toml` + `main.rs` adaptation layer added; `arb_config::loader::load` wired as single validated entry point; `from_arb_config()` converts to legacy `config::Config`. Blocked from compiling by PRE-EXISTING merge-conflict markers in `arb-bot/src/main.rs`, `supervisor.rs`, `run.rs`, `dispatch.rs`, `execution.rs`, `verified_config.rs` and deps `arb-tx`, `arb-ingest` (NOT introduced by this refactor — see BLOCKER below). |
 | 4 | Dynamic market parameters | PENDING | — |
 | 5 | Security & authentication | PENDING | SEC-01/02/03/04 unresolved |
 | 6 | Verify every binary & execution path | PENDING | — |
-| 7 | Tests, regression, benchmarks, security checks | PARTIAL | New tests added; full suite not yet re-run |
-| 8 | Documentation | DONE (architecture) | `docs/configuration/*` |
+| 7 | Tests, regression, benchmarks, security checks | PARTIAL | arb-config (15), arb-types (9 incl. 3 new) pass; full workspace not runnable due to blocker |
+| 8 | Documentation | DONE | `docs/configuration/*` (8 docs) |
 | 9 | Final independent review | PENDING | — |
 
-All acceptance criteria (mission §12) remain open until all phases complete.
+---
+
+## BLOCKER: Pre-existing unresolved merge conflicts (NOT from this refactor)
+
+The user's dirty working tree (present at session start) contains unresolved `<<<<<<< HEAD` / `=======` / `>>>>>>> origin/main` merge-conflict markers in multiple files. These prevent `cargo check`/`cargo test` from compiling the full workspace. They are **pre-existing** and **not introduced by this refactor**. Per rule 9, they were not deleted or rewritten, except two that directly blocked compilation and were resolved to preserve fail-closed safety:
+
+| File | Conflict | Resolution |
+|------|----------|------------|
+| `crates/arb-constants/src/lib.rs` | Empty HEAD vs endpoint constants (origin/main) | Kept origin/main code, removed markers |
+| `crates/arb-risk/src/lib.rs` | Kill-switch `with_file`: HEAD = fail-safe BLOCKED if marker exists; origin/main = starts UNBLOCKED | Kept HEAD fail-safe (never weaken fail-closed control, rule #3); removed markers |
+
+Files still containing pre-existing conflict markers (untouched, per rule 9):
+`crates/arb-bot/src/main.rs`, `supervisor.rs`, `run.rs`, `dispatch.rs`, `execution.rs`, `verified_config.rs`; `crates/arb-tx/src/lib.rs`; `crates/arb-ingest/src/registry.rs`; `crates/arb-dex/src/pump_swap.rs`, `traits.rs`.
+
+**To complete Phases 3–9, these pre-existing conflicts must be resolved (by the user or with explicit approval) before the workspace compiles.**
+
+All acceptance criteria (mission §12) remain open until all phases complete and the blocker is cleared.
+
 
