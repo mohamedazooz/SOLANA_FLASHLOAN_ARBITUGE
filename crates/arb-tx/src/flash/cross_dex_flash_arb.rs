@@ -421,8 +421,17 @@ pub fn build_cross_dex_flash_arbitrage_v1(
     // This should be calculated based on the actual accounts used
     let loaded_accounts_data_size_limit = 256_000u64; // 256 KB default
 
+    // The v1 priority fee is an absolute total in lamports: scale the legacy
+    // micro-lamports-per-CU quote by the CU limit (ceil), never divide it away.
+    let priority_fee_lamports = crate::adaptive::total_priority_fee_lamports(
+        params.priority_fee_micro_lamports,
+        u64::from(params.cu_limit),
+    )
+    .ok_or_else(|| {
+        CrossDexFlashArbError::AtomicityFailed("V1 priority fee exceeds u64 lamports".to_string())
+    })?;
     let v1_config = crate::adaptive::V1ConfigParams {
-        priority_fee_lamports: Some(params.priority_fee_micro_lamports / 1_000_000),
+        priority_fee_lamports: Some(priority_fee_lamports),
         compute_unit_limit: Some(params.cu_limit),
         loaded_accounts_data_size_limit: Some(loaded_accounts_data_size_limit as u32),
         heap_size: None,

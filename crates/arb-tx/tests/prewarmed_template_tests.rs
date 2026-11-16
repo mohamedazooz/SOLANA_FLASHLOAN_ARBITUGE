@@ -263,3 +263,55 @@ fn test_prewarmed_template_latency_benchmark() {
 
     assert!(avg_template_micros > 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: V1 compile_and_sign must embed the absolute priority-fee total
+// ---------------------------------------------------------------------------
+
+#[test]
+fn v1_compile_and_sign_embeds_absolute_priority_fee_total() {
+    let signer = KeypairSigner::new_random();
+    let blockhash = [7u8; 32];
+
+    let cu_limit_ix = build_compute_unit_limit(250_000);
+    let prio_fee_ix = build_compute_unit_price(5_000);
+    let instructions = vec![cu_limit_ix, prio_fee_ix];
+
+    let template = PrewarmedUnsignedTemplate::new(
+        signer.pubkey(),
+        instructions,
+        blockhash,
+        vec![],
+        0,       // fee_sf
+        250_000, // cu_limit
+        5_000,   // priority_fee_micro_lamports (legacy per-CU semantics)
+        0,       // tip_lamports
+        None,    // tip_account
+        vec![],  // hop_instruction_indices
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let tx = template
+        .compile_and_sign(&signer, CompilerCapabilities::v0_standard())
+        .expect("compile and sign template");
+
+    // V1 message layout: version(1) + header(3) + mask(4) + blockhash(32)
+    // + num_instructions(1) + num_addresses(1) + addresses(32*n) + config values.
+    let mask = u32::from_le_bytes(tx.message_bytes[4..8].try_into().unwrap());
+    assert_eq!(mask & 0x03, 0x03, "priority fee mask bits must be set");
+    let num_addresses = tx.message_bytes[41] as usize;
+    let cfg_start = 42 + 32 * num_addresses;
+    let embedded_fee = u64::from_le_bytes(
+        tx.message_bytes[cfg_start..cfg_start + 8]
+            .try_into()
+            .unwrap(),
+    );
+
+    // 5_000 µlam/CU x 250_000 CU = 1_250 lamports absolute total. The old
+    // hardcoded Some(0) (and any per-CU/1e6 division) would embed 0 here.
+    assert_eq!(embedded_fee, 1_250);
+}

@@ -66,6 +66,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 16
 debug = false
+# Defense-in-depth for token/lamport arithmetic: panic on unexpected overflow
+# even though all money paths use explicit checked_* ops. Prevents a silently
+# wrapping value from ever reaching signing or repayment logic.
+overflow-checks = true
 
 [profile.bench]
 inherits = "release"

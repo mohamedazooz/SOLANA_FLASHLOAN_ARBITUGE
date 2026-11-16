@@ -537,3 +537,33 @@ fn test_empty_instruction_list_accepted() {
         AdaptiveTxCompiler::compile_v1_message(payer, &ixs, test_blockhash(), empty_config());
     assert!(result.is_ok(), "empty instruction list must be accepted");
 }
+
+// ---------------------------------------------------------------------------
+// Test: legacy per-CU priority fee -> V1 absolute total conversion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn total_priority_fee_lamports_converts_per_cu_to_absolute_total() {
+    use arb_tx::adaptive::total_priority_fee_lamports;
+
+    // 10_000 µlam/CU x 200_000 CU = 2_000_000_000 µlam = 2_000 lamports (exact)
+    assert_eq!(total_priority_fee_lamports(10_000, 200_000), Some(2_000));
+    // Ceil: 1 µlam/CU x 300_000 CU = 300_000 µlam -> 1 lamport (round up)
+    assert_eq!(total_priority_fee_lamports(1, 300_000), Some(1));
+    // Zero inputs stay zero
+    assert_eq!(total_priority_fee_lamports(0, 200_000), Some(0));
+    assert_eq!(total_priority_fee_lamports(1_000, 0), Some(0));
+    // Overflow fails closed (None), never saturates or wraps
+    assert_eq!(total_priority_fee_lamports(u64::MAX, u64::MAX), None);
+}
+
+#[test]
+fn total_priority_fee_lamports_matches_v1_doc_example() {
+    use arb_tx::adaptive::total_priority_fee_lamports;
+
+    // Solana docs: v1 priorityFee is an absolute total in lamports. A legacy
+    // quote of 5_000 µlam/CU over a 250_000 CU budget is exactly 1_250 lamports.
+    assert_eq!(total_priority_fee_lamports(5_000, 250_000), Some(1_250));
+    // 1_000 µlam/CU over 300_000 CU = 300 lamports exactly.
+    assert_eq!(total_priority_fee_lamports(1_000, 300_000), Some(300));
+}
