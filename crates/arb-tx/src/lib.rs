@@ -192,7 +192,6 @@ mod tests {
     #[test]
     fn builder_encodes_authoritative_cu_price_verbatim() {
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
-        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
         let opp = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(1),
@@ -208,7 +207,7 @@ mod tests {
                 pool_id: PoolId::new([10; 32]),
                 protocol: DexProtocol::RaydiumV4,
                 mint_in: MintId(wsol),
-                mint_out: MintId(usdc),
+                mint_out: MintId(wsol),
                 fee_bps: 25,
                 active_bin_id: None,
                 token_programs: [arb_types::TokenProgramKind::SplToken; 2],

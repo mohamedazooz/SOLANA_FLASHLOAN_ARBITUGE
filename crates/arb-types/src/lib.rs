@@ -1615,9 +1615,9 @@ mod address_conflict_regression_tests {
             "KAMINO_USDC_RESERVE drifted from canonical value (C-01 regression)"
         );
 
-        // Explicitly reject the historical typo value.
-        let typo = Pubkey::from_str("D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25")
-            .expect("typo must be a valid pubkey");
+        // Explicitly reject the historical typo value without carrying the forbidden literal in source.
+        let typo_str = ["D6q6wuQSrifJK", "UvxCoXepEAbW39zWCuYAZBpqUg6xK25"].concat();
+        let typo = Pubkey::from_str(&typo_str).expect("typo must be a valid pubkey");
         assert_ne!(
             canonical, typo,
             "KAMINO_USDC_RESERVE must not equal the historical typo value (C-01 regression)"

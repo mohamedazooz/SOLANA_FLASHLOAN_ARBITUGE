@@ -64,9 +64,7 @@ pub fn cap_cu_price_by_profit(
         .saturating_mul(max_share_bps)
         .div_ceil(10_000);
     // Largest per-CU price whose total cost stays within `budget`.
-    let max_price = budget
-        .saturating_mul(1_000_000)
-        / u64::from(cu_limit);
+    let max_price = budget.saturating_mul(1_000_000) / u64::from(cu_limit);
     desired_cu_price.min(max_price)
 }
 
