@@ -9,7 +9,7 @@ use crate::{
     AppConfig, ChronosConfig, ConfigError, ConfigResult, JitoConfig, JupiterConfig, Mode,
     ProviderConfig, RiskConfig, SecurityConfig, StrategyConfig, WalletConfig,
 };
-use arb_types::{Bps, Lamports};
+use arb_types::Bps;
 use std::collections::HashSet;
 
 /// Run the full validation suite over an `AppConfig`.
@@ -146,6 +146,22 @@ fn validate_jito(cfg: &JitoConfig) -> ConfigResult<()> {
             "jito.leader_refresh_secs must be positive".to_string(),
         ));
     }
+    if cfg.swqos_fallback_hurdle_lamports.0 == 0 {
+        return Err(ConfigError::Validation(
+            "jito.swqos_fallback_hurdle_lamports must be positive".to_string(),
+        ));
+    }
+    if cfg.swqos_fallback_priority_fee_lamports.0 == 0 {
+        return Err(ConfigError::Validation(
+            "jito.swqos_fallback_priority_fee_lamports must be positive".to_string(),
+        ));
+    }
+    if cfg.swqos_fallback_hurdle_lamports.0 < cfg.swqos_fallback_priority_fee_lamports.0 {
+        return Err(ConfigError::Validation(format!(
+            "jito.swqos_fallback_hurdle_lamports ({}) must be >= swqos_fallback_priority_fee_lamports ({})",
+            cfg.swqos_fallback_hurdle_lamports.0, cfg.swqos_fallback_priority_fee_lamports.0
+        )));
+    }
     Ok(())
 }
 
@@ -238,6 +254,12 @@ fn validate_strategy(cfg: &StrategyConfig) -> ConfigResult<()> {
             ));
         }
     }
+    if !(2..=4).contains(&cfg.max_route_hops) {
+        return Err(ConfigError::Validation(format!(
+            "strategy.max_route_hops ({}) must be within 2..=4: each extra hop stacks another DEX fee plus another failure point, and routes longer than 4 hops are economically dominated by cumulative fees",
+            cfg.max_route_hops
+        )));
+    }
     Ok(())
 }
 
@@ -260,8 +282,7 @@ fn validate_risk(cfg: &RiskConfig) -> ConfigResult<()> {
     // Hourly loss limit must not exceed daily loss limit.
     if cfg.max_hourly_loss_usd.0 > cfg.max_daily_loss_usd.0 {
         return Err(ConfigError::Validation(
-            "risk.max_hourly_loss_usd must not exceed risk.max_daily_loss_usd"
-                .to_string(),
+            "risk.max_hourly_loss_usd must not exceed risk.max_daily_loss_usd".to_string(),
         ));
     }
     if cfg.max_consecutive_failures == 0 {
@@ -299,6 +320,11 @@ fn validate_risk(cfg: &RiskConfig) -> ConfigResult<()> {
     if cfg.cooldown_slots.0 == 0 {
         return Err(ConfigError::Validation(
             "risk.cooldown_slots must be positive".to_string(),
+        ));
+    }
+    if cfg.max_implausible_roi_bps.0 == 0 {
+        return Err(ConfigError::Validation(
+            "risk.max_implausible_roi_bps must be positive".to_string(),
         ));
     }
     Ok(())
@@ -346,14 +372,12 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
     if config.mode.mode == Mode::Live {
         if !config.mode.live_enabled {
             return Err(ConfigError::Validation(
-                "mode live requires execution.live_enabled == true (ARB_LIVE=1)"
-                    .to_string(),
+                "mode live requires execution.live_enabled == true (ARB_LIVE=1)".to_string(),
             ));
         }
-        if config.security.webhook_signature_required == false {
+        if !config.security.webhook_signature_required {
             return Err(ConfigError::Validation(
-                "live mode requires security.webhook_signature_required == true"
-                    .to_string(),
+                "live mode requires security.webhook_signature_required == true".to_string(),
             ));
         }
         // Admin token env must be declared.
@@ -365,8 +389,7 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
         // CORS must not be permissive in live mode: require explicit origins.
         if config.security.cors_allow_origins.is_empty() {
             return Err(ConfigError::Validation(
-                "live mode requires security.cors_allow_origins to be non-empty"
-                    .to_string(),
+                "live mode requires security.cors_allow_origins to be non-empty".to_string(),
             ));
         }
         // A real RPC endpoint is required to trade live.
@@ -390,7 +413,12 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
 /// declared and not obviously placeholders.
 pub fn check_no_placeholder_secret_env_names(config: &AppConfig) -> ConfigResult<()> {
     let placeholders = [
-        "changeme", "change-me", "placeholder", "your_token_here", "token", "",
+        "changeme",
+        "change-me",
+        "placeholder",
+        "your_token_here",
+        "token",
+        "",
     ];
     for env_name in [
         &config.provider.primary_token_env,
@@ -450,6 +478,64 @@ mod tests {
         let mut cfg = base_valid();
         cfg.strategy.max_price_impact_bps = Bps(20_000);
         assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn max_route_hops_default_is_three() {
+        let cfg = base_valid();
+        assert_eq!(cfg.strategy.max_route_hops, 3);
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn max_route_hops_beyond_four_rejected() {
+        let mut cfg = base_valid();
+        cfg.strategy.max_route_hops = 5;
+        let err = validate(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("max_route_hops"),
+            "error must name the key: {err}"
+        );
+    }
+
+    #[test]
+    fn max_route_hops_below_two_rejected() {
+        let mut cfg = base_valid();
+        cfg.strategy.max_route_hops = 1;
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn max_route_hops_four_accepted() {
+        let mut cfg = base_valid();
+        cfg.strategy.max_route_hops = 4;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn http_discovery_disabled_by_default() {
+        let cfg = base_valid();
+        assert!(!cfg.strategy.http_discovery_enabled);
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn http_discovery_explicitly_enabled_accepted() {
+        let mut cfg = base_valid();
+        cfg.strategy.http_discovery_enabled = true;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn http_discovery_toml_default_is_off() {
+        let cfg: crate::StrategyConfig = toml::from_str(
+            "base_tokens = []\nmin_net_profit_abs = 0\nmin_net_profit_bps = 0\nmax_price_impact_bps = 0\nmax_state_age_slots = 2\n",
+        )
+        .unwrap();
+        assert!(
+            !cfg.http_discovery_enabled,
+            "HTTP discovery must default to disabled (fail-closed)"
+        );
     }
 
     #[test]
@@ -520,5 +606,40 @@ mod tests {
         cfg.jito.max_tip_lamports = Lamports(1_000);
         cfg.jito.min_keep_lamports = Lamports(0);
         assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn operational_dehardcoded_params_validated() {
+        let mut cfg = base_valid();
+        assert_eq!(cfg.strategy.contingency_buffer_lamports.0, 10_000);
+        assert_eq!(cfg.risk.max_implausible_roi_bps.0, 1_500);
+        assert_eq!(cfg.jito.swqos_fallback_hurdle_lamports.0, 8_000);
+        assert_eq!(cfg.jito.swqos_fallback_priority_fee_lamports.0, 2_000);
+
+        cfg.jito.swqos_fallback_hurdle_lamports = Lamports(0);
+        assert!(validate(&cfg).is_err());
+        cfg.jito.swqos_fallback_hurdle_lamports = Lamports(8_000);
+
+        cfg.jito.swqos_fallback_priority_fee_lamports = Lamports(0);
+        assert!(validate(&cfg).is_err());
+        cfg.jito.swqos_fallback_priority_fee_lamports = Lamports(2_000);
+
+        cfg.risk.max_implausible_roi_bps = Bps(0);
+        assert!(validate(&cfg).is_err());
+        cfg.risk.max_implausible_roi_bps = Bps(1_500);
+
+        // Economic invariant: SWQoS hurdle must be >= priority fee
+        cfg.jito.swqos_fallback_hurdle_lamports = Lamports(1_000);
+        cfg.jito.swqos_fallback_priority_fee_lamports = Lamports(2_000);
+        assert!(validate(&cfg).is_err());
+        cfg.jito.swqos_fallback_hurdle_lamports = Lamports(8_000);
+        cfg.jito.swqos_fallback_priority_fee_lamports = Lamports(2_000);
+
+        // Contingency buffer boundary: 0 is legal (pure floor without slippage padding)
+        cfg.strategy.contingency_buffer_lamports = Lamports(0);
+        assert!(validate(&cfg).is_ok());
+        cfg.strategy.contingency_buffer_lamports = Lamports(10_000);
+
+        assert!(validate(&cfg).is_ok());
     }
 }

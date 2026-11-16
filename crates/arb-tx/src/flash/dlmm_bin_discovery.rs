@@ -23,7 +23,8 @@ use crate::{
     derive_meteora_bin_array_pda,
 };
 use arb_constants::{
-    METEORA_BINS_PER_BIN_ARRAY, meteora_bin_array_index_requires_bitmap_extension,
+    METEORA_BINS_PER_BIN_ARRAY, METEORA_MAX_BINS_PER_SWAP,
+    meteora_bin_array_index_requires_bitmap_extension,
 };
 use solana_pubkey::Pubkey;
 
@@ -53,6 +54,9 @@ pub enum BinArrayPlanError {
     AccountBudget { required: usize, budget: usize },
     /// The estimated transaction size exceeds the protocol limit.
     SizeBudget { estimated: usize, limit: usize },
+    /// The traversal depth exceeds the `lb_clmm` 0.12.0 per-swap bin limit
+    /// (`METEORA_MAX_BINS_PER_SWAP`); the on-chain swap would abort.
+    DepthAboveSwapLimit { bins: u32, limit: u32 },
 }
 
 /// A resolved bin-array plan for one DLMM swap.
@@ -118,6 +122,12 @@ pub fn plan_bin_arrays(
 ) -> Result<DlmmBinArrayPlan, BinArrayPlanError> {
     if bins_traversed == 0 {
         return Err(BinArrayPlanError::ZeroDepth);
+    }
+    if bins_traversed > METEORA_MAX_BINS_PER_SWAP {
+        return Err(BinArrayPlanError::DepthAboveSwapLimit {
+            bins: bins_traversed,
+            limit: METEORA_MAX_BINS_PER_SWAP,
+        });
     }
 
     let step: i64 = if swap_for_y { -1 } else { 1 };
@@ -310,6 +320,22 @@ mod tests {
     }
 
     #[test]
+    fn traversal_above_the_0_12_0_swap_bin_limit_fails_closed() {
+        // lb_clmm 0.12.0: max 260 bins per swap instruction (was 280).
+        let err = plan_bin_arrays(&pool(), 0, true, 261).unwrap_err();
+        assert_eq!(
+            err,
+            BinArrayPlanError::DepthAboveSwapLimit {
+                bins: 261,
+                limit: 260
+            }
+        );
+        // The limit itself remains plannable.
+        let plan = plan_bin_arrays(&pool(), 0, false, 260).unwrap();
+        assert_eq!(plan.bins_traversed, 260);
+    }
+
+    #[test]
     fn single_bin_traversal_needs_one_array() {
         for swap_for_y in [true, false] {
             let plan = plan_bin_arrays(&pool(), 0, swap_for_y, 1).unwrap();
@@ -393,7 +419,7 @@ mod tests {
         // array in the upward direction; the precise plan must never require more.
         for active in [-6168i32, -1, 0, 69, 70, 1000] {
             for swap_for_y in [true, false] {
-                for depth in [1u32, 35, 70, 71, 140, 141, 300] {
+                for depth in [1u32, 35, 70, 71, 140, 141, 260] {
                     let plan = plan_bin_arrays(&pool(), active, swap_for_y, depth).unwrap();
                     let legacy = crate::meteora_bin_array_indices(active, swap_for_y, depth);
                     assert!(

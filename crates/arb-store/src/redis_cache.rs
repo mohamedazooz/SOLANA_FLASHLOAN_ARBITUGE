@@ -198,11 +198,6 @@ impl RedisStore {
         self.redis_url.as_deref()
     }
 
-    /// Whether a live Redis server connection is active (vs. local in-memory only).
-    pub fn is_live_redis(&self) -> bool {
-        self.redis_client.is_some()
-    }
-
     /// Store raw bytes (e.g. a pre-warmed transaction wire template) under `key`.
     ///
     /// The bytes are base64-encoded so the Redis value stays a printable string,

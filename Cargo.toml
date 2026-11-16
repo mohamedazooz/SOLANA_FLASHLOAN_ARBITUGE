@@ -54,7 +54,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
 parking_lot = "0.12"
-arc-swap = "1"
 
 proptest = "1"
 criterion = "0.5"
@@ -64,9 +63,14 @@ solami = { version = "0.1.58", features = ["full"] }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 16
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 debug = false
+# Defense-in-depth for token/lamport arithmetic: panic on unexpected overflow
+# even though all money paths use explicit checked_* ops. Prevents a silently
+# wrapping value from ever reaching signing or repayment logic.
+overflow-checks = true
 
 [profile.bench]
 inherits = "release"

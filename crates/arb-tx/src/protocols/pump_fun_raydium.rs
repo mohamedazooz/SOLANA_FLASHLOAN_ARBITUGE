@@ -363,23 +363,6 @@ impl PumpFunRaydiumArbitrageBuilder {
             .context("Failed to compile unsigned template")?;
         Ok(tx)
     }
-
-    /// Build and validate the transaction packet constraints
-    pub fn build_and_submit(&self) -> Result<Pubkey> {
-        if self.payer != Pubkey::default()
-            && self.meme_mint != Pubkey::default()
-            && self.amount_in_lamports > 0
-        {
-            let tx_bytes = self.build()?;
-            validate_jito_bundle(&[tx_bytes])?;
-        }
-        Ok(self.payer)
-    }
-}
-
-#[cfg(test)]
-pub fn build_and_submit_pump_fun_raydium_arbitrage() -> Result<Pubkey> {
-    PumpFunRaydiumArbitrageBuilder::new().build_and_submit()
 }
 
 #[cfg(test)]

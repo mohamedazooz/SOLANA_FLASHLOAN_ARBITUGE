@@ -58,7 +58,7 @@ async fn main() -> Result<()> {
     let orca_vault_usdc_pk = Pubkey::from_str(orca_usdc_vault)?;
 
     // Online-verified Raydium v4 authority PDA
-    let raydium_authority = Pubkey::from_str("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")?;
+    let raydium_authority = Pubkey::from_str(arb_constants::RAYDIUM_V4_AUTHORITY)?;
 
     let mut raydium_pool = RaydiumV4Pool::new(
         PoolId(Pubkey::from_str(raydium_sol_usdc)?),
@@ -259,7 +259,7 @@ async fn main() -> Result<()> {
                         Lamports(0),
                         1, // WSOL: 1 lamport == 1 raw unit rate num
                         1, // WSOL rate denom
-                        TokenAmount(30_000),
+                        TokenAmount(arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS),
                         Slot(0),
                         0,
                     ) {

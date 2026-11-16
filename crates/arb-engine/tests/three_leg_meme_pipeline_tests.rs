@@ -63,16 +63,19 @@ fn make_dlmm_pool(
             bin_id: active_bin_id - 1,
             amount_x: liquidity * 2,
             amount_y: 0,
+            ..Default::default()
         },
         DlmmBin {
             bin_id: active_bin_id,
             amount_x: liquidity,
             amount_y: liquidity,
+            ..Default::default()
         },
         DlmmBin {
             bin_id: active_bin_id + 1,
             amount_x: 0,
             amount_y: liquidity * 2,
+            ..Default::default()
         },
     ];
 
@@ -99,6 +102,7 @@ fn make_dlmm_pool(
         volatility_reference: 0,
         index_reference: active_bin_id,
         last_update_timestamp: 1_700_000_000,
+        support_limit_order: false,
     };
 
     let exec = PoolExecutionAccounts::MeteoraDlmm {
@@ -182,7 +186,7 @@ fn params(input_size: u64) -> ThreeLegMemeContextParams {
         recent_blockhash: [42u8; 32],
         v1_transport_supported: true,
         slippage_bps: 100,
-        min_profit_lamports: 30_000,
+        min_profit_lamports: arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS,
         flash_loan_fee_sf: 0,
         network_cost_lamports: 0,
         kamino_available_liquidity: None,

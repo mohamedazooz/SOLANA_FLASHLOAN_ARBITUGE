@@ -183,3 +183,52 @@ These must NOT remain static; they must be observed from live data with freshnes
 - All mainnet pool/vault addresses (A33-A61) are UNVERIFIED against on-chain state. They must be verified via mint identity, vault authority, and pool state before being treated as authoritative.
 - Meteora `BINS_PER_BIN_ARRAY=70` (A43) is asserted to match `lb_clmm` but not independently re-verified in this session.
 - Kamino reserve offsets (A58-A61) verified 2026-11-04 per source comment; re-verification pending if program upgraded.
+
+---
+
+## Session-4 refresh (2026-11-16, commit series ending 4096f14+)
+
+Independent re-scan performed after the security refactor. Deltas against the
+inventory above:
+
+### Removed this session (were classified B/G with conflicts)
+| Former value | Location | Disposition |
+|---|---|---|
+| `MAX_VELOCITY_ORDERS_PER_HOUR = 10` | `crates/arb-risk/src/lib.rs` | Deleted (dead + contradicted `RiskLimits::max_orders_per_hour = 120`, which remains the single authoritative value) |
+| Fabricated `pool_coin_vault DQyrAcCrDXYZ...5jz` | `crates/arb-types/src/lib.rs` (dead duplicate struct) | Entire dead struct+impl deleted; `arb-constants::RAYDIUM_SOL_VAULT` is the single source of truth (on-chain verified) |
+
+### Added this session (webhook-service operational configuration, class B)
+| Key | Default | Unit | Validation | Source |
+|---|---|---|---|---|
+| `server.rate_limit_requests_per_minute` | 600 | requests/60 s per client | 0 = disabled; otherwise >= 10 (validated, fail-closed) | `webhook-service/src/config.rs` |
+| `server.max_event_age_secs` | 0 (disabled) | seconds | u64; enabled guard rejects stale/far-future/missing timestamps | `webhook-service/src/config.rs` |
+| `server.auth_token_env` | "" (unset) | env-var NAME | when set, env var MUST exist and be non-empty at load (fail-closed) | `webhook-service/src/config.rs::load_from_file` |
+| `server.max_body_bytes` | 1_048_576 | bytes | usize | (added session 3/4) |
+| `server.cors_allowed_origins` | [] | origin strings | empty = no CORS headers | (added session 3/4) |
+
+### New code constants (class A/E, in-code by design)
+| Value | Location | Class | Justification |
+|---|---|---|---|
+| Fixed rate-limit window = 60 s | `webhook-service/src/rate_limit.rs` | E (mathematical/operational unit) | "per minute" definition; configurable count around it |
+| `MAX_TRACKED_KEYS = 10_000` | `webhook-service/src/rate_limit.rs` | B (memory bound) | prune threshold; bounded-memory guarantee |
+| Future-skew allowance = 300 s | `webhook-service/src/lib.rs::event_age_allowed` | B (operational) | clock-skew tolerance for replay guard |
+| HMAC-SHA256 + optional `sha256=` prefix | `webhook-service/src/lib.rs::verify_hmac_signature` | A (protocol: RFC 2104 / GitHub-Standard-Webhooks convention) | verified against public webhook-signature conventions |
+
+### Independent scan results (verification of inventory completeness)
+- URLs/endpoints in non-test source: Jito block-engine regions (latency_bench,
+  configurable per region at runtime), Telegram API (token from env), Binance/
+  Coinbase public price tickers (telegram.rs SOL/USD fallback), Kobe validators.
+  All documented; none are secrets.
+- 124 `Duration::from_secs/from_millis` literals in non-test crate sources —
+  operational timeouts; the majority are already wired to config via arb-config;
+  remainder are internal poll/tick intervals (class B, low risk, documented in
+  constants_classification.md).
+- 155 base58 literals outside arb-constants/tests: audited sample — canonical
+  protocol addresses (Raydium AMM authority `5Q544...ge4j1`, Serum program
+  `srmqP...tPX`) and real mainnet pool fixtures (class F) used as defaults in
+  protocol builders; no fabricated addresses remain (guarded by
+  `crates/arb-tx/tests/address_regression_guards.rs`).
+
+**Secrets scan:** zero committed secrets (auth tokens resolved via env-var names,
+fail-closed; `ServerConfig` Debug redacts `auth_token`; `Secret` type redacts
+Debug/Display).

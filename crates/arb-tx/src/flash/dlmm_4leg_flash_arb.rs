@@ -27,11 +27,10 @@
 //! 7. **Atomicity self-check** - verify_atomic_integrity before signing
 //! 8. **Size limit** - V1 with 4096 bytes maximum, no ALTs
 
-use crate::atomic_integrity::{ExecutionMode, verify_atomic_integrity};
 use crate::meteora_dlmm::{DlmmSwapAccountSet, MEMO_PROGRAM_ID_STR, build_swap2_exact_in};
 use crate::{
-    CompiledInstruction, KaminoFlashParams, KeypairSigner, build_compute_unit_limit,
-    build_compute_unit_price, build_create_ata_idempotent_for_program, build_kamino_flash_borrow,
+    CompiledInstruction, KaminoFlashParams, build_compute_unit_limit, build_compute_unit_price,
+    build_create_ata_idempotent_for_program, build_kamino_flash_borrow,
     build_kamino_flash_repay_with_index, get_associated_token_address_with_program_id,
 };
 use solana_pubkey::Pubkey;
@@ -540,103 +539,6 @@ pub fn assemble_flash_funded_four_pool(
     }
 
     Ok((ixs, borrow_idx, repay_idx))
-}
-
-/// Assemble and sign the 4-leg flash-funded transaction as V1.
-pub fn build_flash_funded_four_pool_v1_transaction(
-    params: &FlashArb4LegParams,
-    signer: &KeypairSigner,
-) -> Result<FlashFourLegArbitrageTx, FlashArb4LegError> {
-    let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_four_pool(params)?;
-
-    // Atomicity self-check
-    let verification = verify_atomic_integrity(
-        ExecutionMode::SingleTransaction,
-        &ixs,
-        Some(borrow_idx),
-        Some(repay_idx),
-        params.borrow_amount,
-        params.repay_amount(),
-        params.flash_fee,
-    )
-    .map_err(|e| FlashArb4LegError::AltCompilation(e.to_string()))?;
-
-    if !verification.is_atomic {
-        return Err(FlashArb4LegError::AtomicityFailed(
-            verification
-                .rejection_reason
-                .unwrap_or_else(|| "unknown".to_string()),
-        ));
-    }
-
-    // V1 compilation
-    let loaded_accounts_data_size_limit = params
-        .loaded_accounts_data_size_limit
-        .ok_or(FlashArb4LegError::MissingLoadedAccountsDataLimit)?;
-
-    // Use adaptive compiler for V1
-    let v1_config = crate::adaptive::V1ConfigParams {
-        priority_fee_lamports: Some(params.priority_fee_micro_lamports / 1_000_000),
-        compute_unit_limit: Some(params.cu_limit),
-        loaded_accounts_data_size_limit: Some(loaded_accounts_data_size_limit as u32),
-        heap_size: None,
-    };
-
-    let compiled = crate::adaptive::AdaptiveTxCompiler::compile_v1_only(
-        signer,
-        &ixs,
-        params.recent_blockhash,
-        v1_config,
-    )
-    .map_err(|e| FlashArb4LegError::AltCompilation(e.to_string()))?;
-
-    // Check size limit
-    let wire_bytes = compiled.wire_bytes.clone();
-    if wire_bytes.len() > 4096 {
-        return Err(FlashArb4LegError::TransactionTooLarge {
-            size: wire_bytes.len(),
-            limit: 4096,
-        });
-    }
-
-    Ok(FlashFourLegArbitrageTx {
-        wire_bytes: wire_bytes.clone(),
-        tx_size: wire_bytes.len(),
-        instructions: ixs,
-        borrow_instruction_index: borrow_idx,
-        repay_instruction_index: repay_idx,
-        borrow_amount: params.borrow_amount,
-        flash_fee: params.flash_fee,
-        repay_amount: params.repay_amount(),
-        min_leg_1_out: params.leg_1.min_amount_out,
-        min_leg_2_out: params.leg_2.min_amount_out,
-        min_leg_3_out: params.leg_3.min_amount_out,
-        min_leg_4_out: params.leg_4.min_amount_out,
-        settlement_account: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_1.token_in(),
-            &params.leg_1.token_in_program(),
-        ),
-        intermediate_account_a: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_1.token_out(),
-            &params.leg_1.token_out_program(),
-        ),
-        intermediate_account_b: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_2.token_out(),
-            &params.leg_2.token_out_program(),
-        ),
-        intermediate_account_c: get_associated_token_address_with_program_id(
-            &params.payer,
-            &params.leg_3.token_out(),
-            &params.leg_3.token_out_program(),
-        ),
-        pool_1: params.leg_1.lb_pair,
-        pool_2: params.leg_2.lb_pair,
-        pool_3: params.leg_3.lb_pair,
-        pool_4: params.leg_4.lb_pair,
-    })
 }
 
 #[cfg(test)]

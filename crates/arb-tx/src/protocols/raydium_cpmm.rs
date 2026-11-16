@@ -34,7 +34,7 @@ impl RaydiumCpmmAccounts {
             &[RAYDIUM_CPMM_OBSERVATION_SEED, pool.as_ref()],
             &program_id,
         );
-        let amm_config = Pubkey::from_str("D4A2sqNAqqDy1bMT7BpTNNYTubbmMcETcpKEqZiiNtSZ").unwrap();
+        let amm_config = Pubkey::from_str(RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG).unwrap();
         let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
 
         Self {
@@ -103,7 +103,7 @@ impl RaydiumCpmmAccounts {
     ) -> Self {
         let input_vault = derive_raydium_cpmm_vault_pda(&pool, &input_token_mint);
         let output_vault = derive_raydium_cpmm_vault_pda(&pool, &output_token_mint);
-        let amm_config = Pubkey::from_str("D4A2sqNAqqDy1bMT7BpTNNYTubbmMcETcpKEqZiiNtSZ").unwrap();
+        let amm_config = Pubkey::from_str(RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG).unwrap();
         Self::for_pool(
             pool,
             payer,

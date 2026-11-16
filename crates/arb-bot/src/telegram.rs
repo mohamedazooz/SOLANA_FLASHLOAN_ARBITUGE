@@ -9,6 +9,17 @@ use reqwest::Client;
 use serde_json::json;
 use tracing::{debug, error, info, warn};
 
+/// Telegram 403 is a PERMANENT recipient state — never retry it (retries can
+/// never succeed and only burn rate limit). Report the remediation exactly once.
+fn report_telegram_403_once() {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        error!(
+            "Telegram API returned 403 Forbidden — PERMANENT recipient state; alerts will NOT be delivered until fixed. Causes: (1) the target chat never sent /start to this bot, (2) the bot was blocked by the recipient, (3) TELEGRAM_CHAT_ID is another bot's @username (bots cannot message bots — use your numeric user ID or a group/channel the bot is in), (4) the bot token was revoked (regenerate via @BotFather). Not retrying."
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct TelegramNotifier {
     bot_token: Option<String>,
@@ -112,6 +123,10 @@ impl TelegramNotifier {
                                         );
                                         while rx.try_recv().is_ok() {}
                                         tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                                    } else if resp.status().as_u16() == 403 {
+                                        report_telegram_403_once();
+                                        while rx.try_recv().is_ok() {}
+                                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                                     } else {
                                         warn!("Telegram API returned status {}", resp.status());
                                     }
@@ -280,6 +295,8 @@ impl TelegramNotifier {
                 Ok(resp) => {
                     if resp.status().as_u16() == 429 {
                         warn!("Telegram API returned status 429 Too Many Requests");
+                    } else if resp.status().as_u16() == 403 {
+                        report_telegram_403_once();
                     } else {
                         warn!("Telegram API returned status {}", resp.status());
                     }
@@ -295,60 +312,6 @@ impl TelegramNotifier {
             }
         }
         Ok(())
-    }
-
-    /// The bot is firing on an opportunity: route, expected net, and slot.
-    pub async fn alert_opportunity(
-        &self,
-        route: &str,
-        gross_sol: f64,
-        net_sol: f64,
-        net_usd: f64,
-        slot: u64,
-        pools_count: usize,
-        loan_size_sol: f64,
-    ) {
-        let live_sol_price = self.sol_price();
-        let computed_net_usd = if net_usd > 0.0 {
-            net_usd
-        } else {
-            net_sol * live_sol_price
-        };
-        if net_sol < self.min_rejected_alert_sol && computed_net_usd < 1.0 {
-            return;
-        }
-        let loan_usd = loan_size_sol * live_sol_price;
-        let gross_usd = gross_sol * live_sol_price;
-        let pool_desc = if pools_count == 2 {
-            "Two-Leg Cycle"
-        } else if pools_count == 3 {
-            "Triangular Cycle"
-        } else {
-            "Multi-Hop Cycle"
-        };
-        let msg = format!(
-            "🎯 <b>فرصة مراجحة مقتنصة (> $1.00)</b>\n\n\
-             💰 <b>الربح الصافي الحقيقي (Net Profit):</b> <b>+{:.6} SOL</b> (~${:.2} USD)\n\
-             🏊 <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
-             🏦 <b>حجم قرض الفلاش (Flash Loan):</b> <code>{:.4} SOL (~${:.2} USD)</code>\n\
-             🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
-             📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
-             💵 <b>سعر SOL اللحظي المستخدم:</b> ${:.2} USD (سعر حي من السوق)\n\
-             🧊 <b>السلوت (Slot):</b> <code>{}</code>\n\
-             🛡️ <b>الحالة:</b> قيد الإرسال والتوجيه للبيلدر المعتمد",
-            net_sol,
-            computed_net_usd,
-            pools_count,
-            pool_desc,
-            loan_size_sol,
-            loan_usd,
-            esc(route),
-            gross_sol,
-            gross_usd,
-            live_sol_price,
-            slot
-        );
-        let _ = self.send_message(&msg).await;
     }
 
     /// Full telemetry alert for an opportunity with blockchain context and simulation data.
@@ -744,41 +707,6 @@ impl TelegramNotifier {
         let _ = self.send_message(&msg).await;
     }
 
-    /// Confirmed fill with full financial breakdown, blockchain verification, and stage latency.
-    /// Convenience alias forwarding directly to `notify_trade_executed`.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn alert_trade_landed(
-        &self,
-        signature: Option<&str>,
-        bundle_id: &str,
-        profit_sol: f64,
-        profit_usd: f64,
-        loan_size_sol: f64,
-        pools_count: usize,
-        tokens: &str,
-        venues: &str,
-        slot: u64,
-        leader: &str,
-        landed_status: &str,
-        timings: &str,
-    ) {
-        self.notify_trade_executed(
-            signature,
-            bundle_id,
-            profit_sol,
-            profit_usd,
-            loan_size_sol,
-            pools_count,
-            tokens,
-            venues,
-            slot,
-            leader,
-            landed_status,
-            timings,
-        )
-        .await;
-    }
-
     /// Bundle was rejected, dropped, or expired after dispatch.
     pub async fn alert_execution_dropped(&self, bundle_id: &str, route: &str, status: &str) {
         let msg = format!(
@@ -804,25 +732,6 @@ impl TelegramNotifier {
             esc(stage),
             esc(route),
             esc(reason)
-        );
-        let _ = self.send_message(&msg).await;
-    }
-
-    /// Opportunity confirmed by the simulator but not sent (shadow/simulate).
-    pub async fn alert_simulation_opportunity(
-        &self,
-        route_name: &str,
-        profit_sol: f64,
-        profit_usd: f64,
-    ) {
-        let msg = format!(
-            "🧪 <b>فرصة (محاكاة فقط)</b>\n\n\
-             💎 <b>الربح الصافي المتوقع:</b> +{:.6} SOL (~${:.2})\n\
-             🛣️ <b>المسار:</b> <code>{}</code>\n\
-             🛡️ <b>الحالة:</b> اجتازت المحاكاة، لم تُرسل",
-            profit_sol,
-            profit_usd,
-            esc(route_name)
         );
         let _ = self.send_message(&msg).await;
     }

@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arb-constants = { path = "../arb-constants" }
 arb-types = { path = "../arb-types" }
 arb-engine = { path = "../arb-engine" }
 arb-ingest = { path = "../arb-ingest" }

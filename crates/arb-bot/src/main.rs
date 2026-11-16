@@ -3,30 +3,15 @@
 //! M0 — Foundation & Bootstrap: CLI configuration, logging, safety checks.
 
 use anyhow::{Context, Result};
-use arb_config::{loader as arb_config_loader, AppConfig as ArbAppConfig, Mode as ArbMode};
 use std::fs::OpenOptions;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use arb_bot::*;
-
-/// LIVE execution is opt-in only when `ARB_LIVE` is explicitly truthy.
-///
-/// Presence alone must never authorize live trading: `.env.example` ships
-/// `ARB_LIVE=0`, and a truthiness bug here would enable signing/broadcasting.
-pub(crate) fn live_execution_enabled() -> bool {
-    is_truthy_flag(std::env::var("ARB_LIVE").ok().as_deref())
-}
-
-fn is_truthy_flag(value: Option<&str>) -> bool {
-    matches!(
-        value.map(str::trim),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
-    )
-}
 
 struct Args {
     config_path: String,
@@ -91,406 +76,6 @@ fn parse_args() -> Result<Args> {
     Ok(Args { config_path, mode })
 }
 
-<<<<<<< HEAD
-/// Bot configuration loaded from TOML file.
-pub mod config {
-    use serde::Deserialize;
-    use std::fs;
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct Config {
-        pub bot: BotConfig,
-        pub grpc: GrpcConfig,
-        pub rpc: RpcConfig,
-        pub jito: JitoConfig,
-        pub jupiter: JupiterConfig,
-        pub wallet: WalletConfig,
-        pub strategy: StrategyConfig,
-        pub risk: RiskConfig,
-        pub store: StoreConfig,
-        pub metrics: MetricsConfig,
-        pub admin: AdminConfig,
-        #[serde(default)]
-        pub chronos: ChronosConfig,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct ChronosConfig {
-        #[serde(default = "default_true")]
-        pub enabled: bool,
-        #[serde(default = "default_lambda")]
-        pub decay_lambda_per_sec: f64,
-        #[serde(default = "default_max_age_ms")]
-        pub max_age_ms: u64,
-        #[serde(default = "default_min_ev_usd")]
-        pub min_ev_usd: f64,
-        #[serde(default = "default_failed_cost")]
-        pub failed_attempt_cost_lamports: u64,
-        #[serde(default = "default_beta_risk")]
-        pub beta_risk_factor: f64,
-    }
-
-    fn default_true() -> bool {
-        true
-    }
-    fn default_lambda() -> f64 {
-        3.0
-    }
-    fn default_max_age_ms() -> u64 {
-        400
-    }
-    fn default_min_ev_usd() -> f64 {
-        0.05
-    }
-    fn default_failed_cost() -> u64 {
-        10_000
-    }
-    fn default_beta_risk() -> f64 {
-        0.0005
-    }
-    fn default_keep_share() -> f64 {
-        0.85
-    }
-    fn default_ladder_growth() -> f64 {
-        1.6
-    }
-    fn default_tip_floor_max_age_ms() -> u64 {
-        arb_land::DEFAULT_MAX_AGE_MS
-    }
-    fn default_tip_floor_poll_ms() -> u64 {
-        1_000
-    }
-    fn default_leader_gate_enabled() -> bool {
-        true
-    }
-    fn default_leader_refresh_secs() -> u64 {
-        60
-    }
-
-    impl Default for ChronosConfig {
-        fn default() -> Self {
-            Self {
-                enabled: true,
-                decay_lambda_per_sec: 3.0,
-                max_age_ms: 400,
-                min_ev_usd: 0.05,
-                failed_attempt_cost_lamports: 10_000,
-                beta_risk_factor: 0.0005,
-            }
-        }
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct GrpcConfig {
-        pub primary_url: String,
-        pub primary_token_env: String,
-        pub failover_url: Option<String>,
-        pub failover_token_env: Option<String>,
-        pub commitment: String,
-        pub ping_reply: bool,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct RpcConfig {
-        pub url: String,
-        pub commitment: String,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct JitoConfig {
-        pub regions: Vec<String>,
-        pub tip_floor_percentile: String,
-        pub tip_share_bps: u64,
-        pub max_tip_lamports: u64,
-        pub max_tip_share_bps: u64,
-        pub min_keep_lamports: u64,
-
-        // --- Adaptive tip pricing -------------------------------------------
-        // Every field below defaults, so an existing `config.toml` keeps
-        // parsing unchanged and the operator opts in by setting a value.
-        /// Fraction of the edge that must survive every cost, tip included.
-        #[serde(default = "default_keep_share")]
-        pub keep_share: f64,
-        /// Multiplicative cap on how far a retry may raise the previous tip.
-        #[serde(default = "default_ladder_growth")]
-        pub ladder_growth: f64,
-        /// Age past which a tip-floor snapshot is treated as absent.
-        #[serde(default = "default_tip_floor_max_age_ms")]
-        pub tip_floor_max_age_ms: u64,
-        /// Tip-floor poll interval; clamped to the endpoint's 1 rps per-IP limit.
-        #[serde(default = "default_tip_floor_poll_ms")]
-        pub tip_floor_poll_ms: u64,
-        /// Refuse to tip when the slot's leader is not known to run Jito-Solana.
-        #[serde(default = "default_leader_gate_enabled")]
-        pub leader_gate_enabled: bool,
-        /// Validator registry endpoint. `None` uses the public kobe deployment.
-        #[serde(default)]
-        pub kobe_url: Option<String>,
-        /// Where to persist the landing ledger. `None` keeps it in memory only.
-        #[serde(default)]
-        pub ledger_path: Option<String>,
-        /// Interval between leader-schedule refreshes, in seconds.
-        #[serde(default = "default_leader_refresh_secs")]
-        pub leader_refresh_secs: u64,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct JupiterConfig {
-        pub base_url: String,
-        pub api_key_env: String,
-        pub timeout_ms: u64,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct WalletConfig {
-        pub keypair_path: String,
-        pub cold_wallet_pubkey: Option<String>,
-        pub min_sol_balance_lamports: u64,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct StrategyConfig {
-        pub base_tokens: Vec<String>,
-        pub min_net_profit_abs: u64,
-        pub min_net_profit_bps: u64,
-        pub max_price_impact_bps: u64,
-        pub max_state_age_slots: u64,
-        /// Maximum slot age for a pool to enter the *discovery* graph. `None`
-        /// means "same policy as quote freshness" (`max_state_age_slots`).
-        /// This is an explicit policy, never an arbitrary multiplier.
-        #[serde(default)]
-        pub graph_max_age_slots: Option<u64>,
-        pub use_flash_loan: bool,
-        /// Hard cap on dynamically discovered pools (each costs account reads
-        /// every tick). `None` uses the discovery default.
-        pub max_pools: Option<usize>,
-        /// How often the pool catalog is refreshed, in seconds. `None` uses 300.
-        pub discovery_refresh_secs: Option<u64>,
-        /// Minimum TVL (USD) for a discovered pool. `None` uses the default.
-        pub discovery_min_tvl_usd: Option<f64>,
-    }
-
-    fn default_max_orders_per_hour() -> usize {
-        10
-    }
-
-    fn default_cooldown_slots() -> u64 {
-        75
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct RiskConfig {
-        pub max_trade_size_usd: f64,
-        pub max_daily_loss_usd: f64,
-        pub max_hourly_loss_usd: f64,
-        pub max_consecutive_failures: u64,
-        pub min_landing_rate: f64,
-        pub max_attempts_per_slot: u32,
-        pub max_inflight_bundles: u32,
-        pub max_tip_spend_ratio: f64,
-        #[serde(default = "default_max_orders_per_hour")]
-        pub max_orders_per_hour: usize,
-        #[serde(default = "default_cooldown_slots")]
-        pub cooldown_slots: u64,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct StoreConfig {
-        pub url: String,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct MetricsConfig {
-        pub listen: String,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct AdminConfig {
-        pub listen: String,
-        pub token_env: String,
-    }
-
-    #[derive(Debug, Deserialize, Clone)]
-    pub struct BotConfig {
-        pub mode: String,
-        #[serde(default)]
-        pub canary: bool,
-    }
-
-    pub fn load(path: &str) -> anyhow::Result<Config> {
-        use anyhow::Context;
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config file '{path}'"))?;
-        let mut config: Config =
-            toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
-
-        // The deployment environment is the source of truth for the notional cap.
-        if let Ok(raw) = std::env::var("MAX_TRADE_SIZE_USD") {
-            let value: f64 = raw.parse().context("MAX_TRADE_SIZE_USD must be numeric")?;
-            if !value.is_finite() || value <= 0.0 {
-                anyhow::bail!("MAX_TRADE_SIZE_USD must be positive and finite");
-            }
-            config.risk.max_trade_size_usd = value;
-        }
-        if let Ok(raw) = std::env::var("CHRONOS_DECAY_LAMBDA_PER_SEC") {
-            let value: f64 = raw
-                .parse()
-                .context("CHRONOS_DECAY_LAMBDA_PER_SEC must be numeric")?;
-            if !value.is_finite() || value < 0.0 {
-                anyhow::bail!("CHRONOS_DECAY_LAMBDA_PER_SEC must be finite and non-negative");
-            }
-            config.chronos.decay_lambda_per_sec = value;
-        }
-        if let Ok(raw) = std::env::var("CHRONOS_MAX_AGE_MS") {
-            config.chronos.max_age_ms = raw
-                .parse()
-                .context("CHRONOS_MAX_AGE_MS must be an integer")?;
-        }
-        if let Ok(raw) = std::env::var("CHRONOS_MIN_EV_USD") {
-            let value: f64 = raw.parse().context("CHRONOS_MIN_EV_USD must be numeric")?;
-            if !value.is_finite() || value < 0.0 {
-                anyhow::bail!("CHRONOS_MIN_EV_USD must be finite and non-negative");
-            }
-            config.chronos.min_ev_usd = value;
-        }
-
-        if config.risk.max_tip_spend_ratio > 1.0 {
-            anyhow::bail!("max_tip_spend_ratio must be <= 1.0");
-        }
-
-        // —— ChronosConfig validation ——
-        if config.chronos.max_age_ms < 100 || config.chronos.max_age_ms > 5000 {
-            anyhow::bail!(
-                "chronos.max_age_ms must be between 100 and 5000 ms, got {}",
-                config.chronos.max_age_ms
-            );
-        }
-        if config.chronos.decay_lambda_per_sec < 0.1 || config.chronos.decay_lambda_per_sec > 100.0
-        {
-            anyhow::bail!(
-                "chronos.decay_lambda_per_sec must be between 0.1 and 100.0, got {}",
-                config.chronos.decay_lambda_per_sec
-            );
-        }
-        if config.chronos.min_ev_usd < 0.0 {
-            anyhow::bail!(
-                "chronos.min_ev_usd must be >= 0.0, got {}",
-                config.chronos.min_ev_usd
-            );
-        }
-
-        if config.strategy.use_flash_loan {
-            use tracing::info;
-            info!("⚡ Flash Loan enabled — zero-risk atomic flash loan execution active");
-        }
-
-        Ok(config)
-    }
-
-    fn fmt_parse_error(path: &str) -> anyhow::Error {
-        anyhow::anyhow!("Failed to parse TOML configuration from '{path}'")
-    }
-
-    /// Convert the strongly-typed [`crate::ArbAppConfig`] into the legacy
-    /// flat [`Config`] consumed by [`Supervisor::new`].
-    ///
-    /// This is the Phase 3 adaptation layer: `arb-config` is now the single
-    /// validated loading authority, and the legacy struct is a thin adapter
-    /// kept so the supervisor's internal types and behavior are unchanged.
-    /// All validation has already run in [`crate::arb_config_loader::load`].
-    pub(super) fn from_arb_config(arb: crate::ArbAppConfig) -> Config {
-        let usd = |micros: arb_types::UsdMicros| micros.0 as f64 / 1_000_000.0;
-        Config {
-            bot: BotConfig {
-                mode: arb.mode.mode.to_string(),
-                canary: matches!(arb.mode.mode, crate::ArbMode::Canary),
-            },
-            grpc: GrpcConfig {
-                primary_url: arb.provider.primary_url,
-                primary_token_env: arb.provider.primary_token_env,
-                failover_url: arb.provider.failover_url,
-                failover_token_env: arb.provider.failover_token_env,
-                commitment: arb.provider.commitment,
-                ping_reply: arb.provider.ping_reply,
-            },
-            rpc: RpcConfig {
-                url: arb.provider.primary_url.clone(),
-                commitment: arb.provider.commitment.clone(),
-            },
-            jito: JitoConfig {
-                regions: arb.jito.regions,
-                tip_floor_percentile: arb.jito.tip_floor_percentile,
-                tip_share_bps: arb.jito.tip_share_bps.0 as u64,
-                max_tip_lamports: arb.jito.max_tip_lamports.0,
-                max_tip_share_bps: arb.jito.max_tip_share_bps.0 as u64,
-                min_keep_lamports: arb.jito.min_keep_lamports.0,
-                keep_share: arb.jito.keep_share,
-                ladder_growth: arb.jito.ladder_growth,
-                tip_floor_max_age_ms: arb.jito.tip_floor_max_age_ms.0,
-                tip_floor_poll_ms: arb.jito.tip_floor_poll_ms.0,
-                leader_gate_enabled: arb.jito.leader_gate_enabled,
-                kobe_url: arb.jito.kobe_url,
-                ledger_path: arb.jito.ledger_path,
-                leader_refresh_secs: arb.jito.leader_refresh_secs.0,
-            },
-            jupiter: JupiterConfig {
-                base_url: arb.jupiter.base_url,
-                api_key_env: arb.jupiter.api_key_env,
-                timeout_ms: arb.jupiter.timeout_ms.0,
-            },
-            wallet: WalletConfig {
-                keypair_path: arb.wallet.keypair_path,
-                cold_wallet_pubkey: arb.wallet.cold_wallet_pubkey,
-                min_sol_balance_lamports: arb.wallet.min_sol_balance_lamports.0,
-            },
-            strategy: StrategyConfig {
-                base_tokens: arb.strategy.base_tokens,
-                min_net_profit_abs: arb.strategy.min_net_profit_abs.0,
-                min_net_profit_bps: arb.strategy.min_net_profit_bps.0 as u64,
-                max_price_impact_bps: arb.strategy.max_price_impact_bps.0 as u64,
-                max_state_age_slots: arb.strategy.max_state_age_slots.0,
-                graph_max_age_slots: arb.strategy.graph_max_age_slots.map(|s| s.0),
-                use_flash_loan: arb.strategy.use_flash_loan,
-                max_pools: arb.strategy.max_pools,
-                discovery_refresh_secs: arb.strategy.discovery_refresh_secs.map(|s| s.0),
-                discovery_min_tvl_usd: arb.strategy.discovery_min_tvl_usd.map(usd),
-            },
-            risk: RiskConfig {
-                max_trade_size_usd: usd(arb.risk.max_trade_size_usd),
-                max_daily_loss_usd: usd(arb.risk.max_daily_loss_usd),
-                max_hourly_loss_usd: usd(arb.risk.max_hourly_loss_usd),
-                max_consecutive_failures: arb.risk.max_consecutive_failures,
-                min_landing_rate: arb.risk.min_landing_rate,
-                max_attempts_per_slot: arb.risk.max_attempts_per_slot,
-                max_inflight_bundles: arb.risk.max_inflight_bundles as u32,
-                max_tip_spend_ratio: arb.risk.max_tip_spend_ratio,
-                max_orders_per_hour: arb.risk.max_orders_per_hour,
-                cooldown_slots: arb.risk.cooldown_slots.0,
-            },
-            store: StoreConfig {
-                url: arb.store.url,
-            },
-            metrics: MetricsConfig {
-                listen: arb.metrics.listen.to_string(),
-            },
-            admin: AdminConfig {
-                listen: arb.admin.listen.to_string(),
-                token_env: arb.admin.token_env,
-            },
-            chronos: ChronosConfig {
-                enabled: arb.chronos.enabled,
-                decay_lambda_per_sec: arb.chronos.decay_lambda_per_sec,
-                max_age_ms: arb.chronos.max_age_ms.0,
-                min_ev_usd: usd(arb.chronos.min_ev_usd),
-                failed_attempt_cost_lamports: arb.chronos.failed_attempt_cost_lamports.0,
-                beta_risk_factor: arb.chronos.beta_risk_factor,
-            },
-        }
-    }
-}
-
-=======
->>>>>>> origin/main
 fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -526,6 +111,78 @@ fn install_panic_hook() {
 #[derive(Clone)]
 struct FileMakeWriter {
     file: Arc<Mutex<std::fs::File>>,
+    path: Arc<std::path::PathBuf>,
+}
+
+impl FileMakeWriter {
+    /// Re-open the log path after the old inode was renamed away (rotation).
+    fn reopen(&self) {
+        if let Ok(f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path.as_path())
+        {
+            if let Ok(mut guard) = self.file.lock() {
+                *guard = f;
+            }
+        }
+    }
+}
+
+/// Log-retention policy (operator directive): runtime logs older than
+/// `LOG_RETENTION_HOURS` (default 24) are deleted; the opportunity/pool/PnL
+/// database is never touched. The active file is rotated by size so a
+/// long-running process cannot grow it unbounded.
+const LOG_ROTATE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn spawn_log_retention(path: std::path::PathBuf, writer: FileMakeWriter) {
+    let hours: u64 = std::env::var("LOG_RETENTION_HOURS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|h| *h > 0)
+        .unwrap_or(24);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            let cutoff = std::time::SystemTime::now()
+                .checked_sub(Duration::from_secs(hours * 3600))
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if let Ok(md) = std::fs::metadata(&path)
+                && md.len() > LOG_ROTATE_BYTES
+            {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let rotated = path.with_extension(format!("log.{stamp}"));
+                if std::fs::rename(&path, &rotated).is_ok() {
+                    writer.reopen();
+                }
+            }
+            let Some(parent) = path.parent().map(|p| p.to_path_buf()) else {
+                continue;
+            };
+            let stem = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if let Ok(entries) = std::fs::read_dir(&parent) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !name.starts_with(&format!("{stem}.")) {
+                        continue;
+                    }
+                    let Ok(md) = entry.metadata() else { continue };
+                    let Ok(modified) = md.modified() else {
+                        continue;
+                    };
+                    if modified < cutoff {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    });
 }
 
 impl std::io::Write for FileMakeWriter {
@@ -575,7 +232,12 @@ fn init_event_logger() {
         Ok(file) => {
             let file_writer = FileMakeWriter {
                 file: Arc::new(Mutex::new(file)),
+                path: Arc::new(std::path::PathBuf::from(&log_file_path)),
             };
+            spawn_log_retention(
+                std::path::PathBuf::from(&log_file_path),
+                file_writer.clone(),
+            );
             let file_layer = fmt::layer()
                 .with_target(true)
                 .with_ansi(false)
@@ -650,14 +312,8 @@ async fn main() -> Result<()> {
 
     info!("Starting arb-bot in mode: {}", args.mode);
 
-    // Phase 3: `arb-config` is the single validated loading authority. It parses
-    // the TOML, applies auditable environment overrides, runs the full validation
-    // suite, and rejects placeholder secrets — all before the supervisor sees the
-    // config. The result is adapted to the legacy `config::Config` consumed by
-    // `Supervisor::new` so internal behavior is unchanged.
-    let arb = arb_config_loader::load(&args.config_path)
+    let config = config::load(&args.config_path)
         .with_context(|| format!("Failed to load configuration from '{}'", args.config_path))?;
-    let config = config::from_arb_config(arb);
 
     info!("Configuration loaded — RPC: {}", config.rpc.url);
     info!("Max trade size: {} USD", config.risk.max_trade_size_usd);
@@ -686,13 +342,9 @@ async fn main() -> Result<()> {
     info!("TRACE MAIN 1: before Supervisor::new");
     let admin_listen = config.admin.listen.clone();
     let admin_token_env = config.admin.token_env.clone();
-<<<<<<< HEAD
-    let supervisor = supervisor::Supervisor::new(args.mode, config);
-=======
     let supervisor_mode_atomic = Arc::new(std::sync::atomic::AtomicU8::new(args.mode as u8));
     let supervisor =
         supervisor::Supervisor::with_mode_atomic(Arc::clone(&supervisor_mode_atomic), config);
->>>>>>> origin/main
     let admin_kill_switch = supervisor.kill_switch();
 
     // Operator authentication is mandatory for every mutating admin route.
@@ -790,8 +442,6 @@ async fn main() -> Result<()> {
             );
         }
     }
-<<<<<<< HEAD
-=======
 
     // Unified control service: one command layer shared by the web app and
     // Telegram. Attached to the supervisor before run so the loop publishes
@@ -825,7 +475,6 @@ async fn main() -> Result<()> {
             telegram_control::run_listener(control).await;
         });
     }
->>>>>>> origin/main
 
     info!("TRACE MAIN 2: after Supervisor::new, before run");
     supervisor.run().await?;

@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@meteora-ag/dlmm": "^1.9.14",
+    "bs58": "^6.0.0"
+  }
+}

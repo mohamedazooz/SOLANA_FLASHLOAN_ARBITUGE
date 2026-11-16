@@ -40,13 +40,8 @@ mod strategy;
 use execution::max_state_age_slots;
 
 /// Solana base transaction fee per signature, lamports (versioned & legacy).
-/// Part of the single per-tx cost list used by both the Jito edge estimate and
-/// the go/no-go gate (TX-02: one cost basis, never two).
-const BASE_FEE_LAMPORTS: u64 = 5_000;
-
-/// Maximum share of the gross profit the priority fee may consume (20%). Bounds
-/// a runaway priority bid so it never eats the edge it was meant to capture.
-const PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
+/// Re-exported from canonical `arb_constants::SOLANA_BASE_FEE_LAMPORTS`.
+pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
 /// A pre-warmed signed transaction template persisted in Redis.
 ///
@@ -61,11 +56,8 @@ struct CachedTemplate {
     tip: u64,
 }
 
-<<<<<<< HEAD
-=======
 type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
 
->>>>>>> origin/main
 pub struct Supervisor {
     mode: Arc<std::sync::atomic::AtomicU8>,
     config: Config,
@@ -245,32 +237,6 @@ impl Supervisor {
 
         let jito_lander = JitoLander::new(config.jito.regions.clone());
 
-<<<<<<< HEAD
-        let base_mints: Vec<MintId> = config
-            .strategy
-            .base_tokens
-            .iter()
-            .filter_map(|t| Pubkey::from_str(t).ok().map(MintId))
-            .collect();
-
-        let graph = MarketGraph::new(base_mints);
-        // Yellowstone requires a Yellowstone-compatible gRPC endpoint. Do not pass
-        // an HTTP RPC URL here; absent configuration leaves ingestion unavailable.
-        let ingest_url = std::env::var("SOLAMI_GRPC_ENDPOINT")
-            .ok()
-            .filter(|value| !value.trim().is_empty() && !value.starts_with("REPLACE_ME"))
-            .unwrap_or_default();
-        let ingest_token = std::env::var("SOLAMI_API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty() && !value.starts_with("REPLACE_ME"))
-            .unwrap_or_default();
-        if ingest_url.is_empty() || ingest_token.is_empty() {
-            warn!(
-                "Solami Yellowstone gRPC is not configured; market ingestion will remain unavailable"
-            );
-        }
-        let ingest = Arc::new(YellowstoneClient::new(ingest_url, ingest_token));
-=======
         // The configured Kamino flash-loan reserve is WSOL. Every candidate
         // cycle must therefore start and finish in WSOL so the borrow, route
         // accounting, fee units and same-transaction repayment share one mint
@@ -281,7 +247,6 @@ impl Supervisor {
         let graph = MarketGraph::new(vec![MintId(wsol_mint)]);
         // Ingestion is WebSocket + RPC only. gRPC transport removed.
         let ingest = Arc::new(IngestClient::new());
->>>>>>> origin/main
 
         info!("TRACE SUP 2: before store");
         // Fail-closed store selection (see `open_store`): a configured but
@@ -340,7 +305,24 @@ impl Supervisor {
 
         // Legacy JSON-RPC pool is disabled in runtime configuration; retained only for
         // unmigrated APIs and isolated tests. Market state comes from the WebSocket + RPC ingestion path. gRPC transport removed.
-        let rpc_pool = arb_ingest::RpcPool::from_env();
+        // Endpoints merge TOML [rpc] url/failover_url (operator config) with the
+        // env-sourced pool; placeholders and empty values are filtered.
+        let is_usable_rpc = |u: &str| {
+            let t = u.trim();
+            !t.is_empty()
+                && !t.contains("REPLACE_ME")
+                && (t.starts_with("https://") || t.starts_with("http://"))
+        };
+        let mut config_rpc_urls = Vec::new();
+        if is_usable_rpc(&config.rpc.url) {
+            config_rpc_urls.push(config.rpc.url.trim().to_string());
+        }
+        if let Some(f) = config.rpc.failover_url.as_deref() {
+            if is_usable_rpc(f) {
+                config_rpc_urls.push(f.trim().to_string());
+            }
+        }
+        let rpc_pool = arb_ingest::RpcPool::from_config_and_env(config_rpc_urls);
 
         let sim_url = rpc_pool
             .endpoints()
@@ -396,6 +378,8 @@ impl Supervisor {
             // a tip into a non-Jito slot. The service config still exposes the
             // explicit override for an allowlist/legacy opt-in mode.
             tip_on_unknown_leader: !config.jito.leader_gate_enabled,
+            swqos_fallback_hurdle_lamports: config.jito.swqos_fallback_hurdle_lamports,
+            swqos_fallback_priority_fee_lamports: config.jito.swqos_fallback_priority_fee_lamports,
         };
         let jito_service =
             Arc::new(JitoService::new(jito_service_config).expect("valid jito service config"));
@@ -557,7 +541,10 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::MeteoraDlmm
+                | DexProtocol::MeteoraDammV2
+                | DexProtocol::MeteoraDbc
+                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
                 DexProtocol::PumpFun => pump_count += 1,
                 DexProtocol::PumpSwap => pumpswap_count += 1,
             }
@@ -607,8 +594,6 @@ impl Supervisor {
                 .await;
         }
     }
-<<<<<<< HEAD
-=======
 
     pub fn record_landed_trade(&self, trade: crate::telegram::TradeSummary) {
         Self::record_landed_trade_task(&self.recent_landed, self.control().cloned(), trade);
@@ -689,7 +674,10 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::MeteoraDlmm
+                | DexProtocol::MeteoraDammV2
+                | DexProtocol::MeteoraDbc
+                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
                 DexProtocol::PumpFun | DexProtocol::PumpSwap => pump_count += 1,
             }
         }
@@ -751,7 +739,6 @@ impl Supervisor {
 
         self.telegram.alert_five_minute_digest(&stats).await;
     }
->>>>>>> origin/main
 }
 
 #[cfg(test)]

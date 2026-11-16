@@ -48,6 +48,8 @@ pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const TOKEN_2022_NATIVE_MINT: &str = "9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP";
 /// USDC mint address on Solana.
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/// USDT mint (SPL Token) on Mainnet.
+pub const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
 
 // ============================================================================
 // Jito Tip Accounts (Mainnet)
@@ -147,6 +149,8 @@ pub fn jitodontfront_marker() -> Pubkey {
 pub const RAYDIUM_V4_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 /// Raydium AMM v4 Authority PDA.
 pub const RAYDIUM_V4_AUTHORITY: &str = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
+/// OpenBook (Serum v3 successor) DEX Program ID.
+pub const OPENBOOK_PROGRAM_ID: &str = "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX";
 /// Raydium CP-Swap (CPMM) Program ID.
 pub const RAYDIUM_CPMM_PROGRAM_ID: &str = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C";
 /// Raydium CLMM Program ID.
@@ -188,6 +192,33 @@ pub const RAYDIUM_SOL_USDC_POOL: &str = "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMih
 pub const RAYDIUM_SOL_VAULT: &str = "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz";
 /// Raydium USDC vault address.
 pub const RAYDIUM_USDC_VAULT: &str = "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz";
+/// Raydium SOL-USDC OpenBook market address (verified: openserum.io / Solana StackExchange / Raydium SDK).
+pub const RAYDIUM_SOL_USDC_OPENBOOK_MARKET: &str = "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6";
+/// Raydium SOL-USDC OpenBook amm open-orders account.
+pub const RAYDIUM_SOL_USDC_OPEN_ORDERS: &str = "HmiHHzq4Fym9e1D4qzLS6LDDM3tNsCTBPDWHTLZ763jY";
+/// Raydium SOL-USDC OpenBook target-orders account.
+pub const RAYDIUM_SOL_USDC_TARGET_ORDERS: &str = "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR";
+/// Raydium SOL-USDC OpenBook bids account.
+pub const RAYDIUM_SOL_USDC_SERUM_BIDS: &str = "5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh";
+/// Raydium SOL-USDC OpenBook asks account.
+pub const RAYDIUM_SOL_USDC_SERUM_ASKS: &str = "EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCLNBEDXDn1d5";
+/// Raydium SOL-USDC OpenBook event queue.
+pub const RAYDIUM_SOL_USDC_SERUM_EVENT_QUEUE: &str = "8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa";
+/// Raydium SOL-USDC OpenBook base (SOL) vault.
+pub const RAYDIUM_SOL_USDC_SERUM_COIN_VAULT: &str = "CKxTHwM9fPMRRvZmFnFoqKNd9pQR21c5Aq9bh5h9oghX";
+/// Raydium SOL-USDC OpenBook quote (USDC) vault.
+pub const RAYDIUM_SOL_USDC_SERUM_PC_VAULT: &str = "6A5NHCj1yF6urc9wZNe6Bcjj4LVszQNj5DwAWG97yzMu";
+/// Raydium SOL-USDC OpenBook vault signer PDA.
+pub const RAYDIUM_SOL_USDC_SERUM_VAULT_SIGNER: &str =
+    "CTz5UMLQm2SRWHzQnU62Pi4yJqbNGjgRBHqqp6oDHfF7";
+/// Raydium CPMM SOL-USDC pool AmmConfig account (0.25% trade fee tier; fee tiers are on-chain accounts — read rates from the account, never assume this tier).
+///
+/// Verified on-chain: owner == CPMM program, data length 236,
+/// `trade_fee_rate` u64 LE @12 == 2500 (denominator 1_000_000 => 25 bps),
+/// and it is the `amm_config` referenced by `RAYDIUM_CPMM_SOL_USDC_POOL` @8.
+/// The previous constant `D4A2sqNA...` was fabricated — the account does not
+/// exist on mainnet.
+pub const RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG: &str = "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2";
 
 // ============================================================================
 // Orca Whirlpool — SOL-USDC Pool & Vaults (Mainnet)
@@ -220,6 +251,14 @@ pub const METEORA_SOL_USDC_BIN_STEP: u16 = 4;
 /// silently targets the wrong BinArrays and the swap fails (or reads the wrong
 /// bins). Keep it equal to the value the ingestion decoder uses.
 pub const METEORA_BINS_PER_BIN_ARRAY: i64 = 70;
+/// Maximum bins a single DLMM swap instruction may traverse.
+///
+/// `lb_clmm` 0.12.0 (mainnet 2026-05-21) reduced this from 280 to 260 because
+/// the new limit-order logic consumes more CU (official DLMM changelog,
+/// MeteoraAg/dlmm-sdk PR #273). A quote that crosses more bins than this
+/// cannot be executed on-chain: the swap would abort with `TooManyBins`.
+/// Quotes and bin-array plans must fail closed above this limit.
+pub const METEORA_MAX_BINS_PER_SWAP: u32 = 260;
 /// Anchor 8-byte discriminator for `swap2` = sha256("global:swap2")[..8].
 pub const METEORA_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
@@ -255,12 +294,35 @@ pub fn meteora_bin_array_index_requires_bitmap_extension(bin_array_index: i64) -
 // Raydium CPMM — SOL-USDC Pool & Vaults (Mainnet)
 // ============================================================================
 
-/// Raydium CPMM SOL-USDC pool address (1 bps fee tier).
-pub const RAYDIUM_CPMM_SOL_USDC_POOL: &str = "79RbHpxoYSB3EJnN8aGLouuRrDJVGWLzxM3r1qVKsKJ7";
-/// Raydium CPMM SOL vault address.
-pub const RAYDIUM_CPMM_SOL_VAULT: &str = "DJgKsuDtTVvT1VqjC1vHTu6LHjq5Z6KRX1jaLKZJ3VwW";
-/// Raydium CPMM USDC vault address.
-pub const RAYDIUM_CPMM_USDC_VAULT: &str = "HYbZV1vHH8rDvn3a2uPtR8nCnBkL5xXwK7yP1uJ9nC2L";
+/// Raydium CPMM SOL-USDC pool address (25 bps fee tier).
+///
+/// Verified on-chain (getAccountInfo, Alchemy mainnet, 2026 session):
+/// - discriminator `f7ede3f5d7c3de46` == sha256("account:PoolState")[..8]
+/// - owner == `RAYDIUM_CPMM_PROGRAM_ID` (CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C)
+/// - data length 637 (matches the official PoolState layout)
+/// - amm_config @8 == D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2
+///
+/// Cross-checked against the official Raydium API v3
+/// (`api-v3.raydium.io/pools/info/ids?ids=7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny`):
+/// mintA = WSOL, mintB = USDC, config D4FPEru..., tradeFeeRate 2500 (25 bps).
+///
+/// NOTE: the previous constant `79RbHpxo...` was fabricated — the account does
+/// not exist on mainnet. This CPMM SOL/USDC pool is real but carries very small
+/// liquidity (~0.5 SOL + ~37 USDC at verification time); most SOL/USDC depth
+/// lives in the Raydium V4 pool `RAYDIUM_SOL_USDC_POOL`.
+pub const RAYDIUM_CPMM_SOL_USDC_POOL: &str = "7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny";
+/// Raydium CPMM SOL-USDC `token_0_vault` (WSOL, 9 decimals).
+/// Verified on-chain: SPL token account, mint So1111..., owner == CPMM pool
+/// authority PDA GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL.
+pub const RAYDIUM_CPMM_SOL_VAULT: &str = "7VLUXrnSSDo9BfCa4NWaQs68g7ddDY1sdXBKW6Xswj9Y";
+/// Raydium CPMM SOL-USDC `token_1_vault` (USDC, 6 decimals).
+/// Verified on-chain: SPL token account, mint EPjFWdd5..., owner == CPMM pool
+/// authority PDA GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL.
+pub const RAYDIUM_CPMM_USDC_VAULT: &str = "3rzbbW5Q8MA7sCaowf28hNgACNPecdS2zceWy7Ptzua9";
+/// Raydium CPMM SOL-USDC pool authority PDA (owner of both vault token accounts).
+/// Verified on-chain: appears as the owner field of both vault token accounts.
+pub const RAYDIUM_CPMM_SOL_USDC_POOL_AUTHORITY: &str =
+    "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL";
 /// Anchor discriminator for Raydium CPMM swap_base_input instruction.
 pub const RAYDIUM_CPMM_SWAP_BASE_INPUT_DISCRIMINATOR: [u8; 8] =
     [143, 190, 90, 218, 196, 30, 51, 222];
@@ -298,6 +360,24 @@ pub const METEORA_DAMM_V2_POOL_AUTHORITY: &str = "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7
 pub const METEORA_DAMM_V2_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
 /// Anchor discriminator for `cp_amm::swap2`: sha256("global:swap2")[..8].
 pub const METEORA_DAMM_V2_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
+
+// ============================================================================
+// Meteora Dynamic Bonding Curve (DBC) — Program & Migration
+// ============================================================================
+
+/// Meteora Dynamic Bonding Curve (DBC) Program ID on Mainnet.
+pub const METEORA_DBC_PROGRAM_ID: &str = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN";
+/// Meteora DBC Migration Keeper Address.
+pub const METEORA_DBC_MIGRATION_KEEPER: &str = "9rpVELNUXLoMjAcc19UCVLJ73xjXNoYKENvRMHcci2V2";
+/// Anchor discriminator for `dynamic_bonding_curve::swap2`: sha256("global:swap2")[..8].
+pub const METEORA_DBC_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
+
+/// Meteora DLMM Pro Program ID on Mainnet.
+pub const METEORA_DLMM_PRO_PROGRAM_ID: &str = "dPro1D5wiqnGMH8vMDG23jh35btTHoWdyqXjqkqxe8n";
+/// Anchor discriminator for `dlmm_pro::swap`: sha256("global:swap")[..8].
+pub const METEORA_DLMM_PRO_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
+/// Anchor discriminator for DLMM Pro TickArray account.
+pub const METEORA_DLMM_PRO_TICK_ARRAY_DISCRIMINATOR: [u8; 8] = [69, 97, 189, 190, 110, 7, 66, 187];
 
 // ============================================================================
 // Raydium LaunchLab — Program & Discriminators
@@ -395,14 +475,25 @@ pub const HOP_SLIPPAGE_MAX_BPS: u64 = 1_000;
 pub const COMPUTE_BUDGET_LIMIT_2HOP: u32 = 260_000;
 /// Compute budget limit for 3-hop arbitrage.
 pub const COMPUTE_BUDGET_LIMIT_3HOP: u32 = 320_000;
-/// Maximum compute unit limit.
-pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 350_000;
+/// Solana runtime protocol consensus maximum compute units per transaction.
+pub const SOLANA_RUNTIME_MAX_COMPUTE_UNITS: u32 = 1_400_000;
+/// Application-level safety ceiling for arbitrage execution.
+/// Keeps priority fee exposure bounded and prevents runaway compute costs on complex routes.
+pub const APPLICATION_SAFETY_CU_LIMIT: u32 = 350_000;
+/// Maximum compute unit limit enforced by application policy (delegates to APPLICATION_SAFETY_CU_LIMIT).
+pub const MAX_COMPUTE_UNIT_LIMIT: u32 = APPLICATION_SAFETY_CU_LIMIT;
 /// Compute unit buffer percentage.
 pub const CU_BUFFER_PCT: u32 = 15;
-/// Solana packet MTU limit.
+/// Solana runtime packet MTU limit.
 pub const SOLANA_PACKET_MTU_LIMIT: usize = 1232;
+/// Standard Solana consensus network base signature fee (5,000 lamports).
+pub const SOLANA_BASE_FEE_LAMPORTS: u64 = 5_000;
 /// Base priority fee in micro-lamports.
 pub const BASE_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 1_000;
+/// Default baseline priority fee maximum share of gross profit (1,000 bps = 10%).
+pub const DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS: u64 = 1_000;
+/// Default maximum priority fee share cap under peak competition (2,000 bps = 20%).
+pub const DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
 
 /// Return the compute budget limit for a given hop count.
 #[inline]

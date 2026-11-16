@@ -213,6 +213,7 @@ fn test_dlmm_discrete_bin_traversal_and_variable_fee() {
             index_reference: 0,
             last_update_timestamp: 1_700_000_000,
         },
+        ..Default::default()
     };
 
     let bins = vec![
@@ -221,12 +222,14 @@ fn test_dlmm_discrete_bin_traversal_and_variable_fee() {
             amount_x: 0,
             amount_y: 100_000,
             price_q64: ONE_Q64,
+            ..Default::default()
         },
         DlmmBin {
             id: -1,
             amount_x: 0,
             amount_y: 500_000,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 

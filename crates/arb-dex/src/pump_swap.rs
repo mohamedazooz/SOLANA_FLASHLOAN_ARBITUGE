@@ -365,11 +365,6 @@ impl PumpSwapPool {
             let protocol = fee_amount(gross, fee_bps[1])?;
             let creator = fee_amount(gross, fee_bps[2])?;
             let without_lp = gross.checked_sub(lp).ok_or(ArbError::Overflow)?;
-            if (self.real_quote_reserve as u128) < without_lp {
-                return Err(ArbError::InvalidInput(
-                    "PumpSwap insufficient real quote reserves".into(),
-                ));
-            }
             let out = without_lp
                 .checked_sub(protocol)
                 .and_then(|v| v.checked_sub(creator))
@@ -382,29 +377,18 @@ impl PumpSwapPool {
             u64::try_from(out).map_err(|_| ArbError::Overflow)?
         } else {
             let input = amount_in as u128;
-            let total_bps = fee_bps.iter().try_fold(0u128, |sum, rate| {
-                sum.checked_add(*rate as u128).ok_or(ArbError::Overflow)
-            })?;
-            let mut net = input.checked_mul(scale).ok_or(ArbError::Overflow)?
-                / scale.checked_add(total_bps).ok_or(ArbError::Overflow)?;
-            if net == 0 {
-                return Err(ArbError::InvalidInput("PumpSwap buy input is dust".into()));
-            }
-            let [fee_lp, fee_protocol, fee_creator] = fee_bps.map(|rate| fee_amount(net, rate));
-            let fees = [fee_lp?, fee_protocol?, fee_creator?];
-            let cost = net
-                .checked_add(fees.iter().sum::<u128>())
+            // PumpSwap buy: fees are taken from the input quote amount per component
+            // (ceiling rounding, matching the on-chain program), then the remainder
+            // is swapped through the constant-product curve.
+            let fee_lp = fee_amount(input, fee_bps[0])?;
+            let fee_protocol = fee_amount(input, fee_bps[1])?;
+            let fee_creator = fee_amount(input, fee_bps[2])?;
+            let total_fee = fee_lp
+                .checked_add(fee_protocol)
+                .and_then(|v| v.checked_add(fee_creator))
                 .ok_or(ArbError::Overflow)?;
-            if cost > input {
-                net = net
-                    .checked_sub(cost - input)
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| {
-                        ArbError::InvalidInput("PumpSwap exact-in fees consume input".into())
-                    })?;
-            }
-            let swap_input = net
-                .checked_sub(1)
+            let net = input
+                .checked_sub(total_fee)
                 .filter(|value| *value > 0)
                 .ok_or_else(|| {
                     ArbError::InvalidInput("PumpSwap exact-in fees consume input".into())

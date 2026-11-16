@@ -241,9 +241,6 @@ pub fn inc_attempts() {
 pub fn inc_fills() {
     FILLS_TOTAL.inc();
 }
-pub fn get_fills_total() -> u64 {
-    FILLS_TOTAL.get()
-}
 pub fn set_account_update_lag_ms(v: f64) {
     ACCOUNT_UPDATE_LAG_MS.set(v);
 }
@@ -258,9 +255,6 @@ pub fn inc_stale_rejections() {
 }
 pub fn set_cache_consistency(consistent: bool) {
     CACHE_CONSISTENCY.set(if consistent { 1.0 } else { 0.0 });
-}
-pub fn get_cache_consistency() -> bool {
-    CACHE_CONSISTENCY.get() >= 0.5
 }
 pub fn set_state_age(v: f64) {
     STATE_AGE_SLOTS.set(v);

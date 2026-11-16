@@ -14,7 +14,9 @@ pub mod chronos;
 pub mod clmm;
 pub mod cpmm;
 pub mod damm_v2;
+pub mod dbc;
 pub mod dlmm;
+pub mod dlmm_pro;
 pub mod economic;
 pub mod economic_integration;
 pub mod latency;
@@ -59,12 +61,14 @@ pub use cpmm::*;
 pub use damm_v2::{
     DAMM_V2_FEE_DENOMINATOR, DammV2FeeParams, damm_v2_virtual_reserves, quote_damm_v2_exact_in,
 };
+pub use dbc::*;
 pub use dlmm::{
     DlmmBin, DlmmError, DlmmParameters, DlmmPoolState, DlmmSwapQuote, DlmmSwapStepResult,
     DlmmVariableParameters, MAX_BIN_ID, MAX_FEE_RATE, MIN_BIN_ID, ONE_Q64, advance_active_id,
     compute_base_fee, compute_total_fee_rate, compute_variable_fee, consume_bin_liquidity,
     get_price_from_id, pow_q64, quote_dlmm_multi_bin, quote_dlmm_view,
 };
+pub use dlmm_pro::*;
 pub use launchlab::{quote_launchlab_buy_exact_in, quote_launchlab_sell_exact_in};
 
 use arb_types::Lamports;

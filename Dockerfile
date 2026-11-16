@@ -30,8 +30,7 @@ COPY web ./
 RUN npm run build
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release --locked -p arb-bot --bin arb-bot --bin alchemy-webhook
+    cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only
 
 # ============================================================
 # Stage 2: Runtime
@@ -47,11 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY --from=builder /app/target/release/arb-bot /usr/local/bin/arb-bot
-<<<<<<< HEAD
-COPY --from=builder /app/target/release/alchemy-webhook /usr/local/bin/alchemy-webhook
-=======
 COPY --from=web-builder /web/dist /app/web/dist
->>>>>>> origin/main
 
 # The repository ships config/config.example.toml only; real deployments mount
 # a populated config at /app/config/config.toml (compose does this read-only).

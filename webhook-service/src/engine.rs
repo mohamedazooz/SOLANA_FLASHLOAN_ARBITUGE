@@ -187,7 +187,10 @@ impl WorkerEngine {
     }
 
     /// Non-blocking dispatch to worker channel ensuring sub-10ms response to webhook caller.
-    pub fn dispatch(&self, job: TransactionJob) -> Result<(), mpsc::error::TrySendError<TransactionJob>> {
+    pub fn dispatch(
+        &self,
+        job: TransactionJob,
+    ) -> Result<(), mpsc::error::TrySendError<TransactionJob>> {
         self.sender.try_send(job)
     }
 }

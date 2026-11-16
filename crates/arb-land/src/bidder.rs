@@ -134,7 +134,10 @@ impl AdaptiveBidder {
             self.config.profit_floor.0.saturating_add(cu_penalty)
         } else {
             let cu_overhead = (estimated_cu.saturating_mul(500)) / 100_000;
-            10_000u64.saturating_add(cu_overhead)
+            // On calm pools, floor is relaxed to 10,000 lamports (covering 5k base fee + 1k min tip + min keep)
+            10_000u64
+                .min(self.config.profit_floor.0)
+                .saturating_add(cu_overhead)
         };
         Lamports(floor.max(share.0))
     }
@@ -223,6 +226,8 @@ impl AdaptiveBidder {
             let cap = Lamports(cap.0.max(MIN_JITO_TIP_LAMPORTS));
             if winner.tip.0 > cap.0 {
                 winner.tip = cap;
+                // Recompute the calibrated inclusion probability and expected value for the reduced tip
+                winner.inclusion_p = Self::calibrated_inclusion_probability(cap, &floor, ledger);
                 winner.expected_value =
                     expected_value_lamports(winner.inclusion_p, edge.saturating_sub(cap));
                 escalated = true;
@@ -280,6 +285,54 @@ impl AdaptiveBidder {
             }
         }
         best
+    }
+
+    /// Calculate the calibrated inclusion probability for an exact tip amount.
+    ///
+    /// When a bid is clipped by the retry escalation cap or the risk ceiling,
+    /// the inclusion probability must strictly reflect the actual submitted amount,
+    /// never retaining an upper rung's probability for a reduced bid.
+    pub fn calibrated_inclusion_probability(
+        tip: Lamports,
+        floor: &TipFloor,
+        ledger: &LandingLedger,
+    ) -> f64 {
+        let p50_price = floor.at(Percentile::P50).0;
+        if tip.0 < p50_price {
+            // Below P50: scale linearly with tip against P50 coverage
+            let p50_coverage = ledger.coverage(Percentile::P50);
+            return (p50_coverage * (tip.0 as f64 / p50_price.max(1) as f64)).clamp(0.0, 1.0);
+        }
+
+        // Find the bracketing rungs in the published grid
+        let mut best_rung = Percentile::P50;
+        let mut next_rung = None;
+
+        for &rung in &Percentile::GRID {
+            if floor.at(rung).0 <= tip.0 {
+                best_rung = rung;
+            } else {
+                next_rung = Some(rung);
+                break;
+            }
+        }
+
+        let p_low = ledger.coverage(best_rung);
+        let Some(higher) = next_rung else {
+            // Equal to or above highest rung (P99)
+            return ledger.coverage(Percentile::P99);
+        };
+
+        let price_low = floor.at(best_rung).0;
+        let price_high = floor.at(higher).0;
+        if price_high <= price_low {
+            return p_low;
+        }
+
+        let p_high = ledger.coverage(higher);
+        let fraction = (tip.0.saturating_sub(price_low) as f64)
+            / (price_high.saturating_sub(price_low) as f64);
+        (p_low + fraction * (p_high - p_low)).clamp(0.0, 1.0)
     }
 
     /// Score `tip` as if it were paid at `rung`.
@@ -617,5 +670,37 @@ mod tests {
         };
         assert!(tip.0 >= MIN_JITO_TIP_LAMPORTS);
         assert!(tip.0 < 23_000);
+    }
+
+    #[test]
+    fn capped_tip_recalculates_landing_probability_and_ev() {
+        let b = bidder();
+        let ledger = LandingLedger::new();
+        let floor_mkt = floor(1_000, 2_000, 50_000, 100_000);
+        let previous = Lamports(10_000);
+        let plan = b.plan(
+            Lamports(1_000_000),
+            Some(floor_mkt),
+            &ledger,
+            Some(previous),
+        );
+        let TipDecision::Bid { tip, escalated, .. } = plan.decision else {
+            panic!("expected bid");
+        };
+        assert!(escalated);
+        assert_eq!(tip.0, 16_000);
+        // 16_000 is between P75 (2,000) and P90 (50_000).
+        // It must strictly be calibrated between P75 (0.75) and P90 (0.90), NEVER retaining >= 0.90!
+        assert!(
+            plan.inclusion_p < 0.90,
+            "clipped tip must not retain P90 probability"
+        );
+        assert!(
+            plan.inclusion_p >= 0.75,
+            "clipped tip must be at least P75 probability"
+        );
+        let expected_margin = Lamports(1_000_000 - 16_000);
+        let expected_ev = expected_value_lamports(plan.inclusion_p, expected_margin);
+        assert_eq!(plan.expected_value, expected_ev);
     }
 }

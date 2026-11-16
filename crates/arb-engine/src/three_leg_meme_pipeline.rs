@@ -112,7 +112,7 @@ impl Default for ThreeLegMemeContextParams {
             recent_blockhash: [42u8; 32],
             v1_transport_supported: false,
             slippage_bps: 100,
-            min_profit_lamports: 30_000,
+            min_profit_lamports: arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS,
             flash_loan_fee_sf: 0,
             network_cost_lamports: 0,
             kamino_available_liquidity: None,
@@ -352,6 +352,45 @@ fn quote_chain(
         bins: [q1.bins_crossed, q2.bins_crossed, q3.bins_crossed],
         swap_for_y: [d1, d2, d3],
     })
+}
+
+/// Explain WHY no `WSOL -> A -> B -> WSOL` cycle exists among `pools`.
+///
+/// A cycle needs a meme/meme bridge pool whose BOTH sides additionally have a
+/// WSOL-sided pool in the set. This reports, in one line: how many pools are
+/// WSOL-sided, how many distinct mints have a WSOL pool, how many meme/meme
+/// bridge pools exist, and how many of those bridges are "closable" (both
+/// sides covered). `closable_bridges == 0` means the absence is a market
+/// structure fact, not a search failure.
+pub fn diagnose_missing_cycles(pools: &[PoolState]) -> String {
+    let wsol = wsol_mint();
+    let mut wsol_covered: std::collections::BTreeSet<solana_pubkey::Pubkey> = Default::default();
+    let mut bridge_pools = 0usize;
+    let mut closable_bridges = 0usize;
+    for p in pools {
+        let (m1, m2) = (p.base_mint, p.quote_mint);
+        if m1 == wsol {
+            wsol_covered.insert(m2.0);
+        } else if m2 == wsol {
+            wsol_covered.insert(m1.0);
+        } else {
+            bridge_pools += 1;
+        }
+    }
+    for p in pools {
+        let (m1, m2) = (p.base_mint, p.quote_mint);
+        if m1 != wsol && m2 != wsol && wsol_covered.contains(&m1.0) && wsol_covered.contains(&m2.0)
+        {
+            closable_bridges += 1;
+        }
+    }
+    format!(
+        "wsol_sided_pools={} mints_with_wsol_pool={} bridge_pools={} closable_bridges={}",
+        pools.len() - bridge_pools,
+        wsol_covered.len(),
+        bridge_pools,
+        closable_bridges
+    )
 }
 
 /// Enumerate all ordered distinct (p1, p2, p3) triples that form a
@@ -1020,6 +1059,7 @@ mod tests {
             volatility_reference: 0,
             index_reference: out_of_range_active,
             last_update_timestamp: 1_700_000_000,
+            ..Default::default()
         });
         let p2 = pool_without_dlmm_state(2, a, b);
         let p3 = pool_without_dlmm_state(3, b, wsol);
@@ -1057,6 +1097,7 @@ mod tests {
                 volatility_reference: 0,
                 index_reference: active,
                 last_update_timestamp: 1_700_000_000,
+                ..Default::default()
             });
         }
         if let Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {

@@ -10,6 +10,7 @@ pub mod litesvm_sim;
 pub mod meteora_fresh_pipeline;
 pub mod meteora_simulation_harness;
 pub mod opportunity_recorder;
+pub mod paper_trading_report;
 pub mod profitability_gate;
 pub use fork_sim::{
     DEFAULT_FORK_SIM_TIMEOUT_MS, ForkSimResult, ForkSimulator, ForkState, SimAccountSnapshot,
@@ -77,6 +78,8 @@ impl RpcSimulator {
             .unwrap_or(DEFAULT_SIM_TIMEOUT_MS);
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(timeout_ms))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { rpc_url, client }

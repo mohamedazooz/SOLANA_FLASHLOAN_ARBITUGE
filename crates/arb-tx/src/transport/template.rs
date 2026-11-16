@@ -4,6 +4,7 @@
 
 use crate::adaptive::{
     AdaptiveTxCompiler, CompiledAdaptiveTransaction, CompilerCapabilities, V1ConfigParams,
+    total_priority_fee_lamports,
 };
 use crate::kamino::{FLASH_BORROW_DISCRIMINATOR, FLASH_REPAY_DISCRIMINATOR};
 use crate::{AccountMeta, AddressLookupTable, CompiledInstruction, KeypairSigner, TxError};
@@ -60,19 +61,6 @@ impl PreWarmedTxTemplate {
             swap_min_amount_out_offset,
             fee_sf,
         }
-    }
-
-    /// Attach swap instruction offsets after template construction.
-    /// Useful when templates are created from pre-compiled bytes where swap
-    /// instruction offsets were resolved externally.
-    pub fn with_swap_offsets(
-        mut self,
-        swap_amount_in_offset: usize,
-        swap_min_amount_out_offset: usize,
-    ) -> Self {
-        self.swap_amount_in_offset = Some(swap_amount_in_offset);
-        self.swap_min_amount_out_offset = Some(swap_min_amount_out_offset);
-        self
     }
 
     /// Locate byte offsets within a pre-compiled signed transaction wire buffer.
@@ -527,8 +515,16 @@ impl PrewarmedUnsignedTemplate {
         signer: &KeypairSigner,
         _capabilities: CompilerCapabilities,
     ) -> Result<CompiledAdaptiveTransaction, TxError> {
+        // The v1 priority fee is an absolute total in lamports: scale the
+        // tracked micro-lamports-per-CU fee by the CU limit (ceil). A hardcoded
+        // zero here would submit V1 transactions with no priority fee.
+        let priority_fee_lamports =
+            total_priority_fee_lamports(self.priority_fee_micro_lamports, u64::from(self.cu_limit))
+                .ok_or_else(|| {
+                    TxError::Serialization("V1 priority fee exceeds u64 lamports".to_string())
+                })?;
         let v1_config = V1ConfigParams {
-            priority_fee_lamports: Some(0),
+            priority_fee_lamports: Some(priority_fee_lamports),
             compute_unit_limit: Some(self.cu_limit),
             loaded_accounts_data_size_limit: Some(67_108_864),
             heap_size: None,

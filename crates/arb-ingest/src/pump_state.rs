@@ -656,6 +656,26 @@ impl crate::IngestClient {
                 report.pools_rejected += 1;
                 continue;
             }
+            let global_config = parse_program_id(PUMP_SWAP_GLOBAL_CONFIG)
+                .unwrap_or(joined.global_config_account.pubkey);
+            let protocol_fee_recipient =
+                Pubkey::from_str(arb_constants::PUMP_FUN_FEE_RECIPIENT).unwrap_or_default();
+            let pool_version = if joined.header.is_cashback_coin {
+                arb_types::PumpSwapPoolVersion::V1Legacy
+            } else {
+                arb_types::PumpSwapPoolVersion::V2
+            };
+            let execution_accounts = Some(arb_types::PoolExecutionAccounts::PumpSwap {
+                global_config,
+                pool_base_vault: joined.header.base_vault,
+                pool_quote_vault: joined.header.quote_vault,
+                protocol_fee_recipient,
+                protocol_fee_recipient_ata: Pubkey::default(),
+                coin_creator_vault_authority: joined.header.coin_creator,
+                coin_creator_vault_ata: Pubkey::default(),
+                fee_config: joined.fee_config_account.pubkey,
+                pool_version,
+            });
             let state = PoolState {
                 pool_id: PoolId(pool_snapshot.pubkey),
                 protocol: DexProtocol::PumpSwap,
@@ -676,7 +696,7 @@ impl crate::IngestClient {
                 dlmm: None,
                 pump_fun: None,
                 token_programs: Default::default(),
-                execution_accounts: None,
+                execution_accounts,
                 transfer_fee_bps: 0,
                 last_update_slot: joined.slot,
                 last_update_ms: now_ms,

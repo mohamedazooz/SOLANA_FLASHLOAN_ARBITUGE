@@ -62,6 +62,7 @@ fn make_pool(
                 bin_id: *id,
                 amount_x: u128::from(*ax),
                 amount_y: u128::from(*ay),
+                ..Default::default()
             })
             .collect(),
         params: Some(DlmmFeeParams {
@@ -80,6 +81,7 @@ fn make_pool(
         volatility_reference: 0,
         index_reference: active_id,
         last_update_timestamp: 1_700_000_000,
+        support_limit_order: false,
     };
 
     let state = PoolState {
@@ -299,7 +301,7 @@ fn borrow_above_the_pool_capacity_is_rejected() {
     let mut cfg = config(allowlist());
     let capacity = route
         .pool_a
-        .active_bin_max_input(&route.flash_mint, &route.mid_mint)
+        .traversable_max_input(&route.flash_mint, &route.mid_mint)
         .expect("capacity");
     let probe_size = capacity.saturating_add(1_000_000_000);
     cfg.max_borrow = probe_size;

@@ -86,6 +86,8 @@ pub const fn cu_estimate(protocol: DexProtocol) -> u64 {
         DexProtocol::OrcaWhirlpool => 50_000,
         DexProtocol::MeteoraDlmm => 60_000,
         DexProtocol::MeteoraDammV2 => 70_000,
+        DexProtocol::MeteoraDbc => 55_000,
+        DexProtocol::MeteoraDlmmPro => 65_000,
         DexProtocol::RaydiumLaunchLab => 60_000,
         DexProtocol::PumpFun => 40_000,
         DexProtocol::PumpSwap => 48_000,
@@ -101,6 +103,8 @@ pub const fn accounts_required(protocol: DexProtocol) -> u8 {
         DexProtocol::OrcaWhirlpool => 11,
         DexProtocol::MeteoraDlmm => 15,
         DexProtocol::MeteoraDammV2 => 13,
+        DexProtocol::MeteoraDbc => 14,
+        DexProtocol::MeteoraDlmmPro => 16,
         DexProtocol::RaydiumLaunchLab => 14,
         DexProtocol::PumpFun => 16,
         DexProtocol::PumpSwap => 16,
@@ -129,9 +133,27 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Raydium CPMM missing on-chain fee or reserves")
             }
         }
-        DexProtocol::MeteoraDammV2 => Err(
-            "Meteora DAMM v2 remains quote-only until its dedicated fee/curve adapter is accepted",
-        ),
+        DexProtocol::MeteoraDammV2 => {
+            if pool.is_fee_valid() && pool.reserve_in > 0 && pool.reserve_out > 0 {
+                Ok(())
+            } else {
+                Err("Meteora DAMM v2 missing on-chain fee or reserves")
+            }
+        }
+        DexProtocol::MeteoraDbc => {
+            if pool.is_fee_valid() && pool.reserve_in > 0 && pool.reserve_out > 0 {
+                Ok(())
+            } else {
+                Err("Meteora DBC missing on-chain fee or reserves")
+            }
+        }
+        DexProtocol::MeteoraDlmmPro => {
+            if pool.clmm.is_some() {
+                Ok(())
+            } else {
+                Err("Meteora DLMM Pro missing decoded tick array state")
+            }
+        }
         DexProtocol::RaydiumLaunchLab => {
             Err("Raydium LaunchLab remains quote-only until its dedicated fee adapter is accepted")
         }
@@ -233,8 +255,11 @@ macro_rules! clmm_adapter {
 
 cpmm_adapter!(RaydiumV4QuoteAdapter, DexProtocol::RaydiumV4);
 cpmm_adapter!(RaydiumCpmmQuoteAdapter, DexProtocol::RaydiumCpmm);
+cpmm_adapter!(MeteoraDammQuoteAdapter, DexProtocol::MeteoraDammV2);
+cpmm_adapter!(MeteoraDbcQuoteAdapter, DexProtocol::MeteoraDbc);
 clmm_adapter!(RaydiumClmmQuoteAdapter, DexProtocol::RaydiumClmm);
 clmm_adapter!(OrcaWhirlpoolQuoteAdapter, DexProtocol::OrcaWhirlpool);
+clmm_adapter!(MeteoraDlmmProQuoteAdapter, DexProtocol::MeteoraDlmmPro);
 
 pub struct MeteoraDlmmQuoteAdapter;
 impl ProtocolQuoteAdapter for MeteoraDlmmQuoteAdapter {
@@ -296,11 +321,10 @@ static RAYDIUM_CPMM_ADAPTER: RaydiumCpmmQuoteAdapter = RaydiumCpmmQuoteAdapter;
 static RAYDIUM_CLMM_ADAPTER: RaydiumClmmQuoteAdapter = RaydiumClmmQuoteAdapter;
 static ORCA_ADAPTER: OrcaWhirlpoolQuoteAdapter = OrcaWhirlpoolQuoteAdapter;
 static METEORA_DLMM_ADAPTER: MeteoraDlmmQuoteAdapter = MeteoraDlmmQuoteAdapter;
+static METEORA_DAMM_ADAPTER: MeteoraDammQuoteAdapter = MeteoraDammQuoteAdapter;
+static METEORA_DBC_ADAPTER: MeteoraDbcQuoteAdapter = MeteoraDbcQuoteAdapter;
+static METEORA_DLMM_PRO_ADAPTER: MeteoraDlmmProQuoteAdapter = MeteoraDlmmProQuoteAdapter;
 static PUMP_FUN_ADAPTER: PumpFunQuoteAdapter = PumpFunQuoteAdapter;
-static METEORA_DAMM_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
-    venue: DexProtocol::MeteoraDammV2,
-    reason: "Meteora DAMM v2 requires its own layout-version, liquidity-handler, and compounding-fee state adapter",
-};
 static RAYDIUM_LAUNCHLAB_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::RaydiumLaunchLab,
     reason: "Raydium LaunchLab requires its own platform/global config and bonding-curve state adapter",
@@ -318,6 +342,8 @@ pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuo
         DexProtocol::OrcaWhirlpool => &ORCA_ADAPTER,
         DexProtocol::MeteoraDlmm => &METEORA_DLMM_ADAPTER,
         DexProtocol::MeteoraDammV2 => &METEORA_DAMM_ADAPTER,
+        DexProtocol::MeteoraDbc => &METEORA_DBC_ADAPTER,
+        DexProtocol::MeteoraDlmmPro => &METEORA_DLMM_PRO_ADAPTER,
         DexProtocol::RaydiumLaunchLab => &RAYDIUM_LAUNCHLAB_ADAPTER,
         DexProtocol::PumpFun => &PUMP_FUN_ADAPTER,
         DexProtocol::PumpSwap => &PUMP_SWAP_ADAPTER,
@@ -712,7 +738,7 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     let params = d0.params.clone().ok_or(ArbError::InvalidInput(
         "DLMM fee config not ingested".into(),
     ))?;
-    if params.function_type != 0 {
+    if params.function_type > 2 {
         return Err(ArbError::InvalidInput(
             "unsupported Meteora DLMM function type; spot-only quote engine cannot price it".into(),
         ));
@@ -747,6 +773,7 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
             index_reference: d0.index_reference,
             last_update_timestamp: d0.last_update_timestamp,
         },
+        support_limit_order: d0.support_limit_order,
     };
     let mut bins: Vec<DlmmBin> = d0
         .bins
@@ -761,6 +788,9 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
                     ArbError::InvalidInput("DLMM Y reserve exceeds u64 domain".into())
                 })?,
                 price_q64: 0,
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -777,6 +807,9 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
                 bin_id: b.id,
                 amount_x: b.amount_x as u128,
                 amount_y: b.amount_y as u128,
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
             })
             .collect();
     }
@@ -999,12 +1032,14 @@ mod tests {
                     bin_id: 0,
                     amount_x: 1_000_000,
                     amount_y: 1_000_000,
+                    ..Default::default()
                 }],
                 params: None,
                 volatility_accumulator: 0,
                 volatility_reference: 0,
                 index_reference: 0,
                 last_update_timestamp: 0,
+                ..Default::default()
             }),
             pump_fun: None,
             transfer_fee_bps: 0,
@@ -1056,6 +1091,7 @@ mod tests {
                     bin_id: 2,
                     amount_x: 10u128.pow(12),
                     amount_y: 4 * 10u128.pow(12),
+                    ..Default::default()
                 }],
                 params: Some(arb_types::DlmmFeeParams {
                     base_factor: 100,
@@ -1073,6 +1109,7 @@ mod tests {
                 volatility_reference: 0,
                 index_reference: 2,
                 last_update_timestamp: 0,
+                ..Default::default()
             }),
             pump_fun: None,
             transfer_fee_bps: 0,

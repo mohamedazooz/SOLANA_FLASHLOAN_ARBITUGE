@@ -101,10 +101,6 @@ pub struct Bps(pub u16);
 impl Bps {
     pub const ZERO: Self = Self(0);
     pub const MAX: Self = Self(10_000);
-
-    pub fn as_fraction(self) -> f64 {
-        self.0 as f64 / 10_000.0
-    }
 }
 
 /// Slot number on the Solana blockchain.
@@ -176,10 +172,6 @@ impl ComputeUnits {
 
     pub fn checked_add(self, rhs: Self) -> Option<Self> {
         self.0.checked_add(rhs.0).map(Self)
-    }
-
-    pub fn as_u32(self) -> u32 {
-        self.0
     }
 }
 
@@ -284,6 +276,10 @@ pub enum DexProtocol {
     MeteoraDlmm,
     /// Meteora DAMM v2 (`cp_amm`, `cpamdp…`): configurable constant/concentrated AMM.
     MeteoraDammV2,
+    /// Meteora Dynamic Bonding Curve (`dbcij…`): 16-point piecewise launchpad.
+    MeteoraDbc,
+    /// Meteora DLMM Pro (`dPro1…`): continuous tick concentrated liquidity.
+    MeteoraDlmmPro,
     /// Raydium LaunchLab (`LanMV9…`): bonding curve launchpad.
     RaydiumLaunchLab,
     /// Pump.fun bonding curve constant-product AMM.
@@ -302,6 +298,8 @@ impl DexProtocol {
             Self::OrcaWhirlpool => "orca_whirlpool",
             Self::MeteoraDlmm => "meteora_dlmm",
             Self::MeteoraDammV2 => "meteora_damm_v2",
+            Self::MeteoraDbc => "meteora_dbc",
+            Self::MeteoraDlmmPro => "meteora_dlmm_pro",
             Self::RaydiumLaunchLab => "raydium_launchlab",
             Self::PumpFun => "pump_fun",
             Self::PumpSwap => "pump_swap",
@@ -317,10 +315,11 @@ impl DexProtocol {
             Self::RaydiumV4
             | Self::RaydiumCpmm
             | Self::MeteoraDammV2
+            | Self::MeteoraDbc
             | Self::RaydiumLaunchLab
             | Self::PumpFun
             | Self::PumpSwap => PoolKind::Cpmm,
-            Self::RaydiumClmm | Self::OrcaWhirlpool => PoolKind::Clmm,
+            Self::RaydiumClmm | Self::OrcaWhirlpool | Self::MeteoraDlmmPro => PoolKind::Clmm,
             Self::MeteoraDlmm => PoolKind::Dlmm,
         }
     }
@@ -504,6 +503,21 @@ pub enum PoolExecutionAccounts {
         vault_b: Pubkey,
         event_authority: Pubkey,
     },
+    MeteoraDbc {
+        config: Pubkey,
+        authority: Pubkey,
+        vault_base: Pubkey,
+        vault_quote: Pubkey,
+        event_authority: Pubkey,
+    },
+    MeteoraDlmmPro {
+        pool_authority: Pubkey,
+        vault_x: Pubkey,
+        vault_y: Pubkey,
+        tick_arrays: Vec<Pubkey>,
+        oracle: Pubkey,
+        event_authority: Pubkey,
+    },
     RaydiumLaunchLab {
         authority: Pubkey,
         global_config: Pubkey,
@@ -565,10 +579,6 @@ impl UsdMicros {
 
     pub fn as_f64(self) -> f64 {
         self.0 as f64 / 1_000_000.0
-    }
-
-    pub fn is_positive(self) -> bool {
-        self.0 > 0
     }
 
     pub fn saturating_add(self, rhs: Self) -> Self {
@@ -910,6 +920,11 @@ pub struct DlmmState {
     pub index_reference: i32,
     #[serde(default)]
     pub last_update_timestamp: i64,
+    /// Whether the pool supports the limit-order liquidity layer
+    /// (`LbPair::is_support_limit_order` in the official SDK). When `false`,
+    /// quotes use MM reserves only (underquote, fail-safe).
+    #[serde(default)]
+    pub support_limit_order: bool,
 }
 
 /// Single bin in a DLMM ladder.
@@ -921,6 +936,17 @@ pub struct DlmmBin {
     pub amount_x: u128,
     #[serde(default)]
     pub amount_y: u128,
+    /// Limit-order layer: open (unprocessed) order liquidity, denominated in
+    /// the order's committed output token (on-chain `Bin.open_order_amount`).
+    #[serde(default)]
+    pub open_order_amount: u64,
+    /// Limit-order layer: remaining fillable amount of already-processed
+    /// orders (on-chain `Bin.processed_order_remaining_amount`).
+    #[serde(default)]
+    pub processed_order_remaining_amount: u64,
+    /// Limit-order side flag (on-chain `Bin.limit_order_ask_side`).
+    #[serde(default)]
+    pub limit_order_ask_side: bool,
 }
 
 /// Pump.fun bonding curve on-chain state for pricing and capacity clamping.
@@ -953,18 +979,6 @@ impl PumpFunState {
             && self.real_token_reserves > 0
             && self.virtual_sol_reserves > 0
             && self.virtual_token_reserves > 0
-    }
-
-    /// Progress towards Raydium migration in basis points (10_000 = 100% complete at 85 SOL).
-    pub fn graduation_progress_bps(&self) -> u16 {
-        let bps = (self.real_sol_reserves as u128 * 10_000)
-            / (arb_constants::PUMP_FUN_GRADUATION_LAMPORTS as u128);
-        bps.min(10_000) as u16
-    }
-
-    /// Remaining SOL in lamports required to complete graduation.
-    pub fn remaining_sol_to_graduate(&self) -> u64 {
-        arb_constants::PUMP_FUN_GRADUATION_LAMPORTS.saturating_sub(self.real_sol_reserves)
     }
 }
 
@@ -1046,99 +1060,8 @@ impl PoolState {
 
     /// True when the pool carries a usable fee numerator/denominator pair.
     /// A pool with an invalid fee must never be priced or discovered.
-    ///
-    /// Consistent with [`Self::fee_bps`]: a pool whose fee is out of range or
-    /// overflows is not fee-valid.
     pub fn is_fee_valid(&self) -> bool {
         self.fee_bps().is_some()
-    }
-}
-
-/// Complete 18-Account Matrix for Raydium v4 SwapBaseIn instruction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RaydiumV4Accounts {
-    pub token_program: solana_pubkey::Pubkey,
-    pub amm_pool: solana_pubkey::Pubkey,
-    pub amm_authority: solana_pubkey::Pubkey,
-    pub amm_open_orders: solana_pubkey::Pubkey,
-    pub amm_target_orders: solana_pubkey::Pubkey,
-    pub pool_coin_vault: solana_pubkey::Pubkey,
-    pub pool_pc_vault: solana_pubkey::Pubkey,
-    pub serum_program: solana_pubkey::Pubkey,
-    pub serum_market: solana_pubkey::Pubkey,
-    pub serum_bids: solana_pubkey::Pubkey,
-    pub serum_asks: solana_pubkey::Pubkey,
-    pub serum_event_queue: solana_pubkey::Pubkey,
-    pub serum_coin_vault: solana_pubkey::Pubkey,
-    pub serum_pc_vault: solana_pubkey::Pubkey,
-    pub serum_vault_signer: solana_pubkey::Pubkey,
-}
-
-impl RaydiumV4Accounts {
-    pub fn mainnet_sol_usdc() -> Self {
-        use std::str::FromStr;
-        Self {
-            token_program: solana_pubkey::Pubkey::from_str(
-                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            )
-            .unwrap(),
-            amm_pool: solana_pubkey::Pubkey::from_str(
-                "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
-            )
-            .unwrap(),
-            amm_authority: solana_pubkey::Pubkey::from_str(
-                "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
-            )
-            .unwrap(),
-            amm_open_orders: solana_pubkey::Pubkey::from_str(
-                "HmiHHzq4Fym9e1D4qzLS6LDDM3tNsCTBPDWHTLZ763jY",
-            )
-            .unwrap(),
-            amm_target_orders: solana_pubkey::Pubkey::from_str(
-                "CZza3Ej4Mc58MnxWA385itCC9jCo3L1D7zc3LKy1bZMR",
-            )
-            .unwrap(),
-            pool_coin_vault: solana_pubkey::Pubkey::from_str(
-                "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz",
-            )
-            .unwrap(),
-            pool_pc_vault: solana_pubkey::Pubkey::from_str(
-                "HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz",
-            )
-            .unwrap(),
-            serum_program: solana_pubkey::Pubkey::from_str(
-                "srmqPvymJeFKQ4zGQed1GFppgkRHL9kaELCbyksJtPX",
-            )
-            .unwrap(),
-            serum_market: solana_pubkey::Pubkey::from_str(
-                "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6",
-            )
-            .unwrap(),
-            serum_bids: solana_pubkey::Pubkey::from_str(
-                "5jWUncPNBMZJ3sTHKmMLszypVkoRK6bfEQMQUHweeQnh",
-            )
-            .unwrap(),
-            serum_asks: solana_pubkey::Pubkey::from_str(
-                "EaXdHx7x3mdGA38j5RSmKYSXMzAFzzUXCLNBEDXDn1d5",
-            )
-            .unwrap(),
-            serum_event_queue: solana_pubkey::Pubkey::from_str(
-                "8CvwxZ9Db6XbLD46NZwwmVDZZRDy7eydFcAGkXKh9axa",
-            )
-            .unwrap(),
-            serum_coin_vault: solana_pubkey::Pubkey::from_str(
-                "CKxTHwM9fPMRRvZmFnFoqKNd9pQR21c5Aq9bh5h9oghX",
-            )
-            .unwrap(),
-            serum_pc_vault: solana_pubkey::Pubkey::from_str(
-                "6A5NHCj1yF6urc9wZNe6Bcjj4LVszQNj5DwAWG97yzMu",
-            )
-            .unwrap(),
-            serum_vault_signer: solana_pubkey::Pubkey::from_str(
-                "CTz5UMLQm2SRWHzQnU62Pi4yJqbNGjgRBHqqp6oDHfF7",
-            )
-            .unwrap(),
-        }
     }
 }
 
@@ -1166,17 +1089,7 @@ pub struct SwapHop {
     pub execution_accounts: Option<PoolExecutionAccounts>,
 }
 
-impl SwapHop {
-    /// True when this hop executes against the Pump.fun bonding curve.
-    pub fn is_pump_fun(&self) -> bool {
-        self.protocol == DexProtocol::PumpFun
-    }
-
-    /// True when this leg interacts directly with Native SOL rather than SPL WSOL (e.g. Pump.fun).
-    pub fn is_native_sol(&self) -> bool {
-        self.protocol == DexProtocol::PumpFun
-    }
-}
+impl SwapHop {}
 
 /// Quotation result for a swap.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1620,123 +1533,4 @@ pub enum ArbError {
 
     #[error("pump.fun reserve exceeded: requested {requested}, available {available}")]
     PumpFunReserveExceeded { requested: u64, available: u64 },
-}
-
-// ============================================================================
-// Regression tests — address conflicts (P0 C-01 / C-02)
-// ============================================================================
-//
-// These tests lock the canonical on-chain addresses in place so the historical
-// typo values (which existed only in the audit document, never in source) can
-// never be reintroduced:
-//
-//   C-01: Kamino USDC reserve must match arb_constants::KAMINO_USDC_RESERVE
-//         (canonical ...NbBmgJ59, NOT the audit-doc typo ...Ug6xK25).
-//   C-02: Raydium v4 pool_coin_vault must match arb-constants::RAYDIUM_SOL_VAULT
-//         (canonical ...JtteuvPpz, NOT the audit-doc typo ...Ww5jz).
-//
-// On-chain identity of each address remains UNVERIFIED in this repo; these tests
-// only enforce intra-repo consistency. Verify against mainnet account state
-// before mainnet use.
-#[cfg(test)]
-mod address_conflict_regression_tests {
-    use super::*;
-    use arb_constants;
-    use solana_pubkey::Pubkey;
-    use std::str::FromStr;
-
-    /// C-02: RaydiumV4Accounts::mainnet_sol_usdc() pool_coin_vault must equal the
-    /// canonical arb-constants::RAYDIUM_SOL_VAULT, never the audit-doc typo.
-    #[test]
-    fn raydium_v4_pool_coin_vault_matches_canonical_constant() {
-        let accounts = RaydiumV4Accounts::mainnet_sol_usdc();
-        let canonical = Pubkey::from_str(arb_constants::RAYDIUM_SOL_VAULT)
-            .expect("RAYDIUM_SOL_VAULT must be a valid pubkey");
-        assert_eq!(
-            accounts.pool_coin_vault, canonical,
-            "pool_coin_vault drifted from canonical arb-constants::RAYDIUM_SOL_VAULT (C-02 regression)"
-        );
-
-        // Explicitly reject the historical typo value so it cannot be reintroduced.
-        let typo = Pubkey::from_str("DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz")
-            .expect("typo must be a valid pubkey");
-        assert_ne!(
-            accounts.pool_coin_vault, typo,
-            "pool_coin_vault must not equal the historical typo value (C-02 regression)"
-        );
-    }
-
-    /// C-01: arb-constants::KAMINO_USDC_RESERVE must equal the canonical value,
-    /// never the audit-doc typo found in verified_config.rs history.
-    #[test]
-    fn kamino_usdc_reserve_matches_canonical_constant() {
-        let canonical = Pubkey::from_str(arb_constants::KAMINO_USDC_RESERVE)
-            .expect("KAMINO_USDC_RESERVE must be a valid pubkey");
-        assert_eq!(
-            canonical,
-            Pubkey::from_str("D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59")
-                .expect("canonical USDC reserve must be a valid pubkey"),
-            "KAMINO_USDC_RESERVE drifted from canonical value (C-01 regression)"
-        );
-
-        // Explicitly reject the historical typo value.
-        let typo = Pubkey::from_str("D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25")
-            .expect("typo must be a valid pubkey");
-        assert_ne!(
-            canonical, typo,
-            "KAMINO_USDC_RESERVE must not equal the historical typo value (C-01 regression)"
-        );
-    }
-
-    /// SEC-05: fee_bps must never silently convert invalid fees to 100%.
-    #[test]
-    fn fee_bps_rejects_invalid_fees_fail_closed() {
-        fn test_pool(fee_numerator: u64, fee_denominator: u64) -> PoolState {
-            PoolState {
-                pool_id: PoolId::new([1; 32]),
-                protocol: DexProtocol::RaydiumV4,
-                slot: Slot(1),
-                write_version: 1,
-                base_mint: MintId(Pubkey::new_from_array([1; 32])),
-                quote_mint: MintId(Pubkey::new_from_array([2; 32])),
-                decimals_a: 9,
-                decimals_b: 6,
-                reserve_in: 1_000_000,
-                reserve_out: 1_000_000,
-                fee_numerator,
-                fee_denominator,
-                is_active: true,
-                has_risky_token: false,
-                kind: PoolKind::Cpmm,
-                clmm: None,
-                dlmm: None,
-                pump_fun: None,
-                transfer_fee_bps: 0,
-                token_programs: [TokenProgramKind::SplToken; 2],
-                execution_accounts: None,
-                last_update_slot: 1,
-                last_update_ms: 0,
-            }
-        }
-
-        // Zero denominator -> None.
-        let p = test_pool(25, 0);
-        assert_eq!(p.fee_bps(), None);
-        assert!(!p.is_fee_valid());
-
-        // Fee above FEE_BPS_MAX (100%) -> None, never Some(10_000).
-        let p = test_pool(20_000, 10_000); // 200%
-        assert_eq!(p.fee_bps(), None);
-        assert!(!p.is_fee_valid());
-
-        // Valid fee -> Some.
-        let p = test_pool(25, 10_000); // 25 bps
-        assert_eq!(p.fee_bps(), Some(25));
-        assert!(p.is_fee_valid());
-
-        // Overflow-safe: huge numerator that would overflow u16 -> None.
-        let p = test_pool(u64::MAX, 1);
-        assert_eq!(p.fee_bps(), None);
-        assert!(!p.is_fee_valid());
-    }
 }

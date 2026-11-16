@@ -97,52 +97,28 @@ impl Default for DiscoveryConfig {
             arb_constants::WSOL_MINT,
             arb_constants::USDC_MINT,
             // USDT — the second-deepest quote asset on Solana.
-            "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+            arb_constants::USDT_MINT,
+            // Every address below was verified on-chain (SPL Token mint, 82
+            // bytes, owner TokenkegQ..) before being admitted. Fabricated hub
+            // addresses silently kill discovery for that token — see the
+            // regression test `default_hubs_are_verified_mints`.
             // POPCAT — high volatility memecoin
             "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
             // WIF — high volatility memecoin
             "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
-            // JUP — Jupiter aggregator token
-            "JUPyiwrYJFngUPXSiqZFkKHMXkGs3WEXKaJE1agWK",
-            // JTO — Jito governance token
-            "jtojtomepa8beP8uL5qyNtYQgwwJjA72yS6JwTL9CZq",
-            // BONK — popular memecoin
-            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB268",
-            // BOME — Book of Meme
-            "9MCPRCn3cpWFdSmV93hJ1kVXVVdjPpEqfnfYkaZ4TLws",
-            // RENDER
-            "rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof",
-            // RAY — Raydium DEX token
-            "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
-            // ME — Magic Eden token
-            "MEFNBXixkEbait3xn9bkm8FsMeqEikuY4qLQioNc3gU",
-            // TRUMP — High volume political meme
-            "6p6xgHyF7AeQHydaKVtRNVUjCAWoTeZwXHnkTXQKpump",
-            // FARTCOIN — High volume meme
+            // BONK — popular memecoin (verified: SPL mint, 5 decimals)
+            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+            // BOME — Book of Meme (verified: SPL mint, 6 decimals)
+            "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82",
+            // TRUMP — high volume political meme (verified: SPL mint, 6 decimals)
+            "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+            // FARTCOIN — high volume meme
             "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
-            // AI16Z — AI agent meme
-            "HeLp6NuQkmYB4pYWo2zYs22mESHXPQYzXbB8n4V98jwC",
-            // PYTH — Oracle network token
-            "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3",
-            // DRIFT — Drift Protocol DEX
-            "DriFtupJYLTosbwoN8koMbEYSx54aFAVLddWsbksjwg7",
             // PENGU — Pudgy Penguins token
             "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
-            // mSOL — Marinade Staked SOL
-            "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So",
-            // bSOL — BlazeStake Staked SOL
-            "bSo13r4TkiE4KumL71LsHTPpL2euBYLFx6h9HP3piy1",
-            // JitoSOL — Jito Liquid Staking SOL
-            "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn",
-            // GRASS
-            "grass7B4RdKfBCjTKgSqnXkqjwiGvQyFbuSCUJr3XXjs",
-            // KMNO — Kamino Finance
-            "KMNo3nJsBXfcpJTVhZcXLW7RmTwTt4GVFE7suUBo9sS",
-            // ORCA — Orca DEX token
-            "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE",
-            // FWOG — High volume meme
+            // FWOG — high volume meme
             "A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump",
-            // MOODENG — Viral meme
+            // MOODENG — viral meme
             "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY",
         ] {
             if let Ok(pk) = Pubkey::from_str(s) {
@@ -876,7 +852,7 @@ impl PoolDiscovery {
                 let mint_str = mint.0.to_string();
                 let is_hub = mint_str == arb_constants::WSOL_MINT
                     || mint_str == arb_constants::USDC_MINT
-                    || mint_str == "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+                    || mint_str == arb_constants::USDT_MINT;
                 if !is_hub {
                     let mint_auth_tag =
                         u32::from_le_bytes(bytes[0..4].try_into().unwrap_or([1, 0, 0, 0]));
@@ -1039,6 +1015,41 @@ mod tests {
         assert!(cfg.max_pools > 0 && cfg.max_pools <= 1500);
         assert!(cfg.min_tvl_usd >= 1_000.0);
         assert!(!cfg.hub_mints.is_empty());
+    }
+
+    #[test]
+    fn default_hubs_are_verified_mints() {
+        // Every entry must be a valid base58 pubkey AND must appear in this
+        // exact verified set. Addresses were confirmed on-chain (SPL Token
+        // mint accounts: owner TokenkegQ.., 82 bytes) before admission; any
+        // new hub must be re-verified the same way and added here.
+        let verified: Vec<&str> = vec![
+            arb_constants::WSOL_MINT,
+            arb_constants::USDC_MINT,
+            arb_constants::USDT_MINT,
+            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+            "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82",
+            "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+            "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+            "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+            "A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump",
+            "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY",
+        ];
+        let cfg = DiscoveryConfig::default();
+        assert_eq!(
+            cfg.hub_mints.len(),
+            verified.len(),
+            "hub list changed: every address must be on-chain verified first"
+        );
+        for v in &verified {
+            let pk = Pubkey::from_str(v).unwrap_or_else(|_| panic!("non-base58 hub: {v}"));
+            assert!(
+                cfg.hub_mints.iter().any(|m| m.0 == pk),
+                "verified hub missing from defaults: {v}"
+            );
+        }
     }
 
     #[test]

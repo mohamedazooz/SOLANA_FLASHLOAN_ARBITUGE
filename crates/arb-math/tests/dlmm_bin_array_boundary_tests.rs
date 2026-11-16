@@ -70,6 +70,7 @@ fn test_boundary_crossing_bin_69_to_bin_70() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Swap Y -> X (swap_for_y = false): price increases, active ID advances upwards from 69 to 70!
@@ -80,12 +81,14 @@ fn test_boundary_crossing_bin_69_to_bin_70() {
             amount_x: 10_000_000,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
         MathDlmmBin {
             id: 70,
             amount_x: 20_000_000,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 
@@ -109,6 +112,7 @@ fn test_boundary_crossing_bin_70_to_bin_69() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Swap X -> Y (swap_for_y = true): active ID advances downwards from 70 (Array 1) to 69 (Array 0)!
@@ -118,12 +122,14 @@ fn test_boundary_crossing_bin_70_to_bin_69() {
             amount_x: 0,
             amount_y: 10_000_000,
             price_q64: 0,
+            ..Default::default()
         },
         MathDlmmBin {
             id: 69,
             amount_x: 0,
             amount_y: 20_000_000,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 
@@ -146,6 +152,7 @@ fn test_boundary_crossing_bin_neg_70_to_bin_neg_71() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Swap X -> Y: active ID advances downwards from -70 (Array -1) to -71 (Array -2)!
@@ -155,12 +162,14 @@ fn test_boundary_crossing_bin_neg_70_to_bin_neg_71() {
             amount_x: 0,
             amount_y: 10_000_000,
             price_q64: 0,
+            ..Default::default()
         },
         MathDlmmBin {
             id: -71,
             amount_x: 0,
             amount_y: 20_000_000,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 
@@ -183,6 +192,7 @@ fn test_boundary_crossing_bin_neg_71_to_bin_neg_70() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Swap Y -> X: active ID advances upwards from -71 (Array -2) to -70 (Array -1)!
@@ -192,12 +202,14 @@ fn test_boundary_crossing_bin_neg_71_to_bin_neg_70() {
             amount_x: 10_000_000,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
         MathDlmmBin {
             id: -70,
             amount_x: 20_000_000,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 
@@ -220,6 +232,7 @@ fn test_boundary_crossing_bin_neg_1_to_bin_0() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Swap Y -> X: active ID advances upwards from -1 (Array -1) to 0 (Array 0)
@@ -229,12 +242,14 @@ fn test_boundary_crossing_bin_neg_1_to_bin_0() {
             amount_x: 10_000_000,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
         MathDlmmBin {
             id: 0,
             amount_x: 20_000_000,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 
@@ -257,6 +272,7 @@ fn test_boundary_crossing_bin_0_to_bin_neg_1() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Swap X -> Y: active ID advances downwards from 0 (Array 0) to -1 (Array -1)
@@ -266,12 +282,14 @@ fn test_boundary_crossing_bin_0_to_bin_neg_1() {
             amount_x: 0,
             amount_y: 10_000_000,
             price_q64: 0,
+            ..Default::default()
         },
         MathDlmmBin {
             id: -1,
             amount_x: 0,
             amount_y: 20_000_000,
             price_q64: 0,
+            ..Default::default()
         },
     ];
 
@@ -297,6 +315,7 @@ fn test_large_exact_in_crossing_more_than_three_bin_arrays() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     // Continuous bins spanning from 75 down to -75 crossing Array 1, Array 0, Array -1, and Array -2
@@ -312,6 +331,7 @@ fn test_large_exact_in_crossing_more_than_three_bin_arrays() {
             amount_x: 0,
             amount_y,
             price_q64: 0,
+            ..Default::default()
         });
     }
 
@@ -348,6 +368,7 @@ fn test_large_exact_out_crossing_more_than_three_bin_arrays() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     let mut continuous_bins = Vec::with_capacity(160);
@@ -357,6 +378,7 @@ fn test_large_exact_out_crossing_more_than_three_bin_arrays() {
             amount_x: 0,
             amount_y: 100_000,
             price_q64: 0,
+            ..Default::default()
         });
     }
 
@@ -402,6 +424,7 @@ fn test_positive_traversal_crossing_five_bin_arrays_y_to_x() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     let mut continuous_bins = Vec::with_capacity(300);
@@ -412,6 +435,7 @@ fn test_positive_traversal_crossing_five_bin_arrays_y_to_x() {
             amount_x,
             amount_y: 0,
             price_q64: 0,
+            ..Default::default()
         });
     }
 
@@ -450,6 +474,7 @@ fn test_negative_traversal_crossing_five_bin_arrays_x_to_y() {
         status: 0,
         parameters: test_parameters(bin_step),
         v_parameters: test_v_parameters(),
+        ..Default::default()
     };
 
     let mut continuous_bins = Vec::with_capacity(300);
@@ -460,6 +485,7 @@ fn test_negative_traversal_crossing_five_bin_arrays_x_to_y() {
             amount_x: 0,
             amount_y,
             price_q64: 0,
+            ..Default::default()
         });
     }
 

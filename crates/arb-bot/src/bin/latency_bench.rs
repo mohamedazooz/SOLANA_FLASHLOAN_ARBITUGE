@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
 
     let raydium_sol_usdc = arb_tx::RAYDIUM_SOL_USDC_POOL;
     let orca_sol_usdc = arb_tx::ORCA_SOL_USDC_POOL;
-    let ray_authority = Pubkey::from_str("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1")?;
+    let ray_authority = Pubkey::from_str(arb_constants::RAYDIUM_V4_AUTHORITY)?;
     let ray_sol_vault = Pubkey::from_str(arb_tx::RAYDIUM_SOL_VAULT)?;
     let ray_usdc_vault = Pubkey::from_str("HLmqeL62xR1QoZ1HKKbXRrdN1p3phKpxRMb2VVopvBBz")?;
     let orca_sol_vault = Pubkey::from_str("EUuUbDcafPrmVTD5M6qoJAoyyNbihBhugADAxRMn5he9")?;

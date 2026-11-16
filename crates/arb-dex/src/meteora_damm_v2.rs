@@ -222,11 +222,6 @@ impl AmmPool for MeteoraDammV2Pool {
                 "Meteora DAMM v2 fee config/current point has not been coherently joined".into(),
             ));
         }
-        if self.fee_params.collect_fee_mode == 2 {
-            return Err(ArbError::InvalidInput(
-                "Meteora DAMM v2 compounding mode requires layout-version reserve balances; concentrated-liquidity quote is invalid".into(),
-            ));
-        }
         if self.fee_params.collect_fee_mode > 2 {
             return Err(ArbError::InvalidInput(
                 "unknown Meteora DAMM v2 collect fee mode".into(),

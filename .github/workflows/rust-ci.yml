@@ -49,6 +49,27 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  security:
+    name: Security advisories (cargo-deny)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: cargo-deny (workspace)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources licenses
+          arguments: --workspace
+
+      - name: cargo-deny (webhook-service)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources licenses
+          manifest-path: webhook-service/Cargo.toml
+
   web:
     name: Web app build (React + Vite)
     runs-on: ubuntu-latest

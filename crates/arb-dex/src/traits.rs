@@ -30,15 +30,7 @@ pub trait AmmPool: Send + Sync {
 
     /// Pricing family: determines which curve the quote model must use.
     fn kind(&self) -> PoolKind {
-        match self.protocol() {
-            DexProtocol::RaydiumV4
-            | DexProtocol::RaydiumCpmm
-            | DexProtocol::PumpFun
-            | DexProtocol::PumpSwap
-            | DexProtocol::RaydiumLaunchLab => PoolKind::Cpmm,
-            DexProtocol::RaydiumClmm | DexProtocol::OrcaWhirlpool => PoolKind::Clmm,
-            DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => PoolKind::Dlmm,
-        }
+        self.protocol().family()
     }
 
     /// Concentrated-liquidity state, if this pool is a CLMM. `None` for CPMM/DLMM.

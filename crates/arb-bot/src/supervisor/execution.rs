@@ -99,13 +99,9 @@ impl Supervisor {
         }
     }
 
-<<<<<<< HEAD
-    pub(super) async fn fetch_recent_blockhash(&self) -> Option<[u8; 32]> {
-=======
     /// Returns the blockhash plus its `lastValidBlockHeight` (recovery
     /// evidence for expiration; `None` only if the RPC omits it).
     pub(super) async fn fetch_recent_blockhash(&self) -> ([u8; 32], Option<i64>) {
->>>>>>> origin/main
         // Reuse a fresh cached hash: a blockhash stays valid for ~60-90s, so a
         // few seconds of reuse removes an RPC round-trip from the send path
         // without risking an expired hash.
@@ -114,11 +110,7 @@ impl Supervisor {
             if let Some((bh, at, lvbh)) = *cache
                 && at.elapsed() < std::time::Duration::from_secs(3)
             {
-<<<<<<< HEAD
-                return Some(bh);
-=======
                 return (bh, lvbh);
->>>>>>> origin/main
             }
         }
         let req_params = serde_json::json!([{"commitment": "confirmed"}]);
@@ -140,20 +132,11 @@ impl Supervisor {
                 && let Ok(bytes) = bs58::decode(bh).into_vec()
                 && let Ok(arr) = bytes.try_into()
             {
-<<<<<<< HEAD
-                *self.blockhash_cache.lock() = Some((arr, Instant::now()));
-                return Some(arr);
-            }
-        }
-        // Fail closed: never fabricate a zero blockhash. Caller must skip submission.
-        None
-=======
                 *self.blockhash_cache.lock() = Some((arr, Instant::now(), lvbh));
                 return (arr, lvbh);
             }
         }
         ([0u8; 32], None)
->>>>>>> origin/main
     }
 
     /// Latest live SOL/USD mid from the tracked SOL-USDC pools or live market feed,
@@ -302,11 +285,7 @@ impl Supervisor {
             self.live_sol_price(),
         )
         .map_err(anyhow::Error::msg)?;
-<<<<<<< HEAD
-        if !inputs.is_fresh(self.config.strategy.max_state_age_slots) {
-=======
         if !inputs.is_fresh(1500) {
->>>>>>> origin/main
             anyhow::bail!("verified Yellowstone economic inputs exceed max_state_age_slots");
         }
         Ok(inputs)

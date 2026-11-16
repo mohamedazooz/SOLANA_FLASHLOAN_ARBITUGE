@@ -74,6 +74,14 @@ pub struct HeliusWsClient {
     endpoint_unsupported: AtomicBool,
     probe_confirmed: AtomicBool,
     slot_notify: Arc<Notify>,
+    /// Shared RPC pool for the startup seed and event-driven derived-account
+    /// hydration (tick arrays / bin arrays). One pool per client, not per call.
+    rpc_pool: crate::rpc_pool::RpcPool,
+    /// Pools whose derived-account coverage failed a WS update and need a
+    /// targeted hydration fetch. Value = trigger slot.
+    pending_derived: parking_lot::Mutex<HashMap<PoolId, u64>>,
+    /// Per-pool hydrated coverage: (covered array indices/starts, last attempt).
+    derived_covered: parking_lot::Mutex<HashMap<PoolId, (Vec<i64>, Instant)>>,
 }
 
 impl HeliusWsClient {
@@ -94,6 +102,9 @@ impl HeliusWsClient {
             endpoint_unsupported: AtomicBool::new(false),
             probe_confirmed: AtomicBool::new(false),
             slot_notify: Arc::new(Notify::new()),
+            rpc_pool: crate::rpc_pool::RpcPool::from_env(),
+            pending_derived: parking_lot::Mutex::new(HashMap::new()),
+            derived_covered: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -533,6 +544,30 @@ impl HeliusWsClient {
         );
         self.seed_initial_accounts(&yellowstone).await;
 
+        // Event-driven derived-account hydration worker: drains the queue fed
+        // by WS pool updates whose active tick/bin fell outside hydrated
+        // coverage. Fetches ONLY the needed accounts (2-4 small accounts per
+        // crossing) instead of re-polling every pool's tick/bin arrays.
+        {
+            let hydration_client = Arc::clone(&self);
+            let hydration_yellowstone = Arc::clone(&yellowstone);
+            let hydration_cancel = cancel.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_millis(500));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = hydration_cancel.cancelled() => break,
+                        _ = tick.tick() => {
+                            hydration_client
+                                .hydrate_pending_derived(&hydration_yellowstone)
+                                .await;
+                        }
+                    }
+                }
+            });
+        }
+
         let mut attempt = 0u32;
         let mut consecutive_failures = 0usize;
 
@@ -745,6 +780,242 @@ impl HeliusWsClient {
         }
     }
 
+    /// Queue a pool for targeted derived-account hydration (tick arrays /
+    /// bin arrays). Called from the WS update path when coverage fails; the
+    /// hydration worker fetches ONLY the needed accounts (event-driven, not
+    /// the blanket 750ms poll this replaces).
+    /// Throttled to one attempt per pool per 1.5s.
+    fn queue_derived_hydration(&self, pool_id: PoolId, slot: u64) {
+        let mut covered = self.derived_covered.lock();
+        if let Some((_, last)) = covered.get(&pool_id)
+            && last.elapsed() < Duration::from_millis(1500)
+        {
+            return;
+        }
+        covered.insert(pool_id, (Vec::new(), Instant::now()));
+        drop(covered);
+        self.pending_derived.lock().insert(pool_id, slot);
+    }
+
+    /// Drain the hydration queue: fetch each queued pool's needed derived
+    /// accounts (batched), decode, and apply the refreshed pool state.
+    /// Fail-closed: a pool that cannot be decoded or fetched stays unhydrated
+    /// and its WS updates keep being rejected until a later attempt succeeds.
+    pub async fn hydrate_pending_derived(&self, yellowstone: &IngestClient) {
+        let batch: Vec<(PoolId, u64)> = {
+            let mut q = self.pending_derived.lock();
+            if q.is_empty() {
+                return;
+            }
+            q.drain().collect()
+        };
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        )
+        .unwrap_or(u64::MAX);
+
+        for (pool_id, trigger_slot) in batch {
+            let Some(reg) = self.registered_pools.read().get(&pool_id).cloned() else {
+                continue;
+            };
+            let Some(snap) = yellowstone.account_store().get(&pool_id.0) else {
+                continue;
+            };
+            let pool_bytes: &[u8] = &snap.data;
+            let slot = snap.slot.max(trigger_slot);
+
+            match reg.protocol {
+                DexProtocol::MeteoraDlmm => {
+                    let Some(d) = decode_dlmm_state(pool_bytes) else {
+                        continue;
+                    };
+                    let mut keys = crate::registry::dlmm_bin_array_pdas(
+                        &pool_id.0,
+                        d.active_bin_id,
+                        d.bin_step_bps,
+                    );
+                    let ext = crate::registry::bitmap_extension_pda(&pool_id.0);
+                    keys.push(ext);
+                    let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+                    let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+                    let Ok((accounts, _)) = self
+                        .rpc_pool
+                        .get_multiple_accounts_with_slot(&ref_strs)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let mut bins = Vec::new();
+                    for (acc, key) in accounts.into_iter().zip(keys.iter()) {
+                        let Some(acc) = acc else { continue };
+                        let Some(raw) = acc
+                            .get("data")
+                            .and_then(|d| d.get(0))
+                            .and_then(|s| s.as_str())
+                        else {
+                            continue;
+                        };
+                        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
+                        else {
+                            continue;
+                        };
+                        if *key == ext {
+                            continue;
+                        }
+                        bins.extend(crate::registry::decode_bin_array(&bytes));
+                    }
+                    if bins.is_empty() {
+                        continue;
+                    }
+                    let covered =
+                        crate::registry::dlmm_bin_array_indices(d.active_bin_id, d.bin_step_bps);
+                    self.derived_covered
+                        .lock()
+                        .insert(pool_id, (covered, Instant::now()));
+                    if let Some(mut state) = yellowstone.cache().get_pool(&pool_id)
+                        && slot >= state.last_update_slot
+                        && let Some(dlmm) = state.dlmm.as_mut()
+                        && pool_bytes.len() >= 152
+                    {
+                        dlmm.bins = bins;
+                        if let Some(fee_bps) = decode_dlmm_fee_bps(dlmm) {
+                            let token_x =
+                                Pubkey::new_from_array(pool_bytes[88..120].try_into().unwrap());
+                            let token_y =
+                                Pubkey::new_from_array(pool_bytes[120..152].try_into().unwrap());
+                            state.base_mint = MintId(token_x);
+                            state.quote_mint = MintId(token_y);
+                            if let Some((r_in, r_out)) =
+                                compute_dlmm_reserves(dlmm, pool_bytes, &token_x, &token_y)
+                                && r_in > 0
+                                && r_out > 0
+                            {
+                                state.fee_numerator = u64::from(fee_bps);
+                                state.fee_denominator = 10_000;
+                                state.reserve_in = r_in;
+                                state.reserve_out = r_out;
+                                state.slot = Slot(slot);
+                                state.last_update_slot = slot;
+                                state.last_update_ms = now_ms;
+                                let _ = yellowstone.apply_pool_update(state);
+                                debug!(
+                                    "hydration: DLMM {} rehydrated bins at slot {}",
+                                    pool_id.0, slot
+                                );
+                            }
+                        }
+                    }
+                }
+                DexProtocol::OrcaWhirlpool | DexProtocol::RaydiumClmm => {
+                    let decoded = if reg.protocol == DexProtocol::OrcaWhirlpool {
+                        decode_clmm_state(pool_bytes)
+                    } else {
+                        decode_raydium_clmm_state(pool_bytes, reg.fee_bps)
+                    };
+                    let Some(c) = decoded else {
+                        continue;
+                    };
+                    let (keys, starts) = if reg.protocol == DexProtocol::OrcaWhirlpool {
+                        crate::registry::clmm_tick_array_pdas(
+                            &pool_id,
+                            c.tick_current,
+                            c.tick_spacing,
+                        )
+                    } else {
+                        crate::registry::raydium_clmm_tick_array_pdas(
+                            &pool_id,
+                            c.tick_current,
+                            c.tick_spacing,
+                        )
+                    };
+                    let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+                    let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
+                    let Ok((accounts, _)) = self
+                        .rpc_pool
+                        .get_multiple_accounts_with_slot(&ref_strs)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let mut arrays = Vec::new();
+                    for (acc, start_tick) in accounts.into_iter().zip(starts.iter()) {
+                        let Some(acc) = acc else { continue };
+                        let Some(raw) = acc
+                            .get("data")
+                            .and_then(|d| d.get(0))
+                            .and_then(|s| s.as_str())
+                        else {
+                            continue;
+                        };
+                        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw)
+                        else {
+                            continue;
+                        };
+                        let parsed = if reg.protocol == DexProtocol::OrcaWhirlpool {
+                            arb_math::clmm::parse_tick_array_account(&bytes, c.tick_spacing)
+                                .ok()
+                                .map(|f| (f.start_tick_index, f.ticks))
+                        } else {
+                            arb_dex::RaydiumClmmPool::parse_tick_array_state(&bytes)
+                                .ok()
+                                .map(|f| (f.start_tick_index, f.ticks))
+                        };
+                        if let Some((start, ticks)) = parsed
+                            && start == *start_tick
+                        {
+                            arrays.push(arb_types::ClmmTickArray {
+                                start_tick_index: start,
+                                ticks: ticks
+                                    .into_iter()
+                                    .filter(|t| t.initialized)
+                                    .map(|t| arb_types::ClmmTick {
+                                        tick_index: t.tick_index,
+                                        initialized: true,
+                                        liquidity_net: t.liquidity_net,
+                                    })
+                                    .collect(),
+                            });
+                        }
+                    }
+                    if arrays.is_empty() {
+                        continue;
+                    }
+                    self.derived_covered.lock().insert(
+                        pool_id,
+                        (
+                            starts.iter().map(|v| i64::from(*v)).collect(),
+                            Instant::now(),
+                        ),
+                    );
+                    if let Some(mut state) = yellowstone.cache().get_pool(&pool_id)
+                        && slot >= state.last_update_slot
+                        && let Some(clmm) = state.clmm.as_mut()
+                    {
+                        clmm.tick_arrays = arrays;
+                        let (r_in, r_out) = compute_clmm_virtual_reserves(clmm);
+                        if r_in > 0 && r_out > 0 {
+                            state.reserve_in = r_in;
+                            state.reserve_out = r_out;
+                            state.slot = Slot(slot);
+                            state.last_update_slot = slot;
+                            state.last_update_ms = now_ms;
+                            let n_arrays = clmm.tick_arrays.len();
+                            let _ = yellowstone.apply_pool_update(state);
+                            debug!(
+                                "hydration: {:?} {} rehydrated {} tick arrays at slot {}",
+                                reg.protocol, pool_id.0, n_arrays, slot
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn apply_live_pool_update_from_ws(
         &self,
         pk: Pubkey,
@@ -838,7 +1109,8 @@ impl HeliusWsClient {
                         clmm.tick_spacing,
                     )
                 {
-                    return; // Fail closed until hydration fetches shifted tick arrays
+                    self.queue_derived_hydration(pool_id, slot); // fail closed + event-driven hydration
+                    return;
                 }
                 clmm.tick_arrays = existing_ticks;
                 let (r_in, r_out) = compute_clmm_virtual_reserves(&clmm);
@@ -870,7 +1142,8 @@ impl HeliusWsClient {
                     .map(|d| d.bins.clone())
                     .unwrap_or_default();
                 if !existing_bins.iter().any(|b| b.bin_id == dlmm.active_bin_id) {
-                    return; // Fail closed until hydration fetches active BinArray
+                    self.queue_derived_hydration(pool_id, slot); // fail closed + event-driven hydration
+                    return;
                 }
                 dlmm.bins = existing_bins;
                 let Some(fee_bps) = decode_dlmm_fee_bps(&dlmm) else {
@@ -926,7 +1199,8 @@ impl HeliusWsClient {
                         clmm.tick_spacing,
                     )
                 {
-                    return; // Fail closed until hydration fetches shifted tick arrays
+                    self.queue_derived_hydration(pool_id, slot); // fail closed + event-driven hydration
+                    return;
                 }
                 clmm.tick_arrays = existing_ticks;
                 let (r_in, r_out) = compute_clmm_virtual_reserves(&clmm);

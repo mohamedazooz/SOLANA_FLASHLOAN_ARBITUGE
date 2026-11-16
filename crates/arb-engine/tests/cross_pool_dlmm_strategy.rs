@@ -62,6 +62,7 @@ fn bins_around(active_id: i32, span: i32, per_bin_side: u128) -> Vec<arb_types::
             bin_id: active_id + d,
             amount_x: per_bin_side,
             amount_y: per_bin_side,
+            ..Default::default()
         })
         .collect()
 }
@@ -121,6 +122,7 @@ fn dlmm_pool(
             volatility_reference: 0,
             index_reference: active_id,
             last_update_timestamp: 1_700_000_000,
+            support_limit_order: false,
         }),
         pump_fun: None,
         transfer_fee_bps: 0,
@@ -190,12 +192,14 @@ fn bin_ladder_quote_is_consistent_with_active_price() {
             index_reference: active,
             last_update_timestamp: 0,
         },
+        ..Default::default()
     };
     let mut bins = vec![MathBin {
         id: active,
         amount_x: per as u64,
         amount_y: per as u64,
         price_q64: 0,
+        ..Default::default()
     }];
     let amount_in = 10_000_000u64;
     let q = quote_dlmm_multi_bin(&pool, &mut bins, amount_in, true, None).expect("quote");

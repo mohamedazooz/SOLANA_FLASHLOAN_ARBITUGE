@@ -74,3 +74,13 @@ same PR.
 [`archive/`](archive/) contains superseded phase reports, older audits, and
 research notes. They document how the system got here. Do not cite them as
 current behavior; do not update them.
+
+## Document authority & historical generations
+
+Multiple audit/status document generations exist (`docs/audit/`, `docs/audits/`,
+`docs/archive/`). **Authoritative current status**: [`PROJECT_STATE.md`](PROJECT_STATE.md)
+and [`quality/PRODUCTION_READINESS_2026-11-13.md`](quality/PRODUCTION_READINESS_2026-11-13.md).
+Documents under `docs/archive/` and the PR7/PR8-era audit documents are
+point-in-time snapshots of older baselines — they may reference code that has
+since been removed or changed and must not be cited as current status.
+If a document disagrees with the code, the code wins (see preamble above).

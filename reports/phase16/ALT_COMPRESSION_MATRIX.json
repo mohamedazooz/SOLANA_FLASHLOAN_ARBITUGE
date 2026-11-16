@@ -14,11 +14,11 @@
   },
   {
     "compression_value_rung": {
-      "account_count": 65,
-      "bins_per_leg": 10,
-      "bytes_saved_vs_v1": 1929,
-      "v0_alt_bytes": 536,
-      "v1_inline_bytes": 2465
+      "account_count": 62,
+      "bins_per_leg": 9,
+      "bytes_saved_vs_v1": 1836,
+      "v0_alt_bytes": 530,
+      "v1_inline_bytes": 2366
     },
     "instrument": "real_three_pool_dlmm_route",
     "invariants_proven": [
@@ -227,32 +227,10 @@
         }
       },
       {
-        "account_count": 65,
         "bins_per_leg": 10,
-        "v0_alt": {
-          "alt_addresses": 64,
-          "fits_1232": true,
-          "serialized_size_bytes": 536,
-          "version": "V0"
-        },
-        "v0_bare": {
-          "compiled": false,
-          "failure_reason": "transaction too large: 2486 bytes, limit 1232",
-          "serialized_size_bytes": null,
-          "version": null
-        },
-        "v1_inline": {
-          "exceeds_1232": true,
-          "fits_4096": true,
-          "serialized_size_bytes": 2465,
-          "version": "V1"
-        }
-      },
-      {
-        "bins_per_leg": 11,
         "v1": {
           "compiled": false,
-          "failure_reason": "alt compilation failed: Transaction sanitization failure: SIMD-0385 address limit exceeded: 67 > 64"
+          "failure_reason": "atomicity check failed: SIMD-0385 address limit exceeded: account count 65 exceeds maximum V1 limit 64 inline accounts"
         }
       }
     ],

@@ -52,7 +52,7 @@ impl UnifiedRouteGraph {
             return Vec::new();
         }
         let max_hops = max_hops.clamp(2, 8);
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(max_routes.min(64));
         let mut hops = Vec::with_capacity(max_hops);
         let mut used_pools = HashSet::with_capacity(max_hops);
         let mut visited_mints = HashSet::with_capacity(max_hops);
@@ -137,35 +137,6 @@ impl UnifiedRouteGraph {
             hops.pop();
             used_pools.remove(&pool.pool_id);
         }
-    }
-
-    /// Quote all discovered cycles against private route-local pool copies.
-    /// Failed/unsupported candidates are skipped, never priced by a fallback.
-    pub fn quote_cycles(
-        &self,
-        anchor_mint: MintId,
-        amount_in: u64,
-        max_hops: usize,
-        max_routes: usize,
-    ) -> Vec<QuotedCycle> {
-        let candidates = self.enumerate_cycles(anchor_mint, max_hops, max_routes);
-        let mut quoted = Vec::new();
-        for candidate in candidates {
-            let mut route_pools = self.pools.clone();
-            if let Ok(quote) = quote_route(&mut route_pools, &candidate.hops, amount_in) {
-                if quote.output_mint != candidate.input_mint {
-                    continue;
-                }
-                let gross_profit_raw = i128::from(quote.amount_out) - i128::from(amount_in);
-                quoted.push(QuotedCycle {
-                    candidate,
-                    quote,
-                    gross_profit_raw,
-                });
-            }
-        }
-        quoted.sort_by_key(|a| std::cmp::Reverse(a.gross_profit_raw));
-        quoted
     }
 
     /// Re-price one previously discovered candidate. This function is pure

@@ -75,13 +75,6 @@ impl ExecutionTimeline {
             .map(|ev| ev.timestamp_ms)?;
         end.checked_sub(start)
     }
-
-    /// Detection -> submission latency in ms.
-    pub fn submission_latency_ms(&self) -> Option<u64> {
-        let start = self.detection?.timestamp_ms;
-        let end = self.submission?.timestamp_ms;
-        end.checked_sub(start)
-    }
 }
 
 /// Latency metrics computed from observed samples.

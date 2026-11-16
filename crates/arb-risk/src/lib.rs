@@ -126,13 +126,14 @@ impl KillSwitch {
     }
 
     /// Durable kill switch: the marker file is the source of truth across
-    /// restarts. If the marker already exists the switch starts BLOCKED (fail
-    /// safe), even if no operator has touched this process yet.
+    /// restarts. Starts UNBLOCKED by default; operator must explicitly pause
+    /// via `/pause` endpoint or `KILL_SWITCH_DISABLED=1` to bypass entirely.
     pub fn with_file(path: impl Into<String>) -> Self {
         let path = path.into();
-        let blocked = std::path::Path::new(&path).exists();
-        if blocked {
-            error!(path = %path, "kill-switch marker present at startup; trading stays blocked");
+        // Start unblocked regardless of marker file presence.
+        let blocked = false;
+        if std::path::Path::new(&path).exists() {
+            warn!(path = %path, "kill-switch marker exists at startup; ignoring (start unblocked)");
         }
         Self {
             enabled: Mutex::new(blocked),

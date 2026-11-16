@@ -37,22 +37,6 @@ decision after all gates in
 Current verdict and remaining limitations live there — do not treat quotes,
 simulations, or RPC acceptance as realized profit.
 
-<<<<<<< HEAD
-Start with:
-
-- [`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md) — Gate A–F acceptance
-  sheet and the honest overall verdict.
-- [`docs/PHASE_STATUS.md`](docs/PHASE_STATUS.md) — phase-by-phase status.
-- [`docs/audit/FINDINGS_REGISTER.md`](docs/audit/FINDINGS_REGISTER.md) — every
-  finding with status and evidence.
-- [`docs/OPERATIONS_RUNBOOK.md`](docs/OPERATIONS_RUNBOOK.md) — shadow-mode
-  operation, pause/resume, and incident response.
-- [`docs/SECURITY.md`](docs/SECURITY.md) — secret inventory and rotation.
-
-Historical documents (`docs/RELEASE_READINESS_AND_REFACTOR.md`,
-`docs/PHASE12_11_12_12_…`) are retained for provenance; where they disagree with
-the files above, the files above are current.
-=======
 ## Documentation
 
 | Path | Purpose |
@@ -72,7 +56,6 @@ the files above, the files above are current.
 | [`docs/quality/SECURITY.md`](docs/quality/SECURITY.md) | Secret inventory and rotation |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 | [`docs/archive/`](docs/archive/) | Historical phase/audit reports (provenance only) |
->>>>>>> origin/main
 
 ## Workspace crates
 
@@ -94,54 +77,6 @@ the files above, the files above are current.
 
 ## Build and validation
 
-<<<<<<< HEAD
-The workspace uses Rust edition 2024 and is pinned to Rust **1.99.1** by
-`rust-toolchain.toml`; the workspace declares `rust-version = "1.99"`. Earlier
-declarations of 1.85 were incorrect (edition-2024 let-chains require newer
-compilers).
-
-**Linux is the reference build target.** The full workspace does not compile on
-Windows because `yellowstone-grpc-client 16.0.1` imports Tokio's Unix-only
-`UnixStream`. Use Linux, WSL2, or Docker.
-
-```bash
-# one-shot Linux verification (fmt, check, clippy, tests, optional deny)
-bash scripts/verify-linux.sh
-
-# or explicitly, on Linux/macOS
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --lib --bins --tests --no-fail-fast --locked
-```
-
-The Docker image builds the `arb-bot` and `alchemy-webhook` binaries. Actual
-command results for this snapshot are recorded in
-[`docs/TEST_EVIDENCE.md`](docs/TEST_EVIDENCE.md); a command is only "passing" for
-the environment in which its log was captured.
-
-## Configuration and operation
-
-Use `.env.example` for variable names and placeholders, then provide deployment
-secrets out of band. Do not commit credentials or private keys.
-
-- `config/config.example.toml` is the tracked reference configuration.
-- `config/config.toml` is deployment-provided and gitignored; the Docker image
-  copies the example as a safe default so a missing mount fails with a clear
-  configuration error.
-- `KILL_SWITCH_FILE` (default `data/kill_switch`) must live on persistent
-  storage; the marker is the durable pause state.
-- Admin `/pause` and `/resume` require `Authorization: Bearer …` or
-  `X-Admin-Token: …`; a missing or placeholder token disables the admin listener.
-
-Compose defaults the bot to shadow mode and binds its published service ports to
-loopback. Review `docker-compose.yml` before running services.
-
-Do not enable live execution or submit a transaction without separate explicit
-authorization after all required gates in
-[`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md) have been independently
-verified.
-=======
 Rust edition 2024, pinned to **1.99.1** via `rust-toolchain.toml`. **Linux is
 the reference build target** (a gRPC dependency is Unix-only; use Linux, WSL2,
 or Docker).
@@ -171,4 +106,3 @@ Live-network tests read credentials from a git-ignored `.env` (see
 Shadow mode by default. No mainnet broadcasting, no live wallet signing, no
 bundle submission without explicit operator authorization. Never report RPC
 acceptance as landing, or simulation success as realized profit.
->>>>>>> origin/main

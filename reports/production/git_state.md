@@ -1,58 +1,23 @@
-# Git State Report
+# Git State & Repository Baseline Report
 
-## Current Branch
-- **On branch**: `main`
-- **Branch status**: Your branch is up to date with 'origin/main'.
-- **Remote tracking**: `origin/main`
+## 1. Branch and Commit Identity
+- **Active Branch**: `feature/production-readiness-audit` (branched cleanly from `main`)
+- **Base Commit**: `45031bb` (`45031bb Merge pull request #35 from mohamedazooz/feature/dehardcode-config-merge`)
+- **Remote Origin**: `https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE.git`
+- **Head Status on main**: Synced with `origin/main` at commit `45031bb`.
 
-## HEAD Commit
-- **Commit hash**: `541cdec`
-- **Commit title**: "docs: Add phase status and baseline audit documentation"
-- **Commit parent**: `c42c387` — "feat: complete solana flashloan arbitrage workspace phase 12"
-- **Commit history (last 20)**:
-  ```
-  541cdec docs: Add phase status and baseline audit documentation
-  c42c387 feat: complete solana flashloan arbitrage workspace phase 12
-  7677cbe Initial commit
-  ```
+## 2. Working Tree Integrity
+- **Uncommitted Modifications**: None at start of session (clean baseline).
+- **Untracked Files**: None at start of session.
+- **Git Stashes**:
+  - `stash@{0}: On feat/enhanced-telegram-and-landing-telemetry: wip-uncommitted-before-fix-branch` (preserved intact).
+- **Worktrees**:
+  - `C:/Users/3aZzO0OzZ/Downloads/SOLANA_FLASHLOAN_ARBITUGE` (active root)
+  - `C:/Users/3aZzO0OzZ/.local/share/kilo/worktree-pool/solana-flashloan-arbituge-03c3e76f4199/mewing-mangosteen` (commit `7d56343`)
+  - `C:/Users/3aZzO0OzZ/Downloads/SOLANA_FLASHLOAN_ARBITUGE/.kilo/worktrees/carefree-port` (commit `0b68215`)
 
-## Git Remotes
-| Remote | URL | Branches |
-|--------|-----|----------|
-| `origin` | https://github.com/<org>/phase1210.git | main, feature/ci-bootstrap |
-| `origin` (fetch-only) | https://github.com/<org>/phase1210.git | feature/ci-bootstrap |
-
-## Uncommitted Modifications
-Extensive modifications across the repository. Key categories:
-
-### Root-level modifications (15 files):
-- `.env.example` — modified
-- `Cargo.toml` — workspace root modified
-- `Dockerfile` — modified
-- `PROMPET.MD` — modified
-- `README.md` — modified
-- `config.toml` — modified
-- `rust-toolchain.toml` — modified
-- `SAFETY_AND_HARDCODED_AUDIT.md` — modified
-- `deny.toml` — modified
-- Plus 5 more files with modifications
-
-### Crate modifications (all 23 crates have modifications):
-Each crate has its Cargo.toml and source files modified, reflecting the ongoing engineering work.
-
-## Untracked Files
-New files/directories present in workspace:
-- `.agents/`, `.github/`, `config/`, `reports/`, `scripts/`
-- `phase1210.rar`, `skills-lock.json`
-- New Rust source files in `crates/arb-ingest/src/` and tests
-- New documentation files in `docs/`
-- New arboreal configurations
-
-## Worktrees
-- **No worktrees currently configured**.
-
-## Stashes
-- **No stashes present**.
-
-## Tags
-- **No tags** present in the repository.
+## 3. Toolchain & Environment
+- **Rust Toolchain**: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`
+- **Cargo Version**: `cargo 1.99.1 (5f94df478 2026-08-27)`
+- **Edition**: 2024 (let-chains in active use)
+- **Host Platform**: Windows 11 / PowerShell (with WSL2 Ubuntu available as Linux verification fallback).

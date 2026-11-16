@@ -42,16 +42,12 @@
 //! builder (`crate::meteora_dlmm::build_swap2_exact_in`), which reproduces the
 //! generated Meteora client account order and the optional-account sentinels.
 
-use crate::atomic_integrity::{ExecutionMode, verify_atomic_integrity};
 use crate::dlmm_bin_discovery::compact_u16_len;
-use crate::meteora_dlmm::{
-    DLMM_PROGRAM_ID_STR, DlmmSwapAccountSet, MEMO_PROGRAM_ID_STR, build_swap2_exact_in,
-};
+use crate::meteora_dlmm::{DlmmSwapAccountSet, MEMO_PROGRAM_ID_STR, build_swap2_exact_in};
 use crate::{
-    AddressLookupTable, CompiledInstruction, KaminoFlashParams, KeypairSigner, TxBuilder,
-    build_compute_unit_limit, build_compute_unit_price, build_create_ata_idempotent_for_program,
-    build_kamino_flash_borrow, build_kamino_flash_repay_with_index,
-    get_associated_token_address_with_program_id,
+    AddressLookupTable, CompiledInstruction, KaminoFlashParams, build_compute_unit_limit,
+    build_compute_unit_price, build_create_ata_idempotent_for_program, build_kamino_flash_borrow,
+    build_kamino_flash_repay_with_index, get_associated_token_address_with_program_id,
 };
 use arb_types::TokenProgramKind;
 use solana_pubkey::Pubkey;
@@ -406,88 +402,6 @@ pub fn assemble_flash_funded_two_pool(
     Ok((ixs, borrow_idx, repay_idx))
 }
 
-/// Assemble **and sign** the flash-funded two-pool transaction as a v0 versioned
-/// transaction.
-///
-/// Address lookup tables are required in practice: the Kamino + two-DLMM route
-/// references far more accounts than a legacy message can carry inside the
-/// 1232-byte packet limit.
-pub fn build_flash_funded_two_pool_transaction(
-    params: &FlashArbParams,
-    signer: &KeypairSigner,
-    recent_blockhash: [u8; 32],
-    lookup_tables: &[AddressLookupTable],
-) -> Result<FlashTwoPoolArbitrageTx, FlashArbError> {
-    let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(params)?;
-
-    // ── Atomicity self-check ──
-    let verification = verify_atomic_integrity(
-        ExecutionMode::SingleTransaction,
-        &ixs,
-        Some(borrow_idx),
-        Some(repay_idx),
-        params.borrow_amount,
-        params.repay_amount(),
-        params.flash_fee,
-    )
-    .map_err(|e| FlashArbError::AltCompilation(e.to_string()))?;
-    if !verification.is_atomic {
-        return Err(FlashArbError::AtomicityFailed(
-            verification
-                .rejection_reason
-                .unwrap_or_else(|| "unknown".to_string()),
-        ));
-    }
-
-    let message =
-        TxBuilder::compile_v0_message(signer.pubkey(), &ixs, recent_blockhash, lookup_tables)
-            .map_err(|e| FlashArbError::AltCompilation(e.to_string()))?;
-    let signature = signer.sign(&message);
-
-    let mut wire_bytes = Vec::with_capacity(1 + 64 + message.len());
-    wire_bytes.push(1); // compact-u16 signature count = 1
-    wire_bytes.extend_from_slice(&signature);
-    wire_bytes.extend_from_slice(&message);
-
-    let tx_size = wire_bytes.len();
-    if tx_size > arb_constants::SOLANA_PACKET_MTU_LIMIT {
-        return Err(FlashArbError::TransactionTooLarge {
-            size: tx_size,
-            limit: arb_constants::SOLANA_PACKET_MTU_LIMIT,
-        });
-    }
-
-    let flash_mint = params.leg_a.token_in();
-    let mid_mint = params.leg_a.token_out();
-    let settlement_account = get_associated_token_address_with_program_id(
-        &params.payer,
-        &flash_mint,
-        &params.leg_a.token_in_program(),
-    );
-    let intermediate_account = get_associated_token_address_with_program_id(
-        &params.payer,
-        &mid_mint,
-        &params.leg_a.token_out_program(),
-    );
-
-    Ok(FlashTwoPoolArbitrageTx {
-        wire_bytes,
-        tx_size,
-        instructions: ixs,
-        borrow_instruction_index: borrow_idx,
-        repay_instruction_index: repay_idx,
-        borrow_amount: params.borrow_amount,
-        flash_fee: params.flash_fee,
-        repay_amount: params.repay_amount(),
-        min_hop_a_out: params.leg_a.min_amount_out,
-        min_final_out: params.leg_b.min_amount_out,
-        settlement_account,
-        intermediate_account,
-        pool_a: params.leg_a.lb_pair,
-        pool_b: params.leg_b.lb_pair,
-    })
-}
-
 /// Estimated serialized size of a v0 transaction carrying `instructions`.
 ///
 /// Mirrors `TxBuilder::compile_v0_message`: accounts that live in an address lookup
@@ -571,11 +485,6 @@ pub fn estimate_v0_transaction_size(
     size
 }
 
-/// Program id of the Meteora DLMM program.
-pub fn dlmm_program_id() -> Pubkey {
-    Pubkey::from_str(DLMM_PROGRAM_ID_STR).unwrap()
-}
-
 /// Token program id for a mint's token-program kind.
 pub fn token_program_id(kind: TokenProgramKind) -> Pubkey {
     kind.program_id()
@@ -584,6 +493,7 @@ pub fn token_program_id(kind: TokenProgramKind) -> Pubkey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atomic_integrity::{ExecutionMode, verify_atomic_integrity};
     use arb_types::TokenProgramKind;
 
     const WSOL: &str = "So11111111111111111111111111111111111111112";

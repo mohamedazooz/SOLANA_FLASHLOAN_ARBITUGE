@@ -508,7 +508,7 @@ pub fn build_swap_hop_instruction(
         }
         DexProtocol::MeteoraDammV2 => {
             if let Some(arb_types::PoolExecutionAccounts::MeteoraDammV2 {
-                config,
+                config: _,
                 authority,
                 vault_a,
                 vault_b,
@@ -521,10 +521,10 @@ pub fn build_swap_hop_instruction(
                 let user_destination =
                     get_associated_token_address(&user_authority, &hop.mint_out.0);
                 let a_to_b = hop.mint_in.0.to_bytes() < hop.mint_out.0.to_bytes();
-                let (input_vault, output_vault) = if a_to_b {
-                    (vault_a, vault_b)
+                let (token_a_mint, token_b_mint) = if a_to_b {
+                    (hop.mint_in.0, hop.mint_out.0)
                 } else {
-                    (vault_b, vault_a)
+                    (hop.mint_out.0, hop.mint_in.0)
                 };
                 let token_program_in = match hop.token_programs[0] {
                     arb_types::TokenProgramKind::Token2022 => {
@@ -542,25 +542,32 @@ pub fn build_swap_hop_instruction(
                         Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
                     }
                 };
+                let (token_a_program, token_b_program) = if a_to_b {
+                    (token_program_in, token_program_out)
+                } else {
+                    (token_program_out, token_program_in)
+                };
 
-                let mut data = Vec::with_capacity(24);
-                data.extend_from_slice(&[248, 198, 158, 145, 225, 117, 135, 200]); // swap discriminator
+                let mut data = Vec::with_capacity(25);
+                data.extend_from_slice(&arb_constants::METEORA_DAMM_V2_SWAP2_DISCRIMINATOR); // swap2 discriminator
                 data.extend_from_slice(&amount_in.to_le_bytes());
                 data.extend_from_slice(&min_amount_out.to_le_bytes());
+                data.push(0u8); // swap_mode: ExactIn
 
+                // Canonical 14-account Swap2 layout matching official cp-amm IDL:
                 let accounts_meta = vec![
-                    AccountMeta::new_readonly(config, false),
-                    AccountMeta::new(hop.pool_id.0, false),
                     AccountMeta::new_readonly(authority, false),
+                    AccountMeta::new(hop.pool_id.0, false),
                     AccountMeta::new(user_source, false),
                     AccountMeta::new(user_destination, false),
-                    AccountMeta::new(input_vault, false),
-                    AccountMeta::new(output_vault, false),
-                    AccountMeta::new_readonly(hop.mint_in.0, false),
-                    AccountMeta::new_readonly(hop.mint_out.0, false),
+                    AccountMeta::new(vault_a, false),
+                    AccountMeta::new(vault_b, false),
+                    AccountMeta::new_readonly(token_a_mint, false),
+                    AccountMeta::new_readonly(token_b_mint, false),
                     AccountMeta::new_readonly(user_authority, true),
-                    AccountMeta::new_readonly(token_program_in, false),
-                    AccountMeta::new_readonly(token_program_out, false),
+                    AccountMeta::new_readonly(token_a_program, false),
+                    AccountMeta::new_readonly(token_b_program, false),
+                    AccountMeta::new_readonly(program_id, false), // referral sentinel
                     AccountMeta::new_readonly(event_authority, false),
                     AccountMeta::new_readonly(program_id, false),
                 ];
@@ -644,6 +651,135 @@ pub fn build_swap_hop_instruction(
             } else {
                 Err(TxError::Serialization(
                     "Raydium LaunchLab missing execution accounts".into(),
+                ))
+            }
+        }
+        DexProtocol::MeteoraDbc => {
+            if let Some(arb_types::PoolExecutionAccounts::MeteoraDbc {
+                config,
+                authority,
+                vault_base,
+                vault_quote,
+                event_authority,
+            }) = hop.execution_accounts
+            {
+                let program_id = Pubkey::from_str(arb_constants::METEORA_DBC_PROGRAM_ID)
+                    .map_err(|e| TxError::Serialization(e.to_string()))?;
+                let user_source = get_associated_token_address(&user_authority, &hop.mint_in.0);
+                let user_destination =
+                    get_associated_token_address(&user_authority, &hop.mint_out.0);
+                let token_program_in = match hop.token_programs[0] {
+                    arb_types::TokenProgramKind::Token2022 => {
+                        Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
+                    }
+                    arb_types::TokenProgramKind::SplToken => {
+                        Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
+                    }
+                };
+                let token_program_out = match hop.token_programs[1] {
+                    arb_types::TokenProgramKind::Token2022 => {
+                        Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
+                    }
+                    arb_types::TokenProgramKind::SplToken => {
+                        Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
+                    }
+                };
+
+                let mut data = Vec::with_capacity(25);
+                data.extend_from_slice(&arb_constants::METEORA_DBC_SWAP2_DISCRIMINATOR);
+                data.extend_from_slice(&amount_in.to_le_bytes());
+                data.extend_from_slice(&min_amount_out.to_le_bytes());
+                data.push(0u8); // swap_mode: ExactIn
+
+                let accounts_meta = vec![
+                    AccountMeta::new_readonly(authority, false),
+                    AccountMeta::new(hop.pool_id.0, false),
+                    AccountMeta::new_readonly(config, false),
+                    AccountMeta::new(user_source, false),
+                    AccountMeta::new(user_destination, false),
+                    AccountMeta::new(vault_base, false),
+                    AccountMeta::new(vault_quote, false),
+                    AccountMeta::new_readonly(hop.mint_in.0, false),
+                    AccountMeta::new_readonly(hop.mint_out.0, false),
+                    AccountMeta::new_readonly(user_authority, true),
+                    AccountMeta::new_readonly(token_program_in, false),
+                    AccountMeta::new_readonly(token_program_out, false),
+                    AccountMeta::new_readonly(event_authority, false),
+                    AccountMeta::new_readonly(program_id, false),
+                ];
+                Ok(CompiledInstruction {
+                    program_id,
+                    accounts: accounts_meta,
+                    data,
+                })
+            } else {
+                Err(TxError::Serialization(
+                    "Meteora DBC missing execution accounts".into(),
+                ))
+            }
+        }
+        DexProtocol::MeteoraDlmmPro => {
+            if let Some(arb_types::PoolExecutionAccounts::MeteoraDlmmPro {
+                pool_authority,
+                vault_x,
+                vault_y,
+                ref tick_arrays,
+                oracle,
+                event_authority,
+            }) = hop.execution_accounts
+            {
+                let program_id = Pubkey::from_str(arb_constants::METEORA_DLMM_PRO_PROGRAM_ID)
+                    .map_err(|e| TxError::Serialization(e.to_string()))?;
+                let user_source = get_associated_token_address(&user_authority, &hop.mint_in.0);
+                let user_destination =
+                    get_associated_token_address(&user_authority, &hop.mint_out.0);
+                let token_program_in = match hop.token_programs[0] {
+                    arb_types::TokenProgramKind::Token2022 => {
+                        Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
+                    }
+                    arb_types::TokenProgramKind::SplToken => {
+                        Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
+                    }
+                };
+                let token_program_out = match hop.token_programs[1] {
+                    arb_types::TokenProgramKind::Token2022 => {
+                        Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
+                    }
+                    arb_types::TokenProgramKind::SplToken => {
+                        Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
+                    }
+                };
+
+                let mut data = Vec::with_capacity(24);
+                data.extend_from_slice(&arb_constants::METEORA_DLMM_PRO_SWAP_DISCRIMINATOR);
+                data.extend_from_slice(&amount_in.to_le_bytes());
+                data.extend_from_slice(&min_amount_out.to_le_bytes());
+
+                let mut accounts_meta = vec![
+                    AccountMeta::new(hop.pool_id.0, false),
+                    AccountMeta::new_readonly(pool_authority, false),
+                    AccountMeta::new(user_source, false),
+                    AccountMeta::new(user_destination, false),
+                    AccountMeta::new(vault_x, false),
+                    AccountMeta::new(vault_y, false),
+                    AccountMeta::new_readonly(user_authority, true),
+                    AccountMeta::new_readonly(token_program_in, false),
+                    AccountMeta::new_readonly(token_program_out, false),
+                    AccountMeta::new_readonly(oracle, false),
+                    AccountMeta::new_readonly(event_authority, false),
+                    AccountMeta::new_readonly(program_id, false),
+                ];
+                for ta in tick_arrays {
+                    accounts_meta.push(AccountMeta::new(*ta, false));
+                }
+                Ok(CompiledInstruction {
+                    program_id,
+                    accounts: accounts_meta,
+                    data,
+                })
+            } else {
+                Err(TxError::Serialization(
+                    "Meteora DLMM Pro missing execution accounts".into(),
                 ))
             }
         }

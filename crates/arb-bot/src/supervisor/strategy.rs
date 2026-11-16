@@ -47,16 +47,17 @@ impl Supervisor {
                 return Ok(());
             }
         };
-        let economic_config = verified
-            .clone()
-            .into_economic_config(TokenAmount(self.config.strategy.min_net_profit_abs));
+        let economic_config =
+            verified.to_economic_config(TokenAmount(self.config.strategy.min_net_profit_abs));
         {
             let mut graph = self.graph.lock();
-            graph.set_economic_config(economic_config.clone());
+            graph.set_economic_config(economic_config);
         }
 
-        // HTTP catalog/trending discovery is disabled. Pool candidates must arrive
-        // through the configured WebSocket account-update stream and pass account validation.
+        // HTTP catalog discovery is config-gated (strategy.http_discovery_enabled,
+        // default false). When disabled, pool candidates arrive only through the
+        // configured WebSocket account-update stream and must pass account
+        // validation before entering the registry.
 
         // 1. Ingest: take one pool snapshot per strategy cycle; account updates mutate one key.
         //    Raw stream updates are promoted only after protocol-specific decoding.
@@ -108,7 +109,7 @@ impl Supervisor {
         // configured USD notional and a fresh SOL/USD reference. The graph
         // is deliberately WSOL-anchored because Kamino's configured reserve
         // lends WSOL and repayment must close in the exact borrowed mint.
-        let max_sizing = match self.live_sol_price() {
+        let mut max_sizing = match self.live_sol_price() {
             Some(sol_usd)
                 if sol_usd.is_finite()
                     && sol_usd > 0.0
@@ -121,8 +122,30 @@ impl Supervisor {
             }
             _ => 0,
         };
+
+        // When flash funding is enabled, candidate sizing across all engines
+        // (find_base_cycles_with_stats, cross_pool_dlmm, bellman_ford, multi_hop)
+        // must be strictly clamped by verified live Kamino supply-vault liquidity.
+        // If flash liquidity cannot be verified, fail closed (max_sizing = 0).
+        if self.config.strategy.use_flash_loan {
+            match self.kamino_available_flash_liquidity(current_slot) {
+                Some(liq) => {
+                    max_sizing = max_sizing.min(liq);
+                }
+                None => {
+                    debug!(
+                        "Kamino flash liquidity unverifiable at slot {}; fail closed",
+                        current_slot.0
+                    );
+                    max_sizing = 0;
+                }
+            }
+        }
+
         if max_sizing == 0 {
-            debug!("Missing fresh SOL/USD reference or invalid USD size cap; skip graph sizing");
+            debug!(
+                "Missing fresh SOL/USD reference, invalid USD size cap, or zero/unverified flash liquidity; skip graph sizing"
+            );
             return Ok(());
         }
 
@@ -250,7 +273,7 @@ impl Supervisor {
             // existed — even when the longer route was more profitable.
             let bf_opps = {
                 let bf_engine = arb_engine::BellmanFordEngine::from_pools(&fresh_pools)
-                    .with_economic_config(economic_config.clone());
+                    .with_economic_config(economic_config);
                 let found = bf_engine.find_negative_cycles(current_slot, max_sizing);
                 if !found.is_empty() {
                     info!(
@@ -260,7 +283,11 @@ impl Supervisor {
                 }
                 found
             };
-            let multi_opps = graph.find_multi_hop_cycles(current_slot, max_sizing, 5);
+            let multi_opps = graph.find_multi_hop_cycles(
+                current_slot,
+                max_sizing,
+                self.config.strategy.max_route_hops,
+            );
             if !multi_opps.is_empty() {
                 info!("🔁 Multi-hop DFS detected {} route(s)", multi_opps.len());
             }

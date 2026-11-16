@@ -74,14 +74,6 @@ impl TransactionVersion {
             Self::V1 => Some(1),
         }
     }
-
-    /// Maximum wire format size in bytes.
-    pub fn max_mtu(&self) -> usize {
-        match self {
-            Self::Legacy | Self::V0 => SOLANA_PACKET_LEGACY_MTU,
-            Self::V1 => SOLANA_PACKET_V1_MTU,
-        }
-    }
 }
 
 /// Compilation capabilities and constraints supported by the target RPC, validator, or private relay.
@@ -197,6 +189,22 @@ impl V1ConfigParams {
             || self.loaded_accounts_data_size_limit.is_some()
             || self.heap_size.is_some()
     }
+}
+
+/// Convert legacy ComputeBudget priority-fee semantics (micro-lamports per CU)
+/// into the Transaction V1 absolute total in lamports:
+/// `ceil(micro_lamports_per_cu * cu_limit / 1_000_000)`.
+///
+/// Per SIMD-0385 and the official Solana v1 documentation, the v1
+/// `priorityFee` config value is an absolute total in lamports — the per-CU
+/// arithmetic from legacy/v0 `SetComputeUnitPrice` must not be carried across.
+/// Returns `None` on overflow instead of saturating (fail-closed).
+pub fn total_priority_fee_lamports(micro_lamports_per_cu: u64, cu_limit: u64) -> Option<u64> {
+    let total = u128::from(micro_lamports_per_cu)
+        .checked_mul(u128::from(cu_limit))?
+        .checked_add(999_999)?
+        / 1_000_000;
+    u64::try_from(total).ok()
 }
 
 /// Concrete rationale explaining why a specific transaction format was selected.

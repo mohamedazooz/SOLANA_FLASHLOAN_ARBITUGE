@@ -20,8 +20,8 @@ pub use arb_constants::{
     KAMINO_MAIN_MARKET_AUTHORITY, KAMINO_USDC_RESERVE, KAMINO_WSOL_FEE_VAULT, KAMINO_WSOL_RESERVE,
     KAMINO_WSOL_SUPPLY_VAULT, MAX_COMPUTE_UNIT_LIMIT, METEORA_BINS_PER_BIN_ARRAY,
     METEORA_DLMM_PROGRAM_ID, METEORA_SOL_RESERVE, METEORA_SOL_USDC_BIN_STEP, METEORA_SOL_USDC_POOL,
-    METEORA_SWAP2_DISCRIMINATOR, METEORA_USDC_RESERVE, ORCA_SOL_USDC_POOL, ORCA_SOL_VAULT,
-    ORCA_USDC_VAULT, ORCA_WHIRLPOOL_PROGRAM_ID, PUMP_FUN_BONDING_CURVE_SEED,
+    METEORA_SWAP2_DISCRIMINATOR, METEORA_USDC_RESERVE, OPENBOOK_PROGRAM_ID, ORCA_SOL_USDC_POOL,
+    ORCA_SOL_VAULT, ORCA_USDC_VAULT, ORCA_WHIRLPOOL_PROGRAM_ID, PUMP_FUN_BONDING_CURVE_SEED,
     PUMP_FUN_BUY_DISCRIMINATOR, PUMP_FUN_EVENT_AUTHORITY_SEED, PUMP_FUN_FEE_RECIPIENT,
     PUMP_FUN_GLOBAL_SEED, PUMP_FUN_PROGRAM_ID, PUMP_FUN_SELL_DISCRIMINATOR,
     PUMP_SWAP_BUY_DISCRIMINATOR, PUMP_SWAP_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
@@ -29,11 +29,16 @@ pub use arb_constants::{
     PUMP_SWAP_SELL_DISCRIMINATOR, PUMP_SWAP_SELL_V2_DISCRIMINATOR, RAYDIUM_CLMM_OBSERVATION_SEED,
     RAYDIUM_CLMM_PROGRAM_ID, RAYDIUM_CLMM_SWAP_DISCRIMINATOR, RAYDIUM_CLMM_TICK_ARRAY_SEED,
     RAYDIUM_CPMM_AUTH_SEED, RAYDIUM_CPMM_OBSERVATION_SEED, RAYDIUM_CPMM_POOL_VAULT_SEED,
-    RAYDIUM_CPMM_PROGRAM_ID, RAYDIUM_CPMM_SOL_USDC_POOL, RAYDIUM_CPMM_SOL_VAULT,
-    RAYDIUM_CPMM_SWAP_BASE_INPUT_DISCRIMINATOR, RAYDIUM_CPMM_USDC_VAULT, RAYDIUM_SOL_USDC_POOL,
-    RAYDIUM_SOL_VAULT, RAYDIUM_USDC_VAULT, RAYDIUM_V4_PROGRAM_ID, SOLANA_PACKET_MTU_LIMIT,
+    RAYDIUM_CPMM_PROGRAM_ID, RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG, RAYDIUM_CPMM_SOL_USDC_POOL,
+    RAYDIUM_CPMM_SOL_VAULT, RAYDIUM_CPMM_SWAP_BASE_INPUT_DISCRIMINATOR, RAYDIUM_CPMM_USDC_VAULT,
+    RAYDIUM_SOL_USDC_OPEN_ORDERS, RAYDIUM_SOL_USDC_OPENBOOK_MARKET, RAYDIUM_SOL_USDC_POOL,
+    RAYDIUM_SOL_USDC_SERUM_ASKS, RAYDIUM_SOL_USDC_SERUM_BIDS, RAYDIUM_SOL_USDC_SERUM_COIN_VAULT,
+    RAYDIUM_SOL_USDC_SERUM_EVENT_QUEUE, RAYDIUM_SOL_USDC_SERUM_PC_VAULT,
+    RAYDIUM_SOL_USDC_SERUM_VAULT_SIGNER, RAYDIUM_SOL_USDC_TARGET_ORDERS, RAYDIUM_SOL_VAULT,
+    RAYDIUM_USDC_VAULT, RAYDIUM_V4_AUTHORITY, RAYDIUM_V4_PROGRAM_ID, SOLANA_PACKET_MTU_LIMIT,
     SYSTEM_PROGRAM_ID, SYSVAR_INSTRUCTIONS_ID, SYSVAR_RENT_ID, TOKEN_PROGRAM_ID, USDC_MINT,
-    WSOL_MINT, get_cu_limit_for_hops, jito_tip_account_for_leader, jito_tip_account_for_slot,
+    USDT_MINT, WSOL_MINT, get_cu_limit_for_hops, jito_tip_account_for_leader,
+    jito_tip_account_for_slot,
 };
 
 // R10 split: cohesive groups extracted verbatim into domain submodules;
@@ -747,14 +752,19 @@ mod tests {
             mint_out: arb_types::MintId(meme_token),
             fee_bps: 25,
             active_bin_id: None,
-<<<<<<< HEAD
+            token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+            trade_intent: Default::default(),
+            execution_accounts: None,
         };
-        let err = build_swap_hop_instruction(&pump_hop, user, 1_000_000_000, 100_000_000)
-            .expect_err("Pump.fun builder must be disabled until its account matrix is verified");
+        let res = build_swap_hop_instruction(&pump_hop, user, 1_000_000_000, 100_000_000);
         assert!(
-            matches!(&err, TxError::UnsupportedProtocol(msg) if msg.contains("Pump.fun live adapter disabled")),
-            "unexpected error: {err:?}"
+            res.is_ok(),
+            "Pump.fun builder should succeed with live adapter: {:?}",
+            res.err()
         );
+        let ix = res.unwrap();
+        assert_eq!(ix.accounts.len(), 12);
+        assert_eq!(ix.data[0..8], PUMP_FUN_BUY_DISCRIMINATOR);
     }
 
     #[test]
@@ -941,11 +951,7 @@ mod tests {
             expected_min_final_output: 0,
         };
 
-<<<<<<< HEAD
-        let err2 = TxBuilder::assemble_flash_arbitrage(
-=======
         let res2 = TxBuilder::assemble_flash_arbitrage(
->>>>>>> origin/main
             payer,
             tip_account,
             Lamports(1_000_000),
@@ -955,17 +961,6 @@ mod tests {
             &kamino_params,
             6250,
             TokenAmount(1_000_000),
-<<<<<<< HEAD
-        )
-        .expect_err(
-            "Raydium -> Pump.fun route must fail closed until the live adapter is verified",
-        );
-
-        assert!(
-            assert_pump_fun_fail_closed(&err2),
-            "unexpected error: {err2:#}"
-        );
-=======
             &[],
         );
         assert!(
@@ -1029,6 +1024,5 @@ mod tests {
         // MTU overflow
         let oversized = vec![2u8; 1233];
         assert!(validate_jito_bundle(&[oversized]).is_err());
->>>>>>> origin/main
     }
 }

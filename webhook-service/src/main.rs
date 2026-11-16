@@ -3,24 +3,43 @@
 use solana_webhook_service::config::AppConfig;
 use solana_webhook_service::dedup::DeduplicationEngine;
 use solana_webhook_service::engine::{DefaultTelemetryListener, ExpressionEvaluator, WorkerEngine};
+use solana_webhook_service::rate_limit::RateLimiter;
 use solana_webhook_service::router::AmmRouter;
 use solana_webhook_service::{
     handle_bitquery_query, handle_bitquery_status, handle_helius_pumpfun_get,
     handle_helius_pumpfun_webhook, handle_solami_webhook, handle_solami_webhook_get,
-    handle_webhook, health_check, topology_snapshot, ws_topology_handler, AppState,
+    handle_webhook, health_check, rate_limit_middleware, topology_snapshot, ws_topology_handler,
+    AppState,
 };
 
+use axum::http::HeaderValue;
 use axum::{
+    extract::DefaultBodyLimit,
+    middleware,
     routing::{get, post},
     Router,
 };
-use http::{header::{HeaderValue, CONTENT_TYPE, AUTHORIZATION}, Method};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
+
+/// Build the CORS layer from an explicit origin allowlist. Per the OWASP
+/// Webhook Security Cheat Sheet, `CorsLayer::permissive()` is never allowed:
+/// an empty allowlist emits no CORS headers (browser cross-origin access
+/// denied) rather than allowing every origin.
+fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
+    let origins: Vec<HeaderValue> = allowed_origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    if origins.is_empty() {
+        warn!(target: "security", "CORS allowlist empty: cross-origin browser access disabled");
+    }
+    CorsLayer::new().allow_origin(origins)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,8 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(target: "main", "Starting Sentinel Solana Webhook Service...");
 
     // Load TOML configuration
-    let config = AppConfig::load_default().or_else(|_| AppConfig::load_from_file("config.toml"))
-        .map_err(|e| anyhow::anyhow!("Failed to load webhook configuration: {e}"))?;
+    let config = AppConfig::load_default().unwrap_or_else(|e| {
+        warn!(target: "main", error = %e, "Failed to load default config, trying 'config.toml' in current directory");
+        AppConfig::load_from_file("config.toml").expect("FATAL: Unable to load config.toml")
+    });
     let config_arc = Arc::new(config.clone());
 
     info!(
@@ -74,20 +95,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // Build shared state
+    let rate_limiter = Arc::new(RateLimiter::new(
+        config.server.rate_limit_requests_per_minute,
+    ));
     let state = AppState {
         config: config_arc.clone(),
         dedup,
         router,
         evaluator,
         worker,
+        rate_limiter,
     };
 
     // Define Axum application routes
     let app = Router::new()
         .route("/v1/webhook", post(handle_webhook))
         .route("/health", get(health_check))
-        .route("/webhooks/SOLAMI", post(handle_solami_webhook).get(handle_solami_webhook_get))
-        .route("/webhooks/solami", post(handle_solami_webhook).get(handle_solami_webhook_get))
+        .route(
+            "/webhooks/SOLAMI",
+            post(handle_solami_webhook).get(handle_solami_webhook_get),
+        )
+        .route(
+            "/webhooks/solami",
+            post(handle_solami_webhook).get(handle_solami_webhook_get),
+        )
         .route(
             "/webhooks/helius/pumpfun",
             post(handle_helius_pumpfun_webhook).get(handle_helius_pumpfun_get),
@@ -97,24 +128,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/topology", get(topology_snapshot))
         .route("/ws/topology", get(ws_topology_handler))
         .layer(TraceLayer::new_for_http())
-        .layer({
-            let origins = config.server.cors_origins.clone();
-            if origins.is_empty() {
-                // Fail closed: no CORS origins configured, deny all cross-origin.
-                CorsLayer::new()
-            } else {
-                CorsLayer::new()
-                    .allow_origin(
-                        origins
-                            .iter()
-                            .map(|o| o.parse::<http::header::HeaderValue>())
-                            .filter_map(|r| r.ok())
-                            .collect::<Vec<_>>(),
-                    )
-                    .allow_methods([http::Method::GET, http::Method::POST])
-                    .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION])
-            }
-        })
+        .layer(build_cors_layer(&config.server.cors_allowed_origins))
+        .layer(DefaultBodyLimit::max(config.server.max_body_bytes))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
@@ -124,9 +143,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(target: "main", %addr, "Webhook HTTP server listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     info!(target: "main", "Webhook service shutdown complete");
     Ok(())

@@ -59,6 +59,7 @@ fn to_pool_state(d: &arb_types::DlmmState) -> Option<DlmmPoolState> {
             index_reference: d.index_reference,
             last_update_timestamp: d.last_update_timestamp,
         },
+        ..Default::default()
     })
 }
 
@@ -102,6 +103,7 @@ fn to_math_bins(bins: &[arb_types::DlmmBin]) -> Vec<DlmmBin> {
             amount_x: b.amount_x.min(u64::MAX as u128) as u64,
             amount_y: b.amount_y.min(u64::MAX as u128) as u64,
             price_q64: 0,
+            ..Default::default()
         })
         .collect()
 }

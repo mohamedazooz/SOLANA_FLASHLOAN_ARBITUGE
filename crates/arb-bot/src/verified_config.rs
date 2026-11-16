@@ -62,9 +62,8 @@ impl VerifiedQuoteInputs {
             && self.tip_lamports.age_slots <= max_age_slots
     }
 
-    /// Build the authoritative economic config. `min_profit_raw` is the
-    /// denomination-aware floor supplied by the strategy config.
-    pub fn into_economic_config(self, min_profit_raw: TokenAmount) -> EconomicConfig {
+    /// Build the authoritative economic config by reference without consuming self.
+    pub fn to_economic_config(&self, min_profit_raw: TokenAmount) -> EconomicConfig {
         EconomicConfig {
             flash_loan_fee_sf: self.flash_loan_fee_sf.value,
             jito_tip_lamports: self.tip_lamports.value,
@@ -73,6 +72,12 @@ impl VerifiedQuoteInputs {
             lamports_to_base_rate_denom: self.lamports_per_base_denom.value,
             min_profit_raw,
         }
+    }
+
+    /// Build the authoritative economic config. `min_profit_raw` is the
+    /// denomination-aware floor supplied by the strategy config.
+    pub fn into_economic_config(self, min_profit_raw: TokenAmount) -> EconomicConfig {
+        self.to_economic_config(min_profit_raw)
     }
 }
 
@@ -238,17 +243,6 @@ pub fn wsol_reserve() -> Pubkey {
     Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE).expect("valid WSOL reserve constant")
 }
 
-<<<<<<< HEAD
-pub fn usdc_mint() -> Pubkey {
-    Pubkey::from_str(arb_constants::USDC_MINT).expect("valid USDC mint constant")
-}
-
-pub fn usdc_reserve() -> Pubkey {
-    Pubkey::from_str(arb_constants::KAMINO_USDC_RESERVE).expect("valid USDC reserve constant")
-}
-
-=======
->>>>>>> origin/main
 #[cfg(test)]
 mod tests {
     use super::*;

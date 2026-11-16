@@ -348,7 +348,7 @@ impl<T: HttpTransport> OxylabsClient<T> {
             .ok_or_else(|| OxylabsError::EmptyResult {
                 url: url.to_string(),
             })?;
-        let mut sr: ScrapeResult = serde_json::from_value(first)
+        let sr: ScrapeResult = serde_json::from_value(first)
             .map_err(|e| OxylabsError::Transport(format!("bad scrape result: {e}")))?;
         // check requested format present
         let present = match fmt {
