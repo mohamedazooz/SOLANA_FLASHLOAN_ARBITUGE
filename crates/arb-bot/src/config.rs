@@ -310,7 +310,7 @@ fn three_leg_default_slippage() -> u64 {
     100
 }
 fn three_leg_default_min_profit() -> u64 {
-    30_000
+    arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS
 }
 fn three_leg_default_sizes() -> usize {
     4
@@ -421,7 +421,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
         },
         strategy: StrategyConfig {
             base_tokens: arb.strategy.base_tokens,
-            min_net_profit_abs: arb.strategy.min_net_profit_abs.0,
+            min_net_profit_abs: min_net_profit_floor_lamports(arb.strategy.min_net_profit_abs.0),
             min_net_profit_bps: arb.strategy.min_net_profit_bps.0 as u64,
             hop_slippage_bps: default_hop_slippage_bps(),
             max_price_impact_bps: arb.strategy.max_price_impact_bps.0 as u64,

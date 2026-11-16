@@ -136,11 +136,11 @@ impl Supervisor {
 
             if t_max < arb_land::MIN_JITO_TIP_LAMPORTS {
                 debug!(
-                    "Opportunity skipped: Surplus ceiling t_max ({t_max}) < MIN_JITO_TIP; cannot satisfy P_net >= $0.20"
+                    "Opportunity skipped: Surplus ceiling t_max ({t_max}) < MIN_JITO_TIP; cannot satisfy P_net floor"
                 );
-                if gross >= 50_000 {
+                if gross >= min_net_floor {
                     let reason = format!(
-                        "فائض الربح غير كافٍ لتغطية إكرامية Jito مع ضمان بقاء الحد الأدنى للربح الصافي $0.20 (t_max={t_max} lamports)"
+                        "فائض الربح غير كافٍ لتغطية إكرامية Jito مع ضمان بقاء الحد الأدنى للربح الصافي (t_max={t_max} lamports)"
                     );
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
@@ -194,14 +194,35 @@ impl Supervisor {
                 ExecutionRoute::SwqosDirect { .. } => (Lamports(0), None, true),
                 ExecutionRoute::Bundle => match jito_plan.tip.decision {
                     TipDecision::Bid { tip, rung, .. } => {
-                        (Lamports(tip.as_u64().min(t_max)), Some(rung), false)
+                        let final_tip = if tip.as_u64() > t_max {
+                            let clamped = Lamports(t_max);
+                            // Recalculate inclusion probability and EV for the clamped tip
+                            let effective_p = match jito_plan.tip.market {
+                                Some(floor) => self
+                                    .jito_service
+                                    .calibrated_inclusion_probability(clamped, &floor),
+                                None => jito_plan.tip.inclusion_p,
+                            };
+                            let margin = edge.0.saturating_sub(clamped.0);
+                            let effective_ev = (effective_p * (margin as f64)).round() as i64;
+                            if effective_ev <= 0 {
+                                debug!(
+                                    "Opportunity skipped: clamped tip produces non-positive EV ({effective_ev}) at t_max={t_max}"
+                                );
+                                continue;
+                            }
+                            clamped
+                        } else {
+                            tip
+                        };
+                        (final_tip, Some(rung), false)
                     }
                     _ => {
                         debug!(
                             "Opportunity skipped: Jito plan refused ({:?})",
                             jito_plan.tip.decision
                         );
-                        if gross >= 50_000 {
+                        if gross >= min_net_floor {
                             let reason = format!(
                                 "رفض تسعير الـ Tip من الأوراكل: {:?}",
                                 jito_plan.tip.decision
@@ -236,7 +257,7 @@ impl Supervisor {
                 },
                 ExecutionRoute::PlainRpc => {
                     debug!("Opportunity skipped: leader is not Jito-Solana (route=PlainRpc)");
-                    if gross >= 50_000 {
+                    if gross >= min_net_floor {
                         let reason =
                             "المدقق القائد للسلوت الحالي لا يدعم حزم Jito المباشرة".to_string();
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
