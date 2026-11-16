@@ -163,7 +163,7 @@ pub fn params(input_size: u64) -> ThreeLegMemeContextParams {
         recent_blockhash: [42u8; 32],
         v1_transport_supported: true,
         slippage_bps: 100,
-        min_profit_lamports: 30_000,
+        min_profit_lamports: arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS,
         flash_loan_fee_sf: 0,
         network_cost_lamports: 0,
         kamino_available_liquidity: None,

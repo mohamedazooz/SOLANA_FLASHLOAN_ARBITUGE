@@ -40,13 +40,8 @@ mod strategy;
 use execution::max_state_age_slots;
 
 /// Solana base transaction fee per signature, lamports (versioned & legacy).
-/// Part of the single per-tx cost list used by both the Jito edge estimate and
-/// the go/no-go gate (TX-02: one cost basis, never two).
-const BASE_FEE_LAMPORTS: u64 = 5_000;
-
-/// Maximum share of the gross profit the priority fee may consume (20%). Bounds
-/// a runaway priority bid so it never eats the edge it was meant to capture.
-const PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
+/// Re-exported from canonical `arb_constants::SOLANA_BASE_FEE_LAMPORTS`.
+pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
 /// A pre-warmed signed transaction template persisted in Redis.
 ///
@@ -383,6 +378,8 @@ impl Supervisor {
             // a tip into a non-Jito slot. The service config still exposes the
             // explicit override for an allowlist/legacy opt-in mode.
             tip_on_unknown_leader: !config.jito.leader_gate_enabled,
+            swqos_fallback_hurdle_lamports: config.jito.swqos_fallback_hurdle_lamports,
+            swqos_fallback_priority_fee_lamports: config.jito.swqos_fallback_priority_fee_lamports,
         };
         let jito_service =
             Arc::new(JitoService::new(jito_service_config).expect("valid jito service config"));
@@ -544,7 +541,10 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::MeteoraDlmm
+                | DexProtocol::MeteoraDammV2
+                | DexProtocol::MeteoraDbc
+                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
                 DexProtocol::PumpFun => pump_count += 1,
                 DexProtocol::PumpSwap => pumpswap_count += 1,
             }
@@ -674,7 +674,10 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 => meteora_count += 1,
+                DexProtocol::MeteoraDlmm
+                | DexProtocol::MeteoraDammV2
+                | DexProtocol::MeteoraDbc
+                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
                 DexProtocol::PumpFun | DexProtocol::PumpSwap => pump_count += 1,
             }
         }

@@ -3,6 +3,8 @@
 
 pub mod gmgn;
 pub use gmgn::{GmgnClient, TrendingToken};
+pub mod meteora_data_api;
+pub use meteora_data_api::{DiscoveredMeteoraPool, MeteoraDataApiClient, MeteoraPoolItem};
 pub mod dependency_manifest;
 #[cfg(feature = "extra-ingest")]
 pub mod dexscreener;
@@ -38,7 +40,7 @@ pub use registry::{
     decode_raydium_clmm_vaults, decode_raydium_cpmm_fee_bps, decode_raydium_cpmm_vaults,
     decode_raydium_fee_bps, decode_raydium_vaults, decode_spl_token_amount_bytes,
     fetch_accounts_chunked, next_pool_write_version, raydium_clmm_tick_array_pdas,
-    resolve_mints_decimals,
+    raydium_cpmm_amm_config_key, resolve_mints_decimals,
 };
 #[cfg(feature = "extra-ingest")]
 pub mod dual_ingest;

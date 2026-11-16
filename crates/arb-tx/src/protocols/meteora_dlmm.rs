@@ -248,11 +248,11 @@ pub fn derive_directional_bin_arrays(
     // Number of arrays needed to cover the bins traversed, starting from the active array.
     let arrays_needed = (bins_traversed as i64).div_euclid(MAX_BIN_PER_ARRAY) + 1;
 
-    // Policy: max two Bin Arrays per leg.
-    if arrays_needed > 2 {
+    // Policy: max four Bin Arrays per leg (up to 280 bins).
+    if arrays_needed > 4 {
         return Err(DlmmError::TooManyBinArrays {
             needed: arrays_needed as usize,
-            max: 2,
+            max: 4,
         });
     }
 
@@ -610,13 +610,13 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_directional_bin_arrays_rejects_more_than_two() {
+    fn test_derive_directional_bin_arrays_rejects_more_than_four() {
         let pair = test_lb_pair();
-        // 141 bins traversed => 3 arrays needed => rejected by policy
-        let err = derive_directional_bin_arrays(&pair, 100, SwapDirection::XtoY, 141).unwrap_err();
+        // 281 bins traversed => 5 arrays needed => rejected by policy
+        let err = derive_directional_bin_arrays(&pair, 100, SwapDirection::XtoY, 281).unwrap_err();
         assert!(matches!(
             err,
-            DlmmError::TooManyBinArrays { needed: 3, max: 2 }
+            DlmmError::TooManyBinArrays { needed: 5, max: 4 }
         ));
     }
 

@@ -58,6 +58,8 @@ impl TipOracle {
     pub fn with_urls(url: &str, ws_url: &str, max_age_ms: u64) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
             .build()
             .unwrap_or_default();
         Self {
@@ -125,6 +127,22 @@ impl TipOracle {
         } else {
             None
         }
+    }
+
+    /// Compute real-time competition factor from current fresh tip floor.
+    ///
+    /// Computes the ratio of real-time 75th percentile tip to the exponential
+    /// moving average of the median (`p75 / ema50`), clamped between 1.0 (calm)
+    /// and 2.5 (peak competition). If the oracle snapshot is stale or absent,
+    /// returns 1.0 (neutral / calm).
+    pub fn competition_factor(&self, now_ms: u64) -> f64 {
+        if let Some(floor) = self.current(now_ms) {
+            if floor.ema50.0 > 0 {
+                let ratio = floor.p75.0 as f64 / floor.ema50.0 as f64;
+                return ratio.clamp(1.0, 2.5);
+            }
+        }
+        1.0
     }
 
     /// Subscribe to real-time tip updates via WebSocket broadcast channel.
@@ -383,5 +401,54 @@ mod tests {
         assert_eq!(sol_to_lamports(f64::MAX).0, u64::MAX);
         assert_eq!(sol_to_lamports(-1.0).0, 0);
         assert_eq!(sol_to_lamports(f64::NAN).0, 0);
+    }
+
+    #[test]
+    fn test_competition_factor_scaling() {
+        let oracle = TipOracle::new(5_000);
+        // Case 1: No snapshot produces 1.0 (calm)
+        assert_eq!(oracle.competition_factor(1_000), 1.0);
+
+        // Case 2: Calm market (p75 <= ema50) clamps to 1.0
+        let calm_floor = TipFloor {
+            observed_at_ms: 1_000,
+            p25: Lamports(5_000),
+            p50: Lamports(10_000),
+            p75: Lamports(10_000),
+            p95: Lamports(15_000),
+            p99: Lamports(20_000),
+            ema50: Lamports(10_000),
+        };
+        oracle.publish(calm_floor);
+        assert_eq!(oracle.competition_factor(1_200), 1.0);
+
+        // Case 3: Moderate competition (p75 = 1.8 * ema50) returns 1.8
+        let mod_floor = TipFloor {
+            observed_at_ms: 1_000,
+            p25: Lamports(5_000),
+            p50: Lamports(12_000),
+            p75: Lamports(18_000),
+            p95: Lamports(30_000),
+            p99: Lamports(50_000),
+            ema50: Lamports(10_000),
+        };
+        oracle.publish(mod_floor);
+        assert!((oracle.competition_factor(1_200) - 1.8).abs() < 1e-6);
+
+        // Case 4: Extreme spike (p75 = 4.0 * ema50) is clamped to 2.5
+        let spike_floor = TipFloor {
+            observed_at_ms: 1_000,
+            p25: Lamports(5_000),
+            p50: Lamports(20_000),
+            p75: Lamports(40_000),
+            p95: Lamports(80_000),
+            p99: Lamports(100_000),
+            ema50: Lamports(10_000),
+        };
+        oracle.publish(spike_floor);
+        assert_eq!(oracle.competition_factor(1_200), 2.5);
+
+        // Case 5: Stale snapshot (> 5_000 ms age) safely falls back to 1.0
+        assert_eq!(oracle.competition_factor(10_000), 1.0);
     }
 }

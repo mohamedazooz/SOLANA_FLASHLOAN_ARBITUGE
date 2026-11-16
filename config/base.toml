@@ -43,6 +43,8 @@ leader_gate_enabled = true
 # kobe_url = null                      # optional validator registry endpoint
 # ledger_path = "data/adaptive_ledger.json"
 leader_refresh_secs = 60
+swqos_fallback_hurdle_lamports = 8000       # lamports: min edge for SWQoS direct fallback
+swqos_fallback_priority_fee_lamports = 2000 # lamports: priority fee for SWQoS direct fallback
 
 [jupiter]
 base_url = "https://api.jup.ag/swap/v2"   # https only
@@ -73,6 +75,9 @@ discovery_min_tvl_usd = 25000.0
 max_route_hops = 3
 # HTTP catalog discovery off by default: pools arrive via WebSocket only.
 http_discovery_enabled = false
+contingency_buffer_lamports = 10000         # lamports: slippage buffer protecting profit floor
+priority_fee_base_share_bps = 1000          # bps: baseline 10% share during calm conditions
+priority_fee_max_share_bps = 2000           # bps: maximum 20% ceiling during intense competition
 
 [risk]
 max_trade_size_usd = 10000.0        # USD (>0)
@@ -85,6 +90,7 @@ max_inflight_bundles = 2            # count (>0)
 max_tip_spend_ratio = 0.7           # ratio [0, 1]
 max_orders_per_hour = 120           # count/hr (>0)
 cooldown_slots = 75                 # slots (>0)
+max_implausible_roi_bps = 1500      # bps: 15% ceiling rejecting phantom stale-quote spikes
 
 [store]
 url = "sqlite://arb_sentinel.db"

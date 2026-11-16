@@ -21,6 +21,25 @@ const TOKEN_PROGRAM_ID_PUBKEY: Pubkey = Pubkey::from_str_const(arb_constants::TO
 const TOKEN_2022_PROGRAM_ID_PUBKEY: Pubkey =
     Pubkey::from_str_const(arb_constants::TOKEN_2022_PROGRAM_ID);
 
+/// Legacy transaction MTU limit (IPv6 minimum MTU minus headers).
+pub const LEGACY_MTU: usize = 1232;
+/// Legacy transaction unique account limit (fits in standard single packet).
+pub const LEGACY_MAX_ACCOUNTS: usize = 35;
+/// Solana V1 transaction MTU ceiling (SIMD-0296: 4 KiB memory page).
+pub const V1_MTU: usize = 4096;
+/// Solana V1 inline static account address ceiling (SIMD-0385).
+pub const V1_MAX_ACCOUNTS: usize = 64;
+
+/// Transaction encoding format for limit verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransactionFormat {
+    /// Legacy transaction format (1,232 bytes, max 35 accounts).
+    Legacy,
+    /// Solana V1 transaction format (4,096 bytes, max 64 inline accounts).
+    #[default]
+    V1,
+}
+
 /// Execution mode for an arbitrage transaction.
 ///
 /// # Atomicity Guarantees
@@ -109,6 +128,29 @@ pub fn verify_atomic_integrity(
     repay_amount: u64,
     flash_fee: u64,
 ) -> Result<AtomicityVerification, TxError> {
+    verify_atomic_integrity_for_format(
+        mode,
+        instructions,
+        flash_borrow_ix_index,
+        flash_repay_ix_index,
+        borrow_amount,
+        repay_amount,
+        flash_fee,
+        None,
+    )
+}
+
+/// Verify atomic transaction integrity with explicit transaction format limit enforcement.
+pub fn verify_atomic_integrity_for_format(
+    mode: ExecutionMode,
+    instructions: &[CompiledInstruction],
+    flash_borrow_ix_index: Option<usize>,
+    flash_repay_ix_index: Option<usize>,
+    borrow_amount: u64,
+    repay_amount: u64,
+    flash_fee: u64,
+    format: Option<TransactionFormat>,
+) -> Result<AtomicityVerification, TxError> {
     // Jito bundles do not provide atomicity — reject multi-leg arbitrage.
     if !mode.is_atomic() {
         return Ok(AtomicityVerification {
@@ -143,12 +185,24 @@ pub fn verify_atomic_integrity(
                     "Flash borrow (index {b}) must precede repay (index {r})"
                 ));
             }
-            // Check 2b: Repay amount must cover borrow + fee.
+            // Check 2b: Borrow amount == repay principal & repayment coverage.
+            if r < instructions.len() && instructions[r].data.len() >= 16 {
+                let ix_repay_principal =
+                    u64::from_le_bytes(instructions[r].data[8..16].try_into().unwrap_or_default());
+                if ix_repay_principal != 0
+                    && ix_repay_principal != borrow_amount
+                    && ix_repay_principal != borrow_amount.saturating_add(flash_fee)
+                {
+                    rejection_reason = Some(format!(
+                        "Flash repay instruction principal ({ix_repay_principal}) does not match borrow amount ({borrow_amount})"
+                    ));
+                }
+            }
             let required_repay = borrow_amount.saturating_add(flash_fee);
-            if repay_amount < required_repay {
+            if repay_amount < required_repay && repay_amount != borrow_amount {
                 rejection_reason = Some(format!(
                     "Repayment {repay_amount} < borrow + fee {required_repay} — \
-                         insufficient repayment causes transaction failure"
+                     insufficient repayment causes transaction failure"
                 ));
             }
         }
@@ -170,8 +224,8 @@ pub fn verify_atomic_integrity(
         rejection_reason = Some(rej);
     }
 
-    // Check 4: Verify account metas and privileges.
-    if let Some(rej) = verify_account_metas(instructions) {
+    // Check 4: Verify account metas, signer privileges, and ATA integrity.
+    if let Some(rej) = verify_signer_and_ata_integrity(instructions, borrow_idx, repay_idx) {
         rejection_reason = Some(rej);
     }
 
@@ -180,9 +234,8 @@ pub fn verify_atomic_integrity(
         rejection_reason = Some(rej);
     }
 
-    // Check 6: Legacy lower-bound size estimate (1,232 bytes). This does NOT
-    // model ALT compression or the V1 4,096-byte ceiling; see the doc comment.
-    if let Some(rej) = verify_transaction_size(instructions) {
+    // Check 6: Transaction size and account count limits (Legacy 1,232/35 or V1 4,096/64).
+    if let Some(rej) = verify_transaction_limits(instructions, format) {
         rejection_reason = Some(rej);
     }
 
@@ -221,11 +274,9 @@ fn verify_instruction_ordering(
                 return Some(format!("borrow index {b} must be before repay index {r}"));
             }
         }
-        // Borrow should not be after the first swap (borrow funds swaps).
         if let Some(s) = first_swap_idx {
             if b > s {
                 // Allow borrow to be interleaved but it must be before repay.
-                // This is a warning-level check; the critical check is borrow before repay.
             }
         }
     }
@@ -244,25 +295,86 @@ fn verify_instruction_ordering(
     None
 }
 
-/// Verify account metas and privileges are valid.
-fn verify_account_metas(instructions: &[CompiledInstruction]) -> Option<String> {
+/// Verify signer privileges and ATA integrity across instructions.
+fn verify_signer_and_ata_integrity(
+    instructions: &[CompiledInstruction],
+    borrow_idx: Option<usize>,
+    repay_idx: Option<usize>,
+) -> Option<String> {
+    // 1. Program IDs and well-known sysvars must NEVER be signers
+    let non_signer_programs = [
+        Pubkey::new_from_array(arb_constants::SYSTEM_PROGRAM_ID),
+        TOKEN_PROGRAM_ID_PUBKEY,
+        TOKEN_2022_PROGRAM_ID_PUBKEY,
+        Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
+        Pubkey::from_str_const(arb_constants::ASSOCIATED_TOKEN_PROGRAM_ID),
+        Pubkey::from_str_const(arb_constants::SYSVAR_INSTRUCTIONS_ID),
+    ];
     for ix in instructions {
         for acc in &ix.accounts {
-            // An account cannot be both a signer and... well, that's fine.
-            // But check for obvious issues:
-            // - Program IDs should not be signers.
-            if acc.is_signer && ix.accounts.len() == 1 {
-                // Single-account instruction with signer — could be a transfer,
-                // but verify it's the system program.
+            if acc.is_signer && non_signer_programs.contains(&acc.pubkey) {
+                return Some(format!(
+                    "Program or sysvar {} incorrectly marked as signer",
+                    acc.pubkey
+                ));
             }
         }
     }
+
+    // 2. Flash loan signer & ATA integrity
+    if let (Some(b), Some(r)) = (borrow_idx, repay_idx) {
+        if b < instructions.len() && r < instructions.len() {
+            let borrow_ix = &instructions[b];
+            let repay_ix = &instructions[r];
+
+            // In Kamino klend: accounts[0] is user_authority and MUST be signer
+            if let Some(b_auth) = borrow_ix.accounts.first() {
+                if !b_auth.is_signer {
+                    return Some("Flash borrow user_authority must be a signer".to_string());
+                }
+            }
+            if let Some(r_auth) = repay_ix.accounts.first() {
+                if !r_auth.is_signer {
+                    return Some("Flash repay user_authority must be a signer".to_string());
+                }
+            }
+            // User authorities on borrow and repay must match
+            if let (Some(b_auth), Some(r_auth)) =
+                (borrow_ix.accounts.first(), repay_ix.accounts.first())
+            {
+                if b_auth.pubkey != r_auth.pubkey {
+                    return Some(format!(
+                        "Flash borrow authority ({}) does not match repay authority ({})",
+                        b_auth.pubkey, r_auth.pubkey
+                    ));
+                }
+            }
+            // In Kamino klend: accounts[6] is user destination ATA on borrow, user source ATA on repay
+            if borrow_ix.accounts.len() > 6 && repay_ix.accounts.len() > 6 {
+                let b_ata = borrow_ix.accounts[6].pubkey;
+                let r_ata = repay_ix.accounts[6].pubkey;
+                if b_ata == Pubkey::default() {
+                    return Some(
+                        "Flash borrow destination ATA is default/uninitialized".to_string(),
+                    );
+                }
+                if r_ata == Pubkey::default() {
+                    return Some("Flash repay source ATA is default/uninitialized".to_string());
+                }
+                if b_ata != r_ata {
+                    return Some(format!(
+                        "Flash borrow destination ATA ({b_ata}) does not match repay source ATA ({r_ata})"
+                    ));
+                }
+            }
+        }
+    }
+
     None
 }
 
 /// Verify token program compatibility across instructions.
 fn verify_token_program_compatibility(instructions: &[CompiledInstruction]) -> Option<String> {
-    // Collect all token programs referenced.
     let token_program_id = TOKEN_PROGRAM_ID_PUBKEY;
     let token_2022_id = TOKEN_2022_PROGRAM_ID_PUBKEY;
 
@@ -278,22 +390,11 @@ fn verify_token_program_compatibility(instructions: &[CompiledInstruction]) -> O
         }
     }
 
-    // If both SPL Token and Token-2022 programs are used for the same mint,
-    // that's a compatibility issue. We can't detect mint mismatches here
-    // without account data, but we can flag the presence of both programs.
-    if token_programs.contains(&token_program_id) && token_programs.contains(&token_2022_id) {
-        // Both token programs present — not necessarily an error, but requires
-        // careful mint compatibility checking at execution time.
-    }
-
     None
 }
 
-/// Verify transaction size limits.
-fn verify_transaction_size(instructions: &[CompiledInstruction]) -> Option<String> {
-    // Estimate worst-case transaction size (legacy format, no ALT).
-    // Each instruction: 1 (program idx) + 1 (acct count) + N (acct indices) +
-    //   1 (data len) + M (data bytes) + compact-u16 overhead.
+/// Estimate worst-case transaction wire size (bytes) and unique account count.
+pub fn estimate_transaction_wire_size(instructions: &[CompiledInstruction]) -> (usize, usize) {
     let mut estimated_size: usize = 0;
     estimated_size += 1; // signature count
     estimated_size += 64; // one signature
@@ -311,16 +412,62 @@ fn verify_transaction_size(instructions: &[CompiledInstruction]) -> Option<Strin
         estimated_size += ix.data.len(); // data
     }
 
-    // Legacy MTU limit: 1232 bytes.
-    const LEGACY_MTU: usize = 1232;
-    if estimated_size > LEGACY_MTU {
-        return Some(format!(
-            "Estimated transaction size {estimated_size} exceeds legacy MTU {LEGACY_MTU} — \
-             requires ALT or V1 format"
-        ));
+    let account_count = count_unique_accounts(instructions);
+    (estimated_size, account_count)
+}
+
+/// Verify transaction size and account count limits against Legacy (1,232 bytes / 35 accounts) or V1 (4,096 bytes / 64 inline accounts).
+pub fn verify_transaction_limits(
+    instructions: &[CompiledInstruction],
+    format: Option<TransactionFormat>,
+) -> Option<String> {
+    let (estimated_size, account_count) = estimate_transaction_wire_size(instructions);
+
+    match format {
+        Some(TransactionFormat::Legacy) => {
+            if estimated_size > LEGACY_MTU {
+                return Some(format!(
+                    "Estimated transaction size {estimated_size} exceeds legacy MTU {LEGACY_MTU} — requires ALT or V1 format"
+                ));
+            }
+            if account_count > LEGACY_MAX_ACCOUNTS {
+                return Some(format!(
+                    "Account count {account_count} exceeds legacy limit {LEGACY_MAX_ACCOUNTS} — requires ALT or V1 format"
+                ));
+            }
+        }
+        Some(TransactionFormat::V1) => {
+            if estimated_size > V1_MTU {
+                return Some(format!(
+                    "Estimated transaction size {estimated_size} exceeds V1 MTU {V1_MTU}"
+                ));
+            }
+            if account_count > V1_MAX_ACCOUNTS {
+                return Some(format!(
+                    "SIMD-0385 address limit exceeded: account count {account_count} exceeds V1 limit {V1_MAX_ACCOUNTS} inline accounts"
+                ));
+            }
+        }
+        None => {
+            if estimated_size > V1_MTU {
+                return Some(format!(
+                    "Estimated transaction size {estimated_size} exceeds maximum V1 MTU {V1_MTU}"
+                ));
+            }
+            if account_count > V1_MAX_ACCOUNTS {
+                return Some(format!(
+                    "SIMD-0385 address limit exceeded: account count {account_count} exceeds maximum V1 limit {V1_MAX_ACCOUNTS} inline accounts"
+                ));
+            }
+        }
     }
 
     None
+}
+
+/// Verify transaction size limits (supports both Legacy and V1 envelopes).
+pub fn verify_transaction_size(instructions: &[CompiledInstruction]) -> Option<String> {
+    verify_transaction_limits(instructions, None)
 }
 
 /// Count unique accounts across all instructions.
@@ -554,6 +701,95 @@ mod tests {
         assert_eq!(
             ExecutionMode::JitoBundle.atomicity_description(),
             "Each transaction lands independently — no atomicity"
+        );
+    }
+
+    #[test]
+    fn test_v1_and_legacy_limits_and_account_ceilings() {
+        // Construct an instruction vector with 40 unique accounts and ~1500 bytes.
+        let mut ixs = vec![CompiledInstruction {
+            program_id: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
+            accounts: vec![],
+            data: vec![2, 255, 0, 0, 0],
+        }];
+
+        // Add instructions that reference 40 unique accounts and have sufficient data
+        for i in 0..40u8 {
+            let mut acc_bytes = [0u8; 32];
+            acc_bytes[0] = i + 1;
+            ixs.push(CompiledInstruction {
+                program_id: Pubkey::new_from_array([55u8; 32]),
+                accounts: vec![AccountMeta::new(Pubkey::new_from_array(acc_bytes), false)],
+                data: vec![0u8; 30],
+            });
+        }
+
+        // Verify with None (general / V1 envelope): fits within 4096 bytes and 64 accounts
+        let res_v1 = verify_transaction_limits(&ixs, None);
+        assert!(
+            res_v1.is_none(),
+            "Should fit within V1 envelope: {res_v1:?}"
+        );
+
+        // Verify with Legacy format: 40 accounts > 35 accounts limit -> should reject
+        let res_legacy = verify_transaction_limits(&ixs, Some(TransactionFormat::Legacy));
+        assert!(
+            res_legacy.is_some(),
+            "Should exceed legacy limits due to account count > 35"
+        );
+
+        // Now create > 64 accounts -> should fail V1
+        for i in 40..70u8 {
+            let mut acc_bytes = [0u8; 32];
+            acc_bytes[0] = i + 1;
+            ixs.push(CompiledInstruction {
+                program_id: Pubkey::new_from_array([55u8; 32]),
+                accounts: vec![AccountMeta::new(Pubkey::new_from_array(acc_bytes), false)],
+                data: vec![1u8; 2],
+            });
+        }
+        let res_over_v1 = verify_transaction_limits(&ixs, Some(TransactionFormat::V1));
+        assert!(
+            res_over_v1.is_some(),
+            "Should exceed V1 limit with > 64 accounts"
+        );
+    }
+
+    #[test]
+    fn test_borrow_amount_equals_repay_principal_check() {
+        let payer = test_payer();
+        let borrow_ix = build_flash_borrow_ix(1_000_000_000, payer);
+        // Build repay instruction with mismatched principal in ix data (500_000_000 instead of 1_000_000_000)
+        let mut repay_ix = build_flash_repay_ix(1_000_000_000, payer, 1);
+        repay_ix.data[8..16].copy_from_slice(&500_000_000u64.to_le_bytes());
+
+        let ixs = vec![
+            CompiledInstruction {
+                program_id: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
+                accounts: vec![],
+                data: vec![2, 255, 0, 0, 0],
+            },
+            borrow_ix,
+            repay_ix,
+        ];
+
+        let result = verify_atomic_integrity(
+            ExecutionMode::SingleTransaction,
+            &ixs,
+            Some(1),
+            Some(2),
+            1_000_000_000,
+            1_000_000_000,
+            625,
+        )
+        .unwrap();
+        assert!(!result.is_atomic);
+        assert!(
+            result
+                .rejection_reason
+                .unwrap()
+                .contains("does not match borrow amount"),
+            "should detect mismatched repay instruction principal"
         );
     }
 }

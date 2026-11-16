@@ -15,6 +15,8 @@ pub struct Config {
     pub admin: AdminConfig,
     #[serde(default)]
     pub chronos: ChronosConfig,
+    #[serde(default)]
+    pub jupiter: JupiterConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -68,6 +70,53 @@ fn default_leader_gate_enabled() -> bool {
 }
 fn default_leader_refresh_secs() -> u64 {
     60
+}
+fn default_swqos_fallback_hurdle_lamports() -> u64 {
+    8_000
+}
+fn default_swqos_fallback_priority_fee_lamports() -> u64 {
+    2_000
+}
+fn default_contingency_buffer_lamports() -> u64 {
+    10_000
+}
+fn default_priority_fee_base_share_bps() -> u64 {
+    arb_constants::DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS
+}
+fn default_priority_fee_max_share_bps() -> u64 {
+    arb_constants::DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS
+}
+fn default_max_implausible_roi_bps() -> u64 {
+    1_500
+}
+fn default_jupiter_base_url() -> String {
+    "https://api.jup.ag/swap/v2".to_string()
+}
+fn default_jupiter_api_key_env() -> String {
+    "JUPITER_API_KEY".to_string()
+}
+fn default_jupiter_timeout_ms() -> u64 {
+    400
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct JupiterConfig {
+    #[serde(default = "default_jupiter_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_jupiter_api_key_env")]
+    pub api_key_env: String,
+    #[serde(default = "default_jupiter_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for JupiterConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_jupiter_base_url(),
+            api_key_env: default_jupiter_api_key_env(),
+            timeout_ms: default_jupiter_timeout_ms(),
+        }
+    }
 }
 
 impl Default for ChronosConfig {
@@ -127,6 +176,12 @@ pub struct JitoConfig {
     /// Interval between leader-schedule refreshes, in seconds.
     #[serde(default = "default_leader_refresh_secs")]
     pub leader_refresh_secs: u64,
+    /// Minimum edge in lamports required to qualify for SWQoS direct submission fallback.
+    #[serde(default = "default_swqos_fallback_hurdle_lamports")]
+    pub swqos_fallback_hurdle_lamports: u64,
+    /// Priority fee in lamports used for SWQoS direct submission fallback.
+    #[serde(default = "default_swqos_fallback_priority_fee_lamports")]
+    pub swqos_fallback_priority_fee_lamports: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -188,6 +243,16 @@ pub struct StrategyConfig {
     /// account-update stream. Operators may re-enable explicitly.
     #[serde(default)]
     pub http_discovery_enabled: bool,
+    /// Slippage contingency buffer in lamports subtracted from net edge before
+    /// computing maximum allowable tip to protect the profit floor against slippage.
+    #[serde(default = "default_contingency_buffer_lamports")]
+    pub contingency_buffer_lamports: u64,
+    /// Baseline priority fee share of gross profit during calm market conditions (bps).
+    #[serde(default = "default_priority_fee_base_share_bps")]
+    pub priority_fee_base_share_bps: u64,
+    /// Maximum share of gross profit allocated to priority fee under peak competition (bps).
+    #[serde(default = "default_priority_fee_max_share_bps")]
+    pub priority_fee_max_share_bps: u64,
 }
 
 fn default_max_route_hops() -> usize {
@@ -310,7 +375,7 @@ fn three_leg_default_slippage() -> u64 {
     100
 }
 fn three_leg_default_min_profit() -> u64 {
-    30_000
+    arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS
 }
 fn three_leg_default_sizes() -> usize {
     4
@@ -363,6 +428,9 @@ pub struct RiskConfig {
     pub max_orders_per_hour: usize,
     #[serde(default = "default_cooldown_slots")]
     pub cooldown_slots: u64,
+    /// Maximum allowable ROI ceiling in basis points (phantom quote filter).
+    #[serde(default = "default_max_implausible_roi_bps")]
+    pub max_implausible_roi_bps: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -413,6 +481,8 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             kobe_url: arb.jito.kobe_url,
             ledger_path: arb.jito.ledger_path,
             leader_refresh_secs: arb.jito.leader_refresh_secs.0,
+            swqos_fallback_hurdle_lamports: arb.jito.swqos_fallback_hurdle_lamports.0,
+            swqos_fallback_priority_fee_lamports: arb.jito.swqos_fallback_priority_fee_lamports.0,
         },
         wallet: WalletConfig {
             keypair_path: arb.wallet.keypair_path,
@@ -421,7 +491,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
         },
         strategy: StrategyConfig {
             base_tokens: arb.strategy.base_tokens,
-            min_net_profit_abs: arb.strategy.min_net_profit_abs.0,
+            min_net_profit_abs: min_net_profit_floor_lamports(arb.strategy.min_net_profit_abs.0),
             min_net_profit_bps: arb.strategy.min_net_profit_bps.0 as u64,
             hop_slippage_bps: default_hop_slippage_bps(),
             max_price_impact_bps: arb.strategy.max_price_impact_bps.0 as u64,
@@ -436,6 +506,9 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             dlmm_three_leg: None,
             max_route_hops: arb.strategy.max_route_hops,
             http_discovery_enabled: arb.strategy.http_discovery_enabled,
+            contingency_buffer_lamports: arb.strategy.contingency_buffer_lamports.0,
+            priority_fee_base_share_bps: arb.strategy.priority_fee_base_share_bps.0 as u64,
+            priority_fee_max_share_bps: arb.strategy.priority_fee_max_share_bps.0 as u64,
         },
         risk: RiskConfig {
             max_trade_size_usd: usd(arb.risk.max_trade_size_usd),
@@ -448,6 +521,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             max_tip_spend_ratio: arb.risk.max_tip_spend_ratio,
             max_orders_per_hour: arb.risk.max_orders_per_hour,
             cooldown_slots: arb.risk.cooldown_slots.0,
+            max_implausible_roi_bps: arb.risk.max_implausible_roi_bps.0 as u64,
         },
         store: StoreConfig { url: arb.store.url },
         metrics: MetricsConfig {
@@ -464,6 +538,11 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             min_ev_usd: usd(arb.chronos.min_ev_usd),
             failed_attempt_cost_lamports: arb.chronos.failed_attempt_cost_lamports.0,
             beta_risk_factor: arb.chronos.beta_risk_factor,
+        },
+        jupiter: JupiterConfig {
+            base_url: arb.jupiter.base_url,
+            api_key_env: arb.jupiter.api_key_env,
+            timeout_ms: arb.jupiter.timeout_ms.0,
         },
     }
 }

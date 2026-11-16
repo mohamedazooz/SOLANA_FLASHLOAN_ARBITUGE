@@ -31,6 +31,7 @@ pub use dlmm_flash_arbitrage::{
 };
 pub mod meteora_pair_discovery;
 pub use meteora_pair_discovery::{
+    CrossProtocolEligiblePair, CrossProtocolPairDiscovery, CrossProtocolPairDiscoveryReport,
     MeteoraDlmmEligiblePair, MeteoraDlmmPairDiscoveryReport, MeteoraDlmmPoolPairDiscovery,
     PoolRejectionReason,
 };
@@ -74,7 +75,7 @@ use std::collections::HashMap;
 /// Minimum spread threshold to filter floating-point roundoff noise (10 bps = 0.1%).
 pub const EPSILON_CYCLE_SPREAD_BPS: u64 = 10;
 /// Minimum required net profit in lamports to justify execution and Jito tip.
-pub const MIN_NET_PROFIT_LAMPORTS: u64 = 30_000;
+pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 
 /// Profit (output - input) for a cycle at a given input size d (P1 #11: golden-section target).
 ///

@@ -22,7 +22,23 @@ impl Default for JupiterClient {
 }
 
 impl JupiterClient {
+    /// Default Jupiter Swap API v2 endpoint matching `config/base.toml`.
+    pub const DEFAULT_ENDPOINT: &'static str = "https://api.jup.ag/swap/v2";
+
+    /// Create a new JupiterClient using the default endpoint or `JUPITER_BASE_URL` env var.
     pub fn new() -> Self {
+        let endpoint = std::env::var("JUPITER_BASE_URL")
+            .unwrap_or_else(|_| Self::DEFAULT_ENDPOINT.to_string());
+        Self::with_endpoint(endpoint)
+    }
+
+    /// Create a new JupiterClient with a custom base URL.
+    pub fn with_endpoint(endpoint: impl Into<String>) -> Self {
+        Self::with_endpoint_and_timeout(endpoint, Duration::from_millis(3000))
+    }
+
+    /// Create a new JupiterClient with a custom base URL and request timeout.
+    pub fn with_endpoint_and_timeout(endpoint: impl Into<String>, timeout: Duration) -> Self {
         let mut api_keys = Vec::new();
         if let Ok(key) = std::env::var("JUPITER_API_KEY")
             && !key.trim().is_empty()
@@ -37,6 +53,30 @@ impl JupiterClient {
                 api_keys.push(k);
             }
         }
+        Self::with_keys_and_timeout(endpoint, api_keys, timeout)
+    }
+
+    /// Create a new JupiterClient with a custom base URL, explicit API keys, and request timeout.
+    pub fn with_keys_and_timeout(
+        endpoint: impl Into<String>,
+        mut api_keys: Vec<String>,
+        timeout: Duration,
+    ) -> Self {
+        if api_keys.is_empty() {
+            if let Ok(key) = std::env::var("JUPITER_API_KEY")
+                && !key.trim().is_empty()
+            {
+                api_keys.push(key.trim().to_string());
+            }
+            if let Ok(key) = std::env::var("JUP_API_KEY")
+                && !key.trim().is_empty()
+            {
+                let k = key.trim().to_string();
+                if !api_keys.contains(&k) {
+                    api_keys.push(k);
+                }
+            }
+        }
         if api_keys.is_empty() {
             tracing::warn!("JUPITER_API_KEY not set — Jupiter API calls will fail");
         }
@@ -46,7 +86,7 @@ impl JupiterClient {
 
         let client = Client::builder()
             .default_headers(headers)
-            .timeout(Duration::from_millis(3000))
+            .timeout(timeout)
             .build()
             .unwrap_or_default();
 
@@ -54,8 +94,13 @@ impl JupiterClient {
             api_keys,
             current_key_idx: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             client,
-            endpoint: "https://api.jup.ag/swap/v1".to_string(),
+            endpoint: endpoint.into().trim_end_matches('/').to_string(),
         }
+    }
+
+    /// Current base URL endpoint.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
     }
 
     /// Fetch quote from Jupiter v6 API with automated multi-key rotation on 429
@@ -166,6 +211,16 @@ mod tests {
     fn test_jupiter_client_init() {
         let client = JupiterClient::new();
         // Keys are read from env, not hardcoded — empty is valid when no env key is set.
+        assert_eq!(client.endpoint(), "https://api.jup.ag/swap/v2");
+        let custom = JupiterClient::with_endpoint("https://custom.jupiter.api/swap/v2/");
+        assert_eq!(custom.endpoint(), "https://custom.jupiter.api/swap/v2");
+        let keyed = JupiterClient::with_keys_and_timeout(
+            "https://custom.jupiter.api/swap/v2///",
+            vec!["test_key_1".to_string(), "test_key_2".to_string()],
+            Duration::from_millis(500),
+        );
+        assert_eq!(keyed.endpoint(), "https://custom.jupiter.api/swap/v2");
+        assert_eq!(keyed.api_keys.len(), 2);
         info!(
             "JupiterClient initialized with {} API key(s)",
             client.api_keys.len()

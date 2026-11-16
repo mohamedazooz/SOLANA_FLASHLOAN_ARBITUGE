@@ -128,8 +128,10 @@ impl TipStrategy {
     }
 
     /// Calculate dynamic tip scaling with profit size and market competition.
-    /// - Normal opportunities pay base `share_bps` (e.g. 50-55%).
-    /// - High-profit or competitive opportunities dynamically scale up towards `max_share_bps` (e.g. 75%).
+    ///
+    /// Note: In the live execution loop, `AdaptiveBidder` (`crates/arb-land/src/bidder.rs`)
+    /// is the authoritative single source of truth for Jito bundle tip pricing.
+    /// This method is retained for legacy reference and simulation benchmarking.
     pub fn pick_dynamic_tip(
         &self,
         net_before_tip: u64,

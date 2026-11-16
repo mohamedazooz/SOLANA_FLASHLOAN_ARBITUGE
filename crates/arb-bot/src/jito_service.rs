@@ -20,7 +20,9 @@ use arb_land::{
     AdaptiveBidder, BidderConfig, JitoLander, JitoValidatorSet, Landability, LandingLedger,
     LeaderSchedule, MIN_JITO_TIP_LAMPORTS, TipOracle, landability, now_ms,
 };
-use arb_types::{InflightStatus, Lamports, Percentile, RefuseReason, Slot, TipDecision, TipPlan};
+use arb_types::{
+    InflightStatus, Lamports, Percentile, RefuseReason, Slot, TipDecision, TipFloor, TipPlan,
+};
 use parking_lot::RwLock;
 use serde_json::json;
 use solana_pubkey::Pubkey;
@@ -33,6 +35,11 @@ use tracing::{info, warn};
 pub const KOBE_VALIDATORS_URL: &str = "https://kobe.mainnet.jito.network/api/v1/validators";
 
 /// Where a signed transaction should be submitted.
+/// Default priority fee in lamports for SWQoS direct submission.
+pub const SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS: u64 = 2_000;
+/// Minimum edge required to qualify for SWQoS direct execution (5k base fee + 2k priority fee + 1k profit floor).
+pub const SWQOS_MIN_EDGE_HURDLE_LAMPORTS: u64 = 8_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionRoute {
     /// The slot's leader runs Jito-Solana: a bundle can be won.
@@ -90,6 +97,10 @@ pub struct JitoServiceConfig {
     /// slot. This remains overrideable by callers that intentionally want a
     /// legacy fail-open fallback.
     pub tip_on_unknown_leader: bool,
+    /// Minimum edge in lamports required to qualify for SWQoS direct execution fallback.
+    pub swqos_fallback_hurdle_lamports: u64,
+    /// Priority fee in lamports used for SWQoS direct execution fallback.
+    pub swqos_fallback_priority_fee_lamports: u64,
 }
 
 impl Default for JitoServiceConfig {
@@ -105,6 +116,8 @@ impl Default for JitoServiceConfig {
             kobe_url: KOBE_VALIDATORS_URL.to_string(),
             ledger_path: None,
             tip_on_unknown_leader: false,
+            swqos_fallback_hurdle_lamports: SWQOS_MIN_EDGE_HURDLE_LAMPORTS,
+            swqos_fallback_priority_fee_lamports: SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS,
         }
     }
 }
@@ -134,6 +147,8 @@ impl JitoService {
 
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
             .build()
             .context("build Jito service http client")?;
 
@@ -196,6 +211,11 @@ impl JitoService {
         arb_constants::jito_tip_account_for_slot(slot.0, leader.as_ref())
     }
 
+    /// Compute real-time competition factor from the tip oracle snapshot.
+    pub fn competition_factor(&self) -> f64 {
+        self.oracle.competition_factor(now_ms())
+    }
+
     /// Price one opportunity and choose its route.
     ///
     /// `previous_tip` is the tip paid on the last attempt inside the same window;
@@ -234,18 +254,18 @@ impl JitoService {
         let route = if self.bids_for(slot) {
             if tip.is_bid() {
                 ExecutionRoute::Bundle
-            } else if !is_hot_write_lock && edge.0 >= 8_000 {
-                // Hybrid SWQoS fallback: if trade is calm and profitable (covers 5k base + 2k priority + profit),
+            } else if !is_hot_write_lock && edge.0 >= self.config.swqos_fallback_hurdle_lamports {
+                // Hybrid SWQoS fallback: if trade is calm and profitable (covers base + priority + profit),
                 // route directly to SWQoS!
                 ExecutionRoute::SwqosDirect {
-                    priority_fee_lamports: 2_000,
+                    priority_fee_lamports: self.config.swqos_fallback_priority_fee_lamports,
                 }
             } else {
                 ExecutionRoute::Bundle
             }
-        } else if !is_hot_write_lock && edge.0 >= 8_000 {
+        } else if !is_hot_write_lock && edge.0 >= self.config.swqos_fallback_hurdle_lamports {
             ExecutionRoute::SwqosDirect {
-                priority_fee_lamports: 2_000,
+                priority_fee_lamports: self.config.swqos_fallback_priority_fee_lamports,
             }
         } else {
             ExecutionRoute::PlainRpc
@@ -270,6 +290,12 @@ impl JitoService {
         }
 
         ExecutionPlan { route, tip }
+    }
+
+    /// Calibrated inclusion probability for a given tip amount.
+    pub fn calibrated_inclusion_probability(&self, tip: Lamports, floor: &TipFloor) -> f64 {
+        let ledger = self.ledger.read();
+        arb_land::AdaptiveBidder::calibrated_inclusion_probability(tip, floor, &ledger)
     }
 
     /// Fold an observed bundle status into the landing ledger.

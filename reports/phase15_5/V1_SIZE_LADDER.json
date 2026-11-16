@@ -85,7 +85,7 @@
       "transaction_version": null
     }
   ],
-  "generated_at_unix": 1794825506,
+  "generated_at_unix": 1794839657,
   "live_rpc_acceptance_evidence": "reports/v1_mainnet_probe/probe_report_2026-11-13.json (live mainnet RPC, solana-core 4.4.0, V1 simulate accepted, units_consumed=62596); not re-claimed by this offline run",
   "real_route_rungs": [
     {
@@ -251,30 +251,12 @@
       "transaction_version": "V1"
     },
     {
-      "account_count": 65,
-      "alt_required": false,
-      "bins_per_leg": 10,
-      "borrow_amount": 1000000000,
-      "borrow_index": 3,
-      "compiled": true,
-      "cu_limit": 400000,
-      "failure_reason": null,
-      "flash_fee": 10000,
-      "instruction_count": 11,
-      "instrument": "real_three_pool_dlmm_route",
-      "repay_amount": 1000010000,
-      "repay_index": 7,
-      "serialized_size_bytes": 2465,
-      "signature_verified": true,
-      "transaction_version": "V1"
-    },
-    {
       "account_count": null,
       "alt_required": false,
-      "bins_per_leg": 11,
+      "bins_per_leg": 10,
       "compiled": false,
       "cu_limit": null,
-      "failure_reason": "alt compilation failed: Transaction sanitization failure: SIMD-0385 address limit exceeded: 67 > 64",
+      "failure_reason": "atomicity check failed: SIMD-0385 address limit exceeded: account count 65 exceeds maximum V1 limit 64 inline accounts",
       "instrument": "real_three_pool_dlmm_route",
       "serialized_size_bytes": null,
       "signature_verified": false,

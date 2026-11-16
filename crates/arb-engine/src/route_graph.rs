@@ -52,7 +52,7 @@ impl UnifiedRouteGraph {
             return Vec::new();
         }
         let max_hops = max_hops.clamp(2, 8);
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(max_routes.min(64));
         let mut hops = Vec::with_capacity(max_hops);
         let mut used_pools = HashSet::with_capacity(max_hops);
         let mut visited_mints = HashSet::with_capacity(max_hops);

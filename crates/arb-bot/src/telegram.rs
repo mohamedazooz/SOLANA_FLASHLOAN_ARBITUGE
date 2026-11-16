@@ -9,6 +9,17 @@ use reqwest::Client;
 use serde_json::json;
 use tracing::{debug, error, info, warn};
 
+/// Telegram 403 is a PERMANENT recipient state — never retry it (retries can
+/// never succeed and only burn rate limit). Report the remediation exactly once.
+fn report_telegram_403_once() {
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        error!(
+            "Telegram API returned 403 Forbidden — PERMANENT recipient state; alerts will NOT be delivered until fixed. Causes: (1) the target chat never sent /start to this bot, (2) the bot was blocked by the recipient, (3) TELEGRAM_CHAT_ID is another bot's @username (bots cannot message bots — use your numeric user ID or a group/channel the bot is in), (4) the bot token was revoked (regenerate via @BotFather). Not retrying."
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct TelegramNotifier {
     bot_token: Option<String>,
@@ -112,6 +123,10 @@ impl TelegramNotifier {
                                         );
                                         while rx.try_recv().is_ok() {}
                                         tokio::time::sleep(std::time::Duration::from_secs(retry_after)).await;
+                                    } else if resp.status().as_u16() == 403 {
+                                        report_telegram_403_once();
+                                        while rx.try_recv().is_ok() {}
+                                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                                     } else {
                                         warn!("Telegram API returned status {}", resp.status());
                                     }
@@ -280,6 +295,8 @@ impl TelegramNotifier {
                 Ok(resp) => {
                     if resp.status().as_u16() == 429 {
                         warn!("Telegram API returned status 429 Too Many Requests");
+                    } else if resp.status().as_u16() == 403 {
+                        report_telegram_403_once();
                     } else {
                         warn!("Telegram API returned status {}", resp.status());
                     }

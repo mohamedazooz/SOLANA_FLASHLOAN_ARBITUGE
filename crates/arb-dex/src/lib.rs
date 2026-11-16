@@ -2,7 +2,9 @@
 
 pub mod dlmm_validation;
 pub mod meteora_damm_v2;
+pub mod meteora_dbc;
 pub mod meteora_dlmm;
+pub mod meteora_dlmm_pro;
 pub mod orca_whirlpool;
 pub mod pump_fun;
 pub mod pump_swap;
@@ -19,7 +21,9 @@ pub use dlmm_validation::{
     validate_lb_pair_account, validate_pool_pair_compatibility,
 };
 pub use meteora_damm_v2::MeteoraDammV2Pool;
+pub use meteora_dbc::MeteoraDbcPool;
 pub use meteora_dlmm::MeteoraDlmmPool;
+pub use meteora_dlmm_pro::MeteoraDlmmProPool;
 pub use orca_whirlpool::OrcaWhirlpool;
 pub use pump_fun::PumpFunBondingCurve;
 pub use pump_swap::{PumpSwapFeeConfig, PumpSwapFeeTier, PumpSwapPool, PumpSwapPoolHeader};

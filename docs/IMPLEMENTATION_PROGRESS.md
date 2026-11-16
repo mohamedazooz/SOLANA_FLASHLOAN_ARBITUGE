@@ -509,3 +509,59 @@ Any mainnet WSS endpoint supporting `slotSubscribe` + `accountSubscribe` works �
 - `cargo test -p arb-config` — 22 passed (incl. 3 new `http_discovery_*` tests)
 - `cargo test -p arb-ingest from_config_and_env` — 3 passed (dedup, fallback, placeholder filtering)
 - Full workspace gates: see commit message.
+
+## Session 10 — DLMM 0.12.0 compliance, QUOTE_FAILED root-cause fix, flash dry-run, verified CPMM constants
+
+### lb_clmm 0.12.0 compliance (mainnet-active 2026-05-21)
+- `METEORA_MAX_BINS_PER_SWAP = 260` (reduced 280→260): fail-closed in
+  `plan_bin_arrays` (`DepthAboveSwapLimit`), flash evaluator
+  (`BINS_ABOVE_SWAP_LIMIT`), and 3-leg `quote_single_hop` (`None`).
+- Bitmap extension emitted **writable** in swap2 remaining accounts (verified
+  in `to_account_metas`); `CollectFeeMode` decoded and rejected when > 1;
+  fee formulas match official docs (base + variable, 10% cap, both
+  denominators). Audit table: `docs/production/dlmm_correctness.md` §5.
+
+### False `QUOTE_FAILED` — root cause + fix
+- Cause: capacity gate checked the **active bin only**; a one-sided active bin
+  (transient, constant on active meme pools) falsely rejected routes whose
+  on-chain swap would simply continue into neighbouring bins.
+- Fix: `DlmmPoolStateView::traversable_max_input` via
+  `dlmm_multi_bin_max_input` — capacity == quote depth exactly; deeper
+  traversal still fails closed (`BinNotFound`). Regression tests added.
+- Live evidence: 30-sweep rehearsal (270 pair-evaluations): `QUOTE_FAILED = 0`;
+  all rejections typed (`PROFIT_BELOW_FLOOR` / capacity).
+
+### Below-floor evaluations keep quote context
+- `evaluate()` floor gates moved last: `ProfitBelowFloor` rejections now carry
+  hop sizes/bins/costs (`feasible=false` unchanged; execution paths filter on
+  `feasible`). Enables the forced flash dry-run.
+
+### Forced flash dry-run (never broadcast)
+- On no feasible route, the rehearsal picks the best below-floor pair, refetches
+  fresh state, re-evaluates, and attempts the real build. Live verdict:
+  `FinalOutputBelowRepayment { min_out: 9936513, repay: 10000100 }` — the
+  builder refuses a transaction that cannot repay `borrow + flash_fee` at the
+  slippage floor. Zero-loss fail-closed proven at the assembly gate.
+- Full build → atomicity self-check → V1 compile → fork-simulation chain fires
+  automatically when a repayable+profitable route appears.
+
+### 3-leg cycles: structural absence proven
+- `diagnose_missing_cycles()` (exported): on 27 pools / 13 meme-meme bridges →
+  `closable_bridges=0`. No bridge has BOTH sides covered by WSOL-sided pools;
+  `WSOL→A→B→WSOL` cycles cannot exist in the current active set. Reported per
+  sweep instead of a bare "no cycle".
+
+### Fabricated Raydium CPMM constants replaced (preserved work committed)
+- Pool/vaults/AmmConfig/authority PDA verified on-chain (discriminator
+  `f7ede3f5d7c3de46`, owner CPMM program, amm_config @8) + Raydium API v3.
+- `address_regression_guards`: fabricated addresses can never return (6 tests);
+  `cpmm_real_bytes_fixture`: real mainnet bytes decode (2 tests).
+- `telegram.rs`: 403 = permanent recipient state — reported once with
+  remediation, never retried.
+
+### Verification (session 10)
+- `cargo test -p arb-engine` — 130 passed (incl. 3 new traversable-capacity
+  regressions + 260-limit fail-closed case)
+- `cargo test -p arb-tx --lib` — 139 passed; address guards 6 passed
+- `cargo test -p arb-ingest` — 118 lib + 2 fixture passed
+- Live rehearsals: read-only RPC + `simulateTransaction` only; nothing broadcast.

@@ -19,6 +19,15 @@ const FABRICATED_KAMINO_RESERVE: &str = "D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg
 /// `arb-tx/src/primitives/builder.rs` (shares the real market's 20-char prefix;
 /// returns null via getAccountInfo on mainnet).
 const FABRICATED_OPENBOOK_MARKET: &str = "8BnEgHoWFysVcuFFX7QBpDmvu3xei5qGE9KitUfqWQH9";
+/// Fabricated Raydium CPMM SOL/USDC pool that once shipped in `arb-constants`
+/// (returns null via getAccountInfo on mainnet; measured 2026 session).
+const FABRICATED_CPMM_POOL: &str = "79RbHpxoYSB3EJnN8aGLouuRrDJVGWLzxM3r1qVKsKJ7";
+/// Fabricated Raydium CPMM SOL vault constant (nonexistent on mainnet).
+const FABRICATED_CPMM_SOL_VAULT: &str = "DJgKsuDtTVvT1VqjC1vHTu6LHjq5Z6KRX1jaLKZJ3VwW";
+/// Fabricated Raydium CPMM USDC vault constant (nonexistent on mainnet).
+const FABRICATED_CPMM_USDC_VAULT: &str = "HYbZV1vHH8rDvn3a2uPtR8nCnBkL5xXwK7yP1uJ9nC2L";
+/// Fabricated Raydium CPMM AmmConfig constant (nonexistent on mainnet).
+const FABRICATED_CPMM_AMM_CONFIG: &str = "D4A2sqNAqqDy1bMT7BpTNNYTubbmMcETcpKEqZiiNtSZ";
 
 /// On-chain-verified (2026-11-16, mainnet getAccountInfo) values.
 const VERIFIED_RAYDIUM_SOL_VAULT: &str = "DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz";
@@ -26,6 +35,16 @@ const VERIFIED_KAMINO_USDC_RESERVE: &str = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1
 /// Verified via openserum.io market page and Solana StackExchange references
 /// (the market bound to Raydium pool 58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2).
 const VERIFIED_OPENBOOK_SOL_USDC_MARKET: &str = "8BnEgHoWFysVcuFFX7QztDmzuH8r5ZFvyP3sYwn1XTh6";
+/// On-chain-verified (mainnet getAccountInfo + Raydium API v3
+/// `/pools/info/ids?ids=...`, 2026 session): discriminator
+/// sha256("account:PoolState")[..8] == f7ede3f5d7c3de46, owner == CPMM program,
+/// amm_config @8 == D4FPEru..., token_0_vault @72 (WSOL), token_1_vault @104
+/// (USDC), both owned by the pool-authority PDA GpMZbSM2....
+const VERIFIED_CPMM_POOL: &str = "7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny";
+const VERIFIED_CPMM_SOL_VAULT: &str = "7VLUXrnSSDo9BfCa4NWaQs68g7ddDY1sdXBKW6Xswj9Y";
+const VERIFIED_CPMM_USDC_VAULT: &str = "3rzbbW5Q8MA7sCaowf28hNgACNPecdS2zceWy7Ptzua9";
+const VERIFIED_CPMM_AMM_CONFIG: &str = "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2";
+const VERIFIED_CPMM_POOL_AUTHORITY: &str = "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL";
 
 #[test]
 fn raydium_v4_mainnet_sol_usdc_uses_verified_vault() {
@@ -50,6 +69,30 @@ fn arb_constants_match_onchain_verified_addresses() {
     assert_eq!(
         arb_constants::KAMINO_USDC_RESERVE,
         VERIFIED_KAMINO_USDC_RESERVE
+    );
+}
+
+#[test]
+fn raydium_cpmm_constants_use_onchain_verified_addresses() {
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_SOL_USDC_POOL,
+        VERIFIED_CPMM_POOL
+    );
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_SOL_VAULT,
+        VERIFIED_CPMM_SOL_VAULT
+    );
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_USDC_VAULT,
+        VERIFIED_CPMM_USDC_VAULT
+    );
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG,
+        VERIFIED_CPMM_AMM_CONFIG
+    );
+    assert_eq!(
+        arb_constants::RAYDIUM_CPMM_SOL_USDC_POOL_AUTHORITY,
+        VERIFIED_CPMM_POOL_AUTHORITY
     );
 }
 
@@ -117,6 +160,18 @@ fn fabricated_addresses_absent_from_all_workspace_sources() {
             }
             if src.contains(FABRICATED_KAMINO_RESERVE) {
                 offenders.push(format!("{}: fabricated Kamino reserve", entry));
+            }
+            if src.contains(FABRICATED_CPMM_POOL) {
+                offenders.push(format!("{}: fabricated Raydium CPMM pool", entry));
+            }
+            if src.contains(FABRICATED_CPMM_SOL_VAULT) {
+                offenders.push(format!("{}: fabricated Raydium CPMM SOL vault", entry));
+            }
+            if src.contains(FABRICATED_CPMM_USDC_VAULT) {
+                offenders.push(format!("{}: fabricated Raydium CPMM USDC vault", entry));
+            }
+            if src.contains(FABRICATED_CPMM_AMM_CONFIG) {
+                offenders.push(format!("{}: fabricated Raydium CPMM AmmConfig", entry));
             }
         }
     }

@@ -63,8 +63,9 @@ solami = { version = "0.1.58", features = ["full"] }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 16
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 debug = false
 # Defense-in-depth for token/lamport arithmetic: panic on unexpected overflow
 # even though all money paths use explicit checked_* ops. Prevents a silently

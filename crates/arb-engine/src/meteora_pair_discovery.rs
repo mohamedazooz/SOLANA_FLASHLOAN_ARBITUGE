@@ -256,3 +256,237 @@ impl MeteoraDlmmPoolPairDiscovery {
         report
     }
 }
+
+/// Cross-protocol pair of two distinct pools sharing the same underlying token pair.
+/// Connects Meteora (DLMM, DAMM v2) with Raydium (AMM v4, CPMM, CLMM), Pump.fun / PumpSwap,
+/// and internal Meteora cross-pool pairs (DLMM <-> DAMM v2).
+#[derive(Debug, Clone)]
+pub struct CrossProtocolEligiblePair {
+    pub pool_a: PoolId,
+    pub protocol_a: DexProtocol,
+    pub pool_b: PoolId,
+    pub protocol_b: DexProtocol,
+    pub canonical_mint_x: MintId,
+    pub canonical_mint_y: MintId,
+    pub token_programs: [TokenProgramKind; 2],
+    pub pool_a_fee_bps: u16,
+    pub pool_b_fee_bps: u16,
+    pub pool_a_reserve_in: u128,
+    pub pool_a_reserve_out: u128,
+    pub pool_b_reserve_in: u128,
+    pub pool_b_reserve_out: u128,
+    pub pool_a_execution_accounts: PoolExecutionAccounts,
+    pub pool_b_execution_accounts: PoolExecutionAccounts,
+    pub pool_a_state: PoolState,
+    pub pool_b_state: PoolState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CrossProtocolPairDiscoveryReport {
+    pub total_pools_evaluated: usize,
+    pub active_and_valid_pools: usize,
+    pub unique_token_pairs: usize,
+    pub distinct_eligible_pairs: usize,
+    pub eligible_pairs: Vec<CrossProtocolEligiblePair>,
+}
+
+/// Cross-protocol pair discovery connecting Meteora with the entire DEX ecosystem.
+pub struct CrossProtocolPairDiscovery;
+
+impl CrossProtocolPairDiscovery {
+    pub fn discover_pairs(pools: &[PoolState]) -> CrossProtocolPairDiscoveryReport {
+        let mut report = CrossProtocolPairDiscoveryReport::default();
+        let mut valid_pools_by_pair: HashMap<(MintId, MintId), Vec<PoolState>> = HashMap::new();
+
+        for pool in pools {
+            report.total_pools_evaluated += 1;
+            if !pool.is_active || pool.has_risky_token || pool.transfer_fee_bps != 0 {
+                continue;
+            }
+            if pool.execution_accounts.is_none() {
+                continue;
+            }
+            if pool.reserve_in == 0 && pool.reserve_out == 0 {
+                continue;
+            }
+
+            report.active_and_valid_pools += 1;
+            let pair_key =
+                MeteoraDlmmPoolPairDiscovery::canonical_pair_key(pool.base_mint, pool.quote_mint);
+            valid_pools_by_pair
+                .entry(pair_key)
+                .or_default()
+                .push(pool.clone());
+        }
+
+        report.unique_token_pairs = valid_pools_by_pair.len();
+
+        for ((mint_x, mint_y), candidate_pools) in &valid_pools_by_pair {
+            if candidate_pools.len() < 2 {
+                continue;
+            }
+
+            for i in 0..candidate_pools.len() {
+                for j in (i + 1)..candidate_pools.len() {
+                    let pool_a = &candidate_pools[i];
+                    let pool_b = &candidate_pools[j];
+
+                    if pool_a.pool_id == pool_b.pool_id {
+                        continue;
+                    }
+
+                    // Must involve at least one Meteora pool (DLMM or DAMM v2)
+                    let is_meteora_a = matches!(
+                        pool_a.protocol,
+                        DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2
+                    );
+                    let is_meteora_b = matches!(
+                        pool_b.protocol,
+                        DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2
+                    );
+                    if !is_meteora_a && !is_meteora_b {
+                        continue;
+                    }
+
+                    let prog_a = pool_a.token_programs;
+                    let prog_b = pool_b.token_programs;
+                    let prog_x_a = if pool_a.base_mint == *mint_x {
+                        prog_a[0]
+                    } else {
+                        prog_a[1]
+                    };
+                    let prog_x_b = if pool_b.base_mint == *mint_x {
+                        prog_b[0]
+                    } else {
+                        prog_b[1]
+                    };
+                    let prog_y_a = if pool_a.quote_mint == *mint_y {
+                        prog_a[1]
+                    } else {
+                        prog_a[0]
+                    };
+                    let prog_y_b = if pool_b.quote_mint == *mint_y {
+                        prog_b[1]
+                    } else {
+                        prog_b[0]
+                    };
+
+                    if prog_x_a != prog_x_b || prog_y_a != prog_y_b {
+                        continue;
+                    }
+
+                    let exec_a = pool_a.execution_accounts.as_ref().unwrap().clone();
+                    let exec_b = pool_b.execution_accounts.as_ref().unwrap().clone();
+
+                    report.eligible_pairs.push(CrossProtocolEligiblePair {
+                        pool_a: pool_a.pool_id,
+                        protocol_a: pool_a.protocol,
+                        pool_b: pool_b.pool_id,
+                        protocol_b: pool_b.protocol,
+                        canonical_mint_x: *mint_x,
+                        canonical_mint_y: *mint_y,
+                        token_programs: [prog_x_a, prog_y_a],
+                        pool_a_fee_bps: pool_a.fee_numerator as u16,
+                        pool_b_fee_bps: pool_b.fee_numerator as u16,
+                        pool_a_reserve_in: pool_a.reserve_in,
+                        pool_a_reserve_out: pool_a.reserve_out,
+                        pool_b_reserve_in: pool_b.reserve_in,
+                        pool_b_reserve_out: pool_b.reserve_out,
+                        pool_a_execution_accounts: exec_a,
+                        pool_b_execution_accounts: exec_b,
+                        pool_a_state: pool_a.clone(),
+                        pool_b_state: pool_b.clone(),
+                    });
+                }
+            }
+        }
+
+        report.distinct_eligible_pairs = report.eligible_pairs.len();
+        report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arb_types::{Slot, TokenProgramKind};
+    use solana_pubkey::Pubkey;
+
+    #[test]
+    fn test_cross_protocol_pair_discovery_matches_meteora_with_raydium() {
+        let mint_x = MintId(Pubkey::new_unique());
+        let mint_y = MintId(Pubkey::new_unique());
+
+        let pool_dlmm = PoolState {
+            pool_id: PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(100),
+            write_version: 1,
+            base_mint: mint_x,
+            quote_mint: mint_y,
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 10_000_000_000,
+            reserve_out: 50_000_000_000,
+            fee_numerator: 25,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: arb_types::PoolKind::Dlmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
+                reserve_x: Pubkey::new_unique(),
+                reserve_y: Pubkey::new_unique(),
+                oracle: Pubkey::new_unique(),
+                bin_array_pdas: vec![Pubkey::new_unique()],
+                bitmap_extension: None,
+                pool_token_x: mint_x.0,
+                pool_token_y: mint_y.0,
+            }),
+            last_update_slot: 100,
+            last_update_ms: 1000,
+        };
+
+        let pool_raydium = PoolState {
+            pool_id: PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::RaydiumCpmm,
+            slot: Slot(100),
+            write_version: 1,
+            base_mint: mint_x,
+            quote_mint: mint_y,
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 12_000_000_000,
+            reserve_out: 48_000_000_000,
+            fee_numerator: 25,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: arb_types::PoolKind::Cpmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            execution_accounts: Some(PoolExecutionAccounts::RaydiumCpmm {
+                amm_config: Pubkey::new_unique(),
+                authority: Pubkey::new_unique(),
+                vault_0: Pubkey::new_unique(),
+                vault_1: Pubkey::new_unique(),
+                observation_state: Pubkey::new_unique(),
+            }),
+            last_update_slot: 100,
+            last_update_ms: 1000,
+        };
+
+        let report = CrossProtocolPairDiscovery::discover_pairs(&[pool_dlmm, pool_raydium]);
+        assert_eq!(report.distinct_eligible_pairs, 1);
+        let pair = &report.eligible_pairs[0];
+        assert_eq!(pair.protocol_a, DexProtocol::MeteoraDlmm);
+        assert_eq!(pair.protocol_b, DexProtocol::RaydiumCpmm);
+    }
+}

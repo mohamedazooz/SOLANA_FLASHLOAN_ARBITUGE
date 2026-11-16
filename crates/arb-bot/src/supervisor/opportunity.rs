@@ -44,6 +44,31 @@ impl Supervisor {
         let quote_ingest_time =
             std::time::Instant::now() - Duration::from_micros(t_ingest_to_quote_us);
         for opp in opportunities {
+            // Invariant check: when flash funding is enabled, candidate trade size must not exceed
+            // verified available supply-vault liquidity.
+            if self.config.strategy.use_flash_loan {
+                let available_vault_liquidity = match self
+                    .kamino_available_flash_liquidity(current_slot)
+                {
+                    Some(liq) => liq,
+                    None => {
+                        debug!(
+                            "Opportunity rejected: Kamino supply-vault liquidity unverifiable at slot {}",
+                            current_slot.0
+                        );
+                        continue;
+                    }
+                };
+                if opp.size_in.as_u64() > available_vault_liquidity {
+                    debug!(
+                        "Opportunity rejected: size_in ({}) exceeds available vault liquidity ({})",
+                        opp.size_in.as_u64(),
+                        available_vault_liquidity
+                    );
+                    continue;
+                }
+            }
+
             // Config is the single source of truth for the per-hop min-out
             // floor: stamp it onto every candidate before any builder reads
             // it. Builders further clamp to HOP_SLIPPAGE_MAX_BPS.
@@ -89,11 +114,19 @@ impl Supervisor {
             let base_cu = measured_cu.unwrap_or(estimated_cu);
             let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
             let desired_cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
+            // Dynamic priority fee ceiling: scales adaptively between base_share and max_share
+            // according to real-time competition factor observed by TipOracle.
+            let comp_factor = self.jito_service.competition_factor();
+            let base_share = self.config.strategy.priority_fee_base_share_bps;
+            let max_share = self.config.strategy.priority_fee_max_share_bps;
+            let dynamic_max_share_bps =
+                ((base_share as f64 * comp_factor) as u64).clamp(base_share, max_share);
+
             let cu_price = arb_tx::cap_cu_price_by_profit(
                 opp.gross_profit.as_u64(),
                 cu_limit,
                 desired_cu_price,
-                PRIORITY_FEE_MAX_SHARE_BPS,
+                dynamic_max_share_bps,
             );
             // cu_price is micro-lamports per CU; convert to a lamport estimate.
             // Ceil: priority fee is a non-refundable cost, so underestimating
@@ -129,18 +162,18 @@ impl Supervisor {
             // P_net = G - C_fees - T_Jito >= $0.20 USD
             // T_max = G - C_fees - $0.20 - B
             let min_net_floor = self.config.strategy.min_net_profit_abs;
-            let contingency_buffer = 10_000u64; // B
+            let contingency_buffer = self.config.strategy.contingency_buffer_lamports; // B
             let t_max = net_before_tip
                 .saturating_sub(min_net_floor)
                 .saturating_sub(contingency_buffer);
 
             if t_max < arb_land::MIN_JITO_TIP_LAMPORTS {
                 debug!(
-                    "Opportunity skipped: Surplus ceiling t_max ({t_max}) < MIN_JITO_TIP; cannot satisfy P_net >= $0.20"
+                    "Opportunity skipped: Surplus ceiling t_max ({t_max}) < MIN_JITO_TIP; cannot satisfy P_net floor"
                 );
-                if gross >= 50_000 {
+                if gross >= min_net_floor {
                     let reason = format!(
-                        "فائض الربح غير كافٍ لتغطية إكرامية Jito مع ضمان بقاء الحد الأدنى للربح الصافي $0.20 (t_max={t_max} lamports)"
+                        "فائض الربح غير كافٍ لتغطية إكرامية Jito مع ضمان بقاء الحد الأدنى للربح الصافي (t_max={t_max} lamports)"
                     );
                     self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                         route: route_label.clone(),
@@ -194,14 +227,35 @@ impl Supervisor {
                 ExecutionRoute::SwqosDirect { .. } => (Lamports(0), None, true),
                 ExecutionRoute::Bundle => match jito_plan.tip.decision {
                     TipDecision::Bid { tip, rung, .. } => {
-                        (Lamports(tip.as_u64().min(t_max)), Some(rung), false)
+                        let final_tip = if tip.as_u64() > t_max {
+                            let clamped = Lamports(t_max);
+                            // Recalculate inclusion probability and EV for the clamped tip
+                            let effective_p = match jito_plan.tip.market {
+                                Some(floor) => self
+                                    .jito_service
+                                    .calibrated_inclusion_probability(clamped, &floor),
+                                None => jito_plan.tip.inclusion_p,
+                            };
+                            let margin = edge.0.saturating_sub(clamped.0);
+                            let effective_ev = (effective_p * (margin as f64)).round() as i64;
+                            if effective_ev <= 0 {
+                                debug!(
+                                    "Opportunity skipped: clamped tip produces non-positive EV ({effective_ev}) at t_max={t_max}"
+                                );
+                                continue;
+                            }
+                            clamped
+                        } else {
+                            tip
+                        };
+                        (final_tip, Some(rung), false)
                     }
                     _ => {
                         debug!(
                             "Opportunity skipped: Jito plan refused ({:?})",
                             jito_plan.tip.decision
                         );
-                        if gross >= 50_000 {
+                        if gross >= min_net_floor {
                             let reason = format!(
                                 "رفض تسعير الـ Tip من الأوراكل: {:?}",
                                 jito_plan.tip.decision
@@ -236,7 +290,7 @@ impl Supervisor {
                 },
                 ExecutionRoute::PlainRpc => {
                     debug!("Opportunity skipped: leader is not Jito-Solana (route=PlainRpc)");
-                    if gross >= 50_000 {
+                    if gross >= min_net_floor {
                         let reason =
                             "المدقق القائد للسلوت الحالي لا يدعم حزم Jito المباشرة".to_string();
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
@@ -354,7 +408,7 @@ impl Supervisor {
             let max_implausible_roi_bps: u128 = std::env::var("ARB_MAX_IMPLAUSIBLE_ROI_BPS")
                 .ok()
                 .and_then(|v| v.trim().parse::<u128>().ok())
-                .unwrap_or(1_500); // 15% ceiling
+                .unwrap_or(self.config.risk.max_implausible_roi_bps as u128);
             if implied_roi_bps > max_implausible_roi_bps {
                 warn!(
                     "Opportunity rejected: implied ROI {implied_roi_bps} bps exceeds implausibility ceiling {max_implausible_roi_bps} bps (stale-quote artifact); route={route_label} size_in={} slot={}",
