@@ -552,7 +552,7 @@ impl MultiDexRegistry {
                 // measured in one 150s run). Make the failure LOUD on transition
                 // and every 20th consecutive failure, plus an explicit recovery.
                 let n = CONSECUTIVE_RPC_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
-                if n == 1 || n % 20 == 0 {
+                if n == 1 || n.is_multiple_of(20) {
                     warn!(
                         "batch_fetch_accounts: RPC failure x{n} consecutive (chunk of {} keys) — pools will go stale and ticks will be skipped (fail closed); check RPC provider credits/limits",
                         chunk.len()
@@ -633,12 +633,8 @@ impl MultiDexRegistry {
                 cpmm_config_pubkeys.push(cfg);
             }
         }
-        let cpmm_cfg_slot = Self::batch_fetch_accounts(
-            &self.rpc,
-            &cpmm_config_pubkeys,
-            &mut cpmm_config_map,
-        )
-        .await;
+        let cpmm_cfg_slot =
+            Self::batch_fetch_accounts(&self.rpc, &cpmm_config_pubkeys, &mut cpmm_config_map).await;
         max_observed_slot = max_observed_slot.max(cpmm_cfg_slot);
 
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
@@ -842,7 +838,10 @@ impl MultiDexRegistry {
                     quote_bal,
                     vault_data_map.contains_key(&p.base_vault),
                     vault_data_map.contains_key(&p.quote_vault),
-                    pool_data_map.get(&p.pool_id.0).map(|(_, d)| d.len()).unwrap_or(0)
+                    pool_data_map
+                        .get(&p.pool_id.0)
+                        .map(|(_, d)| d.len())
+                        .unwrap_or(0)
                 );
                 continue;
             }
@@ -1750,7 +1749,11 @@ pub fn decode_raydium_cpmm_fee_bps(data: &[u8]) -> Option<u16> {
     if data.len() < TRADE_FEE_RATE_OFFSET + 8 {
         return None;
     }
-    let rate = u64::from_le_bytes(data[TRADE_FEE_RATE_OFFSET..TRADE_FEE_RATE_OFFSET + 8].try_into().ok()?);
+    let rate = u64::from_le_bytes(
+        data[TRADE_FEE_RATE_OFFSET..TRADE_FEE_RATE_OFFSET + 8]
+            .try_into()
+            .ok()?,
+    );
     if rate == 0 {
         return None;
     }

@@ -165,10 +165,12 @@ fn precise_plan_is_never_under_provisioned_versus_the_legacy_helper() {
     for depth in [261u32, 280, 500] {
         for swap_for_y in [true, false] {
             match plan_bin_arrays(&pk(POOL_A), 0, swap_for_y, depth) {
-                Err(arb_tx::flash::dlmm_bin_discovery::BinArrayPlanError::DepthAboveSwapLimit {
-                    bins,
-                    limit,
-                }) => {
+                Err(
+                    arb_tx::flash::dlmm_bin_discovery::BinArrayPlanError::DepthAboveSwapLimit {
+                        bins,
+                        limit,
+                    },
+                ) => {
                     assert_eq!(bins, depth);
                     assert_eq!(limit, arb_constants::METEORA_MAX_BINS_PER_SWAP);
                 }

@@ -1274,7 +1274,12 @@ mod tests {
         // empty. Neighbouring bins ascending (Y->X direction) hold X.
         let pool = dlmm_pool(
             100,
-            vec![(98, 0, 0), (99, 0, 0), (100, 0, 5_000_000), (101, 900_000, 0)],
+            vec![
+                (98, 0, 0),
+                (99, 0, 0),
+                (100, 0, 5_000_000),
+                (101, 900_000, 0),
+            ],
         );
         // WSOL -> USDC is Y -> X: the active bin cannot absorb, but the
         // on-chain swap simply continues into bins 101+.

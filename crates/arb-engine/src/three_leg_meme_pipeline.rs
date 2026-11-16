@@ -379,7 +379,8 @@ pub fn diagnose_missing_cycles(pools: &[PoolState]) -> String {
     }
     for p in pools {
         let (m1, m2) = (p.base_mint, p.quote_mint);
-        if m1 != wsol && m2 != wsol && wsol_covered.contains(&m1.0) && wsol_covered.contains(&m2.0) {
+        if m1 != wsol && m2 != wsol && wsol_covered.contains(&m1.0) && wsol_covered.contains(&m2.0)
+        {
             closable_bridges += 1;
         }
     }
