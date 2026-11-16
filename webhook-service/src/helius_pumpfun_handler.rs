@@ -56,10 +56,12 @@ pub async fn handle_helius_pumpfun_webhook(
             .get("Authorization")
             .and_then(|h| h.to_str().ok())
             .map(|val| {
-                val == state.config.server.auth_token
+                crate::verify_webhook_token(Some(val), &state.config.server.auth_token)
                     || val
                         .strip_prefix("Bearer ")
-                        .map(|t| t == state.config.server.auth_token)
+                        .map(|t| {
+                            crate::verify_webhook_token(Some(t), &state.config.server.auth_token)
+                        })
                         .unwrap_or(false)
             })
             .unwrap_or(false);

@@ -250,8 +250,6 @@ impl Default for RiskLimits {
     }
 }
 
-pub const MAX_VELOCITY_ORDERS_PER_HOUR: usize = 10;
-
 /// Configuration for Chronos Spatiotemporal Expected Value (EV) Gate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChronosRiskConfig {

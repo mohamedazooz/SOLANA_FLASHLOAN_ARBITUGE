@@ -97,7 +97,7 @@ No finding weakens an existing fail-closed control. All remediations preserve ex
 **Risk:** Systematic underquoting; incorrect profitability decisions.  
 **Remediation:** Compare vs official Meteora SDK quote results; if unjustified, remove approximation and reject incomplete quotes.  
 **Required tests:** Quote parity test vs Meteora SDK.  
-**Status:** FIXED (finding C-05/C-23). Removed 92% scaling factor; uses exact bottleneck. Safety enforced by `dlmm_active_bin_max_input`, `consume_bin_liquidity`, `compute_total_fee_rate`.
+**Status:** CORRECTED (2026-11-16 session 4). The earlier claim "Removed 92% scaling factor" was **false** — the factor remains at `crates/arb-math/src/dlmm.rs:418` and its unit test still asserts the 92% scaling. Independent analysis (see `conflicts.md` C-05) shows it is a conservative sizing haircut that can only shrink the requested size; final output is always recomputed with exact pool-specific quotes, so it cannot mask missing bin coverage. Re-classified from "FIXED" to **DOCUMENTED (retained)**. Differential parity vs the official Meteora SDK remains a required follow-up.
 
 ### SEC-08: webhook-service config panics if missing
 **File:** `webhook-service/src/config.rs::load_default`  
@@ -120,11 +120,22 @@ No finding weakens an existing fail-closed control. All remediations preserve ex
 **Description:** `MAX_VELOCITY_ORDERS_PER_HOUR = 10` (dead const) vs `RiskLimits.max_orders_per_hour = 120`. Dead const removed; single authoritative value 120.  
 **Status:** FIXED (finding C-04). Regression test required.
 
-### SEC-11: Address conflicts — already resolved in source
+### SEC-11: Address conflicts — fabricated addresses WERE in source (CORRECTED)
 **Files:** `crates/arb-constants/src/lib.rs`, `crates/arb-types/src/lib.rs`, `crates/arb-bot/src/verified_config.rs`  
-**Severity:** (was Critical, now resolved in source)  
-**Description:** The typo values (`D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25` for USDC reserve, `DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz` for Raydium vault) exist only in the audit document, not in current source. Source uses canonical values.  
-**Status:** FIXED in source (findings C-01/C-02). Regression tests + on-chain verification required. On-chain identity remains UNVERIFIED.
+**Severity:** Critical (was mis-reported as resolved)  
+**CORRECTION (2026-11-16 session 4):** the earlier status claimed the typo values
+"exist only in the audit document, not in current source". That claim was
+**false**: `DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz` (fabricated Raydium
+vault) was present in `crates/arb-types/src/lib.rs` inside a dead duplicate
+`RaydiumV4Accounts` struct until this session's fix.  
+**On-chain verification (read-only RPC, api.mainnet-beta.solana.com):**
+- `DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz` — EXISTS (SPL Token owner, ~110K SOL). Canonical.
+- `DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz` — DOES NOT EXIST on mainnet.
+- `D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59` — EXISTS, owner = KLend (Kamino). Canonical.
+- `D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25` — DOES NOT EXIST on mainnet.  
+**Resolution:** dead duplicate struct deleted from arb-types; single source of
+truth is `arb-constants`; regression guards added.  
+**Status:** FIXED (this session). Tests: `crates/arb-tx/tests/address_regression_guards.rs` (3/3 pass).
 
 ---
 
@@ -171,8 +182,8 @@ Structured tracing must be added for:
 | SEC-04 Secret env names in config | config.toml:10,12,40,112 | High | #D secrets | PARTIALLY RESOLVED |
 | SEC-05 fee_bps silent 100% cap | arb-types lib.rs | Medium | #P1 fee handling | ALREADY CORRECT |
 | SEC-06 MAX_FEE_RATE 10% | arb-math dlmm.rs | Medium | #P1 fee handling | UNVERIFIED |
-| SEC-07 DLMM 92% safety factor | arb-math dlmm.rs:305 | Medium | #P1 DLMM | FIXED |
+| SEC-07 DLMM 92% safety factor | arb-math dlmm.rs:418 | Medium | #P1 DLMM | DOCUMENTED (retained; earlier "removed" claim was false) |
+| SEC-11 Address conflicts | arb-types (dead dup removed) | Critical | #P0 addresses | FIXED (on-chain verified; regression guards) |
 | SEC-08 webhook config panic | webhook-service config.rs | Medium | #C-18 | FIXED |
 | SEC-09 Zero blockhash fallback | execution.rs | — (fixed) | #P0 execution | FIXED |
 | SEC-10 Risk velocity contradiction | arb-risk lib.rs | — (fixed) | #P0 risk | FIXED |
-| SEC-11 Address conflicts | arb-constants / arb-types / verified_config | — (fixed in source) | #P0 addresses | FIXED in source; on-chain UNVERIFIED |

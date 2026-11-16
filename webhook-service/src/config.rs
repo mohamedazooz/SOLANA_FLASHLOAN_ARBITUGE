@@ -28,6 +28,18 @@ pub struct ServerConfig {
     pub auth_token: String,
     pub channel_buffer_size: usize,
     pub worker_threads: usize,
+    /// Explicit CORS allowlist (origins). An empty list disables CORS headers
+    /// entirely; `CorsLayer::permissive()` is never constructed.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
+    /// Maximum accepted request body size in bytes (per OWASP webhook
+    /// guidance). Requests above this are rejected before parsing.
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: usize,
+}
+
+fn default_max_body_bytes() -> usize {
+    1_048_576
 }
 
 /// Strict Deduplication parameters.

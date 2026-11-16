@@ -6,6 +6,11 @@ host = "0.0.0.0"
 port = 8085
 # Optional bearer token for provider authentication. Empty string disables requirement.
 auth_token = "" # Set WEBHOOK_AUTH_TOKEN in the process environment
+# Explicit CORS origin allowlist. Empty list = no CORS headers emitted
+# (browser cross-origin access denied). Never permissive.
+cors_allowed_origins = []
+# Maximum accepted request body size in bytes.
+max_body_bytes = 1048576
 channel_buffer_size = 65536
 worker_threads = 4
 

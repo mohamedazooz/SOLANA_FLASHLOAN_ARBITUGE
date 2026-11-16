@@ -11,15 +11,32 @@ use solana_webhook_service::{
 };
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
+use axum::http::HeaderValue;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
+
+/// Build the CORS layer from an explicit origin allowlist. Per the OWASP
+/// Webhook Security Cheat Sheet, `CorsLayer::permissive()` is never allowed:
+/// an empty allowlist emits no CORS headers (browser cross-origin access
+/// denied) rather than allowing every origin.
+fn build_cors_layer(allowed_origins: &[String]) -> CorsLayer {
+    let origins: Vec<HeaderValue> = allowed_origins
+        .iter()
+        .filter_map(|o| o.parse().ok())
+        .collect();
+    if origins.is_empty() {
+        warn!(target: "security", "CORS allowlist empty: cross-origin browser access disabled");
+    }
+    CorsLayer::new().allow_origin(origins)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -98,7 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/topology", get(topology_snapshot))
         .route("/ws/topology", get(ws_topology_handler))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer(build_cors_layer(&config.server.cors_allowed_origins))
+        .layer(DefaultBodyLimit::max(config.server.max_body_bytes))
         .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)

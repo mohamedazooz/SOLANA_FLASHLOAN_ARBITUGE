@@ -61,13 +61,13 @@ jobs:
       - name: cargo-deny (workspace)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check advisories bans sources
+          command: check advisories bans sources licenses
           arguments: --workspace
 
       - name: cargo-deny (webhook-service)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check advisories bans sources
+          command: check advisories bans sources licenses
           manifest-path: webhook-service/Cargo.toml
 
   web:

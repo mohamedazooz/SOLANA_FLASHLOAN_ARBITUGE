@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Senior Core Backend Engineer <core@sentinel.ai>"]
 description = "High-frequency, ultra-low-latency non-blocking Solana Webhook service with Redis and DashMap deduplication"
+license = "MIT OR Apache-2.0"
 
 [workspace]
 

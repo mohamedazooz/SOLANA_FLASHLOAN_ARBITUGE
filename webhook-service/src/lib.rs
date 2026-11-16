@@ -41,6 +41,33 @@ pub struct AppState {
     pub worker: Arc<WorkerEngine>,
 }
 
+/// Constant-time byte equality. Per the OWASP Webhook Security Cheat Sheet,
+/// authentication tokens must never be compared with plain string equality,
+/// which leaks timing information byte by byte.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Verify a raw header value against the configured token in constant time.
+pub fn verify_webhook_token(provided: Option<&str>, expected: &str) -> bool {
+    provided.is_some_and(|p| constant_time_eq(p.as_bytes(), expected.as_bytes()))
+}
+
+/// Verify a header value that may carry the token raw or as `Bearer <token>`.
+fn bearer_or_raw_token_valid(val: &str, expected: &str) -> bool {
+    verify_webhook_token(Some(val), expected)
+        || val
+            .strip_prefix("Bearer ")
+            .is_some_and(|t| verify_webhook_token(Some(t), expected))
+}
+
 /// High-throughput POST `/v1/webhook` handler.
 pub async fn handle_webhook(
     State(state): State<AppState>,
@@ -54,13 +81,7 @@ pub async fn handle_webhook(
         let is_auth_valid = headers
             .get("Authorization")
             .and_then(|h| h.to_str().ok())
-            .map(|val| {
-                val == state.config.server.auth_token
-                    || val
-                        .strip_prefix("Bearer ")
-                        .map(|t| t == state.config.server.auth_token)
-                        .unwrap_or(false)
-            })
+            .map(|val| bearer_or_raw_token_valid(val, &state.config.server.auth_token))
             .unwrap_or(false);
 
         if !is_auth_valid {

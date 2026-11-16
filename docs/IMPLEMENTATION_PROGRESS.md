@@ -139,3 +139,97 @@ inside `arguments`, colliding with the action's own default manifest path
    authorization; remain `#[ignore]`-gated by design.
 3. Live trading remains DISABLED (Gate G) — requires explicit operator
    authorization; this session makes no change to that status.
+
+---
+
+## Session 4 (2026-11-16) — hardcoded-values/security refactor: verified fixes & corrections of previous agent claims
+
+### DEF-6 (Critical) — fabricated Raydium vault address in dead `arb-types` duplicate
+
+| Field | Value |
+|---|---|
+| ID | DEF-6 |
+| Severity | Critical |
+| Files | `crates/arb-types/src/lib.rs` (deleted struct), `crates/arb-constants/src/lib.rs` (canonical) |
+| Root cause | A second, dead `RaydiumV4Accounts` struct+impl existed in `arb_types` (~lines 1054–1133) carrying `DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz` as `pool_coin_vault`. The live path uses `arb_tx::protocols::raydium_v4::RaydiumV4Accounts` (`pub use protocols::*`), which correctly sources `arb_constants::RAYDIUM_SOL_VAULT`. |
+| Evidence | Read-only on-chain verification via a scratch Rust RPC client against `api.mainnet-beta.solana.com`: canonical vault `DQyrAcCrDXQ7NeoqGgDCZwBvWDcYmFCjSb9JtteuvPpz` EXISTS (owner = SPL Token program, ~110K SOL); the arb-types value DOES NOT EXIST on mainnet. Kamino likewise: `D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59` EXISTS (owner = KLend), `D6q6wuQSrifJKUvxCoXepEAbW39zWCuYAZBpqUg6xK25` DOES NOT EXIST. |
+| Fix | Deleted the entire dead duplicate struct+impl from `arb-types`. Single source of truth: `arb-constants`. |
+| Test | `crates/arb-tx/tests/address_regression_guards.rs` — 3 tests: (1) live-path vault equals the on-chain-verified address, (2) arb-constants match, (3) hygiene guard asserting the fabricated addresses appear nowhere in the repo tree (canonicalize-based walker, self-excluded). 3/3 pass. |
+
+### DEF-7 (High) — webhook-service hardening (OWASP Webhook Security Cheat Sheet / Standard Webhooks)
+
+| Field | Value |
+|---|---|
+| ID | DEF-7 |
+| Severity | High |
+| Files | `webhook-service/src/{lib.rs,main.rs,config.rs,bitquery_handler.rs,solami_handler.rs,helius_pumpfun_handler.rs}`, `webhook-service/config.toml` |
+| Root cause | (a) bearer-token comparisons used `==` (non-constant-time, timing side channel); (b) `CorsLayer::permissive()` reflected any origin; (c) unbounded request body size. |
+| Fix | (a) `constant_time_eq` + `verify_webhook_token`/`bearer_or_raw_token_valid` helpers in `lib.rs`, used by all 4 token check sites; (b) CORS now built from `server.cors_allowed_origins` allowlist (empty list ⇒ no CORS headers emitted) via `build_cors_layer`; (c) `DefaultBodyLimit::max(server.max_body_bytes)` (default 1 MiB, configurable). |
+| Test | `cargo test` in webhook-service: 11 passed / 0 failed. `cargo fmt`/`clippy -D warnings` clean. |
+
+### DEF-8 (Low) — dead contradictory risk constant
+
+`MAX_VELOCITY_ORDERS_PER_HOUR = 10` in `crates/arb-risk/src/lib.rs` was referenced by
+zero code and contradicted the authoritative `RiskLimits::max_orders_per_hour = 120`.
+Deleted. `cargo test -p arb-risk` green.
+
+### Correction of previous-session report claims (transparency record)
+
+`reports/config_refactor/{conflicts.md,security_findings.md}` from the earlier
+config-refactor agent contained **fabricated fix claims**, now corrected in-place
+with evidence:
+
+1. **C-02 / SEC-11:** claimed the fabricated addresses "exist only in the audit
+   document, not in current source" and that "arb-types [was] fixed to canonical
+   value". Both false — the fabricated Raydium vault was in `arb-types` source
+   until this session (see DEF-6). Reports updated; on-chain verification recorded.
+2. **C-05 / SEC-07:** claimed the DLMM 92% factor was "Removed ... Test updated to
+   expect exact bottleneck". False — the factor remains at
+   `crates/arb-math/src/dlmm.rs:418` and the unit test at `dlmm.rs:1672` still
+   asserts 92% scaling. Status re-classified to **DOCUMENTED (retained)**.
+
+### DLMM 92% factor — independent mathematical analysis (retained, documented)
+
+`scale_dlmm_three_hop_input` (`arb-math/src/dlmm.rs:395-423`) is a *sizing*
+heuristic, not a quote:
+
+- It scales a probe amount up to `min(hop1_cap, hop2_equiv, hop3_equiv, wallet_cap)`
+  then applies `× 92/100`. It can only **shrink** the requested input, never
+  overstate executable capacity.
+- Inside a Meteora DLMM active bin, price is constant-sum (zero price impact
+  within the bin), so linear scaling of gross edge with input is exact in that
+  regime; the 8% haircut is a conservative margin against bin-boundary crossing.
+- Downstream, the chosen size is re-clamped per hop by
+  `edge_max_input_capacity` (`arb-engine/src/lib.rs:874-879`) and the actual
+  output/profit is recomputed with exact pool-specific quotes
+  (`quote_pool` → `quote_dlmm_multi_bin`). An infeasible size therefore fails
+  the real quote — the haircut cannot mask missing bin coverage.
+- Full multi-bin executable capacity exists independently
+  (`dlmm_multi_bin_max_input`, used by `flash_loan_sizing.rs:244` and
+  `arb-engine/src/lib.rs:601`).
+
+**Disposition:** retained. Follow-up required before live sizing trust:
+differential parity vs the official Meteora SDK (`ts` SDK or Rust
+`dlmm-sdk`-equivalent) on real mainnet bin snapshots.
+
+### Session 4 verification log
+
+| Check | Command | Result |
+|---|---|---|
+| fmt | `cargo fmt --all -- --check` | exit 0 |
+| clippy | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| workspace tests | `cargo test --workspace` | **1020 passed / 0 failed / 2 ignored** (2 intentional live-RPC ignores in `arb-tx/tests/mainnet_alt_integration_tests.rs`) |
+| webhook tests | `cargo test` (webhook-service) | 11 passed / 0 failed |
+| cargo-deny (workspace) | `cargo deny check advisories bans sources licenses` | all ok |
+| cargo-deny (webhook) | `cargo deny --manifest-path webhook-service/Cargo.toml check advisories bans sources licenses` | all ok |
+
+### Remaining work (from directive 4, deferred to next sessions)
+
+1. Full AST-aware hardcoded-value inventory refresh + classification A–G table
+   (`reports/config_refactor/hardcoded_inventory.md` is pre-session-4).
+2. `reports/config_refactor/final_audit.json` + `final_report.md` regeneration.
+3. Secret provider abstraction; rate limiting in webhook-service; replay
+   protection/timestamp validation for webhook signature schemes (HMAC) where
+   providers support them.
+4. Meteora SDK differential parity harness (blocks live-sizing trust).
+5. Live trading remains DISABLED (Gate G) — operator decision only.
