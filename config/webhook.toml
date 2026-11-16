@@ -1,0 +1,85 @@
+# Sentinel Arbitrage Webhook Configuration
+# Classification: Security hardening — webhook receipt and processing.
+
+[webhook]
+# CORS configuration
+# PRODUCTION: MUST use explicit allowlist — NEVER CorsLayer::permissive()
+allowed_origins = [
+    "https://trusted-admin.example.com",
+    "https://internal-tool.example.com",
+]
+# Development allows localhost for local testing:
+# allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+# If None or empty, the service will reject all origins not in the allowlist.
+# In production, this field must have at least one entry.
+
+# Authentication
+# HMAC secret for webhook signature verification
+# Set via WEBHOOK_HMAC_SECRET environment variable
+hmac_secret_env = "WEBHOOK_HMAC_SECRET"
+
+# Signature verification
+# Enable SHA256 HMAC signature verification on incoming webhook payloads
+signature_verification = true
+
+# Replay protection
+# Window (in seconds) within which duplicate timestamps are rejected
+replay_window_seconds = 300     # 5 minutes
+
+# Input size limits
+max_payload_bytes = 1_000_000   # 1MB max payload size
+max_origin_age_seconds = 300    # Max age for origin timestamp
+
+# Rate limits
+# Per-IP rate limit for webhook submissions
+rate_limit_per_ip = 100         # max 100 requests per minute per IP
+rate_limit_window_seconds = 60  # window for rate limit counting
+
+# Event filtering
+# Only process these event types; ignore all others
+allowed_event_types = ["arbitrage_opportunity", "risk_alert", "kill_switch", "status_update"]
+
+# Output formatting
+response_format = "json"        # "json" | "text"
+success_status = 200
+error_status = 400
+
+# --- Security directives ---
+
+# [webhook.security] - MANDATORY PRODUCTION SETTINGS
+#
+# 1. NEVER set allowed_origins to an empty list in production.
+#    Always provide at least one trusted origin.
+#
+# 2. signature_verification MUST be true in production.
+#    Without signature verification, any party can send fraudulent webhooks.
+#
+# 3. replay_window_seconds should be kept small (5 min is recommended).
+#    Large windows enable replay attacks.
+#
+# 4. rate_limit_per_ip and rate_limit_window_seconds must be enforced
+#    at the server level, not just documented here.
+#
+# 5. If webhook-processing side effects exist (trade execution, state changes),
+#    require additional confirmation (e.g., admin token in query string or header)
+#    beyond the webhook authentication.
+#
+# 6. Log every webhook receipt, verification result, and processing outcome.
+#    Never silently drop or accept webhooks without audit evidence.
+#
+# 7. In production, webhook-processing endpoints must be rate-limited and
+    # behind authentication (Bearer token or mTLS).
+#
+# 7. Never use CorsLayer::permissive() in production.
+#    This was identified as a security concern in the Phase 0 audit (conflict #7).
+#    Replace with explicit allowlist as shown above.
+#
+# 8. Webhook payloads must be validated against a schema before processing.
+#    Unknown fields must cause rejection, not silent ignoring.
+#
+# 9. All webhook processing must be idempotent — receiving the same webhook
+    # twice must not produce different state changes.
+#
+# 10. In case of verification failure, return 403 with a minimal error message
+    # that does not reveal internal implementation details.

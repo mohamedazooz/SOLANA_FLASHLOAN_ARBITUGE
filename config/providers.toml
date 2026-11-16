@@ -1,0 +1,48 @@
+# Sentinel Arbitrage Provider Configuration
+# Classification: Operational configuration — primary/fallback RPC providers.
+# Never use shared public RPC endpoints for production trading.
+# Two URLs must represent independent infrastructure (different backends).
+
+[providers]
+# Primary Yellowstone gRPC endpoint
+# MUST be set via SOLAMI_GRPC_ENDPOINT environment variable
+# This must be a dedicated infrastructure endpoint, NOT a shared public endpoint
+primary_grpc_url = ""             # SOLAMI_GRPC_ENDPOINT env var
+
+# Primary JSON-RPC endpoint (fallback for simulation, not for live trading)
+# MUST be set via RPC_URL environment variable
+primary_rpc_url = ""              # RPC_URL env var
+
+# Fallback Yellowstone gRPC endpoint
+# Must be truly independent infrastructure (different cloud account, region, provider)
+fallback_grpc_url = ""            # SHYFT_GRPC_ENDPOINT env var (optional)
+
+# Fallback JSON-RPC endpoint
+fallback_rpc_url = ""             # optional (optional for failover)
+
+# Commitment commitment level
+commitment = "processed"          # "processed" | "confirmed" | "finalized"
+
+# Provider health monitoring
+# These thresholds are checked at startup and periodically at runtime
+max_slot_lag = 8                # Slot lag above which provider is considered unhealthy
+stale_after_seconds = 3         # Tip floor snapshot stale after this many seconds
+provider_cooldown_seconds = 2   # Cooldown after 3 consecutive failures
+
+# Provider selection policy
+# - healthy: provider must have slot_lag ≤ max_slot_lag
+# - fresh: tip floor snapshot must be ≤ stale_after_seconds old
+# - failover: 3 consecutive failures → Open Circuit + cooldown
+selection_policy = "healthy_fresh"  # healthy_fresh | healthy_only | fresh_only
+
+# --- Verification ---
+# These values are verified against on-chain data and must not be changed
+# without re-auditing the risk configuration.
+
+# Primary provider must NOT be a shared public endpoint (e.g., public rpc.mainnet-beta.solana.com)
+# Primary provider must have a dedicated infrastructure backend.
+
+# Failover is triggered by:
+# - 3 consecutive provider health check failures
+# - Slot lag exceeding max_slot_lag
+# - Stale tip floor snapshot (older than stale_after_seconds)

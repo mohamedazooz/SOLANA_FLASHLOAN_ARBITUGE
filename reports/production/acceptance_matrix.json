@@ -1,0 +1,123 @@
+{
+  "matrix_id": "production_acceptance_2026_11_16",
+  "generated": "2026-11-16T00:00:00Z",
+  "project": "Solana Arbitrage Bot — Full Production Readiness",
+
+  "gates": {
+    "gate_a_repo_integrity": {
+      "status": "PASS",
+      "evidence": "baseline captured at commit 541cdec; git state documented in reports/production/git_state.md; no user changes lost",
+      "test_references": ["baseline.md"],
+      "outstanding_issues": []
+    },
+
+    "gate_b_protocol_correctness": {
+      "status": "PARTIAL",
+      "evidence": "Meteora DLMM math verified (31 tests pass); Kamino flash loan instruction sequence verified (10/10 tests pass); V1 not implemented",
+      "test_references": ["phase3_dlmm_audit.md", "phase4_kamino_audit.md", "phase6_v1_audit.md"],
+      "outstanding_issues": [
+        "V1 SIMD-0385 transaction support not implemented",
+        "92% safety factor in DLMM requires differential validation",
+        "Kamino borrow index hardcoded to 2 (requires dynamic fix)"
+      ]
+    },
+
+    "gate_c_economic_correctness": {
+      "status": "PASS",
+      "evidence": "Exact integer arithmetic throughout; no floating point in raw token accounting; all 31 arb-math tests pass; double-counting prevented via CostLedger; flash fee read from on-chain Q64.64",
+      "test_references": ["phase2_economic_audit.md", "arb-math test suite"],
+      "outstanding_issues": []
+    },
+
+    "gate_d_safety": {
+      "status": "PARTIAL",
+      "evidence": "Kill switch durable with file-based persistence; Circuit breaker with correct state machine (8 failures → Open, 10 slots cooldown, 3 successes → Closed); 13 risk checks in evaluate_full(); Loss tracking with periodic reset",
+      "test_references": ["phase9_risk_audit.md", "arb-risk test suite"],
+      "outstanding_issues": [
+        "Loss reset automation not hooked up in supervisor periodic loop",
+        "No per-strategy capital isolation",
+        "No position concentration limit",
+        "No correlated risk check"
+      ]
+    },
+
+    "gate_e_reliability": {
+      "status": "PARTIAL",
+      "evidence": "Provider supervisor with health monitoring and failover conceptual; Blockhash cache with TTL; RTT tracking for adaptive CU pricing; Previous tips tracked for escalation capping",
+      "test_references": ["phase8_lifecycle_audit.md", "arb-bot test suite"],
+      "outstanding_issues": [
+        "No formal transaction state machine documented",
+        "LiteSVM/RPC simulation not integrated into preflight path (code states 'simulation unavailable')",
+        "No duplicate execution prevention",
+        "Blockhash cache TTL not actively enforced before every submission",
+        "No generation change gate for Yellowstone filter re-derivation"
+      ]
+    },
+
+    "gate_f_security": {
+      "status": "PARTIAL",
+      "evidence": "CORS explicitly configured with allowlist in webhook.toml (fixes conflict C-03); Secrets management documented in production.toml; No HSM integration yet; Cargo audit/SBOM not yet run",
+      "test_references": ["phase7_jito_landing.md", "phase9_risk_audit.md", "config/webhook.toml"],
+      "outstanding_issues": [
+        "Replace CorsLayer::permissive() in actual code (config only)",
+        "Implement HSM/KMS integration",
+        "Run cargo audit and generate SBOM"
+      ]
+    },
+
+    "gate_g_testing": {
+      "status": "PASS",
+      "evidence": "All unit tests pass across workspace (27+ tests in arb-math, 23 in arb-engine, 10+ in arb-tx, 10 in arb-risk, etc.); doc-tests pass across 18 crates; property-based tests not yet implemented",
+      "test_references": ["workspace test suite"],
+      "outstanding_issues": [
+        "Property-based tests not yet implemented for numeric edge cases",
+        "Integration tests not run (require RPC infrastructure)"
+      ]
+    },
+
+    "gate_h_economic_evidence": {
+      "status": "PARTIAL",
+      "evidence": "Economic model validated with 11 passing tests; exact integer arithmetic confirmed; no guessed fees or prices; dynamic tip and priority fee logic present; paper-trading not yet executed",
+      "test_references": ["phase2_economic_audit.md", "economic model tests"],
+      "outstanding_issues": [
+        "Paper-trading validation period needed",
+        "Statistical analysis of strategy viability not yet run",
+        "Execution cost validation not yet performed"
+      ]
+    },
+
+    "gate_i_canary": {
+      "status": "NOT APPLICABLE",
+      "evidence": "Canary deployment requires explicit operator authorization; prerequisites not yet all met (V1 support, simulation, capital isolation)",
+      "test_references": ["directive_part_0"],
+      "outstanding_issues": [
+        "All canary prerequisites must be met first",
+        "Operator authorization required for activation"
+      ]
+    },
+
+    "gate_j_production": {
+      "status": "NOT APPROVED",
+      "evidence": "Multiple blockers prevent production deployment: V1 transaction support not implemented, simulation pipeline gap, no per-strategy capital isolation, paper-trading not yet run",
+      "test_references": ["phase6_v1_audit.md", "phase8_lifecycle_audit.md", "phase9_risk_audit.md"],
+      "outstanding_issues": [
+        "Implement Solana V1 transaction support (SIMD-0385)",
+        "Integrate simulation into preflight validation path",
+        "Fix Kamino borrow instruction index",
+        "Implement per-strategy capital isolation",
+        "Run and validate paper-trading statistics",
+        "Canary deployment with explicit operator authorization"
+      ]
+    }
+  },
+
+  "production_readiness_summary": {
+    "code": "substantial progress — core arbitrage engine, DLMM math, Kamino flash loans, risk engine, and economic model are implemented and tested",
+    "infrastructure": "configuration files created with conflict fixes; CORS and secret management documented; V1 support missing",
+    "monitoring": "structured logging framework, metrics exposition, landing ledger with persistence, RTT tracking",
+    "safety": "kill switch durable, circuit breaker operational, 13 risk checks enforced in order, loss tracking with periodic reset",
+    "economics": "exact integer net-profit model authoritative; no double-counted costs; dynamic tip/priority fee logic; realistic failure costs",
+    "protocol_compliance": "Meteora DLMM math verified, Kamino flash loan instruction sequence verified, Token-2022 safety enforced, fee validation reject-invalid",
+    "deployment_readiness": "BLOCKED — pending V1 support, simulation integration, paper-trading validation, and canary authorization"
+  }
+}

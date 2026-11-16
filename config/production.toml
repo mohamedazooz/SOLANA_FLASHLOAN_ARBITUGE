@@ -1,0 +1,100 @@
+# Sentinel Solana Arbitrage Bot — Production Configuration
+#
+# WARNING: Live trading is opt-in and requires BOTH:
+#   1. [bot] mode = "live" AND live_enabled = true
+#   2. ARB_LIVE=1 environment variable set to a truthy value
+#
+# Never enable live trading until all mandatory security controls pass
+# startup validation. Secrets must be provided through the secret provider,
+# never committed to this file.
+
+[bot]
+mode = "shadow"
+live_enabled = false
+
+[grpc]
+primary_url = ""
+primary_token_env = "HELIUS_API_KEY"
+failover_url = ""
+failover_token_env = "SHYFT_API_KEY"
+commitment = "confirmed"
+ping_reply = true
+
+[rpc]
+url = ""
+commitment = "confirmed"
+
+[jito]
+regions = ["frankfurt", "amsterdam", "ny"]
+tip_floor_percentile = "p75"
+tip_share_bps = 5500
+max_tip_lamports = 2000000
+max_tip_share_bps = 7000
+min_keep_lamports = 10000
+keep_share = 0.60
+ladder_growth = 1.6
+tip_floor_max_age_ms = 5000
+tip_floor_poll_ms = 1000
+leader_gate_enabled = true
+leader_refresh_secs = 60
+
+[jupiter]
+base_url = "https://api.jup.ag/swap/v2"
+api_key_env = "JUPITER_API_KEY"
+timeout_ms = 400
+
+[wallet]
+keypair_path = "solana_keypair.json"
+cold_wallet_pubkey = ""
+min_sol_balance_lamports = 50000000   # 0.05 SOL safety floor reserve
+
+[strategy]
+base_tokens = [
+    "So11111111111111111111111111111111111111112",
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+]
+min_net_profit_abs = 50000
+min_net_profit_bps = 5
+max_price_impact_bps = 40
+max_state_age_slots = 2
+graph_max_age_slots = 8
+use_flash_loan = true
+max_pools = 1000
+discovery_refresh_secs = 15
+discovery_min_tvl_usd = 25000.0
+
+[risk]
+max_trade_size_usd = 10000.0
+max_daily_loss_usd = 5.0
+max_hourly_loss_usd = 2.0
+max_consecutive_failures = 8
+min_landing_rate = 0.02
+max_attempts_per_slot = 3
+max_inflight_bundles = 2
+max_tip_spend_ratio = 0.7
+max_orders_per_hour = 120
+cooldown_slots = 75
+
+[store]
+url = "sqlite://arb_sentinel.db"
+
+[metrics]
+listen = "127.0.0.1:9100"
+
+[admin]
+listen = "127.0.0.1:9101"
+token_env = "SENTINEL_ADMIN_KEY"
+
+[security]
+# Production REQUIRES an explicit CORS allowlist. Empty = deny all cross-origin.
+cors_allow_origins = []
+max_request_body_bytes = 1048576
+webhook_signature_required = true
+
+[chronos]
+enabled = true
+decay_lambda_per_sec = 3.0
+max_age_ms = 400
+min_ev_usd = 0.05
+failed_attempt_cost_lamports = 10000
+beta_risk_factor = 0.0005

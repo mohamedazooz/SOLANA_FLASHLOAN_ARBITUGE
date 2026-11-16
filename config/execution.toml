@@ -1,0 +1,37 @@
+# Sentinel Arbitrage Execution Configuration
+# Classification: Operational configuration — overridable per environment.
+
+[execution]
+# Mode gates
+mode_gate = "ARB_LIVE"        # Environment var: when set to "live", live execution enabled
+                              # when "shadow"/"simulate", execution is read-only
+
+# Safety floor
+safety_floor_lamports = 50000000  # 0.05 SOL; balance must exceed this to trade
+
+# Blockhash freshness
+blockhash_ttl_seconds = 3       # Cache TTL for blockhash (3 seconds)
+max_blockhash_age_slots = 2     # Max age slots for blockhash freshness
+
+# Transaction size limits
+max_tx_bytes = 1232             # Solana packet MTU limit; tx exceeding this are rejected
+
+# Retry configuration
+max_simulation_retries = 3      # Max LiteSVM/RPC simulation attempts
+max_submission_retries = 5      # Max bundle submission attempts
+retry_backoff_ms = 1000         # Base backoff milliseconds between retries
+
+# Simulation
+simulation_mode = "litesvm"     # "litesvm" | "rpc" | "none"
+# If "none", preflight simulation is skipped — highly discouraged for production
+
+# Jito submission
+max_bundle_size = 5             # Max transactions per bundle (1..=5)
+max_concurrent_bundles = 5      # Max inflight bundle IDs
+
+# Route depth
+max_route_hops = 3              # Max hops in an arbitrage route (2 or 3)
+use_flash_loan = true           # Whether Kamino flash loans are enabled
+
+# Route filtering
+min_pool_tvl_usd = 25000.0      # Minimum TVL for a pool to be considered

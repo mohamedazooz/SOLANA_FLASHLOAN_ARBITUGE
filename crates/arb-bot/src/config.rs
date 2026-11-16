@@ -371,7 +371,99 @@ pub struct BotConfig {
     pub canary: bool,
 }
 
+pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
+    let usd = |micros: arb_types::UsdMicros| micros.0 as f64 / 1_000_000.0;
+    Config {
+        bot: BotConfig {
+            canary: matches!(arb.mode.mode, arb_config::Mode::Canary),
+        },
+        rpc: RpcConfig {
+            url: arb.provider.primary_url.clone(),
+            commitment: arb.provider.commitment.clone(),
+        },
+        jito: JitoConfig {
+            regions: arb.jito.regions,
+            tip_floor_percentile: arb.jito.tip_floor_percentile,
+            tip_share_bps: arb.jito.tip_share_bps.0 as u64,
+            max_tip_lamports: arb.jito.max_tip_lamports.0,
+            max_tip_share_bps: arb.jito.max_tip_share_bps.0 as u64,
+            min_keep_lamports: arb.jito.min_keep_lamports.0,
+            keep_share: arb.jito.keep_share,
+            ladder_growth: arb.jito.ladder_growth,
+            tip_floor_max_age_ms: arb.jito.tip_floor_max_age_ms.0,
+            tip_floor_poll_ms: arb.jito.tip_floor_poll_ms.0,
+            leader_gate_enabled: arb.jito.leader_gate_enabled,
+            kobe_url: arb.jito.kobe_url,
+            ledger_path: arb.jito.ledger_path,
+            leader_refresh_secs: arb.jito.leader_refresh_secs.0,
+        },
+        wallet: WalletConfig {
+            keypair_path: arb.wallet.keypair_path,
+            cold_wallet_pubkey: arb.wallet.cold_wallet_pubkey,
+            min_sol_balance_lamports: arb.wallet.min_sol_balance_lamports.0,
+        },
+        strategy: StrategyConfig {
+            base_tokens: arb.strategy.base_tokens,
+            min_net_profit_abs: arb.strategy.min_net_profit_abs.0,
+            min_net_profit_bps: arb.strategy.min_net_profit_bps.0 as u64,
+            hop_slippage_bps: default_hop_slippage_bps(),
+            max_price_impact_bps: arb.strategy.max_price_impact_bps.0 as u64,
+            max_state_age_slots: arb.strategy.max_state_age_slots.0,
+            graph_max_age_slots: arb.strategy.graph_max_age_slots.map(|s| s.0),
+            use_flash_loan: arb.strategy.use_flash_loan,
+            max_pools: arb.strategy.max_pools,
+            max_per_venue: None,
+            discovery_refresh_secs: arb
+                .strategy
+                .discovery_refresh_secs
+                .map(|s| s.0),
+            discovery_min_tvl_usd: arb
+                .strategy
+                .discovery_min_tvl_usd
+                .map(usd),
+            dlmm_cross_pool: None,
+            dlmm_three_leg: None,
+        },
+        risk: RiskConfig {
+            max_trade_size_usd: usd(arb.risk.max_trade_size_usd),
+            max_daily_loss_usd: usd(arb.risk.max_daily_loss_usd),
+            max_hourly_loss_usd: usd(arb.risk.max_hourly_loss_usd),
+            max_consecutive_failures: arb.risk.max_consecutive_failures,
+            min_landing_rate: arb.risk.min_landing_rate,
+            max_attempts_per_slot: arb.risk.max_attempts_per_slot,
+            max_inflight_bundles: arb.risk.max_inflight_bundles as u32,
+            max_tip_spend_ratio: arb.risk.max_tip_spend_ratio,
+            max_orders_per_hour: arb.risk.max_orders_per_hour,
+            cooldown_slots: arb.risk.cooldown_slots.0,
+        },
+        store: StoreConfig {
+            url: arb.store.url,
+        },
+        metrics: MetricsConfig {
+            listen: arb.metrics.listen.to_string(),
+        },
+        admin: AdminConfig {
+            listen: arb.admin.listen.to_string(),
+            token_env: arb.admin.token_env,
+        },
+        chronos: ChronosConfig {
+            enabled: arb.chronos.enabled,
+            decay_lambda_per_sec: arb.chronos.decay_lambda_per_sec,
+            max_age_ms: arb.chronos.max_age_ms.0,
+            min_ev_usd: usd(arb.chronos.min_ev_usd),
+            failed_attempt_cost_lamports: arb
+                .chronos
+                .failed_attempt_cost_lamports
+                .0,
+            beta_risk_factor: arb.chronos.beta_risk_factor,
+        },
+    }
+}
+
 pub fn load(path: &str) -> anyhow::Result<Config> {
+    if let Ok(arb) = arb_config::loader::load(path) {
+        return Ok(from_arb_config(arb));
+    }
     use anyhow::Context;
     let contents =
         fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
