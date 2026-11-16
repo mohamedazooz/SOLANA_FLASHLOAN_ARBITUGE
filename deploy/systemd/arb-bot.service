@@ -1,0 +1,20 @@
+[Unit]
+Description=Solana Flashloan Arbitrage Engine
+After=network.target
+
+[Service]
+Type=simple
+User=solana
+Group=solana
+WorkingDirectory=/opt/solana-arb-bot
+ExecStart=/opt/solana-arb-bot/bin/arb-bot --config /opt/solana-arb-bot/config/production.toml
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=65535
+MemoryMax=8G
+EnvironmentFile=/opt/solana-arb-bot/.env
+StandardOutput=append:/var/log/arb-bot/stdout.log
+StandardError=append:/var/log/arb-bot/stderr.log
+
+[Install]
+WantedBy=multi-user.target

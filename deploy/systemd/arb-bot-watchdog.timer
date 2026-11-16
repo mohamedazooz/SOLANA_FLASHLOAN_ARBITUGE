@@ -1,0 +1,10 @@
+[Unit]
+Description=Arb Bot Watchdog Timer (Every 30s)
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=30s
+Unit=arb-bot-watchdog.service
+
+[Install]
+WantedBy=timers.target
