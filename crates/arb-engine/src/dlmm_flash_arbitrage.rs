@@ -28,7 +28,7 @@
 
 use arb_math::dlmm::{
     DlmmBin as MathDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
-    dlmm_active_bin_max_input, quote_dlmm_view,
+    dlmm_active_bin_max_input, dlmm_multi_bin_max_input, quote_dlmm_view,
 };
 use arb_tx::dlmm_bin_discovery::{DlmmBinArrayPlan, plan_bin_arrays};
 use arb_tx::dlmm_flash_arb::{
@@ -173,6 +173,35 @@ impl DlmmFlashArbPool {
             u64::try_from(active.amount_y).ok()?,
             swap_for_y,
         )
+    }
+
+    /// Maximum input absorbable across the whole fetched bin window in the
+    /// `from -> to` direction.
+    ///
+    /// Unlike [`Self::active_bin_max_input`], an empty OUTPUT side of the
+    /// active bin is not a rejection: the walk continues into neighbouring
+    /// bins exactly like the on-chain swap. The result equals the executable
+    /// depth of the quote engine on the same window (deeper traversal fails
+    /// closed with `BinNotFound`), so capacity == quote depth.
+    pub fn traversable_max_input(&self, from: &MintId, to: &MintId) -> Option<u64> {
+        let swap_for_y = self.swap_for_y(from, to)?;
+        let dlmm = self.state.dlmm.as_ref()?;
+        let bins: Vec<MathDlmmBin> = dlmm
+            .bins
+            .iter()
+            .filter_map(|b| {
+                Some(MathDlmmBin {
+                    id: b.bin_id,
+                    amount_x: u64::try_from(b.amount_x).ok()?,
+                    amount_y: u64::try_from(b.amount_y).ok()?,
+                    price_q64: 0,
+                    open_order_amount: b.open_order_amount,
+                    processed_order_remaining_amount: b.processed_order_remaining_amount,
+                    limit_order_ask_side: b.limit_order_ask_side,
+                })
+            })
+            .collect();
+        dlmm_multi_bin_max_input(dlmm.active_bin_id, dlmm.bin_step_bps, &bins, swap_for_y)
     }
 
     /// Quote an exact-in hop `from -> to`.
@@ -386,6 +415,7 @@ pub enum FlashArbRejection {
     BorrowAbovePoolLiquidity { borrow: u64, capacity: u64 },
     IntermediateAbovePoolLiquidity { amount: u64, capacity: u64 },
     QuoteFailed { hop: &'static str, detail: String },
+    BinsAboveSwapLimit { bins: u32, limit: u32 },
     TooManyBinArrays { required: usize, budget: usize },
     TransactionTooLarge { estimated: usize, limit: usize },
     ComputeUnitsExceeded { estimated: u32, limit: u32 },
@@ -405,6 +435,7 @@ impl FlashArbRejection {
             Self::BorrowAbovePoolLiquidity { .. } => "BORROW_ABOVE_POOL_LIQUIDITY",
             Self::IntermediateAbovePoolLiquidity { .. } => "INTERMEDIATE_ABOVE_POOL_LIQUIDITY",
             Self::QuoteFailed { .. } => "QUOTE_FAILED",
+            Self::BinsAboveSwapLimit { .. } => "BINS_ABOVE_SWAP_LIMIT",
             Self::TooManyBinArrays { .. } => "TOO_MANY_BIN_ARRAYS",
             Self::TransactionTooLarge { .. } => "TRANSACTION_TOO_LARGE",
             Self::ComputeUnitsExceeded { .. } => "COMPUTE_UNITS_EXCEEDED",
@@ -536,7 +567,7 @@ impl DlmmFlashArbEvaluator<'_> {
         // ── Hop A ──
         let Some(capacity_a) = route
             .pool_a
-            .active_bin_max_input(&route.flash_mint, &route.mid_mint)
+            .traversable_max_input(&route.flash_mint, &route.mid_mint)
         else {
             return DlmmFlashArbEvaluation::reject(
                 borrow,
@@ -568,6 +599,15 @@ impl DlmmFlashArbEvaluator<'_> {
                 },
             );
         };
+        if quote_a.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
+            return DlmmFlashArbEvaluation::reject(
+                borrow,
+                FlashArbRejection::BinsAboveSwapLimit {
+                    bins: quote_a.bins_crossed,
+                    limit: arb_constants::METEORA_MAX_BINS_PER_SWAP,
+                },
+            );
+        }
 
         // Conservative Pool A output (the amount the chain is allowed to deliver).
         let slippage_factor =
@@ -586,7 +626,7 @@ impl DlmmFlashArbEvaluator<'_> {
         // ── Hop B (executed path: fed the conservative Pool A output) ──
         let Some(capacity_b) = route
             .pool_b
-            .active_bin_max_input(&route.mid_mint, &route.flash_mint)
+            .traversable_max_input(&route.mid_mint, &route.flash_mint)
         else {
             return DlmmFlashArbEvaluation::reject(
                 borrow,
@@ -618,6 +658,15 @@ impl DlmmFlashArbEvaluator<'_> {
                 },
             );
         };
+        if quote_b.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
+            return DlmmFlashArbEvaluation::reject(
+                borrow,
+                FlashArbRejection::BinsAboveSwapLimit {
+                    bins: quote_b.bins_crossed,
+                    limit: arb_constants::METEORA_MAX_BINS_PER_SWAP,
+                },
+            );
+        }
         // Optimistic Pool B output, used only for reporting.
         let quote_b_optimistic = route
             .pool_b
@@ -1148,5 +1197,109 @@ mod tests {
         assert_eq!(pool.swap_for_y(&pool_y(), &pool_x()), Some(true));
         // The canonical base/quote ordering is deliberately ignored.
         assert_eq!(pool.state.base_mint, pool_x());
+    }
+
+    fn dlmm_pool(active_bin_id: i32, bins: Vec<(i32, u128, u128)>) -> DlmmFlashArbPool {
+        DlmmFlashArbPool {
+            pool_id: Pubkey::new_unique(),
+            state: PoolState {
+                pool_id: arb_types::PoolId(Pubkey::new_unique()),
+                protocol: arb_types::DexProtocol::MeteoraDlmm,
+                slot: arb_types::Slot(0),
+                write_version: 0,
+                base_mint: pool_x(),
+                quote_mint: pool_y(),
+                decimals_a: 9,
+                decimals_b: 6,
+                reserve_in: 0,
+                reserve_out: 0,
+                fee_numerator: 0,
+                fee_denominator: 1,
+                is_active: true,
+                has_risky_token: false,
+                kind: arb_types::PoolKind::Dlmm,
+                clmm: None,
+                dlmm: Some(arb_types::DlmmState {
+                    active_bin_id,
+                    status: 0,
+                    bin_step_bps: 20,
+                    bins: bins
+                        .into_iter()
+                        .map(|(bin_id, amount_x, amount_y)| arb_types::DlmmBin {
+                            bin_id,
+                            amount_x,
+                            amount_y,
+                            open_order_amount: 0,
+                            processed_order_remaining_amount: 0,
+                            limit_order_ask_side: false,
+                        })
+                        .collect(),
+                    params: Some(arb_types::DlmmFeeParams {
+                        base_factor: 2500,
+                        filter_period: 30,
+                        decay_period: 600,
+                        reduction_factor: 5000,
+                        variable_fee_control: 20000,
+                        max_volatility_accumulator: 10000,
+                        protocol_share: 1000,
+                        base_fee_power_factor: 0,
+                        function_type: 0,
+                        collect_fee_mode: 0,
+                    }),
+                    volatility_accumulator: 10000,
+                    volatility_reference: 10000,
+                    index_reference: active_bin_id,
+                    last_update_timestamp: 0,
+                    support_limit_order: true,
+                }),
+                pump_fun: None,
+                transfer_fee_bps: 0,
+                token_programs: [TokenProgramKind::SplToken; 2],
+                execution_accounts: None,
+                last_update_slot: 0,
+                last_update_ms: 0,
+            },
+            token_x_mint: pool_y(),
+            token_y_mint: pool_x(),
+            reserve_x: Pubkey::new_unique(),
+            reserve_y: Pubkey::new_unique(),
+            oracle: Pubkey::new_unique(),
+            token_x_program: TokenProgramKind::SplToken,
+            token_y_program: TokenProgramKind::SplToken,
+            transfer_fee_bps: [0, 0],
+        }
+    }
+
+    #[test]
+    fn one_sided_active_bin_does_not_falsely_reject_traversable_capacity() {
+        // Active bin holds only Y; its X side (the Y->X output side) is
+        // empty. Neighbouring bins ascending (Y->X direction) hold X.
+        let pool = dlmm_pool(
+            100,
+            vec![(98, 0, 0), (99, 0, 0), (100, 0, 5_000_000), (101, 900_000, 0)],
+        );
+        // WSOL -> USDC is Y -> X: the active bin cannot absorb, but the
+        // on-chain swap simply continues into bins 101+.
+        assert_eq!(pool.active_bin_max_input(&pool_x(), &pool_y()), None);
+        let cap = pool
+            .traversable_max_input(&pool_x(), &pool_y())
+            .expect("traversable capacity must see past the empty active bin");
+        assert!(cap > 0);
+    }
+
+    #[test]
+    fn traversable_capacity_fails_closed_without_the_active_bin() {
+        // Window does not contain the active bin (stale/complete fetch):
+        // capacity must be None, never a guessed value.
+        let pool = dlmm_pool(100, vec![(50, 1_000_000, 1_000_000), (51, 1, 1)]);
+        assert_eq!(pool.traversable_max_input(&pool_x(), &pool_y()), None);
+        assert_eq!(pool.active_bin_max_input(&pool_x(), &pool_y()), None);
+    }
+
+    #[test]
+    fn traversable_capacity_is_none_when_the_pool_holds_neither_mint() {
+        let other = MintId(Pubkey::new_unique());
+        let pool = dlmm_pool(100, vec![(100, 1_000_000, 1_000_000)]);
+        assert_eq!(pool.traversable_max_input(&other, &pool_y()), None);
     }
 }

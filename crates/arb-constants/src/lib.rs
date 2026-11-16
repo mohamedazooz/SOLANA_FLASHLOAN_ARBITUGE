@@ -245,6 +245,14 @@ pub const METEORA_SOL_USDC_BIN_STEP: u16 = 4;
 /// silently targets the wrong BinArrays and the swap fails (or reads the wrong
 /// bins). Keep it equal to the value the ingestion decoder uses.
 pub const METEORA_BINS_PER_BIN_ARRAY: i64 = 70;
+/// Maximum bins a single DLMM swap instruction may traverse.
+///
+/// `lb_clmm` 0.12.0 (mainnet 2026-05-21) reduced this from 280 to 260 because
+/// the new limit-order logic consumes more CU (official DLMM changelog,
+/// MeteoraAg/dlmm-sdk PR #273). A quote that crosses more bins than this
+/// cannot be executed on-chain: the swap would abort with `TooManyBins`.
+/// Quotes and bin-array plans must fail closed above this limit.
+pub const METEORA_MAX_BINS_PER_SWAP: u32 = 260;
 /// Anchor 8-byte discriminator for `swap2` = sha256("global:swap2")[..8].
 pub const METEORA_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 

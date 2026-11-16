@@ -108,14 +108,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|p| p.protocol == DexProtocol::MeteoraDlmm)
         .collect();
 
-    let mut by_meme: HashMap<String, Vec<&DiscoveredPoolState>> = HashMap::new();
+    let mut by_meme: HashMap<(String, String), Vec<&DiscoveredPoolState>> = HashMap::new();
     let mut bridges: Vec<&DiscoveredPoolState> = Vec::new();
     for p in &dlmm {
         let (a, b) = (p.base_mint.0, p.quote_mint.0);
         if is_wsol(&a) && !is_anchor(&b) {
-            by_meme.entry(b.to_string()).or_default().push(p);
+            by_meme.entry((b.to_string(), a.to_string())).or_default().push(p);
         } else if is_wsol(&b) && !is_anchor(&a) {
-            by_meme.entry(a.to_string()).or_default().push(p);
+            by_meme.entry((a.to_string(), b.to_string())).or_default().push(p);
+        } else if is_anchor(&a) && !is_anchor(&b) {
+            // meme/USDC (or meme/USDT) pool — the shared anchor side is a
+            // valid flash-loan denomination.
+            by_meme.entry((b.to_string(), a.to_string())).or_default().push(p);
+        } else if is_anchor(&b) && !is_anchor(&a) {
+            by_meme.entry((a.to_string(), b.to_string())).or_default().push(p);
         } else if !is_anchor(&a) && !is_anchor(&b) && a != b {
             // meme/meme pool: potential middle leg A→B of a 3-leg cycle.
             bridges.push(p);
@@ -128,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let bridges: Vec<&DiscoveredPoolState> = bridges.into_iter().take(4).collect();
 
-    let mut candidates: Vec<(&String, &Vec<&DiscoveredPoolState>)> = by_meme
+    let mut candidates: Vec<(&(String, String), &Vec<&DiscoveredPoolState>)> = by_meme
         .iter()
         .filter(|(_, v)| v.len() >= 2)
         .collect();
@@ -139,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let candidates: Vec<_> = candidates.into_iter().take(8).collect();
     println!(
-        "[2] meme/SOL DLMM pairs with ≥2 pools: {} (scanning up to {}); meme/meme bridge pools: {}",
+        "[2] meme DLMM groups with ≥2 pools sharing a quote mint: {} (scanning up to {}); meme/meme bridge pools: {}",
         by_meme.iter().filter(|(_, v)| v.len() >= 2).count(),
         candidates.len(),
         bridges.len()
@@ -238,7 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             else {
                 println!(
                     "    sweep {:<10} fetch failed (fail-closed)",
-                    &meme[..meme.len().min(10)]
+                    &meme.0[..meme.0.len().min(10)]
                 );
                 continue;
             };
@@ -272,6 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // share. Many deep meme DLMM pools are USDC-quoted, so a WSOL-only
         // sweep would never see their cross-pool edges.
         for (meme, pair_pools) in &candidates {
+            let meme_label = &meme.0[..meme.0.len().min(10)];
             let pool_a = pair_pools[0].pool_id.0;
             let pool_b = pair_pools[1].pool_id.0;
             let (Some(fp_a), Some(fp_b)) = (
@@ -312,11 +319,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let e = evaluator.evaluate(r, pair_flash_cfg.min_borrow);
                     println!(
                         "    sweep {:<10} {tag}: feasible={} net={} rejection={:?}",
-                        &meme[..meme.len().min(10)],
+                        meme_label,
                         e.feasible,
                         e.net_profit,
                         e.rejection.as_ref().map(|x| x.as_str())
                     );
+                    if let Some(rej) = e.rejection.as_ref() {
+                        println!("      detail: {rej:?}");
+                    }
                 }
                 if let Some(found) = routes
                     .iter()
@@ -324,7 +334,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|e| e.feasible)
                     .max_by_key(|e| e.net_profit)
                 {
-                    best_entry = Some(((pool_a, pool_b), (*meme).clone(), MintId(fm), found));
+                    best_entry = Some(
+                        ((pool_a, pool_b), meme_label.to_string(), MintId(fm), found),
+                    );
                     break;
                 }
             }
