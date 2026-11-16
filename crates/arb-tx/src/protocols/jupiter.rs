@@ -53,6 +53,30 @@ impl JupiterClient {
                 api_keys.push(k);
             }
         }
+        Self::with_keys_and_timeout(endpoint, api_keys, timeout)
+    }
+
+    /// Create a new JupiterClient with a custom base URL, explicit API keys, and request timeout.
+    pub fn with_keys_and_timeout(
+        endpoint: impl Into<String>,
+        mut api_keys: Vec<String>,
+        timeout: Duration,
+    ) -> Self {
+        if api_keys.is_empty() {
+            if let Ok(key) = std::env::var("JUPITER_API_KEY")
+                && !key.trim().is_empty()
+            {
+                api_keys.push(key.trim().to_string());
+            }
+            if let Ok(key) = std::env::var("JUP_API_KEY")
+                && !key.trim().is_empty()
+            {
+                let k = key.trim().to_string();
+                if !api_keys.contains(&k) {
+                    api_keys.push(k);
+                }
+            }
+        }
         if api_keys.is_empty() {
             tracing::warn!("JUPITER_API_KEY not set — Jupiter API calls will fail");
         }
@@ -190,6 +214,13 @@ mod tests {
         assert_eq!(client.endpoint(), "https://api.jup.ag/swap/v2");
         let custom = JupiterClient::with_endpoint("https://custom.jupiter.api/swap/v2/");
         assert_eq!(custom.endpoint(), "https://custom.jupiter.api/swap/v2");
+        let keyed = JupiterClient::with_keys_and_timeout(
+            "https://custom.jupiter.api/swap/v2///",
+            vec!["test_key_1".to_string(), "test_key_2".to_string()],
+            Duration::from_millis(500),
+        );
+        assert_eq!(keyed.endpoint(), "https://custom.jupiter.api/swap/v2");
+        assert_eq!(keyed.api_keys.len(), 2);
         info!(
             "JupiterClient initialized with {} API key(s)",
             client.api_keys.len()
