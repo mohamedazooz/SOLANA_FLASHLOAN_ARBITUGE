@@ -267,3 +267,41 @@ pub fn build_raydium_v4_swap_instruction_v2(
         data,
     })
 }
+
+// ============================================================================
+// Regression test — address conflicts (P0 C-02)
+// ============================================================================
+//
+// Moved here from arb-types during the arb-tx protocols refactor (the
+// RaydiumV4Accounts struct now lives in this module).
+//
+// Locks the canonical on-chain pool_coin_vault in place so the historical typo
+// value (which existed only in an audit document, never in source) can never
+// be reintroduced. On-chain identity of the address remains UNVERIFIED in this
+// repo; the test only enforces intra-repo consistency. Verify against mainnet
+// account state before mainnet use.
+#[cfg(test)]
+mod raydium_v4_address_regression_tests {
+    use super::*;
+
+    /// C-02: RaydiumV4Accounts::mainnet_sol_usdc() pool_coin_vault must equal
+    /// the canonical arb-constants::RAYDIUM_SOL_VAULT, never the audit-doc typo.
+    #[test]
+    fn raydium_v4_pool_coin_vault_matches_canonical_constant() {
+        let accounts = RaydiumV4Accounts::mainnet_sol_usdc();
+        let canonical =
+            Pubkey::from_str(RAYDIUM_SOL_VAULT).expect("RAYDIUM_SOL_VAULT must be a valid pubkey");
+        assert_eq!(
+            accounts.pool_coin_vault, canonical,
+            "pool_coin_vault drifted from canonical arb-constants::RAYDIUM_SOL_VAULT (C-02 regression)"
+        );
+
+        // Explicitly reject the historical typo value so it cannot be reintroduced.
+        let typo = Pubkey::from_str("DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz")
+            .expect("typo must be a valid pubkey");
+        assert_ne!(
+            accounts.pool_coin_vault, typo,
+            "pool_coin_vault must not equal the historical typo value (C-02 regression)"
+        );
+    }
+}
