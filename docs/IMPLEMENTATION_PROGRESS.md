@@ -64,6 +64,56 @@ fake benchmarks against a verified-clean tree would violate the
 non-negotiable rules (no fabricated results; never confuse compilation with
 correctness).
 
+### Phase 9/13 — cargo-deny wired into CI — COMPLETE (2026-11-16, session 2)
+
+- Discovery: `deny.toml` existed but was **never enforced** — no CI job ran it.
+  This was the one genuinely "unlinked" component in the repo.
+- Added `security` job to `.github/workflows/rust-ci.yml` running
+  `cargo deny check advisories bans sources` on the workspace AND the
+  standalone `webhook-service/Cargo.lock` (EmbarkStudios/cargo-deny-action@v2).
+- Verified locally with cargo-deny 0.20.2: `advisories ok, bans ok, sources ok`
+  (exit 0). Two pre-existing RUSTSEC ignores in `deny.toml` preserved
+  (bincode 1.3.3 unmaintained, protobuf 2.28 recursion — both flagged
+  advisory-not-detected in current lock, i.e. stale ignores kept for safety).
+
+### Phase 10 — dead dependency removal — COMPLETE
+
+- `arc-swap = "1"` declared in `[workspace.dependencies]` but inherited by zero
+  crates and referenced by zero source files — **confirmed dead**, removed from
+  `Cargo.toml`. `cargo check --workspace --all-targets` passes (exit 0).
+- Audited all other workspace deps (`ruint`, `hex`, `hmac`, `sha2`, `proptest`,
+  `criterion`, `parking_lot`, `futures`, `tokio-util`): all used. `tokio-util`
+  is used for `CancellationToken` (arb-bot, arb-ingest).
+- Module-tree orphan sweep: every non-`bin/` source file is declared in a
+  `mod`/`pub mod`/`#[path]` tree; `arb-bot/src/bin/*` are Cargo binaries;
+  `pump_state_tests.rs` is linked via `#[path]` from `pump_state.rs:860`.
+  **Zero orphan files.**
+
+### Phase 2 — program-ID verification against official sources — COMPLETE
+
+Retrieved 2026-11-16:
+
+| Constant | Verified against |
+|---|---|
+| Jito tip accounts (8) | `getTipAccounts` canonical list (Jito docs / block-engine response, cross-checked via wisarmy/raytx docs + Alchemy docs) — all 8 match |
+| Raydium AMM v4 `675kPX…Mp8` | docs.raydium.io/reference/program-addresses |
+| Raydium CLMM `CAMMC…rWqK` | docs.raydium.io (same table) |
+| Raydium CPMM `CPMMoo…KP1C` | docs.raydium.io + Bitquery + Solscan |
+| Orca Whirlpool `whirLb…tyCc` | canonical (dev.orca.so / whirlpools repo) |
+| Meteora DLMM `LBUZKh…Pwxo` | canonical (MeteoraAg/dlmm-sdk) |
+| pump.fun `6EF8rr…F6P` + fees `pfeeUx…oVZ` | canonical pump.fun mainnet IDs |
+
+No mismatches found; no code changes required.
+
+### Phase 12 — criterion benchmarks re-run — COMPLETE
+
+- `cargo bench -p arb-math --bench cpmm_bench`: `cpmm_out` 13.914 ns mean;
+  `optimal_two_pool` 233.13 ns mean.
+- `cargo bench -p arb-ingest --bench dual_ingest_bench --features extra-ingest`:
+  in-process HTTP-vs-stream harness table captured.
+- Results appended to `docs/quality/PERFORMANCE_BENCHMARKS.md` with the
+  sandbox-vs-campaign caveat.
+
 ### Unresolved blockers / limitations
 
 1. `cargo-audit` not installable in this sandbox within session budget —
