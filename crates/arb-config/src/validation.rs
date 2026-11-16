@@ -348,7 +348,7 @@ fn validate_cross_field(config: &AppConfig) -> ConfigResult<()> {
                 "mode live requires execution.live_enabled == true (ARB_LIVE=1)".to_string(),
             ));
         }
-        if config.security.webhook_signature_required == false {
+        if !config.security.webhook_signature_required {
             return Err(ConfigError::Validation(
                 "live mode requires security.webhook_signature_required == true".to_string(),
             ));
