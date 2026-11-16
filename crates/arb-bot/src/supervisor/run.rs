@@ -354,9 +354,9 @@ impl Supervisor {
         let expected_min_final_output = result.expected_min_final_output;
         let hop_inputs = vec![
             result.legs[0].amount_in,
-            result.legs[1].amount_in,
-            result.legs[2].amount_in,
-            expected_out,
+            result.legs[0].amount_out,
+            result.legs[1].amount_out,
+            result.legs[2].amount_out,
         ];
         let gross = result.gross_profit_lamports as u64;
         let net = result.net_profit_lamports.max(0) as u64;

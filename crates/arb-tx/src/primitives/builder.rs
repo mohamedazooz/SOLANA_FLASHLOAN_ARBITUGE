@@ -185,14 +185,10 @@ impl TxBuilder {
             }
         }
 
-        // 1. Compute Budget (Dynamically bounded <= 200,000 CU with 15% buffer, elevated priority fee)
+        // 1. Compute Budget: CU limit with safety buffer, and authoritative priority fee price
         let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        let dynamic_cu_price = calculate_dynamic_cu_price(
-            opportunity.gross_profit.as_u64(),
-            priority_fee_micro_lamports,
-        );
         ixs.push(build_compute_unit_limit(effective_cu));
-        ixs.push(build_compute_unit_price(dynamic_cu_price));
+        ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
@@ -321,14 +317,19 @@ impl TxBuilder {
             .ok_or_else(|| TxError::InvalidInput("profit floor arithmetic overflow".into()))?;
 
         let mut legs = Vec::with_capacity(opportunity.hops.len());
+        let mut prev_min_out: Option<u64> = None;
         for (i, _hop) in opportunity.hops.iter().enumerate() {
-            let amount_in = inputs[i];
+            let nominal_in = inputs[i];
+            let amount_in = match prev_min_out {
+                Some(prev_min) => nominal_in.min(prev_min),
+                None => nominal_in,
+            };
             let expected_out = inputs[i + 1];
             if amount_in > 0 && expected_out == 0 {
                 return Err(TxError::InvalidInput(format!("hop {i} quotes zero output")));
             }
 
-            // Slippage applied once per hop, never deducted twice.
+            // Slippage applied once per hop boundary, never deducted twice.
             let min_out_slippage = expected_out
                 .checked_sub((expected_out * slippage_bps) / 10_000)
                 .ok_or_else(|| {
@@ -348,6 +349,7 @@ impl TxBuilder {
                 min_out_slippage
             };
 
+            prev_min_out = Some(min_out);
             legs.push((amount_in, min_out));
         }
         Ok(legs)
@@ -369,14 +371,10 @@ impl TxBuilder {
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
 
-        // 1. Compute Budget Limit & Dynamic Priority Fee (Injected BEFORE Swaps & Borrow)
+        // 1. Compute Budget Limit & Authoritative Priority Fee (Injected BEFORE Swaps & Borrow)
         let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        let dynamic_cu_price = calculate_dynamic_cu_price(
-            opportunity.gross_profit.as_u64(),
-            priority_fee_micro_lamports,
-        );
         ixs.push(build_compute_unit_limit(effective_cu));
-        ixs.push(build_compute_unit_price(dynamic_cu_price));
+        ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
