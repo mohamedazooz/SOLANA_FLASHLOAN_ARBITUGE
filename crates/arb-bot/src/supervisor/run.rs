@@ -649,8 +649,13 @@ impl Supervisor {
         let cancel_registry = cancel_token.clone();
         let slot_notify_worker = ws_slot_notify.clone();
         tokio::spawn(async move {
-            let cadence = Duration::from_millis(750);
-            let min_gap = Duration::from_millis(550);
+            // Slow reconciliation sweep, NOT the real-time data path. The WS
+            // stream is the sole live source; this pass (30s) only repairs
+            // missed WS messages and refreshes derived-account amounts. The
+            // former 750ms full poll moved ~70GB/day of redundant RPC bytes
+            // (every pool's tick/bin arrays re-fetched 1.3x/second).
+            let cadence = Duration::from_secs(30);
+            let min_gap = Duration::from_secs(29);
             let mut interval =
                 tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -732,7 +737,7 @@ impl Supervisor {
             }
         });
         info!(
-            "🌊 Multi-DEX active reserve ingestion worker running (WS-slot triggered / 750ms cadence, parallel batch-100)"
+            "🌊 Multi-DEX ingestion: WS stream is the live path; 30s reconciliation sweep active (750ms poll removed)"
         );
 
         // 5. Periodic dynamic discovery refresh worker (HTTP catalog; config-gated)

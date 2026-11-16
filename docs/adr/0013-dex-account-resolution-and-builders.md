@@ -16,7 +16,7 @@ An exhaustive reverse-engineering audit revealed why testing with live execution
 3. **Meteora DLMM**:
    - Fallback derives `[b"reserve_x", pool]` (non-existent PDA).
    - Discards `bin_array_pdas` from `PoolExecutionAccounts::MeteoraDlmm` and hardcodes `METEORA_SOL_USDC_BIN_STEP = 10`. Any pool with bin step != 10 (e.g. 20, 25, 80) builds wrong bin arrays and reverts.
-4. **Raydium CPMM**: Fallback hardcodes single `amm_config` (`D4A2sqNAqqDy1bMT7BpTNNYTubbmMcETcpKEqZiiNtSZ`).
+4. **Raydium CPMM**: Fallback hardcodes single `amm_config`. The constant was later found to be fabricated (nonexistent on mainnet) and replaced with the on-chain-verified SOL/USDC config `D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2` (Session 10); it remains a SOL/USDC-only fallback — arbitrary CPMM pools must pass their own `amm_config` via `for_pool`.
 5. **Raydium CLMM**: Fallback hardcodes the *CPMM* config (wrong program owner!) and hardcodes `tick_spacing = 60, tick_current = 0`.
 6. **PumpSwap**: `arb-tx:1449` returns `TxError::UnsupportedProtocol`, resulting in 0% execution.
 7. **Pipeline Propagation**: `supervisor/run.rs:949` stripped `execution_accounts` during split-routing re-quoting by creating `SwapHop { execution_accounts: None, .. }`.

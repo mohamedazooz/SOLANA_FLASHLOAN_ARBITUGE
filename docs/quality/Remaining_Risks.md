@@ -20,6 +20,20 @@ Honest, severity-ranked. Nothing here is hidden behind a green CI badge.
 
 ## MEDIUM
 
+### No 3-leg WSOL→A→B→WSOL cycles in the current active set (measured 2026-11-16)
+- **Fact, not a defect:** across 27 live pools / 13 meme-meme bridge pools,
+  `closable_bridges=0` — no bridge has BOTH sides covered by WSOL-sided pools.
+  Three-leg cycles cannot exist until the market structure changes.
+- **Monitoring:** `diagnose_missing_cycles()` runs every sweep; when a bridge
+  becomes closable the 3-leg pipeline picks it up automatically.
+
+### Two-pool meme spreads below cost floor (measured 2026-11-16)
+- **Fact:** all 12 scanned pairs economically negative at the quote level
+  (best net -63,600 raw at min borrow); fees + flash cost exceed the spread.
+- **Behavior:** builder refuses unrepayable flash transactions
+  (`FinalOutputBelowRepayment`); nothing is built or broadcast. The full
+  build→simulate chain fires automatically when a profitable route appears.
+
 ### Solami WS and Alchemy keys rejected by providers (verified 2026-11-13)
 
 The operator-provided Solami WS key is refused on both known Solami WS paths

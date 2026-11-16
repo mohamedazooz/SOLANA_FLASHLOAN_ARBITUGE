@@ -211,8 +211,14 @@ pub const RAYDIUM_SOL_USDC_SERUM_PC_VAULT: &str = "6A5NHCj1yF6urc9wZNe6Bcjj4LVsz
 /// Raydium SOL-USDC OpenBook vault signer PDA.
 pub const RAYDIUM_SOL_USDC_SERUM_VAULT_SIGNER: &str =
     "CTz5UMLQm2SRWHzQnU62Pi4yJqbNGjgRBHqqp6oDHfF7";
-/// Raydium CPMM SOL-USDC pool AmmConfig account (0.25% fee tier; fee tiers are on-chain accounts — read rates from the account, never assume this tier).
-pub const RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG: &str = "D4A2sqNAqqDy1bMT7BpTNNYTubbmMcETcpKEqZiiNtSZ";
+/// Raydium CPMM SOL-USDC pool AmmConfig account (0.25% trade fee tier; fee tiers are on-chain accounts — read rates from the account, never assume this tier).
+///
+/// Verified on-chain: owner == CPMM program, data length 236,
+/// `trade_fee_rate` u64 LE @12 == 2500 (denominator 1_000_000 => 25 bps),
+/// and it is the `amm_config` referenced by `RAYDIUM_CPMM_SOL_USDC_POOL` @8.
+/// The previous constant `D4A2sqNA...` was fabricated — the account does not
+/// exist on mainnet.
+pub const RAYDIUM_CPMM_SOL_USDC_AMM_CONFIG: &str = "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2";
 
 // ============================================================================
 // Orca Whirlpool — SOL-USDC Pool & Vaults (Mainnet)
@@ -245,6 +251,14 @@ pub const METEORA_SOL_USDC_BIN_STEP: u16 = 4;
 /// silently targets the wrong BinArrays and the swap fails (or reads the wrong
 /// bins). Keep it equal to the value the ingestion decoder uses.
 pub const METEORA_BINS_PER_BIN_ARRAY: i64 = 70;
+/// Maximum bins a single DLMM swap instruction may traverse.
+///
+/// `lb_clmm` 0.12.0 (mainnet 2026-05-21) reduced this from 280 to 260 because
+/// the new limit-order logic consumes more CU (official DLMM changelog,
+/// MeteoraAg/dlmm-sdk PR #273). A quote that crosses more bins than this
+/// cannot be executed on-chain: the swap would abort with `TooManyBins`.
+/// Quotes and bin-array plans must fail closed above this limit.
+pub const METEORA_MAX_BINS_PER_SWAP: u32 = 260;
 /// Anchor 8-byte discriminator for `swap2` = sha256("global:swap2")[..8].
 pub const METEORA_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
@@ -280,12 +294,35 @@ pub fn meteora_bin_array_index_requires_bitmap_extension(bin_array_index: i64) -
 // Raydium CPMM — SOL-USDC Pool & Vaults (Mainnet)
 // ============================================================================
 
-/// Raydium CPMM SOL-USDC pool address (1 bps fee tier).
-pub const RAYDIUM_CPMM_SOL_USDC_POOL: &str = "79RbHpxoYSB3EJnN8aGLouuRrDJVGWLzxM3r1qVKsKJ7";
-/// Raydium CPMM SOL vault address.
-pub const RAYDIUM_CPMM_SOL_VAULT: &str = "DJgKsuDtTVvT1VqjC1vHTu6LHjq5Z6KRX1jaLKZJ3VwW";
-/// Raydium CPMM USDC vault address.
-pub const RAYDIUM_CPMM_USDC_VAULT: &str = "HYbZV1vHH8rDvn3a2uPtR8nCnBkL5xXwK7yP1uJ9nC2L";
+/// Raydium CPMM SOL-USDC pool address (25 bps fee tier).
+///
+/// Verified on-chain (getAccountInfo, Alchemy mainnet, 2026 session):
+/// - discriminator `f7ede3f5d7c3de46` == sha256("account:PoolState")[..8]
+/// - owner == `RAYDIUM_CPMM_PROGRAM_ID` (CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C)
+/// - data length 637 (matches the official PoolState layout)
+/// - amm_config @8 == D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2
+///
+/// Cross-checked against the official Raydium API v3
+/// (`api-v3.raydium.io/pools/info/ids?ids=7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny`):
+/// mintA = WSOL, mintB = USDC, config D4FPEru..., tradeFeeRate 2500 (25 bps).
+///
+/// NOTE: the previous constant `79RbHpxo...` was fabricated — the account does
+/// not exist on mainnet. This CPMM SOL/USDC pool is real but carries very small
+/// liquidity (~0.5 SOL + ~37 USDC at verification time); most SOL/USDC depth
+/// lives in the Raydium V4 pool `RAYDIUM_SOL_USDC_POOL`.
+pub const RAYDIUM_CPMM_SOL_USDC_POOL: &str = "7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny";
+/// Raydium CPMM SOL-USDC `token_0_vault` (WSOL, 9 decimals).
+/// Verified on-chain: SPL token account, mint So1111..., owner == CPMM pool
+/// authority PDA GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL.
+pub const RAYDIUM_CPMM_SOL_VAULT: &str = "7VLUXrnSSDo9BfCa4NWaQs68g7ddDY1sdXBKW6Xswj9Y";
+/// Raydium CPMM SOL-USDC `token_1_vault` (USDC, 6 decimals).
+/// Verified on-chain: SPL token account, mint EPjFWdd5..., owner == CPMM pool
+/// authority PDA GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL.
+pub const RAYDIUM_CPMM_USDC_VAULT: &str = "3rzbbW5Q8MA7sCaowf28hNgACNPecdS2zceWy7Ptzua9";
+/// Raydium CPMM SOL-USDC pool authority PDA (owner of both vault token accounts).
+/// Verified on-chain: appears as the owner field of both vault token accounts.
+pub const RAYDIUM_CPMM_SOL_USDC_POOL_AUTHORITY: &str =
+    "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL";
 /// Anchor discriminator for Raydium CPMM swap_base_input instruction.
 pub const RAYDIUM_CPMM_SWAP_BASE_INPUT_DISCRIMINATOR: [u8; 8] =
     [143, 190, 90, 218, 196, 30, 51, 222];
