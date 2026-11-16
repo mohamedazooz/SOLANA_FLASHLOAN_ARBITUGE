@@ -211,6 +211,11 @@ impl JitoService {
         arb_constants::jito_tip_account_for_slot(slot.0, leader.as_ref())
     }
 
+    /// Compute real-time competition factor from the tip oracle snapshot.
+    pub fn competition_factor(&self) -> f64 {
+        self.oracle.competition_factor(now_ms())
+    }
+
     /// Price one opportunity and choose its route.
     ///
     /// `previous_tip` is the tip paid on the last attempt inside the same window;

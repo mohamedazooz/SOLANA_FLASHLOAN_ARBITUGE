@@ -241,6 +241,12 @@ pub struct StrategyConfig {
     /// computing maximum allowable tip to protect the profit floor against slippage.
     #[serde(default = "default_contingency_buffer_lamports")]
     pub contingency_buffer_lamports: Lamports,
+    /// Baseline priority fee share of gross profit during calm market conditions (bps).
+    #[serde(default = "default_priority_fee_base_share_bps")]
+    pub priority_fee_base_share_bps: Bps,
+    /// Maximum share of gross profit allocated to priority fee under peak competition (bps).
+    #[serde(default = "default_priority_fee_max_share_bps")]
+    pub priority_fee_max_share_bps: Bps,
 }
 
 fn default_max_route_hops() -> usize {
@@ -366,6 +372,12 @@ fn default_swqos_fallback_priority_fee_lamports() -> Lamports {
 fn default_contingency_buffer_lamports() -> Lamports {
     Lamports(10_000)
 }
+fn default_priority_fee_base_share_bps() -> Bps {
+    Bps(arb_constants::DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS as u16)
+}
+fn default_priority_fee_max_share_bps() -> Bps {
+    Bps(arb_constants::DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS as u16)
+}
 fn default_max_implausible_roi_bps() -> Bps {
     Bps(1_500)
 }
@@ -444,6 +456,12 @@ impl AppConfig {
                 max_route_hops: 3,
                 http_discovery_enabled: false,
                 contingency_buffer_lamports: Lamports(10_000),
+                priority_fee_base_share_bps: Bps(
+                    arb_constants::DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS as u16,
+                ),
+                priority_fee_max_share_bps: Bps(
+                    arb_constants::DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS as u16
+                ),
             },
             risk: RiskConfig {
                 max_trade_size_usd: UsdMicros(10_000_000_000), // $10,000

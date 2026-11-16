@@ -429,10 +429,16 @@ pub const APPLICATION_SAFETY_CU_LIMIT: u32 = 350_000;
 pub const MAX_COMPUTE_UNIT_LIMIT: u32 = APPLICATION_SAFETY_CU_LIMIT;
 /// Compute unit buffer percentage.
 pub const CU_BUFFER_PCT: u32 = 15;
-/// Solana packet MTU limit.
+/// Solana runtime packet MTU limit.
 pub const SOLANA_PACKET_MTU_LIMIT: usize = 1232;
+/// Standard Solana consensus network base signature fee (5,000 lamports).
+pub const SOLANA_BASE_FEE_LAMPORTS: u64 = 5_000;
 /// Base priority fee in micro-lamports.
 pub const BASE_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 1_000;
+/// Default baseline priority fee maximum share of gross profit (1,000 bps = 10%).
+pub const DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS: u64 = 1_000;
+/// Default maximum priority fee share cap under peak competition (2,000 bps = 20%).
+pub const DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
 
 /// Return the compute budget limit for a given hop count.
 #[inline]

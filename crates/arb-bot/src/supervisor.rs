@@ -40,13 +40,8 @@ mod strategy;
 use execution::max_state_age_slots;
 
 /// Solana base transaction fee per signature, lamports (versioned & legacy).
-/// Part of the single per-tx cost list used by both the Jito edge estimate and
-/// the go/no-go gate (TX-02: one cost basis, never two).
-const BASE_FEE_LAMPORTS: u64 = 5_000;
-
-/// Maximum share of the gross profit the priority fee may consume (20%). Bounds
-/// a runaway priority bid so it never eats the edge it was meant to capture.
-const PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
+/// Re-exported from canonical `arb_constants::SOLANA_BASE_FEE_LAMPORTS`.
+pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
 /// A pre-warmed signed transaction template persisted in Redis.
 ///
