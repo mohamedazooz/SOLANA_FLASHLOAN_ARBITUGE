@@ -124,7 +124,7 @@ impl CostLedger {
 
 /// Configuration for economic evaluation. Every field must be supplied by a
 /// verified source; nothing here is hardcoded in the authoritative path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EconomicConfig {
     /// Kamino flash-loan fee as the raw U68F60 value read from the verified
     /// reserve account (`ReserveConfig.fees.flash_loan_fee_sf`; klend's

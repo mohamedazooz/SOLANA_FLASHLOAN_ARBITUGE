@@ -58,6 +58,8 @@ impl TipOracle {
     pub fn with_urls(url: &str, ws_url: &str, max_age_ms: u64) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(3))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
             .build()
             .unwrap_or_default();
         Self {

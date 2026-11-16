@@ -134,6 +134,8 @@ impl JitoService {
 
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(8)
             .build()
             .context("build Jito service http client")?;
 
