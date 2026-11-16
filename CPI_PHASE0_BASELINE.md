@@ -114,6 +114,23 @@ Prior implementation across `three_leg_meme_pipeline.rs`, `run.rs`, and `builder
 3. This resulted in transactions paying higher priority fees than accounted for in the profitability model, eroding net profits.
 4. **Remediation**: The final compute budget price injected into the transaction MUST equal the price used in the authoritative profitability evaluation. Checked arithmetic with `div_ceil` must be used for lamport conversions.
 
+### 4.3 Leg 3 WSOL Output Delta vs Initial Balance Defect
+1. **Defect**: Early implementations calculated `final_wsol_delta = wsol_final - wsol_initial` and compared it against `leg3_min_amount_out` and `min_final_wsol_delta` (the repayment amount).
+   Because `wsol_initial` held the flash loan principal which was debited in Leg 1, `wsol_final - wsol_initial` represents only the net profit (e.g., 0.05 SOL), whereas `leg3_min_amount_out` and `min_final_wsol_delta` represent the gross repayment scale (e.g., 10.04 SOL). This resulted in 100% false-positive runtime aborts.
+2. **Remediation**:
+   - Record `wsol_pre_leg3` immediately prior to Leg 3 swap execution.
+   - Leg 3 received output is strictly `leg3_delta = wsol_final - wsol_pre_leg3`.
+   - Ensure `leg3_delta >= leg3_min_amount_out` and `leg3_delta >= min_final_wsol_delta`.
+   - Prevent pre-existing WSOL inventory subsidy by verifying `wsol_final >= wsol_baseline + min_final_wsol_delta`, where `wsol_baseline = wsol_initial - leg1_amount_in`.
+
+### 4.4 CPI Optional Account Sentinel Privilege Handling
+1. **Defect**: In Meteora DLMM `swap2`, absent optional accounts (`bin_array_bitmap_extension` and `host_fee_in`) use the DLMM program ID sentinel. Flagging an executable program account as writable in CPI triggers an immediate Solana runtime rejection (`An instruction attempted to borrow an account as writable that was not passed as writable`).
+2. **Remediation**: The CPI builder dynamically inspects `is_writable` and sentinel address matching, emitting `AccountMeta::new_readonly` whenever the sentinel or an un-granted account is passed.
+
+### 4.5 User Token Account Authority Verification
+1. **Defect**: Validating only token data length allowed passing arbitrary or unverified token accounts.
+2. **Remediation**: Added `validate_user_token_account` ensuring `account.owner` is SPL Token or Token-2022 and `data[32..64] == user.key`.
+
 ---
 
 ## 5. Security & Risk Gates Baseline

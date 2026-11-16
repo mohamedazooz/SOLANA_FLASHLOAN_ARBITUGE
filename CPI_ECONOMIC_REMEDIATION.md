@@ -69,3 +69,21 @@ Slippage tolerance ($s$, in basis points) is applied **exactly once** at the quo
 ### 3.2 Exact Lamport Conversion
 $$\text{Cost}_{\text{Priority}} = \left\lceil \frac{\text{cu\_price} \times \text{cu\_limit}}{1{,}000{,}000} \right\rceil = \text{checked\_mul}(\text{cu\_price}, \text{cu\_limit}).\text{div\_ceil}(1{,}000{,}000)$$
 Ceiling division guarantees non-refundable network fees are never underestimated.
+
+---
+
+## 4. On-Chain Sequential Balance Delta Verification
+
+Inside `programs/arb-executor`:
+1. **Leg 1**:
+   $$\Delta A_1 = \text{meme\_a\_post1} - \text{meme\_a\_initial} \ge \text{leg1\_min\_amount\_out} \ge \text{leg2\_amount\_in}$$
+2. **Leg 2**:
+   $$\Delta B_2 = \text{meme\_b\_post2} - \text{meme\_b\_initial} \ge \text{leg2\_min\_amount\_out} \ge \text{leg3\_amount\_in}$$
+   $$\text{meme\_a\_post2} \ge \text{meme\_a\_initial} \quad (\text{zero intermediate subsidy})$$
+3. **Leg 3**:
+   $$\Delta W_3 = \text{wsol\_final} - \text{wsol\_pre\_leg3} \ge \text{leg3\_min\_amount\_out} \ge \text{min\_final\_wsol\_delta}$$
+   $$\text{meme\_b\_final} \ge \text{meme\_b\_initial} \quad (\text{zero intermediate subsidy})$$
+4. **Pre-Existing WSOL Inventory Protection**:
+   Let $\text{wsol\_baseline} = \text{wsol\_initial} - \text{leg1\_amount\_in}$.
+   $$\text{wsol\_final} \ge \text{wsol\_baseline} + \text{min\_final\_wsol\_delta}$$
+   Guarantees the trader's pre-existing WSOL balance is never drained to cover a repayment deficit.

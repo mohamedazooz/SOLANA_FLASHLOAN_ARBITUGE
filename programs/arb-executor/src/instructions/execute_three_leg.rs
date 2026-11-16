@@ -8,7 +8,7 @@ use crate::cpi::{DlmmSwapAccounts, invoke_meteora_swap2};
 use crate::error::ExecutorError;
 use crate::validation::{
     TOKEN_2022_PROGRAM_ID, read_token_account_balance, validate_distinct_pools,
-    validate_protocol_programs,
+    validate_protocol_programs, validate_user_token_account,
 };
 
 /// Parameters for the `execute_three_leg` instruction.
@@ -129,10 +129,15 @@ pub fn process_execute_three_leg<'a>(
     let leg2_bin_arrays = &accounts[ba_offset2..ba_offset3];
     let leg3_bin_arrays = &accounts[ba_offset3..ba_offset_end];
 
-    // Baseline Token Balances
-    let wsol_initial = read_token_account_balance(user_wsol_account)?;
-    let meme_a_initial = read_token_account_balance(user_meme_a_account)?;
-    let meme_b_initial = read_token_account_balance(user_meme_b_account)?;
+    // Baseline Token Balances & Ownership Validation
+    let wsol_initial = validate_user_token_account(user_wsol_account, user.key, None)?;
+    let meme_a_initial = validate_user_token_account(user_meme_a_account, user.key, None)?;
+    let meme_b_initial = validate_user_token_account(user_meme_b_account, user.key, None)?;
+
+    // Initial WSOL must cover Leg 1 input
+    let wsol_baseline = wsol_initial
+        .checked_sub(args.leg1_amount_in)
+        .ok_or(ExecutorError::CalculationOverflow)?;
 
     // ==========================================
     // LEG 1: WSOL -> Meme A
@@ -261,28 +266,66 @@ pub fn process_execute_three_leg<'a>(
         bin_arrays: leg3_bin_arrays,
     };
 
+    let wsol_pre_leg3 = read_token_account_balance(user_wsol_account)?;
+
     invoke_meteora_swap2(
         &leg3_swap_accounts,
         args.leg3_amount_in,
         args.leg3_min_amount_out,
     )?;
 
-    // Validate Leg 3 WSOL Output Delta & Meme B Inventory Isolation
+    // Validate Leg 3 WSOL Output Delta & Inventory Isolation
     let wsol_final = read_token_account_balance(user_wsol_account)?;
-    let final_wsol_delta = wsol_final
-        .checked_sub(wsol_initial)
-        .ok_or(ExecutorError::FinalWsolDeltaBelowMinimum)?;
-
-    if final_wsol_delta < args.leg3_min_amount_out {
-        return Err(ExecutorError::Leg3OutputBelowMinimum.into());
-    }
-    if final_wsol_delta < args.min_final_wsol_delta {
-        return Err(ExecutorError::FinalWsolDeltaBelowMinimum.into());
-    }
-
     let meme_b_final = read_token_account_balance(user_meme_b_account)?;
+
+    verify_sequential_balance_transitions(
+        wsol_initial,
+        wsol_baseline,
+        wsol_pre_leg3,
+        wsol_final,
+        meme_b_initial,
+        meme_b_final,
+        &args,
+    )?;
+
+    Ok(())
+}
+
+/// Validate Leg 3 WSOL output, ensure repayment threshold is reached, and prevent
+/// subsidization from pre-existing WSOL or intermediate tokens.
+pub fn verify_sequential_balance_transitions(
+    _wsol_initial: u64,
+    wsol_baseline: u64,
+    wsol_pre_leg3: u64,
+    wsol_final: u64,
+    meme_b_initial: u64,
+    meme_b_final: u64,
+    args: &ExecuteThreeLegArgs,
+) -> Result<(), ExecutorError> {
+    // Actual WSOL produced by Leg 3
+    let leg3_delta = wsol_final
+        .checked_sub(wsol_pre_leg3)
+        .ok_or(ExecutorError::CalculationOverflow)?;
+
+    if leg3_delta < args.leg3_min_amount_out {
+        return Err(ExecutorError::Leg3OutputBelowMinimum);
+    }
+    if leg3_delta < args.min_final_wsol_delta {
+        return Err(ExecutorError::FinalWsolDeltaBelowMinimum);
+    }
+
+    // Intermediate token B inventory isolation
     if meme_b_final < meme_b_initial {
-        return Err(ExecutorError::IntermediateInventorySubsidized.into());
+        return Err(ExecutorError::IntermediateInventorySubsidized);
+    }
+
+    // Pre-existing WSOL inventory isolation:
+    // The final WSOL balance must cover the pre-borrow baseline plus the required repayment
+    let required_final_wsol = wsol_baseline
+        .checked_add(args.min_final_wsol_delta)
+        .ok_or(ExecutorError::CalculationOverflow)?;
+    if wsol_final < required_final_wsol {
+        return Err(ExecutorError::FinalWsolDeltaBelowMinimum);
     }
 
     Ok(())

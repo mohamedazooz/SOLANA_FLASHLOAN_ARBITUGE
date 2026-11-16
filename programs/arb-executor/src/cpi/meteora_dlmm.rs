@@ -55,10 +55,19 @@ pub fn invoke_meteora_swap2<'a>(
     // 2. Build AccountMetas matching the official 16 fixed accounts + dynamic bin arrays
     let mut metas = Vec::with_capacity(16 + accounts.bin_arrays.len());
     metas.push(AccountMeta::new(*accounts.lb_pair.key, false));
-    metas.push(AccountMeta::new(
-        *accounts.bin_array_bitmap_extension.key,
-        false,
-    ));
+
+    // When the optional bitmap extension is unconfigured, the official builder encodes the
+    // DLMM program ID sentinel as readonly. Passing an executable program account or an un-granted
+    // account as writable causes an immediate runtime privilege rejection.
+    let bitmap_ext_meta = if *accounts.bin_array_bitmap_extension.key == METEORA_DLMM_PROGRAM_ID
+        || !accounts.bin_array_bitmap_extension.is_writable
+    {
+        AccountMeta::new_readonly(*accounts.bin_array_bitmap_extension.key, false)
+    } else {
+        AccountMeta::new(*accounts.bin_array_bitmap_extension.key, false)
+    };
+    metas.push(bitmap_ext_meta);
+
     metas.push(AccountMeta::new(*accounts.reserve_x.key, false));
     metas.push(AccountMeta::new(*accounts.reserve_y.key, false));
     metas.push(AccountMeta::new(*accounts.user_token_in.key, false));
@@ -66,7 +75,17 @@ pub fn invoke_meteora_swap2<'a>(
     metas.push(AccountMeta::new_readonly(*accounts.token_x_mint.key, false));
     metas.push(AccountMeta::new_readonly(*accounts.token_y_mint.key, false));
     metas.push(AccountMeta::new(*accounts.oracle.key, false));
-    metas.push(AccountMeta::new(*accounts.host_fee_in.key, false));
+
+    // When host fee is unconfigured, sentinel is encoded as readonly
+    let host_fee_meta = if *accounts.host_fee_in.key == METEORA_DLMM_PROGRAM_ID
+        || !accounts.host_fee_in.is_writable
+    {
+        AccountMeta::new_readonly(*accounts.host_fee_in.key, false)
+    } else {
+        AccountMeta::new(*accounts.host_fee_in.key, false)
+    };
+    metas.push(host_fee_meta);
+
     metas.push(AccountMeta::new_readonly(*accounts.user.key, true)); // user signer forwarded
     metas.push(AccountMeta::new_readonly(
         *accounts.token_x_program.key,

@@ -18,7 +18,9 @@ use solana_address::Address;
 use solana_program_error::{ProgramError, ProgramResult};
 
 pub use error::ExecutorError;
-pub use instructions::{ExecuteThreeLegArgs, process_execute_three_leg};
+pub use instructions::{
+    ExecuteThreeLegArgs, process_execute_three_leg, verify_sequential_balance_transitions,
+};
 pub use validation::*;
 
 /// Arbitrage Executor Program ID.
@@ -130,5 +132,201 @@ mod tests {
                 ExecutorError::Leg2InputExceedsLeg1Output as u32
             ))
         );
+    }
+
+    #[test]
+    fn test_verify_sequential_balance_transitions_happy_path() {
+        let borrow = 1_000_000_000u64; // 1 SOL
+        let repay = 1_000_011_529u64; // 1 SOL + fee
+        let args = ExecuteThreeLegArgs {
+            leg1_amount_in: borrow,
+            leg1_min_amount_out: 50_000_000,
+            leg2_amount_in: 50_000_000,
+            leg2_min_amount_out: 200_000_000,
+            leg3_amount_in: 200_000_000,
+            leg3_min_amount_out: 1_020_000_000,
+            min_final_wsol_delta: repay,
+            leg1_bin_array_count: 1,
+            leg2_bin_array_count: 1,
+            leg3_bin_array_count: 1,
+        };
+
+        // User starts with 0 pre-borrow WSOL.
+        // At entry to arb-executor, Kamino flash borrow funded 1 SOL.
+        let wsol_initial = borrow;
+        let wsol_baseline = 0;
+        // In Leg 1, 1 SOL is spent. User has 0 WSOL.
+        let wsol_pre_leg3 = 0;
+        // In Leg 3, Leg 3 yields 1.05 SOL WSOL.
+        let wsol_final = 1_050_000_000;
+        let meme_b_initial = 0;
+        let meme_b_final = 10_000; // unspent residual
+
+        let res = verify_sequential_balance_transitions(
+            wsol_initial,
+            wsol_baseline,
+            wsol_pre_leg3,
+            wsol_final,
+            meme_b_initial,
+            meme_b_final,
+            &args,
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_verify_sequential_balance_transitions_with_preexisting_wsol() {
+        let borrow = 1_000_000_000u64; // 1 SOL
+        let repay = 1_000_011_529u64;
+        let args = ExecuteThreeLegArgs {
+            leg1_amount_in: borrow,
+            leg1_min_amount_out: 50_000_000,
+            leg2_amount_in: 50_000_000,
+            leg2_min_amount_out: 200_000_000,
+            leg3_amount_in: 200_000_000,
+            leg3_min_amount_out: 1_020_000_000,
+            min_final_wsol_delta: repay,
+            leg1_bin_array_count: 1,
+            leg2_bin_array_count: 1,
+            leg3_bin_array_count: 1,
+        };
+
+        // User already had 3 SOL WSOL before the transaction.
+        let pre_existing_wsol = 3_000_000_000u64;
+        let wsol_initial = pre_existing_wsol + borrow; // 4 SOL
+        let wsol_baseline = pre_existing_wsol; // 3 SOL
+        let wsol_pre_leg3 = pre_existing_wsol; // 3 SOL
+        // Leg 3 yields 1.05 SOL, so final balance is 3 + 1.05 = 4.05 SOL
+        let wsol_final = pre_existing_wsol + 1_050_000_000;
+
+        let res = verify_sequential_balance_transitions(
+            wsol_initial,
+            wsol_baseline,
+            wsol_pre_leg3,
+            wsol_final,
+            0,
+            0,
+            &args,
+        );
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_verify_sequential_balance_transitions_rejects_leg3_underflow() {
+        let borrow = 1_000_000_000u64;
+        let repay = 1_000_011_529u64;
+        let args = ExecuteThreeLegArgs {
+            leg1_amount_in: borrow,
+            leg1_min_amount_out: 50_000_000,
+            leg2_amount_in: 50_000_000,
+            leg2_min_amount_out: 200_000_000,
+            leg3_amount_in: 200_000_000,
+            leg3_min_amount_out: 1_020_000_000,
+            min_final_wsol_delta: repay,
+            leg1_bin_array_count: 1,
+            leg2_bin_array_count: 1,
+            leg3_bin_array_count: 1,
+        };
+
+        // Leg 3 only yields 1.01 SOL (below leg3_min_amount_out 1.02 SOL)
+        let wsol_final = 1_010_000_000;
+
+        let res = verify_sequential_balance_transitions(borrow, 0, 0, wsol_final, 0, 0, &args);
+        assert_eq!(res, Err(ExecutorError::Leg3OutputBelowMinimum));
+    }
+
+    #[test]
+    fn test_verify_sequential_balance_transitions_rejects_repay_shortfall() {
+        let borrow = 1_000_000_000u64;
+        let repay = 1_000_011_529u64;
+        let args = ExecuteThreeLegArgs {
+            leg1_amount_in: borrow,
+            leg1_min_amount_out: 50_000_000,
+            leg2_amount_in: 50_000_000,
+            leg2_min_amount_out: 200_000_000,
+            leg3_amount_in: 200_000_000,
+            leg3_min_amount_out: 990_000_000, // lower than repay
+            min_final_wsol_delta: repay,
+            leg1_bin_array_count: 1,
+            leg2_bin_array_count: 1,
+            leg3_bin_array_count: 1,
+        };
+
+        // Leg 3 yields 995_000_000 (satisfies leg3_min_out, but does not cover repay)
+        let wsol_final = 995_000_000;
+
+        let res = verify_sequential_balance_transitions(borrow, 0, 0, wsol_final, 0, 0, &args);
+        assert_eq!(res, Err(ExecutorError::FinalWsolDeltaBelowMinimum));
+    }
+
+    #[test]
+    fn test_verify_sequential_balance_transitions_rejects_intermediate_subsidy() {
+        let borrow = 1_000_000_000u64;
+        let repay = 1_000_011_529u64;
+        let args = ExecuteThreeLegArgs {
+            leg1_amount_in: borrow,
+            leg1_min_amount_out: 50_000_000,
+            leg2_amount_in: 50_000_000,
+            leg2_min_amount_out: 200_000_000,
+            leg3_amount_in: 200_000_000,
+            leg3_min_amount_out: 1_020_000_000,
+            min_final_wsol_delta: repay,
+            leg1_bin_array_count: 1,
+            leg2_bin_array_count: 1,
+            leg3_bin_array_count: 1,
+        };
+
+        // Initial Meme B had 500 units, but final has only 400 units (100 units consumed!)
+        let res = verify_sequential_balance_transitions(
+            borrow,
+            0,
+            0,
+            1_050_000_000,
+            500,
+            400, // VIOLATION
+            &args,
+        );
+        assert_eq!(res, Err(ExecutorError::IntermediateInventorySubsidized));
+    }
+
+    #[test]
+    fn test_verify_sequential_balance_transitions_rejects_preexisting_wsol_subsidy() {
+        let borrow = 1_000_000_000u64;
+        let repay = 1_000_011_529u64;
+        let args = ExecuteThreeLegArgs {
+            leg1_amount_in: borrow,
+            leg1_min_amount_out: 50_000_000,
+            leg2_amount_in: 50_000_000,
+            leg2_min_amount_out: 200_000_000,
+            leg3_amount_in: 200_000_000,
+            leg3_min_amount_out: 1_000_011_529,
+            min_final_wsol_delta: repay,
+            leg1_bin_array_count: 1,
+            leg2_bin_array_count: 1,
+            leg3_bin_array_count: 1,
+        };
+
+        // User started with 5 SOL WSOL.
+        let pre_existing_wsol = 5_000_000_000u64;
+        let wsol_initial = pre_existing_wsol + borrow; // 6 SOL
+        let wsol_baseline = pre_existing_wsol; // 5 SOL
+        let wsol_pre_leg3 = pre_existing_wsol; // 5 SOL
+
+        // Leg 3 failed and produced only 0.5 SOL instead of covering the flash loan!
+        // So wsol_final is 5.5 SOL.
+        // If we didn't check baseline, 5.5 SOL > 1.000011529 SOL (repay), but it would drain
+        // 0.5 SOL of pre-existing user funds to pay Kamino!
+        let wsol_final = pre_existing_wsol + 500_000_000;
+
+        let res = verify_sequential_balance_transitions(
+            wsol_initial,
+            wsol_baseline,
+            wsol_pre_leg3,
+            wsol_final,
+            0,
+            0,
+            &args,
+        );
+        assert_eq!(res, Err(ExecutorError::Leg3OutputBelowMinimum));
     }
 }
