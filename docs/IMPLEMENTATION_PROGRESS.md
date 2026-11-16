@@ -304,3 +304,71 @@ with PDA checks 17/17.
 2. Secret provider abstraction follow-ups (webhook replay protection done in
    session 4; rotation tooling pending).
 3. Live trading remains DISABLED (Gate G) — explicit operator decision only.
+
+---
+
+## Session 6 — Uploaded notes-file verification (v1 / Jito / DLMM / flash-loan claims)
+
+Input: user-uploaded `solana_v1_dlmm_flash_loan_notes.md` (18 Arabic sections).
+Task: audit whether each claim is implemented, verify the claims themselves
+online (SIMD-0385/0296, solana.com docs, Agave/Anza, Jito), then apply the
+verified gaps.
+
+### Claim-by-claim audit result
+
+| § | Claim | Repo status | Claim verified online |
+|---|---|---|---|
+| 1 | v1 does not kill Jito; bundles remain for multi-tx sequencing | N/A (informational) | YES — SIMD-0296 itself documents bundles as the pre-v1 workaround; Jito bundles (≤5 txs) continue to operate |
+| 2 | v1: 1232→4096 bytes, 64 inline accounts, 64 instructions, 12 sigs, no ALTs | Implemented (`arb-tx/transport/adaptive.rs`: `SOLANA_PACKET_V1_MTU=4096`, `MAX_V1_ADDRESSES=64` sanitization) | YES — SIMD-0385 + solana.com/upgrades; **mainnet-active since epoch 1035 (2026-09-15, slot 447,120,000)**, gate `txv1aq4pp281K9um3tnPgkfX8UqtFT6wcVW3hNezGLL` |
+| 3 | @solana/kit v1 helpers; priority fee = total lamports, not µlam/CU | Partially (see defect D1 below) | YES — solana.com/docs: "In v1 it is an absolute total in lamports — no multiplication, no rounding. Do not carry the per-CU arithmetic across." |
+| 4 | Rust `solana_message::v1::{TransactionConfig, Message::try_compile_with_config}` | Equivalent native implementation in `arb-tx` (`V1ConfigParams` + mask/values serializer), `solana-message =4.6.0` pinned | YES — API confirmed in solana-foundation/solana-dev-skill reference (solana-message ≥4.1.0, 4.2.x adds serialize) |
+| 5 | RPC: `maxSupportedTransactionVersion: 1`, base64/json only, budget from `transactionConfig` | Implemented (`rpc_pool.rs`, `arb-sim`, `adaptive.rs` decode) | YES — solana.com docs; base58 stays capped at 1232 bytes; ComputeBudget scanning returns nothing for v1 |
+| 6 | AMM/CLMM/DLMM model comparison | Implemented (protocol-specific engines) | Consistent with protocol docs |
+| 7–8 | Flash loans compose with DLMM; net-profit formula with checked ops | Implemented (`net_profit_lamports`, checked, disabled-reserve fail-closed) | YES |
+| 9 | `checked_*` everywhere, i128 profit, `overflow-checks = true` in release | checked_*/i128 done; **`overflow-checks` was missing from `[profile.release]`** → fixed | YES — standard Rust hardening practice |
+| 10 | saturating vs wrapping vs checked semantics | Money paths use checked; `saturating_sub` audited — remaining uses are provably non-negative complements (bps `10_000 - fee`), monotonic counters, elapsed-time diffs, and PnL-locked reserve reads | Consistent |
+| 11–12 | BestSize argmax; ternary search + quote caching | Superseded by a stronger design: multi-basin coarse grid + fine search (`meteora_size_optimizer.rs`) that explicitly rejects the unimodality assumption ternary search requires; quote caching via `quote_map` | Notes' ternary suggestion is *worse* for multi-basin DLMM profit curves — retained existing approach |
+| 13 | Sizing bounds from quotes/liquidity, not constants | Implemented: `max_trade_size_usd / live SOL price` → `max_sizing` → clamps optimizer bounds (`strategy.rs:191`), bin-capacity-derived limits (`flash_loan_sizing.rs`), unified-control overrides | YES |
+| 14 | Price impact formula | Implemented (`calculate_price_impact_bps`, dlmm.rs:1510) | YES |
+| 15–17 | Per-bin fill math, Σ per-bin output | Implemented and at **zero-diff parity** with SDK (session 5 differential, 16 cases / 145 fields) | YES |
+| 18 | Token-2022 `transferFeeExcludedOutAmount` | Repo is **stricter**: Token-2022 with transfer fee is rejected fail-closed (`has_risky`), never netted out | Conservative superset — retained |
+
+### Defect found and fixed (D1 — P0, execution economics)
+
+`priority_fee_micro_lamports` is legacy **micro-lamports-per-CU** semantics
+(`SetComputeUnitPrice`). Two V1 builders converted it as
+`micro_lamports / 1_000_000` **without multiplying by the CU limit**, and the
+prewarmed template hardcoded `priority_fee_lamports: Some(0)` — all three
+produce V1 transactions with zero (or ~zero) embedded priority fee, exactly
+the failure mode notes §3 warns about. With the common 10,000 µlam/CU default
+and a 200k CU budget, `10_000 / 1_000_000 = 0` lamports.
+
+Correct v1 total (ceil): `total = ceil(µlam_per_cu × cu_limit / 1e6)`.
+
+- `arb-tx/src/transport/adaptive.rs`: new `total_priority_fee_lamports()` (u128 checked, `None` on overflow — fail-closed).
+- `arb-tx/src/flash/dlmm_4leg_flash_arb.rs:579` — fixed (was `/ 1_000_000`).
+- `arb-tx/src/flash/cross_dex_flash_arb.rs:425` — fixed (was `/ 1_000_000`).
+- `arb-tx/src/transport/template.rs` `compile_and_sign` — fixed (was `Some(0)`).
+- Already-correct sites (verified, untouched): `arb-bot/supervisor/opportunity.rs` (×2), `flash/dlmm_3leg_flash_arb.rs`, `flash/compiler.rs`, `flash/meteora_atomic_builder.rs` (takes absolute lamports).
+
+Also fixed: `[profile.release] overflow-checks = true` (defense-in-depth with the checked-arithmetic money paths; release compile verified).
+
+### Tests added
+
+- `v1_header_unit.rs`: `total_priority_fee_lamports_converts_per_cu_to_absolute_total` (exact, ceil, zero, overflow→None), `total_priority_fee_lamports_matches_v1_doc_example`.
+- `prewarmed_template_tests.rs`: `v1_compile_and_sign_embeds_absolute_priority_fee_total` — decodes mask + config values from the signed V1 message and asserts the embedded total equals `ceil(5_000 × 250_000 / 1e6) = 1_250` lamports (old code embedded 0).
+
+### Verification (session 6)
+
+| Check | Command | Result |
+|---|---|---|
+| arb-tx suite | `cargo test -p arb-tx` | all pass (138 lib + integration suites) |
+| fmt / clippy | `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` | exit 0 |
+| workspace tests | `cargo test --workspace` | **1030 passed / 0 failed** |
+| release profile | `cargo check --workspace --release` | exit 0 (overflow-checks active) |
+
+### Remaining work (unchanged)
+
+1. Hardcoded-value inventory refresh + classification table regeneration.
+2. Secret provider rotation tooling.
+3. Live trading remains DISABLED (Gate G) — explicit operator decision only.

@@ -574,9 +574,18 @@ pub fn build_flash_funded_four_pool_v1_transaction(
         .loaded_accounts_data_size_limit
         .ok_or(FlashArb4LegError::MissingLoadedAccountsDataLimit)?;
 
-    // Use adaptive compiler for V1
+    // Use adaptive compiler for V1. The v1 priority fee is an absolute total
+    // in lamports: scale the legacy micro-lamports-per-CU quote by the CU limit
+    // (ceil), never divide it away.
+    let priority_fee_lamports = crate::adaptive::total_priority_fee_lamports(
+        params.priority_fee_micro_lamports,
+        u64::from(params.cu_limit),
+    )
+    .ok_or_else(|| {
+        FlashArb4LegError::AltCompilation("V1 priority fee exceeds u64 lamports".to_string())
+    })?;
     let v1_config = crate::adaptive::V1ConfigParams {
-        priority_fee_lamports: Some(params.priority_fee_micro_lamports / 1_000_000),
+        priority_fee_lamports: Some(priority_fee_lamports),
         compute_unit_limit: Some(params.cu_limit),
         loaded_accounts_data_size_limit: Some(loaded_accounts_data_size_limit as u32),
         heap_size: None,
