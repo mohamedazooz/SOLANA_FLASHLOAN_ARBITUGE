@@ -71,6 +71,8 @@ discovery_min_tvl_usd = 25000.0
 # Max hops per route. Each extra hop stacks another DEX fee + failure point;
 # >4 hops is economically dominated by cumulative fees. Validated 2..=4.
 max_route_hops = 3
+# HTTP catalog discovery off by default: pools arrive via WebSocket only.
+http_discovery_enabled = false
 
 [risk]
 max_trade_size_usd = 10000.0        # USD (>0)

@@ -86,6 +86,8 @@ impl Default for ChronosConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct RpcConfig {
     pub url: String,
+    #[serde(default)]
+    pub failover_url: Option<String>,
     pub commitment: String,
 }
 
@@ -181,6 +183,11 @@ pub struct StrategyConfig {
     /// 4 hops are economically dominated by cumulative fees.
     #[serde(default = "default_max_route_hops")]
     pub max_route_hops: usize,
+    /// HTTP-based pool catalog discovery (REST APIs). Defaults to **false**
+    /// (disabled): pool candidates must arrive via the WebSocket
+    /// account-update stream. Operators may re-enable explicitly.
+    #[serde(default)]
+    pub http_discovery_enabled: bool,
 }
 
 fn default_max_route_hops() -> usize {
@@ -388,6 +395,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
         },
         rpc: RpcConfig {
             url: arb.provider.primary_url.clone(),
+            failover_url: arb.provider.failover_url.clone(),
             commitment: arb.provider.commitment.clone(),
         },
         jito: JitoConfig {
@@ -427,6 +435,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             dlmm_cross_pool: None,
             dlmm_three_leg: None,
             max_route_hops: arb.strategy.max_route_hops,
+            http_discovery_enabled: arb.strategy.http_discovery_enabled,
         },
         risk: RiskConfig {
             max_trade_size_usd: usd(arb.risk.max_trade_size_usd),

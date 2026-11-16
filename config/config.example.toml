@@ -61,6 +61,10 @@ discovery_min_tvl_usd = 25000.0
 # Max hops per route. Each extra hop stacks another DEX fee + failure point;
 # >4 hops is economically dominated by cumulative fees. Validated 2..=4.
 max_route_hops = 3
+# HTTP-based pool catalog discovery (Orca/Raydium/Meteora/Dexscreener/Pump.fun
+# REST APIs). Default false: pools arrive via the WebSocket account-update
+# stream only. Set true to re-enable HTTP catalog fetching.
+http_discovery_enabled = false
 
 [risk]
 max_trade_size_usd = 10000.0

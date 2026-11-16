@@ -437,9 +437,11 @@ impl Supervisor {
             self.rpc_pool.endpoints_count(),
             self.rpc_pool.redacted_hosts()
         );
-        info!(
-            "🔍 Discovering active multi-DEX pools across Raydium, Orca, Meteora, and Pump.fun..."
-        );
+        if self.config.strategy.http_discovery_enabled {
+            info!(
+                "🔍 HTTP catalog discovery enabled — fetching active multi-DEX pools across Raydium, Orca, Meteora, and Pump.fun..."
+            );
+        }
         let disc = arb_ingest::PoolDiscovery::new(self.rpc_pool.clone());
         let mut disc_cfg = arb_ingest::DiscoveryConfig::default();
         // Hot-meme extension without recompiling: `ARB_DISCOVERY_HUBS` is a
@@ -477,15 +479,21 @@ impl Supervisor {
             .unwrap_or(max_per_venue.saturating_mul(5));
         let refresh_secs = self.config.strategy.discovery_refresh_secs.unwrap_or(60);
 
-        let discovered = disc.discover(&disc_cfg).await;
-        if !discovered.is_empty() {
-            let disc_cnt = discovered.len();
-            {
-                let mut reg_write = self.registry.write();
-                arb_ingest::register_discovered(&mut reg_write, &discovered);
+        if self.config.strategy.http_discovery_enabled {
+            let discovered = disc.discover(&disc_cfg).await;
+            if !discovered.is_empty() {
+                let disc_cnt = discovered.len();
+                {
+                    let mut reg_write = self.registry.write();
+                    arb_ingest::register_discovered(&mut reg_write, &discovered);
+                }
+                info!(
+                    "🎯 Successfully registered {disc_cnt} discovered liquid pools into MultiDexRegistry"
+                );
             }
+        } else {
             info!(
-                "🎯 Successfully registered {disc_cnt} discovered liquid pools into MultiDexRegistry"
+                "HTTP pool discovery disabled by config (http_discovery_enabled = false) — pool candidates arrive via the WebSocket account-update stream only"
             );
         }
 
@@ -727,37 +735,43 @@ impl Supervisor {
             "🌊 Multi-DEX active reserve ingestion worker running (WS-slot triggered / 750ms cadence, parallel batch-100)"
         );
 
-        // 5. Periodic dynamic discovery refresh worker
-        let disc_worker = Arc::new(disc);
-        let reg_worker_disc = Arc::clone(&self.registry);
-        let cancel_disc = cancel_token.clone();
-        let hw_client_for_disc = hw_client_opt.clone();
-        tokio::spawn(async move {
-            let period = Duration::from_secs(refresh_secs.max(30));
-            let mut interval =
-                tokio::time::interval_at(tokio::time::Instant::now() + period, period);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                tokio::select! {
-                    _ = cancel_disc.cancelled() => break,
-                    _ = interval.tick() => {
-                        let pools = disc_worker.discover(&disc_cfg).await;
-                        if !pools.is_empty() {
-                            let updated_pools = {
-                                let mut reg_write = reg_worker_disc.write();
-                                arb_ingest::register_discovered(&mut reg_write, &pools);
-                                reg_write.pools().to_vec()
-                            };
-                            if let Some(ref hw) = hw_client_for_disc {
-                                for rp in &updated_pools {
-                                    hw.register_pool(rp);
+        // 5. Periodic dynamic discovery refresh worker (HTTP catalog; config-gated)
+        if self.config.strategy.http_discovery_enabled {
+            let disc_worker = Arc::new(disc);
+            let reg_worker_disc = Arc::clone(&self.registry);
+            let cancel_disc = cancel_token.clone();
+            let hw_client_for_disc = hw_client_opt.clone();
+            tokio::spawn(async move {
+                let period = Duration::from_secs(refresh_secs.max(30));
+                let mut interval =
+                    tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = cancel_disc.cancelled() => break,
+                        _ = interval.tick() => {
+                            let pools = disc_worker.discover(&disc_cfg).await;
+                            if !pools.is_empty() {
+                                let updated_pools = {
+                                    let mut reg_write = reg_worker_disc.write();
+                                    arb_ingest::register_discovered(&mut reg_write, &pools);
+                                    reg_write.pools().to_vec()
+                                };
+                                if let Some(ref hw) = hw_client_for_disc {
+                                    for rp in &updated_pools {
+                                        hw.register_pool(rp);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-        });
+            });
+        } else {
+            info!(
+                "Periodic HTTP discovery refresh worker not started (http_discovery_enabled = false)"
+            );
+        }
 
         // No HTTP polling loop: WebSocket account updates are the sole authoritative
         // market-state input. Raw updates are journaled until protocol decoders promote them.

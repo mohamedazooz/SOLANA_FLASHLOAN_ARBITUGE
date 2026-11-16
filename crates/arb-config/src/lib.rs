@@ -225,6 +225,12 @@ pub struct StrategyConfig {
     /// spreads). Validated to 2..=4; default 3.
     #[serde(default = "default_max_route_hops")]
     pub max_route_hops: usize,
+    /// HTTP-based pool catalog discovery (Orca/Raydium/Meteora/Dexscreener/
+    /// Pump.fun REST APIs). Defaults to **false** (disabled): pool candidates
+    /// must arrive through the configured WebSocket account-update stream and
+    /// pass account validation. Operators may re-enable explicitly.
+    #[serde(default)]
+    pub http_discovery_enabled: bool,
 }
 
 fn default_max_route_hops() -> usize {
@@ -409,6 +415,7 @@ impl AppConfig {
                 discovery_refresh_secs: Some(Seconds(15)),
                 discovery_min_tvl_usd: Some(UsdMicros(25_000_000_000)), // $25,000
                 max_route_hops: 3,
+                http_discovery_enabled: false,
             },
             risk: RiskConfig {
                 max_trade_size_usd: UsdMicros(10_000_000_000), // $10,000

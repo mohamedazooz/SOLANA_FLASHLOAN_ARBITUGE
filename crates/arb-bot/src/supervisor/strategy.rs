@@ -55,8 +55,10 @@ impl Supervisor {
             graph.set_economic_config(economic_config.clone());
         }
 
-        // HTTP catalog/trending discovery is disabled. Pool candidates must arrive
-        // through the configured WebSocket account-update stream and pass account validation.
+        // HTTP catalog discovery is config-gated (strategy.http_discovery_enabled,
+        // default false). When disabled, pool candidates arrive only through the
+        // configured WebSocket account-update stream and must pass account
+        // validation before entering the registry.
 
         // 1. Ingest: take one pool snapshot per strategy cycle; account updates mutate one key.
         //    Raw stream updates are promoted only after protocol-specific decoding.

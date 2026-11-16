@@ -465,3 +465,47 @@ record_resync/run_comparison_loop`, `rpc_reconcile::fetch_and_publish`.
 - `cargo clippy --workspace --all-targets -- -D warnings` — exit 0
 - `cargo test --workspace` — **1036 passed / 0 failed** (4 new config validation tests)
 - Live run re-check: 8 health sweeps → 1 error line (transition) + explicit fallback warning
+
+
+---
+
+## Session 9 — HTTP discovery shutdown, RPC pool config wiring, public WS/RPC trial
+
+### HTTP catalog discovery kill switch (operator decision: default OFF)
+- `arb-config::StrategyConfig.http_discovery_enabled: bool` — serde default → **false** (fail-closed).
+- `arb-bot::config::StrategyConfig` mirrored + wired via `from_arb_config`.
+- `run.rs`: initial `PoolDiscovery::discover()` call AND the periodic refresh worker are both gated; when off, startup logs the disabled line and pools arrive via WebSocket account updates only.
+- `strategy.rs` stale comment ("HTTP catalog discovery is disabled") corrected to describe the config-gated reality.
+- `config/config.example.toml` + `config/base.toml`: `http_discovery_enabled = false` documented.
+- Effect: Pump.fun 403 / Dexscreener / catalog HTTP noise eliminated by default; `register_discovered` retained for explicit operator re-enable.
+
+### RPC pool root-cause fix (was: env-only)
+- Root cause of `leader refresh failed: getEpochInfo: No RPC endpoints configured in pool`: `Supervisor` built `RpcPool::from_env()` and ignored TOML `[rpc] url`.
+- New `RpcPool::from_config_and_env(config_urls)`: config URLs first, env URLs appended, deduped, placeholder/non-http entries dropped (defense-in-depth filter inside the pool constructor too).
+- Empty pool now falls back to the shared public endpoint with a loud warning naming the exact config keys to set — leader refresh, health checks and seeding no longer starve on an empty pool.
+- `arb-bot::config::RpcConfig.failover_url` added (wired from `arb-config::ProviderConfig.failover_url`).
+- Research basis: Solana docs — public endpoint caps ≈100 req/10s per IP, 40 req/10s per method; subscribe-don't-poll, batch, backoff-with-jitter, respect Retry-After (already implemented: token buckets, 429 → cooldown + rotate).
+
+### Secrets provisioning (admin/web fail-closed gates)
+- `scripts/generate_secrets.sh`: generates `SENTINEL_ADMIN_KEY` (openssl rand -hex 32) and `WEB_ADMIN_PASSWORD` into gitignored `.env` (chmod 600), replaces placeholders only, `--force` rotates. Operator keys are read at startup only.
+
+### Public WS + public RPC trial (measured, run3, 100s, simulate mode)
+| Component | Result |
+|---|---|
+| Public WS wss endpoint | Connected after one 429 connect retry; slotSubscribe streaming live (real slots 470017976→470018003); `stream_ingest=ok` |
+| Public RPC endpoint | 429/cooldown under seeding load; `seed_initial_accounts: 0/15` → 0 pools registered (fail-closed: no routes on unverified state) |
+| Leader refresh | 1 failure (429 cooldown) vs previous every-60s failures — TOML wiring works |
+| HTTP discovery | Off by default; zero Pump.fun/catalog noise |
+| Store | SQLite WAL `./data/warm/sentinel_state.db` + Redis connected |
+| Telegram | `telegram=ok` (operator token from `.env`) |
+| Health sweep | Transition-based alerting: 7 error lines total over 100s (was 17 warnings per sweep-cycle in run #2) |
+
+**Conclusion (evidence-based):** public WS is viable as a degraded slot-clock/stream source; public RPC cannot sustain account seeding on a shared IP (documented 100 req/10s ceiling) — production scanning requires operator RPC credentials. The pipeline is correct end-to-end: the bot refused to fabricate routes on unseeded state.
+
+### WS provider answer (operator question)
+Any mainnet WSS endpoint supporting `slotSubscribe` + `accountSubscribe` works — the client is provider-agnostic with per-endpoint capability detection (`-32601` accountSubscribe unsupported → fatal for that endpoint only). Known: Alchemy standard tiers lack `accountSubscribe`; Helius/QuickNode/Triton/RPCfast/Solami support it. Helius "enhanced" WS APIs are not required.
+
+### Verification (session 9)
+- `cargo test -p arb-config` — 22 passed (incl. 3 new `http_discovery_*` tests)
+- `cargo test -p arb-ingest from_config_and_env` — 3 passed (dedup, fallback, placeholder filtering)
+- Full workspace gates: see commit message.

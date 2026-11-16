@@ -474,10 +474,43 @@ impl RpcPool {
 
     /// Initialize multi-RPC pool from environment with per-provider rate limits
     /// and round-robin switching (load balancing across healthy providers).
+    /// Builds a pool from operator-configured URLs merged with the
+    /// environment endpoints (config first, env appended, deduped). When both
+    /// sources are empty, falls back to the shared public endpoint with a
+    /// loud warning so non-market-critical workers (e.g. Jito leader
+    /// refresh, health checks) still function in degraded mode.
+    pub fn from_config_and_env(config_urls: Vec<String>) -> Self {
+        dotenvy::dotenv().ok();
+        let mut seen = std::collections::HashSet::new();
+        let mut endpoints: Vec<String> = Vec::new();
+        for u in config_urls
+            .into_iter()
+            .chain(Self::collect_rpc_urls(|k| std::env::var(k).ok()))
+        {
+            let u = u.trim().to_string();
+            let usable = !u.is_empty()
+                && !u.contains("REPLACE_ME")
+                && (u.starts_with("https://") || u.starts_with("http://"));
+            if usable && seen.insert(u.clone()) {
+                endpoints.push(u);
+            }
+        }
+        if endpoints.is_empty() {
+            tracing::warn!(
+                "no RPC endpoints configured via TOML [rpc] url/failover_url or env; falling back to the shared public endpoint https://api.mainnet-beta.solana.com — heavily rate-limited (HTTP 429 expected, 100 req/10s per IP per official docs); NOT production-grade: configure [rpc].url in config TOML or ALCHEMY_RPC_URL / HELIUS_RPC_URL / SOLANA_RPC_*"
+            );
+            endpoints.push("https://api.mainnet-beta.solana.com".to_string());
+        }
+        Self::finish_from_env(endpoints)
+    }
+
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
         let endpoints = Self::collect_rpc_urls(|k| std::env::var(k).ok());
+        Self::finish_from_env(endpoints)
+    }
 
+    fn finish_from_env(endpoints: Vec<String>) -> Self {
         let sender_endpoint = std::env::var("HELIUS_SENDER_REGIONAL")
             .ok()
             .or_else(|| std::env::var("HELIUS_SENDER_URL").ok())
@@ -1533,6 +1566,48 @@ mod tests {
             RpcPool::classify_provider(4, "https://rpc.solami.dev/sol?api_key=q88_5678");
         assert_eq!(solami_lower.rps_limit, 3.0);
         assert_eq!(solami_lower.max_batch_size, 100);
+    }
+
+    #[test]
+    fn from_config_and_env_config_first_then_env_deduped() {
+        let pool = RpcPool::from_config_and_env(vec![
+            "https://rpc.example-private.com".to_string(),
+            "https://api.mainnet-beta.solana.com".to_string(),
+            "https://api.mainnet-beta.solana.com".to_string(),
+        ]);
+        assert_eq!(pool.endpoints()[0], "https://rpc.example-private.com");
+        let public = pool
+            .endpoints()
+            .iter()
+            .filter(|u| u.contains("api.mainnet-beta"))
+            .count();
+        assert_eq!(public, 1, "duplicate URLs must be deduped");
+    }
+
+    #[test]
+    fn from_config_and_env_empty_config_still_yields_public_fallback() {
+        let pool = RpcPool::from_config_and_env(Vec::new());
+        assert!(
+            !pool.endpoints().is_empty(),
+            "empty pool must not starve leader refresh / health checks"
+        );
+        assert!(pool.endpoints().iter().all(|u| u.starts_with("https://")));
+    }
+
+    #[test]
+    fn from_config_and_env_filters_placeholder_entries() {
+        let pool = RpcPool::from_config_and_env(vec![
+            "".to_string(),
+            "REPLACE_ME_RPC_URL".to_string(),
+            "ftp://not-a-rpc.example.com".to_string(),
+        ]);
+        assert!(
+            pool.endpoints()
+                .iter()
+                .all(|u| !u.contains("REPLACE_ME") && !u.starts_with("ftp://")),
+            "placeholders and non-http schemes must be dropped: {:?}",
+            pool.endpoints()
+        );
     }
 
     #[test]

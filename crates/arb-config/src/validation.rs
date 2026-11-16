@@ -492,6 +492,32 @@ mod tests {
     }
 
     #[test]
+    fn http_discovery_disabled_by_default() {
+        let cfg = base_valid();
+        assert!(!cfg.strategy.http_discovery_enabled);
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn http_discovery_explicitly_enabled_accepted() {
+        let mut cfg = base_valid();
+        cfg.strategy.http_discovery_enabled = true;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
+    fn http_discovery_toml_default_is_off() {
+        let cfg: crate::StrategyConfig = toml::from_str(
+            "base_tokens = []\nmin_net_profit_abs = 0\nmin_net_profit_bps = 0\nmax_price_impact_bps = 0\nmax_state_age_slots = 2\n",
+        )
+        .unwrap();
+        assert!(
+            !cfg.http_discovery_enabled,
+            "HTTP discovery must default to disabled (fail-closed)"
+        );
+    }
+
+    #[test]
     fn provider_url_must_use_approved_scheme() {
         let mut cfg = base_valid();
         cfg.provider.primary_url = "ftp://example.com".to_string();
