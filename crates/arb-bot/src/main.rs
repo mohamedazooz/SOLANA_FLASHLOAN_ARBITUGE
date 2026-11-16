@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use std::fs::OpenOptions;
 use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
+use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -110,6 +111,76 @@ fn install_panic_hook() {
 #[derive(Clone)]
 struct FileMakeWriter {
     file: Arc<Mutex<std::fs::File>>,
+    path: Arc<std::path::PathBuf>,
+}
+
+impl FileMakeWriter {
+    /// Re-open the log path after the old inode was renamed away (rotation).
+    fn reopen(&self) {
+        if let Ok(f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.path.as_path())
+        {
+            if let Ok(mut guard) = self.file.lock() {
+                *guard = f;
+            }
+        }
+    }
+}
+
+/// Log-retention policy (operator directive): runtime logs older than
+/// `LOG_RETENTION_HOURS` (default 24) are deleted; the opportunity/pool/PnL
+/// database is never touched. The active file is rotated by size so a
+/// long-running process cannot grow it unbounded.
+const LOG_ROTATE_BYTES: u64 = 64 * 1024 * 1024;
+
+fn spawn_log_retention(path: std::path::PathBuf, writer: FileMakeWriter) {
+    let hours: u64 = std::env::var("LOG_RETENTION_HOURS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|h| *h > 0)
+        .unwrap_or(24);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(600)).await;
+            let cutoff = std::time::SystemTime::now()
+                .checked_sub(Duration::from_secs(hours * 3600))
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            if let Ok(md) = std::fs::metadata(&path)
+                && md.len() > LOG_ROTATE_BYTES
+            {
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let rotated = path.with_extension(format!("log.{stamp}"));
+                if std::fs::rename(&path, &rotated).is_ok() {
+                    writer.reopen();
+                }
+            }
+            let Some(parent) = path.parent().map(|p| p.to_path_buf()) else {
+                continue;
+            };
+            let stem = path
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if let Ok(entries) = std::fs::read_dir(&parent) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !name.starts_with(&format!("{stem}.")) {
+                        continue;
+                    }
+                    let Ok(md) = entry.metadata() else { continue };
+                    let Ok(modified) = md.modified() else { continue };
+                    if modified < cutoff {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    });
 }
 
 impl std::io::Write for FileMakeWriter {
@@ -159,7 +230,9 @@ fn init_event_logger() {
         Ok(file) => {
             let file_writer = FileMakeWriter {
                 file: Arc::new(Mutex::new(file)),
+                path: Arc::new(std::path::PathBuf::from(&log_file_path)),
             };
+            spawn_log_retention(std::path::PathBuf::from(&log_file_path), file_writer.clone());
             let file_layer = fmt::layer()
                 .with_target(true)
                 .with_ansi(false)

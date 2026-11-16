@@ -19,11 +19,11 @@ use base64::prelude::*;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Thread-safe Paced Single-Account RPC Fetcher enforcing sequential requests,
 /// strict semaphore rate limits, inter-request pacing, and automatic endpoint failover.
@@ -547,8 +547,24 @@ impl MultiDexRegistry {
             let refs_owned: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
             let refs: Vec<&str> = refs_owned.iter().map(|s| s.as_str()).collect();
             let Ok((accounts, slot)) = rpc.get_multiple_accounts_with_slot(&refs).await else {
+                // RPC starvation used to be swallowed here: pools silently went
+                // stale and every downstream tick was skipped (283 skipped ticks
+                // measured in one 150s run). Make the failure LOUD on transition
+                // and every 20th consecutive failure, plus an explicit recovery.
+                let n = CONSECUTIVE_RPC_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n % 20 == 0 {
+                    warn!(
+                        "batch_fetch_accounts: RPC failure x{n} consecutive (chunk of {} keys) — pools will go stale and ticks will be skipped (fail closed); check RPC provider credits/limits",
+                        chunk.len()
+                    );
+                }
                 continue;
             };
+            if CONSECUTIVE_RPC_FAILURES.swap(0, Ordering::Relaxed) > 0 {
+                info!(
+                    "batch_fetch_accounts: RPC recovered after consecutive failures (slot {slot})"
+                );
+            }
             max_slot = max_slot.max(slot);
             for (val, pk) in accounts.into_iter().zip(chunk.iter()) {
                 let Some(acc) = val else { continue };
@@ -599,6 +615,31 @@ impl MultiDexRegistry {
         let vault_slot =
             Self::batch_fetch_accounts(&self.rpc, &vault_pubkeys, &mut vault_data_map).await;
         max_observed_slot = max_observed_slot.max(vault_slot);
+
+        // 2b. CPMM AmmConfig accounts — the swap fee lives here (trade_fee_rate
+        // u64 LE @12), not in the pool account. Batch-fetched so the fee is
+        // always the live on-chain value, never a catalog guess.
+        let mut cpmm_config_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        let mut cpmm_config_pubkeys: Vec<Pubkey> = Vec::new();
+        for p in &self.pools {
+            if p.protocol != DexProtocol::RaydiumCpmm {
+                continue;
+            }
+            if let Some((_, data)) = pool_data_map.get(&p.pool_id.0)
+                && let Some(cfg) = raydium_cpmm_amm_config_key(data)
+                && !cpmm_config_pubkeys.contains(&cfg)
+            {
+                cpmm_config_pubkeys.push(cfg);
+            }
+        }
+        let cpmm_cfg_slot = Self::batch_fetch_accounts(
+            &self.rpc,
+            &cpmm_config_pubkeys,
+            &mut cpmm_config_map,
+        )
+        .await;
+        max_observed_slot = max_observed_slot.max(cpmm_cfg_slot);
 
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
         let mut derived_pubkeys: Vec<Pubkey> = Vec::new();
@@ -751,6 +792,15 @@ impl MultiDexRegistry {
             }
         }
 
+        debug!(
+            "fetch_live_pool_states: pools_fetched={} vaults_fetched={} cpmm_cfg_fetched={} derived_fetched={} for {} registered pools",
+            pool_data_map.len(),
+            vault_data_map.len(),
+            cpmm_config_map.len(),
+            derived_data_map.len(),
+            self.pools.len()
+        );
+
         let effective_slot = Slot(max_observed_slot);
         let mut states = Vec::with_capacity(self.pools.len());
         let now_ms = u64::try_from(
@@ -785,8 +835,14 @@ impl MultiDexRegistry {
             );
             if needs_vaults && (base_bal == 0 || quote_bal == 0) {
                 debug!(
-                    "MultiDexRegistry: {:?} pool {} missing live reserves (base={} quote={})",
-                    p.protocol, p.pool_id, base_bal, quote_bal
+                    "MultiDexRegistry: {:?} pool {} missing live reserves (base={} quote={}) vault_entry(base={} quote={}) pool_bytes_len={}",
+                    p.protocol,
+                    p.pool_id,
+                    base_bal,
+                    quote_bal,
+                    vault_data_map.contains_key(&p.base_vault),
+                    vault_data_map.contains_key(&p.quote_vault),
+                    pool_data_map.get(&p.pool_id.0).map(|(_, d)| d.len()).unwrap_or(0)
                 );
                 continue;
             }
@@ -825,7 +881,10 @@ impl MultiDexRegistry {
                 (DexProtocol::PumpSwap, _) => None,
                 (DexProtocol::RaydiumV4, Some(d)) => decode_raydium_fee_bps(d),
                 (DexProtocol::RaydiumCpmm, Some(d)) => {
-                    decode_raydium_cpmm_fee_bps(d).or(Some(p.fee_bps))
+                    let cfg_fee = raydium_cpmm_amm_config_key(d)
+                        .and_then(|k| cpmm_config_map.get(&k))
+                        .and_then(|(_, cfg)| decode_raydium_cpmm_fee_bps(cfg));
+                    cfg_fee.or(Some(p.fee_bps))
                 }
                 (DexProtocol::RaydiumClmm, _) => Some(p.fee_bps.max(1)),
                 (DexProtocol::OrcaWhirlpool, Some(d)) => decode_orca_fee_bps(d),
@@ -834,8 +893,12 @@ impl MultiDexRegistry {
             };
             let Some(fee_bps) = onchain_fee_bps else {
                 debug!(
-                    "MultiDexRegistry: {:?} pool {} — on-chain fee undecodable; skipping (fail closed)",
-                    p.protocol, p.pool_id
+                    "MultiDexRegistry: {:?} pool {} — on-chain fee undecodable; skipping (fail closed) pool_bytes_len={} clmm_decoded={} dlmm_decoded={}",
+                    p.protocol,
+                    p.pool_id,
+                    pool_bytes.map(|d| d.len()).unwrap_or(0),
+                    clmm.is_some(),
+                    dlmm.is_some()
                 );
                 continue;
             };
@@ -1319,44 +1382,12 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
             })
         }
         DexProtocol::RaydiumCpmm => {
-            if data.len() < 333 {
-                return None;
-            }
-            let va: [u8; 32] = data.get(72..104)?.try_into().ok()?;
-            let vb: [u8; 32] = data.get(104..136)?.try_into().ok()?;
-            let ma: [u8; 32] = data.get(168..200)?.try_into().ok()?;
-            let mb: [u8; 32] = data.get(200..232)?.try_into().ok()?;
-            let token_a_vault = Pubkey::new_from_array(va);
-            let token_b_vault = Pubkey::new_from_array(vb);
-            let token_a_mint = Pubkey::new_from_array(ma);
-            let token_b_mint = Pubkey::new_from_array(mb);
-            if token_a_vault == Pubkey::default()
-                || token_b_vault == Pubkey::default()
-                || token_a_mint == Pubkey::default()
-                || token_b_mint == Pubkey::default()
-            {
-                return None;
-            }
-            let fee_bps = decode_raydium_cpmm_fee_bps(data).unwrap_or(25);
-            let dec_a = data[331];
-            let dec_b = data[332];
-            Some(DecodedPoolInfo {
-                token_a_mint,
-                token_b_mint,
-                token_a_vault,
-                token_b_vault,
-                fee_bps,
-                decimals_a: if (1..=18).contains(&dec_a) {
-                    Some(dec_a)
-                } else {
-                    None
-                },
-                decimals_b: if (1..=18).contains(&dec_b) {
-                    Some(dec_b)
-                } else {
-                    None
-                },
-            })
+            // Fail closed: the CPMM swap fee lives in the separate AmmConfig
+            // account (trade_fee_rate u64 LE @12), not in the pool account, so
+            // a pool-data-only decode cannot produce a verified fee. Returning
+            // a guessed fee here would fabricate an edge; use
+            // decode_raydium_cpmm_vaults + a live AmmConfig fetch instead.
+            None
         }
         DexProtocol::OrcaWhirlpool => {
             if data.len() < 245 {
@@ -1521,7 +1552,7 @@ pub async fn resolve_mints_decimals(
 /// `tick_current`: the array containing the current tick, the one below and the
 /// one above. Returns the keys plus the start tick of each, so a decoded array
 /// can be checked against the slot it was requested for.
-fn clmm_tick_array_pdas(
+pub fn clmm_tick_array_pdas(
     pool_id: &PoolId,
     tick_current: i32,
     tick_spacing: u16,
@@ -1577,7 +1608,10 @@ pub fn raydium_clmm_tick_array_pdas(
 /// directions. The number of arrays scales with `bin_step` (size-aware):
 /// enough arrays to cover ~500 bps of price impact on each side of the active
 /// bin, replacing the old fixed three-array ceiling.
-fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32, bin_step: u16) -> Vec<Pubkey> {
+/// Bin-array indices covering ~500 bps of price impact on each side of the
+/// active bin. Shared by the PDA deriver and the event-driven hydration
+/// coverage check (helius_ws.rs).
+pub fn dlmm_bin_array_indices(active_id: i32, bin_step: u16) -> Vec<i64> {
     let index = bin_id_to_bin_array_index(active_id);
     let step = u32::from(bin_step.max(1));
     let bins_traversed = 500u32 / step + 1;
@@ -1586,6 +1620,12 @@ fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32, bin_step: u16) -> Vec<Pubk
     (0..arrays_needed)
         .flat_map(|i| [index - i, index + i])
         .filter(move |i| seen.insert(*i))
+        .collect()
+}
+
+pub fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32, bin_step: u16) -> Vec<Pubkey> {
+    dlmm_bin_array_indices(active_id, bin_step)
+        .into_iter()
         .map(|i| derive_meteora_bin_array_pda(pool, i))
         .collect()
 }
@@ -1674,27 +1714,43 @@ pub fn decode_orca_fee_bps(data: &[u8]) -> Option<u16> {
     Some(fee_rate / 100)
 }
 
-/// Decode the Raydium CPMM (constant product) swap fee in basis points from the pool account.
+/// Extract the `amm_config` pubkey from Raydium CPMM pool account data.
 ///
-/// Raydium CPMM `PoolState` layout (Anchor, with 8-byte discriminator):
-/// - `trade_fee_rate` @8+136 (u64) — fee rate in hundredths of a basis point, denominator 1_000_000.
-///   bps = trade_fee_rate / 100. Verified: 25 bps = 2500.
-///
-/// Returns `None` on short account or zero denominator so the caller fails closed.
-pub fn decode_raydium_cpmm_fee_bps(data: &[u8]) -> Option<u16> {
-    // Anchor discriminator (8) + PoolState fields up to trade_fee_rate
-    // PoolState: amm_config (32) + pool_creator (32) + token_0_vault (32) + token_1_vault (32)
-    // + token_0_mint (32) + token_1_mint (32) + observation_key (32) + auth_bump (1) + status (1)
-    // + lp_mint (32) + lp_mint_decimals (1) + token_0_decimals (1) + token_1_decimals (1)
-    // + token_0_price (8) + token_1_price (8) + lp_supply (16) + protocol_fee_rate (4)
-    // + trade_fee_rate (8) ...
-    // Total before trade_fee_rate: 8(disc) + 32*8 + 1+1 + 1+1+1 + 8+8 + 16 + 4 = 8+256+3+3+16+4 = 290 bytes
-    // trade_fee_rate @8+282 = 290
-    const OFFSET: usize = 8 + 282;
-    if data.len() < OFFSET + 8 {
+/// Verified `PoolState` layout (data length 637, discriminator
+/// `f7ede3f5d7c3de46` == sha256("account:PoolState")[..8]):
+/// `amm_config` @8..40, `pool_creator` @40..72, `token_0_vault` @72..104,
+/// `token_1_vault` @104..136, `lp_mint` @136..168, `token_0_mint` @168..200,
+/// `token_1_mint` @200..232. Verified live against the mainnet SOL/USDC CPMM
+/// pool `7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny`.
+pub fn raydium_cpmm_amm_config_key(pool_data: &[u8]) -> Option<Pubkey> {
+    if pool_data.len() < 40 {
         return None;
     }
-    let rate = u64::from_le_bytes(data[OFFSET..OFFSET + 8].try_into().ok()?);
+    let key = Pubkey::new_from_array(pool_data[8..40].try_into().ok()?);
+    (key != Pubkey::default()).then_some(key)
+}
+
+/// Decode the Raydium CPMM (constant product) swap fee in basis points from the
+/// pool's **AmmConfig** account.
+///
+/// Raydium CPMM keeps fee rates in the separate `AmmConfig` account (owned by
+/// the CPMM program, data length 236), NOT in the pool account:
+/// - `bump` @8 (u8), `disable_create_pool` @9 (u8), `index` @10 (u16),
+/// - `trade_fee_rate` u64 LE @12 — denominator 1_000_000; bps = rate / 100.
+///
+/// Verified live: config `D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2` (the
+/// SOL/USDC pool's config) holds 2500 => 25 bps, matching the official Raydium
+/// API v3 `tradeFeeRate` for that pool. The previous implementation read offset
+/// 290 of the POOL account, which lands inside `token_1_program`/`observation_key`
+/// — fabricated bytes, never a fee.
+///
+/// Returns `None` on short account or zero rate so the caller fails closed.
+pub fn decode_raydium_cpmm_fee_bps(data: &[u8]) -> Option<u16> {
+    const TRADE_FEE_RATE_OFFSET: usize = 12;
+    if data.len() < TRADE_FEE_RATE_OFFSET + 8 {
+        return None;
+    }
+    let rate = u64::from_le_bytes(data[TRADE_FEE_RATE_OFFSET..TRADE_FEE_RATE_OFFSET + 8].try_into().ok()?);
     if rate == 0 {
         return None;
     }
@@ -1726,19 +1782,28 @@ mod fee_decoder_tests {
 
     #[test]
     fn raydium_cpmm_fee_reads_live_value() {
-        // trade_fee_rate = 100 => 1 bps (CPMM 1 bps tier).
-        // Offset = 8 + 282 = 290
-        let mut d = vec![0u8; 300];
-        d[290..298].copy_from_slice(&100u64.to_le_bytes());
+        // AmmConfig: trade_fee_rate u64 LE @12 = 100 => 1 bps (CPMM 1 bps tier).
+        let mut d = vec![0u8; 236];
+        d[12..20].copy_from_slice(&100u64.to_le_bytes());
         assert_eq!(decode_raydium_cpmm_fee_bps(&d), Some(1));
     }
 
     #[test]
     fn raydium_cpmm_fee_reads_25bps_value() {
-        // trade_fee_rate = 2500 => 25 bps.
-        let mut d = vec![0u8; 300];
-        d[290..298].copy_from_slice(&2500u64.to_le_bytes());
+        // AmmConfig: trade_fee_rate = 2500 => 25 bps (SOL/USDC config D4FPEru...).
+        let mut d = vec![0u8; 236];
+        d[12..20].copy_from_slice(&2500u64.to_le_bytes());
         assert_eq!(decode_raydium_cpmm_fee_bps(&d), Some(25));
+    }
+
+    #[test]
+    fn raydium_cpmm_amm_config_key_extracts_pool_field() {
+        let mut pool = vec![0u8; 637];
+        let cfg = Pubkey::new_unique();
+        pool[8..40].copy_from_slice(&cfg.to_bytes());
+        assert_eq!(raydium_cpmm_amm_config_key(&pool), Some(cfg));
+        assert_eq!(raydium_cpmm_amm_config_key(&[0u8; 40]), None);
+        assert_eq!(raydium_cpmm_amm_config_key(&[0u8; 10]), None);
     }
 
     #[test]
@@ -2037,7 +2102,10 @@ pub fn resolve_fee_bps(protocol: DexProtocol, pool_account_data: &[u8]) -> Optio
             if bps > 10_000 { None } else { Some(bps) }
         }
         DexProtocol::RaydiumClmm => None,
-        DexProtocol::RaydiumCpmm => decode_raydium_cpmm_fee_bps(pool_account_data),
+        // Fail closed: the CPMM fee lives in the separate AmmConfig account,
+        // not in pool data. `fetch_live_pool_states` resolves it via
+        // raydium_cpmm_amm_config_key + a live AmmConfig batch fetch.
+        DexProtocol::RaydiumCpmm => None,
         DexProtocol::PumpFun => None,
         DexProtocol::PumpSwap => None,
         DexProtocol::MeteoraDammV2 => None,
@@ -2046,6 +2114,11 @@ pub fn resolve_fee_bps(protocol: DexProtocol, pool_account_data: &[u8]) -> Optio
 }
 
 static POOL_WRITE_VERSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Consecutive `getMultipleAccounts` failures across all `batch_fetch_accounts`
+/// call sites. Non-zero means RPC starvation: pools go stale and downstream
+/// ticks are skipped (fail closed). Reset on the first success.
+static CONSECUTIVE_RPC_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 /// Monotonic write version shared between HTTP registry refreshes and live WS pool updates.
 pub fn next_pool_write_version() -> u64 {
@@ -2333,28 +2406,17 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_pool_info_raydium_cpmm() {
+    fn test_decode_pool_info_raydium_cpmm_fails_closed() {
+        // The CPMM fee lives in the separate AmmConfig account, so a
+        // pool-data-only decode must not fabricate one.
         let mut data = vec![0u8; 350];
-        let va = Pubkey::new_unique();
-        let vb = Pubkey::new_unique();
-        let ma = Pubkey::new_unique();
-        let mb = Pubkey::new_unique();
-        data[72..104].copy_from_slice(&va.to_bytes());
-        data[104..136].copy_from_slice(&vb.to_bytes());
-        data[168..200].copy_from_slice(&ma.to_bytes());
-        data[200..232].copy_from_slice(&mb.to_bytes());
+        data[72..104].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[104..136].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[168..200].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[200..232].copy_from_slice(&Pubkey::new_unique().to_bytes());
         data[331] = 9;
         data[332] = 6;
-        data[290..298].copy_from_slice(&2500u64.to_le_bytes());
-
-        let info = decode_pool_info(DexProtocol::RaydiumCpmm, &data).expect("valid Raydium CPMM");
-        assert_eq!(info.token_a_vault, va);
-        assert_eq!(info.token_b_vault, vb);
-        assert_eq!(info.token_a_mint, ma);
-        assert_eq!(info.token_b_mint, mb);
-        assert_eq!(info.fee_bps, 25);
-        assert_eq!(info.decimals_a, Some(9));
-        assert_eq!(info.decimals_b, Some(6));
+        assert!(decode_pool_info(DexProtocol::RaydiumCpmm, &data).is_none());
     }
 
     #[test]
@@ -2547,10 +2609,12 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_fee_bps_raydium_cpmm() {
-        let mut data = vec![0u8; 300];
-        data[290..298].copy_from_slice(&100u64.to_le_bytes()); // 1 bps
-        assert_eq!(resolve_fee_bps(DexProtocol::RaydiumCpmm, &data), Some(1));
+    fn test_resolve_fee_bps_raydium_cpmm_fails_closed() {
+        // The CPMM fee lives in the separate AmmConfig account; a pool-data-only
+        // resolve must return None (never a guessed tier).
+        let mut data = vec![0u8; 637];
+        data[290..298].copy_from_slice(&100u64.to_le_bytes()); // stale-offset noise
+        assert_eq!(resolve_fee_bps(DexProtocol::RaydiumCpmm, &data), None);
     }
 
     // ---- compute_dlmm_reserves fail-closed forensics (soak10/11 phantom ROI) ----
