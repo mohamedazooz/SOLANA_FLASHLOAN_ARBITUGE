@@ -212,6 +212,33 @@ pub struct ThreeLegMemePipelineResult {
     pub expected_min_final_output: u64,
 }
 
+impl ThreeLegMemePipelineResult {
+    /// Return the canonical HopExecutionPlan enforcing that `previous_hop.min_amount_out >= next_hop.amount_in`.
+    pub fn hop_execution_plan(&self) -> arb_types::HopExecutionPlan {
+        let plan = arb_types::HopExecutionPlan {
+            legs: vec![
+                arb_types::HopExecutionLeg {
+                    amount_in: self.legs[0].amount_in,
+                    min_amount_out: self.context.leg_1_params.min_amount_out,
+                },
+                arb_types::HopExecutionLeg {
+                    amount_in: self.legs[1].amount_in,
+                    min_amount_out: self.context.leg_2_params.min_amount_out,
+                },
+                arb_types::HopExecutionLeg {
+                    amount_in: self.legs[2].amount_in,
+                    min_amount_out: self.context.leg_3_params.min_amount_out,
+                },
+            ],
+        };
+        debug_assert!(
+            plan.validate_sequential_solvency(),
+            "Canonical HopExecutionPlan violated sequential solvency"
+        );
+        plan
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ThreeLegMemePipelineError {
     #[error("no 3-leg WSOL -> A -> B -> WSOL cycle found among {pools} candidate pools")]
