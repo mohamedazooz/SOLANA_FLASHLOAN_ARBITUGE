@@ -1,0 +1,7 @@
+[Unit]
+Description=Arb Bot Process and Health Watchdog
+After=arb-bot.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/solana-arb-bot/scripts/arb_bot_watchdog.sh
