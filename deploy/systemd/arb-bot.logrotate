@@ -1,0 +1,13 @@
+/var/log/arb-bot/*.log {
+    daily
+    missingok
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 solana solana
+    sharedscripts
+    postrotate
+        systemctl reload arb-bot > /dev/null 2>/dev/null || true
+    endscript
+}
