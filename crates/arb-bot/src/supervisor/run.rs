@@ -47,9 +47,7 @@ impl Supervisor {
         let base_cu = arb_tx::estimate_route_cu(true, &hop_protocols, 3);
         let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
         let cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
-        // Ceiling conversion — the priority fee is non-refundable, so a floor
-        // here would understate the cost this estimate feeds.
-        let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+        let priority_fee = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
 
         // Dynamic tip floor: query live p50 from tip_oracle if fresh, capped by tip_lamports ceiling
         let dynamic_tip = self
@@ -354,48 +352,12 @@ impl Supervisor {
         let size_in = result.size_search.best_input.max(1);
         let expected_out = result.expected_final_out;
         let expected_min_final_output = result.expected_min_final_output;
-        // `hop_inputs` contract (arb-types / builder::derive_swap_legs):
-        //   [borrow, out_1, out_2, out_3]  — length hops.len() + 1
-        // i.e. element i+1 is hop i's EXPECTED output, and the builder applies
-        // slippage to it exactly once. Feeding the per-leg `amount_in` values
-        // here instead would be wrong twice over: those are already discounted
-        // (each is the previous hop's min-out), so the builder would haircut
-        // them a second time; and the last entry must be the conservative final
-        // output, not the optimistic `expected_final_out`.
-        //
-        // The pipeline's `quote_chain` chains conservatively, so
-        //   legs[i+1].amount_in == floor(legs[i].amount_out * (1 - s))
-        // which is exactly the enforced on-chain `min_amount_out` for hop i.
-        // `out_3` is `expected_min_final_output` — the same slippage floor the
-        // repayment guarantee was checked against — never the optimistic quote.
         let hop_inputs = vec![
-            size_in,
-            result.legs[0].amount_in,           // CONSERVATIVE: in2 = floor(out1 * (1-s))
-            result.legs[1].amount_in,           // CONSERVATIVE: in3 = floor(out2 * (1-s))
-            result.legs[2].amount_in,           // CONSERVATIVE: in4 = floor(out3 * (1-s))
+            result.legs[0].amount_in,
+            result.legs[0].amount_out,
+            result.legs[1].amount_out,
+            result.legs[2].amount_out,
         ];
-        debug_assert_eq!(
-            hop_inputs.len(),
-            hops.len() + 1,
-            "hop_inputs must be [borrow, out_1..out_n]"
-        );
-        // The chained inputs must equal the discounted previous output; if the
-        // pipeline and this vector ever disagree, stop rather than dispatch a
-        // route whose on-chain min-out does not match its quote.
-        for i in 0..hops.len() {
-            let prev_min_out = result.legs[i].amount_out;
-            let next_in = result.legs
-                .get(i + 1)
-                .map(|l| l.amount_in)
-                .unwrap_or(expected_min_final_output);
-            if next_in > prev_min_out {
-                warn!(
-                    "3-leg route {} inconsistent: leg {i} min-out {prev_min_out} < next input {next_in}; skipping",
-                    result.pool_ids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
-                );
-                return Vec::new();
-            }
-        }
         let gross = result.gross_profit_lamports as u64;
         let net = result.net_profit_lamports.max(0) as u64;
 

@@ -2,28 +2,22 @@
 name = "arb-executor"
 version = "0.1.0"
 edition = "2024"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-anchor-lang = "0.31.0"
-anchor-spl = "0.31.0"
-solana-program = "2.1.14"
-
-soluma-deps = { version = "0.1.0", features = ["cpi"] }
+license = "MIT OR Apache-2.0"
 
 [features]
-default = ["cpi"]
-cpi = []  # Enable if this crate is used via CPI
+default = []
+no-entrypoint = []
 
-[profile.release]
-overflow-checks = true
-call-conv = "tail"
-strip = "debuginfo"
-max-args = 255
-max-basic-blocks = 10000
-max-funcs = 10000
-max-instructions = 100000
-max-mem = "2GB"
-max-stack = "1MB"
+[dependencies]
+solana-address = { version = "=2.7.0", default-features = false }
+solana-pubkey = { workspace = true }
+solana-instruction = { version = "=3.5.0", default-features = false }
+solana-account-info = { version = "=3.1.1", default-features = false }
+solana-cpi = { version = "=3.1.0", default-features = false }
+solana-program-error = { version = "=3.0.1", default-features = false }
+solana-program-entrypoint = { version = "=3.1.1", default-features = false }
+borsh = { version = "1", features = ["derive"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
