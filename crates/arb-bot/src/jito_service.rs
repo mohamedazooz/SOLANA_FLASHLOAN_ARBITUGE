@@ -97,6 +97,10 @@ pub struct JitoServiceConfig {
     /// slot. This remains overrideable by callers that intentionally want a
     /// legacy fail-open fallback.
     pub tip_on_unknown_leader: bool,
+    /// Minimum edge in lamports required to qualify for SWQoS direct execution fallback.
+    pub swqos_fallback_hurdle_lamports: u64,
+    /// Priority fee in lamports used for SWQoS direct execution fallback.
+    pub swqos_fallback_priority_fee_lamports: u64,
 }
 
 impl Default for JitoServiceConfig {
@@ -112,6 +116,8 @@ impl Default for JitoServiceConfig {
             kobe_url: KOBE_VALIDATORS_URL.to_string(),
             ledger_path: None,
             tip_on_unknown_leader: false,
+            swqos_fallback_hurdle_lamports: SWQOS_MIN_EDGE_HURDLE_LAMPORTS,
+            swqos_fallback_priority_fee_lamports: SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS,
         }
     }
 }
@@ -243,18 +249,18 @@ impl JitoService {
         let route = if self.bids_for(slot) {
             if tip.is_bid() {
                 ExecutionRoute::Bundle
-            } else if !is_hot_write_lock && edge.0 >= SWQOS_MIN_EDGE_HURDLE_LAMPORTS {
-                // Hybrid SWQoS fallback: if trade is calm and profitable (covers 5k base + 2k priority + profit),
+            } else if !is_hot_write_lock && edge.0 >= self.config.swqos_fallback_hurdle_lamports {
+                // Hybrid SWQoS fallback: if trade is calm and profitable (covers base + priority + profit),
                 // route directly to SWQoS!
                 ExecutionRoute::SwqosDirect {
-                    priority_fee_lamports: SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS,
+                    priority_fee_lamports: self.config.swqos_fallback_priority_fee_lamports,
                 }
             } else {
                 ExecutionRoute::Bundle
             }
-        } else if !is_hot_write_lock && edge.0 >= SWQOS_MIN_EDGE_HURDLE_LAMPORTS {
+        } else if !is_hot_write_lock && edge.0 >= self.config.swqos_fallback_hurdle_lamports {
             ExecutionRoute::SwqosDirect {
-                priority_fee_lamports: SWQOS_DEFAULT_PRIORITY_FEE_LAMPORTS,
+                priority_fee_lamports: self.config.swqos_fallback_priority_fee_lamports,
             }
         } else {
             ExecutionRoute::PlainRpc

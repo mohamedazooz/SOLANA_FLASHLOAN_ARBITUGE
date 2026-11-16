@@ -69,6 +69,18 @@ fn default_leader_gate_enabled() -> bool {
 fn default_leader_refresh_secs() -> u64 {
     60
 }
+fn default_swqos_fallback_hurdle_lamports() -> u64 {
+    8_000
+}
+fn default_swqos_fallback_priority_fee_lamports() -> u64 {
+    2_000
+}
+fn default_contingency_buffer_lamports() -> u64 {
+    10_000
+}
+fn default_max_implausible_roi_bps() -> u64 {
+    1_500
+}
 
 impl Default for ChronosConfig {
     fn default() -> Self {
@@ -127,6 +139,12 @@ pub struct JitoConfig {
     /// Interval between leader-schedule refreshes, in seconds.
     #[serde(default = "default_leader_refresh_secs")]
     pub leader_refresh_secs: u64,
+    /// Minimum edge in lamports required to qualify for SWQoS direct submission fallback.
+    #[serde(default = "default_swqos_fallback_hurdle_lamports")]
+    pub swqos_fallback_hurdle_lamports: u64,
+    /// Priority fee in lamports used for SWQoS direct submission fallback.
+    #[serde(default = "default_swqos_fallback_priority_fee_lamports")]
+    pub swqos_fallback_priority_fee_lamports: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -188,6 +206,10 @@ pub struct StrategyConfig {
     /// account-update stream. Operators may re-enable explicitly.
     #[serde(default)]
     pub http_discovery_enabled: bool,
+    /// Slippage contingency buffer in lamports subtracted from net edge before
+    /// computing maximum allowable tip to protect the profit floor against slippage.
+    #[serde(default = "default_contingency_buffer_lamports")]
+    pub contingency_buffer_lamports: u64,
 }
 
 fn default_max_route_hops() -> usize {
@@ -363,6 +385,9 @@ pub struct RiskConfig {
     pub max_orders_per_hour: usize,
     #[serde(default = "default_cooldown_slots")]
     pub cooldown_slots: u64,
+    /// Maximum allowable ROI ceiling in basis points (phantom quote filter).
+    #[serde(default = "default_max_implausible_roi_bps")]
+    pub max_implausible_roi_bps: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -413,6 +438,8 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             kobe_url: arb.jito.kobe_url,
             ledger_path: arb.jito.ledger_path,
             leader_refresh_secs: arb.jito.leader_refresh_secs.0,
+            swqos_fallback_hurdle_lamports: arb.jito.swqos_fallback_hurdle_lamports.0,
+            swqos_fallback_priority_fee_lamports: arb.jito.swqos_fallback_priority_fee_lamports.0,
         },
         wallet: WalletConfig {
             keypair_path: arb.wallet.keypair_path,
@@ -436,6 +463,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             dlmm_three_leg: None,
             max_route_hops: arb.strategy.max_route_hops,
             http_discovery_enabled: arb.strategy.http_discovery_enabled,
+            contingency_buffer_lamports: arb.strategy.contingency_buffer_lamports.0,
         },
         risk: RiskConfig {
             max_trade_size_usd: usd(arb.risk.max_trade_size_usd),
@@ -448,6 +476,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             max_tip_spend_ratio: arb.risk.max_tip_spend_ratio,
             max_orders_per_hour: arb.risk.max_orders_per_hour,
             cooldown_slots: arb.risk.cooldown_slots.0,
+            max_implausible_roi_bps: arb.risk.max_implausible_roi_bps.0 as u64,
         },
         store: StoreConfig { url: arb.store.url },
         metrics: MetricsConfig {

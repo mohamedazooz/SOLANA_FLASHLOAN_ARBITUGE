@@ -162,6 +162,12 @@ pub struct JitoConfig {
     /// Interval between leader-schedule refreshes (seconds).
     #[serde(default = "default_leader_refresh_secs")]
     pub leader_refresh_secs: Seconds,
+    /// Minimum edge in lamports required to qualify for SWQoS direct execution fallback.
+    #[serde(default = "default_swqos_fallback_hurdle_lamports")]
+    pub swqos_fallback_hurdle_lamports: Lamports,
+    /// Priority fee in lamports used for SWQoS direct execution fallback.
+    #[serde(default = "default_swqos_fallback_priority_fee_lamports")]
+    pub swqos_fallback_priority_fee_lamports: Lamports,
 }
 
 /// Jupiter swap API configuration.
@@ -231,6 +237,10 @@ pub struct StrategyConfig {
     /// pass account validation. Operators may re-enable explicitly.
     #[serde(default)]
     pub http_discovery_enabled: bool,
+    /// Slippage contingency buffer in lamports subtracted from net edge before
+    /// computing maximum allowable tip to protect the profit floor against slippage.
+    #[serde(default = "default_contingency_buffer_lamports")]
+    pub contingency_buffer_lamports: Lamports,
 }
 
 fn default_max_route_hops() -> usize {
@@ -261,6 +271,9 @@ pub struct RiskConfig {
     pub max_orders_per_hour: usize,
     /// Circuit-breaker cooldown window (slots).
     pub cooldown_slots: Slot,
+    /// Maximum allowable ROI ceiling in basis points (phantom quote filter).
+    #[serde(default = "default_max_implausible_roi_bps")]
+    pub max_implausible_roi_bps: Bps,
 }
 
 /// Chronos expected-value gate configuration.
@@ -344,6 +357,18 @@ fn default_leader_gate_enabled() -> bool {
 fn default_leader_refresh_secs() -> Seconds {
     Seconds(60)
 }
+fn default_swqos_fallback_hurdle_lamports() -> Lamports {
+    Lamports(8_000)
+}
+fn default_swqos_fallback_priority_fee_lamports() -> Lamports {
+    Lamports(2_000)
+}
+fn default_contingency_buffer_lamports() -> Lamports {
+    Lamports(10_000)
+}
+fn default_max_implausible_roi_bps() -> Bps {
+    Bps(1_500)
+}
 fn default_max_request_body() -> usize {
     1_048_576 // 1 MiB
 }
@@ -389,6 +414,8 @@ impl AppConfig {
                 kobe_url: None,
                 ledger_path: Some("data/adaptive_ledger.json".to_string()),
                 leader_refresh_secs: Seconds(60),
+                swqos_fallback_hurdle_lamports: Lamports(8_000),
+                swqos_fallback_priority_fee_lamports: Lamports(2_000),
             },
             jupiter: JupiterConfig {
                 base_url: "https://api.jup.ag/swap/v2".to_string(),
@@ -416,6 +443,7 @@ impl AppConfig {
                 discovery_min_tvl_usd: Some(UsdMicros(25_000_000_000)), // $25,000
                 max_route_hops: 3,
                 http_discovery_enabled: false,
+                contingency_buffer_lamports: Lamports(10_000),
             },
             risk: RiskConfig {
                 max_trade_size_usd: UsdMicros(10_000_000_000), // $10,000
@@ -428,6 +456,7 @@ impl AppConfig {
                 max_tip_spend_ratio: 0.7,
                 max_orders_per_hour: 120,
                 cooldown_slots: Slot(75),
+                max_implausible_roi_bps: Bps(1_500),
             },
             chronos: ChronosConfig {
                 enabled: true,

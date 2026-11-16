@@ -129,7 +129,7 @@ impl Supervisor {
             // P_net = G - C_fees - T_Jito >= $0.20 USD
             // T_max = G - C_fees - $0.20 - B
             let min_net_floor = self.config.strategy.min_net_profit_abs;
-            let contingency_buffer = 10_000u64; // B
+            let contingency_buffer = self.config.strategy.contingency_buffer_lamports; // B
             let t_max = net_before_tip
                 .saturating_sub(min_net_floor)
                 .saturating_sub(contingency_buffer);
@@ -375,7 +375,7 @@ impl Supervisor {
             let max_implausible_roi_bps: u128 = std::env::var("ARB_MAX_IMPLAUSIBLE_ROI_BPS")
                 .ok()
                 .and_then(|v| v.trim().parse::<u128>().ok())
-                .unwrap_or(1_500); // 15% ceiling
+                .unwrap_or(self.config.risk.max_implausible_roi_bps as u128);
             if implied_roi_bps > max_implausible_roi_bps {
                 warn!(
                     "Opportunity rejected: implied ROI {implied_roi_bps} bps exceeds implausibility ceiling {max_implausible_roi_bps} bps (stale-quote artifact); route={route_label} size_in={} slot={}",

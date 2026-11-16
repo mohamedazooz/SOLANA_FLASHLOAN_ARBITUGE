@@ -22,7 +22,23 @@ impl Default for JupiterClient {
 }
 
 impl JupiterClient {
+    /// Default Jupiter Swap API v2 endpoint matching `config/base.toml`.
+    pub const DEFAULT_ENDPOINT: &'static str = "https://api.jup.ag/swap/v2";
+
+    /// Create a new JupiterClient using the default endpoint or `JUPITER_BASE_URL` env var.
     pub fn new() -> Self {
+        let endpoint = std::env::var("JUPITER_BASE_URL")
+            .unwrap_or_else(|_| Self::DEFAULT_ENDPOINT.to_string());
+        Self::with_endpoint(endpoint)
+    }
+
+    /// Create a new JupiterClient with a custom base URL.
+    pub fn with_endpoint(endpoint: impl Into<String>) -> Self {
+        Self::with_endpoint_and_timeout(endpoint, Duration::from_millis(3000))
+    }
+
+    /// Create a new JupiterClient with a custom base URL and request timeout.
+    pub fn with_endpoint_and_timeout(endpoint: impl Into<String>, timeout: Duration) -> Self {
         let mut api_keys = Vec::new();
         if let Ok(key) = std::env::var("JUPITER_API_KEY")
             && !key.trim().is_empty()
@@ -46,7 +62,7 @@ impl JupiterClient {
 
         let client = Client::builder()
             .default_headers(headers)
-            .timeout(Duration::from_millis(3000))
+            .timeout(timeout)
             .build()
             .unwrap_or_default();
 
@@ -54,8 +70,13 @@ impl JupiterClient {
             api_keys,
             current_key_idx: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             client,
-            endpoint: "https://api.jup.ag/swap/v1".to_string(),
+            endpoint: endpoint.into().trim_end_matches('/').to_string(),
         }
+    }
+
+    /// Current base URL endpoint.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
     }
 
     /// Fetch quote from Jupiter v6 API with automated multi-key rotation on 429
@@ -166,6 +187,9 @@ mod tests {
     fn test_jupiter_client_init() {
         let client = JupiterClient::new();
         // Keys are read from env, not hardcoded — empty is valid when no env key is set.
+        assert_eq!(client.endpoint(), "https://api.jup.ag/swap/v2");
+        let custom = JupiterClient::with_endpoint("https://custom.jupiter.api/swap/v2/");
+        assert_eq!(custom.endpoint(), "https://custom.jupiter.api/swap/v2");
         info!(
             "JupiterClient initialized with {} API key(s)",
             client.api_keys.len()

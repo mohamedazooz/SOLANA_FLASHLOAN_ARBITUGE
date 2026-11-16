@@ -383,6 +383,8 @@ impl Supervisor {
             // a tip into a non-Jito slot. The service config still exposes the
             // explicit override for an allowlist/legacy opt-in mode.
             tip_on_unknown_leader: !config.jito.leader_gate_enabled,
+            swqos_fallback_hurdle_lamports: config.jito.swqos_fallback_hurdle_lamports,
+            swqos_fallback_priority_fee_lamports: config.jito.swqos_fallback_priority_fee_lamports,
         };
         let jito_service =
             Arc::new(JitoService::new(jito_service_config).expect("valid jito service config"));

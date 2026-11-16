@@ -11,7 +11,7 @@ use std::cmp;
 
 pub const DEFAULT_FLASH_LOAN_FEE_BPS: u64 = 30;
 pub const DEFAULT_RAYDIUM_FEE_BPS: u64 = 25;
-pub const MIN_NET_PROFIT_LAMPORTS: u64 = 30_000;
+pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PumpFunParams {
