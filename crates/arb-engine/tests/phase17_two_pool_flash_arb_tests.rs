@@ -301,7 +301,7 @@ fn borrow_above_the_pool_capacity_is_rejected() {
     let mut cfg = config(allowlist());
     let capacity = route
         .pool_a
-        .active_bin_max_input(&route.flash_mint, &route.mid_mint)
+        .traversable_max_input(&route.flash_mint, &route.mid_mint)
         .expect("capacity");
     let probe_size = capacity.saturating_add(1_000_000_000);
     cfg.max_borrow = probe_size;

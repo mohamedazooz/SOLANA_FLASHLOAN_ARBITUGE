@@ -139,6 +139,11 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
         if quote.amount_out == 0 {
             return None;
         }
+        // lb_clmm 0.12.0: a swap instruction aborts above 260 traversed bins.
+        // A quote beyond that limit is unexecutable — fail closed.
+        if quote.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
+            return None;
+        }
         Some((quote.amount_out, quote, swap_for_y))
     }
 

@@ -53,7 +53,7 @@ pub use meteora_size_optimizer::{
 pub use three_leg_meme_pipeline::{
     ThreeLegMemeContextParams, ThreeLegMemeLegQuote, ThreeLegMemePipelineError,
     ThreeLegMemePipelineResult, ThreeLegMemeSizeSearchResult, build_three_leg_meme_pipeline,
-    simulate_profitability_gate,
+    diagnose_missing_cycles, simulate_profitability_gate,
 };
 
 use arb_math::{
