@@ -85,6 +85,20 @@ A full clean test run was conducted across all workspace crates and target binar
   - Unit tests: 6 passed
   - `dimensional_currency_tests`: 7 passed (`test_compile_time_typed_amount_safety`, `test_negative_invalid_cross_currency_addition_rejected`, etc.)
 
+### 8. `webhook-service` (Fast Webhook Ingest Microservice)
+- **Status**: **28 passed; 0 failed**
+- **Breakdown**:
+  - `src/lib.rs` unit tests: 11 passed (rate limit, secret redaction, env resolution)
+  - `tests/bitquery_test.rs`: 3 passed
+  - `tests/security_hardening_tests.rs`: 6 passed (HMAC verification, rate limit middleware, replay age guard)
+  - `tests/solami_webhook_test.rs`: 4 passed (batch processing, authentication, dedup)
+  - `tests/webhook_tests.rs`: 4 passed (precision deserialization, router, evaluator)
+
+### 9. `web` (Operator Monitoring Dashboard)
+- **Status**: **Clean production build (0 TypeScript errors)**
+- **Command**: `cd web; npm run build`
+- **Output**: `tsc -b && vite build` completed in 2.15s (`dist/index.html`, `dist/assets/index-DVjQMAbR.css`, `dist/assets/index-Usx7VelH.js`).
+
 ---
 
 ## 3. Adversarial & Fuzzing Test Results
