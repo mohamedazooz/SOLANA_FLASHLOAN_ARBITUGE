@@ -65,3 +65,6 @@ Thumbs.db
 web/dist/
 web/node_modules/
 web/tsconfig.tsbuildinfo
+
+# Local archive snapshots (never commit workspace archives)
+*.rar
