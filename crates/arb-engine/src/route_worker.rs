@@ -5,8 +5,6 @@
 //! to completely eliminate slippage and maximize net atomic profit.
 
 use arb_ingest::RpcPool;
-#[cfg(feature = "split-routing")]
-use arb_types::ExecutionOpportunity;
 use arb_types::{DexProtocol, Lamports, PoolId, PoolState};
 use base64::prelude::*;
 use std::sync::Arc;

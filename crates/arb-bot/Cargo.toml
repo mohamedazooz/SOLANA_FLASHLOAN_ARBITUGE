@@ -9,6 +9,9 @@ autobins = false
 default = []
 split-routing = ["arb-engine/split-routing"]
 extra-ingest = ["arb-ingest/extra-ingest"]
+# Compile-in fail-closed shadow mode: live/canary arming is ignored and the
+# binary always runs in simulate. Used by the Docker shadow image.
+shadow-only = []
 
 [lib]
 name = "arb_bot"
