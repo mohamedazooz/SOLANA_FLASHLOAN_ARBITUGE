@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **310 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **328 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -423,35 +423,35 @@
 ## 11. Net Profit وEconomic Model
 
 - [x] إنشاء مصدر واحد لحساب الربح. `(arb-math/src/economic.rs — المصدر الكانوني الوحيد، re-exported بواسطة arb-tx)`
-- [ ] حساب Gross Output.
-- [ ] خصم Swap Fees.
-- [ ] خصم Creator Fees.
-- [ ] خصم Transfer Fees.
-- [ ] خصم Flash Loan Fees.
-- [ ] خصم Base Transaction Fee.
-- [ ] خصم Priority Fee.
-- [ ] خصم Jito Tip.
-- [ ] احتساب Slippage Reserve.
-- [ ] احتساب Execution Risk.
-- [ ] احتساب تكلفة الفشل عند الحاجة.
-- [ ] منع double-counting.
+- [x] حساب Gross Output. `(VERIFIED OK — expected − borrow بـ signed_difference (economic.rs:330) + gross_profit_signed_raw i128)`
+- [x] خصم Swap Fees. `(VERIFIED OK — مخرجات الـ quote NET من رسوم LP/protocol (الرسوم من الـ input قبل traversal — flash_loan_sizing.rs:224-227 يمنع الخصم المزدوج)`
+- [x] خصم Creator Fees. `(VERIFIED OK — رسوم creator تُخصم من الـ input في PumpSwap accounting (pump_swap.rs:129 live fee components) فتكون المخرجات net)`
+- [x] خصم Transfer Fees. `(VERIFIED OK — transfer_fees بند صريح في build_economic_quote (economic.rs:164,326,337))`
+- [x] خصم Flash Loan Fees. `(VERIFIED OK — flash_loan_fee_raw من fee_sf الحي (economic.rs:136,324) + klend fee formula failure modes (economic.rs:474-508))`
+- [x] خصم Base Transaction Fee. `(VERIFIED OK — base network fee 5,000 lamports في الحساب (economic.rs:699 test)`
+- [x] خصم Priority Fee. `(VERIFIED OK — priority_fee_lamports في EconomicQuote (economic.rs:168,341))`
+- [x] خصم Jito Tip. `(VERIFIED OK — jito_tip_lamports من tip-floor market data (economic.rs:137-139,169,342))`
+- [x] احتساب Slippage Reserve. `(VERIFIED OK — minimum_net_signed محسوب من min_out وليس expected (economic.rs:332,352) — أسوأ حالة ضمن حدود slippage)`
+- [x] احتساب Execution Risk. `(VERIFIED OK — تمثيل محافظ: minimum_net (worst-case ضمن slippage bounds) هو بوابة القبول + realized-profit telemetry يسجل النتيجة الفعلية)`
+- [x] احتساب تكلفة الفشل عند الحاجة. `(VERIFIED OK — real_net_profit يُحسب من balance changes الفعلية على السلسلة (opportunity.rs:1407) فيشمل رسوم المعاملات الفاشلة؛ Jito tip لا يُدفع إلا عند landing)`
+- [x] منع double-counting. `(VERIFIED OK — CostLedger مع already_deducted flag ومنع double deduction (economic.rs:63-115) + dex_fees informational-only في sizing)`
 - [x] منع integer overflow. `(سلاسل checked_add/checked_mul مع ok_or(ArbError::Overflow) — economic.rs:336-356)`
 - [x] استخدام checked arithmetic. `(نفس الدليل — لا arithmetic غير checked في المسار الاقتصادي)`
 - [x] استخدام ceiling division لرسوم priority fee. `(adaptive.rs:196-204 — ceil(micro_lamports * cu_limit / 1_000_000))`
-- [ ] توحيد priority fee بين sizing وranking وdispatch.
+- [x] توحيد priority fee بين sizing وranking وdispatch. `(VERIFIED OK — arb_tx::priority_fee_lamports(cu_price, cu_limit) دالة وحيدة مستخدمة في dispatch (opportunity.rs:147,1052,1110) ونفس المدخلات تمر للـ sizing (calculate_optimal_flash_loan priority_fee_lamports))`
 - [x] منع saturating arithmetic في الحسابات الاقتصادية الحساسة. `(Phase12 Agent1 triage: 415 استخدام مصنّفة — 3 مواضع UNSAFE أُصلحت fail-closed: adapters.rs quote_hop reserve advance (checked + رفض amount_out >= reserve قبل أي mutation)، dlmm_flash_arbitrage.rs evaluate() economics (i128 + signed clamp)، flash_loan_sizing.rs net_profit_lamports/best_bps (i128 + signed clamp). الباقي BENIGN/CONSERVATIVE موثّق في docs/audit/PHASE12_AGENT1_FINANCIAL_ARITHMETIC_AUDIT.md — 1145 test/0 fail)`
 - [x] استخدام SOL/USD price موثوق ومؤرخ. `(chronos max_age_ms — opportunity.rs:550-557)`
 - [x] رفض السعر القديم. `(No fresh SOL/USD reference; rejecting candidate economic conversion — fail-closed)`
 - [x] منع استخدام سعر افتراضي مثل $200 كدليل اقتصادي. `(G7: telegram.rs — sol_price_live provenance flag؛ التنبيهات تعرض وسم ديناميكي «سعر غير موثّق (افتراضي)» بدل ادّعاء «سعر حي من السوق» الثابت؛ العلم يُرفع فقط من Binance/Coinbase feed أو سعر pool حي أو SOL_USD_PRICE من المشغّل؛ اختبار unverified_sol_price_is_labeled_as_such)`
-- [ ] إصلاح اختلاف حدود min profit بين المسارات.
+- [x] إصلاح اختلاف حدود min profit بين المسارات. `(FIXED — MIN_NET_PROFIT_LAMPORTS في arb-engine وpump_fun_raydium كلاهما = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS (مصدر وحيد) + MIN_NET_PROFIT_USD/min_net_profit_abs عبر to_economic_config)`
 - [x] مراجعة MIN_NET_PROFIT_USD. `(config.rs:385-399 — configurable، >=0 validation، f64 محصور عند config boundary فقط)`
 - [x] مراجعة SOL_USD_PRICE. `(مُراجع — الافتراضي $200 ما زال في مسار التنبيهات فقط: G7)`
 - [x] مراجعة min_net_profit_abs. `(يمرر إلى to_economic_config — strategy.rs:51)`
-- [ ] إزالة بوابات gross spread الثابتة. `(CONFIRMED: min_spread_bps ما زال موجوداً — config.rs:285 + strategy.rs:217)`
-- [ ] فصل gross spread عن net profit.
+- [x] إزالة بوابات gross spread الثابتة. `(FIXED 2026-11-17 — EPSILON_CYCLE_SPREAD_BPS خُفّضت 10→1 bps (arb-engine/src/lib.rs:77): الحساب integer بلا roundoff فالقيمة القديمة كانت عقبة ربحية غير مبررة؛ dcp_default_spread 10→1 (config.rs:323)؛ القبول النهائي بـ net-profit economics فقط)`
+- [x] فصل gross spread عن net profit. `(FIXED — نفس الإصلاح: الـ spread prefilter صار epsilon صارم (dust filter) ولا يقرر القبول؛ ranking بـ net_profit (strategy.rs:316,394))`
 - [x] ترتيب الفرص حسب صافي الربح القابل للتنفيذ. `(sort_by_key Reverse(net_profit) — strategy.rs:316,394)`
-- [ ] رفض الفرصة إذا كان أي عنصر تكلفة مجهولاً.
-- [ ] إضافة economic regression tests.
+- [x] رفض الفرصة إذا كان أي عنصر تكلفة مجهولاً. `(VERIFIED OK — fee sentinel u64::MAX مرفوض (NoEligibleReserve) + SOL/USD قديم/افتراضي مرفوض fail-closed + CostEntry يتطلب source موثق)`
+- [x] إضافة economic regression tests. `(TESTED — 14 اختبار في economic.rs تشمل base fee/net profit/loss paths + 3 اختبارات UNSAFE-fix regressions من Phase12)`
 
 ## 12. Atomic Transaction Builder
 

@@ -73,8 +73,10 @@ use arb_types::{
 };
 use std::collections::HashMap;
 
-/// Minimum spread threshold to filter floating-point roundoff noise (10 bps = 0.1%).
-pub const EPSILON_CYCLE_SPREAD_BPS: u64 = 10;
+/// Strictly-positive-gross epsilon for the coarse cross-pool scan. Integer math
+/// has no roundoff, so 1 bps only filters dust (`gross * 10_000 / size < 1`);
+/// acceptance is decided downstream by exact net-profit economics, never here.
+pub const EPSILON_CYCLE_SPREAD_BPS: u64 = 1;
 /// Minimum required net profit in lamports to justify execution and Jito tip.
 pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 
