@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-11 commit (this push) — feat(metrics): separate runtime latency histograms 570-572 — 450/495
+* **Commit:** batch-12 commit (this push) — docs(audit): rpc duplicate-call audit 654 — 451/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -113,9 +113,17 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 11: 450 / 495 — 45 remaining.**
 
+### Batch 12 — checklist 654 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 654 Duplicate RPC calls | New inventory audit of every runtime RPC call site: startup-only / freshness-gated (vault hydration >100 slots) / batched+deduped (ATA probes) / cached (blockhash 3 s) / conditional fail-closed recovery (Kamino raw fallback) / unified client (`RpcPool` + process-wide `shared_dispatch_client`). Verdict: no duplicate-call patterns remain on the live per-tick path; `write_version: 1` on HTTP-sourced snapshots documented as an ordering token with real slot/owner provenance | `docs/audit/RPC_CALL_AUDIT.md` (new) |
+
+**Checklist after batch 12: 451 / 495 — 44 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653, 570, 571, 572.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653, 570, 571, 572, 654.
 
 ## Problems discovered (this session)
 
