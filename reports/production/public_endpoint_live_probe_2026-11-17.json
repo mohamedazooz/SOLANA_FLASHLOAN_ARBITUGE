@@ -1,0 +1,50 @@
+{
+  "generated_at_utc": "2026-11-17T13:16:04Z",
+  "rpc": {
+    "rpc_version": {
+      "feature-set": 2681577653,
+      "solana-core": "4.4.0"
+    },
+    "rpc_slot_processed": 470547135,
+    "blockhash_context_slot": 470547134,
+    "kamino_reserve_owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "kamino_reserve_discriminator_ok": true,
+    "kamino_flash_loan_fee_sf_live": 11529215046068,
+    "kamino_flash_loan_fee_sf_matches_constant": true,
+    "kamino_reserve_liquidity_mint": "So11111111111111111111111111111111111111112",
+    "kamino_reserve_liquidity_mint_is_wsol": true,
+    "kamino_wsol_available_flash_liquidity_lamports": 257088141820951,
+    "kamino_wsol_available_flash_liquidity_sol": 257088.141820951,
+    "meteora_pool_owner_is_dlmm_program": true,
+    "meteora_pool_account_bytes": 904
+  },
+  "wss": {
+    "wss_url": "wss://api.mainnet-beta.solana.com",
+    "wss_connected": true,
+    "slots_received": [
+      470547139,
+      470547140,
+      470547141,
+      470547142,
+      470547143
+    ],
+    "slot_advance_count": 4
+  },
+  "v1_simulation": {
+    "baseline_wire_bytes": 154,
+    "roundtrip_wire_bytes": 638,
+    "flash_fee_lamports": 10000,
+    "baseline_base64": {
+      "accepted": true,
+      "err": "InvalidAccountForFee",
+      "units_consumed": 0,
+      "logs_head": []
+    },
+    "roundtrip_base64": {
+      "accepted": true,
+      "err": "InvalidAccountForFee",
+      "units_consumed": 0,
+      "logs_head": []
+    }
+  }
+}

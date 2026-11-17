@@ -2,6 +2,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "programs/*"]
+exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2024"

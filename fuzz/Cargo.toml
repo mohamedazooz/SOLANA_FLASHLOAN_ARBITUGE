@@ -1,0 +1,45 @@
+[package]
+name = "arb-bot-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.arb-math]
+path = "../crates/arb-math"
+
+[dependencies.arb-types]
+path = "../crates/arb-types"
+
+[[bin]]
+name = "cpmm_quote"
+path = "fuzz_targets/cpmm_quote.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "net_profit"
+path = "fuzz_targets/net_profit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transfer_fee"
+path = "fuzz_targets/transfer_fee.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dlmm_traversal"
+path = "fuzz_targets/dlmm_traversal.rs"
+test = false
+doc = false
+bench = false
