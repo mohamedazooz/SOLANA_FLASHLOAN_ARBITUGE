@@ -829,6 +829,7 @@ impl Supervisor {
             user_destination_liquidity: payer,
             reserve_liquidity_fee_receiver: Pubkey::from_str(arb_tx::KAMINO_WSOL_FEE_VAULT)
                 .unwrap(),
+            liquidity_mint: Pubkey::from_str(arb_tx::WSOL_MINT).unwrap(),
         };
 
         let mut last_snapshot_digest = Instant::now();

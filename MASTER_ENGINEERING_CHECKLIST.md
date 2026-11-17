@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **158 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **338** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 وG9 صارتا PARTIAL/FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **333** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -74,7 +74,7 @@
 | G3 | **FIXED/TESTED (PR #56, commit 804d386)**: `QuoteReadinessContext`/`DependencyManifest` مربوطة — بوابة `validate_route_account_dependencies` في `process_opportunities` (opportunity.rs:75) تستدعي `quote_dependencies_for_route` مع manifests من `manifest_for_registered_pool` (مصدر وحيد)؛ + إصلاح provenance في `helius_ws.rs` (provider_id من yellowstone بدل ProviderId(2) الثابت) | `supervisor/opportunity.rs:75,1424`, `arb-ingest/src/lib.rs:766` |
 | G4 | **MITIGATED/VERIFIED (PR #53 + PR #56)**: reconcile sweep دوري بحد أدنى 30s بدل كل slot notification؛ والبوابات الجديدة (G2/G3) تمنع أي حالة قديمة من الوصول للتسعير/التنفيذ. الحد المتبقي: vault updates للـ DLMM/CLMM/Orca/PumpFun ما زالت عبر hydration وليست streams | `supervisor/run.rs` — min_gap reconciliation |
 | G5 | Solami Mirage parser لا يستخرج حقول protobuf حقيقية: يستخدم `latest_slot` محلي، `pubkey: None`, `write_version: None`، وغير موصّل بالبوت | `solami_mirage.rs:138-140` |
-| G6 | **PARTIAL/MITIGATED**: حارس fail-closed جديد `flash_mint_matches_kamino_reserve()` — أي config بـ flash mint ≠ WSOL مع WSOL reserve (والعكس) يُرفض بـ `FLASH_MINT_RESERVE_MISMATCH` قبل أي حساب؛ هذا أكّد أن rehearsal كان سيقيّم USDC flash loan بمخاطبة WSOL reserve. `FLASH_BORROW_MINT`/`FLASH_BORROW_MINT_DECIMALS` env يسمحان بأصل اقتراض غير WSOL في الـ rehearsal. المتبقي: اختيار أفضل reserve اقتصادياً تلقائياً من مسح Kamino reserves الحي | dlmm_flash_arbitrage.rs — 3 اختبارات جديدة |
+| G6 | **FIXED/TESTED**: (1) حارس fail-closed `flash_mint_matches_kamino_reserve()` يرفض أي config بـ flash mint ≠ WSOL مع WSOL reserve (والعكس) بـ `FLASH_MINT_RESERVE_MISMATCH`؛ (2) **اختيار حي اقتصادي تلقائي** — `select_kamino_flash_reserve` يمسح reserves السوق الرئيسية (WSOL+USDC) حياً عبر `decode_reserve_candidate` (mint/decimals/status/fee_sf/supply+fee vaults من البايتات الحية؛ offsets @152/@184 تحققت empirically ضد ثوابت WSOL 2026-11-17)، يفلتر (active + fee enabled + سيولة حية ≥ min_borrow) ويختار أقل fee ثم الأعمق سيولة، fail-closed عند لا مرشح؛ (3) `KaminoFlashParams.liquidity_mint` generalized + `from_candidate`؛ (4) مربوط بالـ rehearsal (`[2c]` دليل حي: fee_sf 11529215046068، سيولة 257,399 SOL، 2 candidates) | kamino.rs — 3 اختبارات جديدة + rehearsal حي |
 | G7 | **FIXED/TESTED**: علم provenance `sol_price_live` في TelegramNotifier — قيمة $200 الافتراضية لم تعد تُقدَّم كدليل سوق؛ التنبيهات تعرض وسم «سعر غير موثّق» حتى يأتي سعر حي (Binance/Coinbase أو pool SOL/USDC أو SOL_USD_PRICE) | telegram.rs — `unverified_sol_price_is_labeled_as_such` |
 | G8 | **FIXED/TESTED**: gating ثنائي لـ slotSubscribe — env `WS_SLOT_SUBSCRIBE` + رفض حي (id=1) يعطّل slot sub فقط دون `endpoint_unsupported`؛ slot freshness يعتمد context.slot من accountNotification | helius_ws.rs — اختباران جديدان |
 | G9 | **FIXED/TESTED**: cargo-fuzz harness كامل في `fuzz/` (مستبعد من workspace) — 4 targets: cpmm_quote / net_profit / transfer_fee / dlmm_traversal؛ 4 جلسات × 20s نظيفة (3.1M/10.2M/8.3M/2.9M runs). **الـ fuzz وجد عيباً حقيقياً**: ضرب U256 غير محمي في cpmm_out_fee/cpmm_out_upfront_fee_ceil (panic أو wrap صامت) — أُصلح بـ checked arithmetic + 2 regression tests | fuzz/ + cpmm.rs — `cpmm_out_fee_fails_closed_on_wide_inputs` |
@@ -403,10 +403,10 @@
 - [ ] التحقق من Minimum Borrow.
 - [ ] التحقق من Maximum Borrow.
 - [ ] التحقق من Token Decimals.
-- [ ] اكتشاف جميع أصول الاقتراض المتاحة.
-- [ ] عدم حصر الاختيار في WSOL دون مبرر.
-- [ ] تقييم كل reserve مؤهل.
-- [ ] اختيار أفضل أصل اقتراض اقتصادياً.
+- [x] اكتشاف جميع أصول الاقتراض المتاحة. `(G6: مسح حي لـ WSOL+USDC main-market reserves عبر decode_reserve_candidate — mint/decimals/status/fee_sf/supply+fee vaults كلها من البايتات الحية؛ offsets @152/@184 تحققت empirically ضد ثوابت WSOL المعروفة 2026-11-17)`
+- [x] عدم حصر الاختيار في WSOL دون مبرر. `(G6: KaminoFlashParams.liquidity_mint generalized — to_flash_accounts لم يعد WSOL hardcoded؛ from_candidate يبني params لأي candidate حي + ATA الخاص بمintه)`
+- [x] تقييم كل reserve مؤهل. `(G6: select_kamino_flash_reserve يفلتر حياً — active + fee enabled (sentinel u64::MAX مرفوض) + سيولة حية >= min_borrow — 3 اختبارات جديدة في kamino.rs)`
+- [x] اختيار أفضل أصل اقتراض اقتصادياً. `(G6: أقل fee أولاً ثم الأعمق سيولة عند التعادل؛ دليل حي [2c] في rehearsal 2026-11-17: مسح 2 candidates واختيار WSOL reserve d4A2prbA بـ fee_sf 11529215046068 وسيولة 257,399 SOL حية — fail-closed عند لا مرشح مؤهل)`
 - [ ] تحسين Borrow Amount.
 - [ ] ربط حجم الاقتراض بعمق المسار.
 - [ ] ربط الحجم بحدود bins وticks.

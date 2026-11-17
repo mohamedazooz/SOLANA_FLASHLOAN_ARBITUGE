@@ -440,6 +440,13 @@ pub const KAMINO_WSOL_SUPPLY_VAULT: &str = "GafNuUXj9rxGLn4y79dPu6MHSuPWeJR6UtTW
 pub const KAMINO_WSOL_FEE_VAULT: &str = "3JNof8s453bwG5UqiXBLJc77NRQXezYYEBbk3fqnoKph";
 /// Kamino USDC Reserve address.
 pub const KAMINO_USDC_RESERVE: &str = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59";
+/// USDC main-market reserve supply vault. Read live from the reserve account
+/// at `KAMINO_RESERVE_SUPPLY_VAULT_OFFSET` on 2026-11-17 (public mainnet RPC);
+/// the same offset read on the WSOL reserve reproduced the verified
+/// `KAMINO_WSOL_SUPPLY_VAULT` constant, cross-checking the layout.
+pub const KAMINO_USDC_SUPPLY_VAULT: &str = "Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6";
+/// USDC main-market reserve fee vault (same live verification as above).
+pub const KAMINO_USDC_FEE_VAULT: &str = "BbDUrk1bVtSixgQsPLBJFZEF7mwGstnD5joA1WzYvYFX";
 
 /// 8-byte Anchor discriminator: sha256("global:flash_borrow_reserve_liquidity")[0..8]
 pub const FLASH_BORROW_DISCRIMINATOR: [u8; 8] = [135, 231, 52, 167, 7, 52, 212, 193];

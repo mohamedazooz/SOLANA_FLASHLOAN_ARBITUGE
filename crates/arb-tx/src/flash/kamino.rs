@@ -239,6 +239,17 @@ pub const KAMINO_RESERVE_STATUS_OFFSET: usize = 8 + 4848;
 pub const KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET: usize = 8 + 4896;
 /// `config.status == 0` means the reserve is Active.
 pub const KAMINO_RESERVE_STATUS_ACTIVE: u8 = 0;
+/// Byte offsets of `liquidity.supply_vault` and `liquidity.fee_vault` inside
+/// the klend `Reserve` account. `ReserveLiquidity` stores `mint_pubkey(32) →
+/// supply_vault(32) → fee_vault(32)` contiguously, so with the verified mint
+/// offset above these follow at +32 each. Verified empirically against live
+/// mainnet accounts on 2026-11-17: the WSOL reserve's bytes at these offsets
+/// equal the verified `KAMINO_WSOL_SUPPLY_VAULT` / `KAMINO_WSOL_FEE_VAULT`
+/// constants, and the USDC reserve yields
+/// `Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6` (supply) /
+/// `BbDUrk1bVtSixgQsPLBJFZEF7mwGstnD5joA1WzYvYFX` (fee).
+pub const KAMINO_RESERVE_SUPPLY_VAULT_OFFSET: usize = 8 + 152;
+pub const KAMINO_RESERVE_FEE_VAULT_OFFSET: usize = 8 + 184;
 
 // ============================================================================
 // SPL Token account decoding (reserve supply vault liquidity)
@@ -265,6 +276,8 @@ pub enum KaminoReadError {
     ReserveNotActive(u8),
     #[error("token account too short: {0} bytes (need at least 72)")]
     TokenAccountTooShort(usize),
+    #[error("no eligible Kamino reserve for mint {mint} across {candidates} candidate(s)")]
+    NoEligibleReserve { mint: String, candidates: usize },
 }
 
 /// Pure decoder: extract `flash_loan_fee_sf` (U68F60 u64, 60 fractional bits)
@@ -327,6 +340,147 @@ pub fn decode_supply_vault_liquidity(
         <[u8; 8]>::try_from(&account[SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET..amount_end])
             .map_err(|_| KaminoReadError::TokenAccountTooShort(account.len()))?,
     ))
+}
+
+// ============================================================================
+// Reserve snapshot decoding + economic flash-reserve selection (G6)
+// ============================================================================
+
+/// Pure decoder: the reserve's `liquidity.supply_vault` pubkey. Verifies the
+/// Anchor discriminator and length before trusting the bytes — fail closed.
+pub fn decode_reserve_supply_vault(account: &[u8]) -> Result<Pubkey, KaminoReadError> {
+    let end = KAMINO_RESERVE_SUPPLY_VAULT_OFFSET + 32;
+    if account.len() < end {
+        return Err(KaminoReadError::AccountTooShort(account.len()));
+    }
+    if account[0..8] != KAMINO_RESERVE_DISCRIMINATOR {
+        return Err(KaminoReadError::BadDiscriminator);
+    }
+    let bytes = <[u8; 32]>::try_from(&account[KAMINO_RESERVE_SUPPLY_VAULT_OFFSET..end])
+        .map_err(|_| KaminoReadError::AccountTooShort(account.len()))?;
+    Ok(Pubkey::new_from_array(bytes))
+}
+
+/// Pure decoder: the reserve's `liquidity.fee_vault` pubkey. Same fail-closed
+/// contract as [`decode_reserve_supply_vault`].
+pub fn decode_reserve_fee_vault(account: &[u8]) -> Result<Pubkey, KaminoReadError> {
+    let end = KAMINO_RESERVE_FEE_VAULT_OFFSET + 32;
+    if account.len() < end {
+        return Err(KaminoReadError::AccountTooShort(account.len()));
+    }
+    if account[0..8] != KAMINO_RESERVE_DISCRIMINATOR {
+        return Err(KaminoReadError::BadDiscriminator);
+    }
+    let bytes = <[u8; 32]>::try_from(&account[KAMINO_RESERVE_FEE_VAULT_OFFSET..end])
+        .map_err(|_| KaminoReadError::AccountTooShort(account.len()))?;
+    Ok(Pubkey::new_from_array(bytes))
+}
+
+/// Live-decoded flash-loan facts for one klend reserve, plus its supply-vault
+/// liquidity. Every field is read from verified on-chain bytes — nothing is
+/// defaulted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KaminoReserveCandidate {
+    pub reserve: Pubkey,
+    pub mint: Pubkey,
+    pub decimals: u8,
+    pub active: bool,
+    pub flash_loan_fee_sf: u64,
+    pub supply_vault: Pubkey,
+    pub fee_vault: Pubkey,
+    /// Token balance of the supply vault — the liquidity a flash borrow can
+    /// actually draw from.
+    pub available_liquidity: u64,
+}
+
+/// Decode a klend `Reserve` account plus its supply-vault token account into a
+/// [`KaminoReserveCandidate`]. The mint is read from the reserve itself (not
+/// assumed), and the vault balance is only trusted when it holds that mint.
+pub fn decode_reserve_candidate(
+    reserve: Pubkey,
+    reserve_account: &[u8],
+    supply_vault_account: &[u8],
+) -> Result<KaminoReserveCandidate, KaminoReadError> {
+    let vault_end = KAMINO_RESERVE_SUPPLY_VAULT_OFFSET + 32;
+    let fee_end = KAMINO_RESERVE_FEE_VAULT_OFFSET + 32;
+    if reserve_account.len() < fee_end.max(vault_end) {
+        return Err(KaminoReadError::AccountTooShort(reserve_account.len()));
+    }
+    if reserve_account[0..8] != KAMINO_RESERVE_DISCRIMINATOR {
+        return Err(KaminoReadError::BadDiscriminator);
+    }
+    let mint = Pubkey::new_from_array(
+        <[u8; 32]>::try_from(
+            &reserve_account
+                [KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET..KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET + 32],
+        )
+        .map_err(|_| KaminoReadError::AccountTooShort(reserve_account.len()))?,
+    );
+    let supply_vault = Pubkey::new_from_array(
+        <[u8; 32]>::try_from(&reserve_account[KAMINO_RESERVE_SUPPLY_VAULT_OFFSET..vault_end])
+            .map_err(|_| KaminoReadError::AccountTooShort(reserve_account.len()))?,
+    );
+    let fee_vault = Pubkey::new_from_array(
+        <[u8; 32]>::try_from(&reserve_account[KAMINO_RESERVE_FEE_VAULT_OFFSET..fee_end])
+            .map_err(|_| KaminoReadError::AccountTooShort(reserve_account.len()))?,
+    );
+    let decimals = reserve_account[KAMINO_RESERVE_MINT_DECIMALS_OFFSET];
+    let active = reserve_account[KAMINO_RESERVE_STATUS_OFFSET] == KAMINO_RESERVE_STATUS_ACTIVE;
+    let flash_loan_fee_sf = u64::from_le_bytes(
+        <[u8; 8]>::try_from(
+            &reserve_account[KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET
+                ..KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET + 8],
+        )
+        .map_err(|_| KaminoReadError::AccountTooShort(reserve_account.len()))?,
+    );
+    let available_liquidity = decode_supply_vault_liquidity(supply_vault_account, &mint)?;
+    Ok(KaminoReserveCandidate {
+        reserve,
+        mint,
+        decimals,
+        active,
+        flash_loan_fee_sf,
+        supply_vault,
+        fee_vault,
+        available_liquidity,
+    })
+}
+
+/// Economic selection of the flash-loan reserve (G6): among live-decoded
+/// candidates keep only those that
+///
+/// 1. lend exactly `borrow_mint` (unit integrity across the whole route),
+/// 2. are active,
+/// 3. have flash loans enabled (`flash_loan_fee_sf != u64::MAX` sentinel),
+/// 4. can actually cover `min_borrow` from live supply-vault liquidity,
+///
+/// then choose the lowest fee rate (U68F60 values are directly comparable);
+/// ties break on the deepest liquidity. Fails closed when nothing qualifies.
+pub fn select_kamino_flash_reserve(
+    candidates: &[KaminoReserveCandidate],
+    borrow_mint: &Pubkey,
+    min_borrow: u64,
+) -> Result<KaminoReserveCandidate, KaminoReadError> {
+    candidates
+        .iter()
+        .filter(|c| {
+            c.mint == *borrow_mint
+                && c.active
+                && c.flash_loan_fee_sf != u64::MAX
+                && c.available_liquidity >= min_borrow
+        })
+        .cloned()
+        .max_by(|a, b| {
+            // Reversed fee comparison so max_by yields the LOWEST fee rate;
+            // on a fee tie, prefer the DEEPEST liquidity.
+            b.flash_loan_fee_sf
+                .cmp(&a.flash_loan_fee_sf)
+                .then_with(|| a.available_liquidity.cmp(&b.available_liquidity))
+        })
+        .ok_or_else(|| KaminoReadError::NoEligibleReserve {
+            mint: borrow_mint.to_string(),
+            candidates: candidates.len(),
+        })
 }
 
 #[cfg(test)]
@@ -628,5 +782,103 @@ mod tests {
             decode_supply_vault_liquidity(&acct, &mint).unwrap(),
             u64::MAX
         );
+    }
+
+    fn fixture_reserve_with_vaults(mint: Pubkey, fee_sf: u64) -> (Vec<u8>, Pubkey, Pubkey) {
+        let mut acc = fixture_reserve(mint, fee_sf);
+        let supply = Pubkey::new_from_array([7u8; 32]);
+        let fee = Pubkey::new_from_array([8u8; 32]);
+        acc[KAMINO_RESERVE_SUPPLY_VAULT_OFFSET..KAMINO_RESERVE_SUPPLY_VAULT_OFFSET + 32]
+            .copy_from_slice(supply.as_ref());
+        acc[KAMINO_RESERVE_FEE_VAULT_OFFSET..KAMINO_RESERVE_FEE_VAULT_OFFSET + 32]
+            .copy_from_slice(fee.as_ref());
+        (acc, supply, fee)
+    }
+
+    #[test]
+    fn reserve_vault_decoders_read_verified_offsets() {
+        let (acc, supply, fee) = fixture_reserve_with_vaults(wsol(), 11_529_215_046_068);
+        assert_eq!(decode_reserve_supply_vault(&acc).unwrap(), supply);
+        assert_eq!(decode_reserve_fee_vault(&acc).unwrap(), fee);
+        let mut bad = acc.clone();
+        bad[0] ^= 0xff;
+        assert!(matches!(
+            decode_reserve_supply_vault(&bad),
+            Err(KaminoReadError::BadDiscriminator)
+        ));
+        assert!(matches!(
+            decode_reserve_fee_vault(&[0u8; 32]),
+            Err(KaminoReadError::AccountTooShort(_))
+        ));
+    }
+
+    #[test]
+    fn reserve_candidate_decodes_all_fields_fail_closed() {
+        let (acc, supply, fee) = fixture_reserve_with_vaults(wsol(), 11_529_215_046_068);
+        let vault = fixture_token_account(wsol(), Pubkey::new_unique(), 5_000_000_000);
+        let c = decode_reserve_candidate(Pubkey::new_from_array([9u8; 32]), &acc, &vault)
+            .expect("candidate must decode");
+        assert_eq!(c.mint, wsol());
+        assert_eq!(c.decimals, 9);
+        assert!(c.active);
+        assert_eq!(c.flash_loan_fee_sf, 11_529_215_046_068);
+        assert_eq!(c.supply_vault, supply);
+        assert_eq!(c.fee_vault, fee);
+        assert_eq!(c.available_liquidity, 5_000_000_000);
+        // Vault holding a different mint than the reserve's liquidity mint is
+        // rejected — the balance would be units for the wrong asset.
+        let wrong_vault = fixture_token_account(Pubkey::new_unique(), Pubkey::new_unique(), 1);
+        assert!(
+            decode_reserve_candidate(Pubkey::new_from_array([9u8; 32]), &acc, &wrong_vault)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn reserve_selection_is_economic_and_fail_closed() {
+        let wsol = wsol();
+        let mk = |reserve: u8, fee_sf: u64, liq: u64, active: bool| KaminoReserveCandidate {
+            reserve: Pubkey::new_from_array([reserve; 32]),
+            mint: wsol,
+            decimals: 9,
+            active,
+            flash_loan_fee_sf: fee_sf,
+            supply_vault: Pubkey::new_from_array([reserve; 32]),
+            fee_vault: Pubkey::new_from_array([reserve; 32]),
+            available_liquidity: liq,
+        };
+        // Lowest fee wins even against a far deeper pool.
+        let cheap = mk(1, 11_529_215_046_068, 5_000_000_000, true);
+        let deep = mk(2, 23_058_430_092_136, 500_000_000_000, true);
+        let picked =
+            select_kamino_flash_reserve(&[deep.clone(), cheap.clone()], &wsol, 1_000_000).unwrap();
+        assert_eq!(picked.reserve, cheap.reserve);
+        // Fee tie breaks on liquidity depth.
+        let deep2 = mk(3, 11_529_215_046_068, 50_000_000_000, true);
+        let picked =
+            select_kamino_flash_reserve(&[cheap, deep2.clone()], &wsol, 1_000_000).unwrap();
+        assert_eq!(picked.reserve, deep2.reserve);
+        // Mint mismatch, disabled fee sentinel, inactive reserve, and
+        // insufficient live liquidity all fail closed.
+        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
+        assert!(matches!(
+            select_kamino_flash_reserve(&[deep], &usdc, 1_000_000),
+            Err(KaminoReadError::NoEligibleReserve { .. })
+        ));
+        let disabled = mk(4, u64::MAX, 1_000_000_000, true);
+        assert!(matches!(
+            select_kamino_flash_reserve(&[disabled], &wsol, 1_000_000),
+            Err(KaminoReadError::NoEligibleReserve { .. })
+        ));
+        let inactive = mk(5, 11_529_215_046_068, 1_000_000_000, false);
+        assert!(matches!(
+            select_kamino_flash_reserve(&[inactive], &wsol, 1_000_000),
+            Err(KaminoReadError::NoEligibleReserve { .. })
+        ));
+        let thin = mk(6, 11_529_215_046_068, 999_999, true);
+        assert!(matches!(
+            select_kamino_flash_reserve(&[thin], &wsol, 1_000_000),
+            Err(KaminoReadError::NoEligibleReserve { .. })
+        ));
     }
 }
