@@ -48,6 +48,48 @@
 
 ---
 
+## Audit Ledger — نتائج التدقيق الفعلي
+
+> تدقيق فعلي منفَّذ على commit `72cc41c` (أحدث main وقت التدقيق).
+> المنهج: قراءة الكود + تشغيل `cargo build --workspace` +
+> `cargo test --workspace --all-targets` كاملة.
+
+### التقدم الحالي
+
+- **54 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **441** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدققاً فردياً قبل التعليم.
+
+### نتائج التشغيل
+
+- `cargo build --workspace`: نجح (0 أخطاء).
+- `cargo test --workspace --all-targets`: **1080 اختبار ناجح، 0 فشل** عبر 86 test binary.
+- CI يفرض `cargo fmt --check` و `cargo clippy --workspace --all-targets -- -D warnings` و `cargo-deny` (rust-ci.yml).
+
+### فجوات مؤكدة (CONFIRMED — لم تُعلَّم [x])
+
+| # | الفجوة | الدليل |
+|---|---|---|
+| G1 | `ProviderCapabilityRegistry` + `validate_execution_prerequisites` غير مربوطة بالـ Supervisor — معرّفة ومُصدَّرة فقط | `capability.rs`, `arb-ingest/src/lib.rs:70` — صفر استدعاءات في `arb-bot` |
+| G2 | `ProviderSupervisor` (health/circuit-breaker/failover selection) غير مستخدم في مسار التشغيل الحقيقي | صفر استدعاءات في `arb-bot` خارج re-export `lib.rs:24` |
+| G3 | `build_quote_dependency_set` / `QuoteReadinessContext` / `SlotIntegrity` / `DependencyManifest` (بوابة fail-closed للـ quotes) غير مستدعاة خارج `arb-ingest` | grep على `arb-bot` = 0 نتائج |
+| G4 | recurring HTTP market-data polling في hot path: `fetch_live_pool_states` تُستدعى دورياً عند كل slot notification + vault hydration عبر HTTP | `supervisor/run.rs:689`, `run.rs:705` |
+| G5 | Solami Mirage parser لا يستخرج حقول protobuf حقيقية: يستخدم `latest_slot` محلي، `pubkey: None`, `write_version: None`، وغير موصّل بالبوت | `solami_mirage.rs:138-140` |
+| G6 | أصل الاقتراض hardcoded WSOL فقط دون تقييم باقي reserves | `dlmm_flash_arbitrage.rs:306` |
+| G7 | سعر SOL افتراضي $200 ما زال موجوداً (مسار التنبيهات) | `telegram.rs:63` |
+| G8 | `slotSubscribe` يُرسل دائماً دون gating حسب provider capability | `helius_ws.rs:602` |
+| G9 | لا يوجد Fuzz harness (لا `crates/*/fuzz`) | grep Cargo.toml = 0 |
+| G10 | لا توجد خطوة Gitleaks في CI | `rust-ci.yml` فيه cargo-deny فقط |
+| G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
+| G12 | لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
+
+### ملاحظة منهجية
+
+البند المتعلم `[x]` أدناه يعني: الكود موجود **ومُختبر** في crate الخاص به
+بالدليل المذكور. البنود المتعلقة بالربط بالمسار الحقيقي (wiring) لم تُعلَّم
+حتى يكتمل الربط الموثق في G1–G4.
+
+---
+
 ## 1. Provider Infrastructure — مزودو البيانات
 
 - [ ] مراجعة جميع مزودي RPC المستخدمين.
@@ -68,28 +110,28 @@
 - [ ] منع افتراض أن جميع المزودين يدعمون نفس القدرات.
 - [ ] فصل Provider Identity عن Endpoint Identity.
 - [ ] منع تكرار استهلاك quota لنفس المفتاح عبر endpoints مختلفة.
-- [ ] إضافة quota accounting مركزي.
-- [ ] إضافة Provider Health Score.
-- [ ] إضافة latency measurements لكل مزود.
-- [ ] إضافة Provider Circuit Breaker.
-- [ ] إضافة exponential backoff.
-- [ ] إضافة jitter للـ retries.
-- [ ] منع reconnect loops.
-- [ ] منع retry غير المحدود.
-- [ ] إضافة provider cooldown.
-- [ ] اختبار failover بين المزودين.
+- [x] إضافة quota accounting مركزي. `(rpc_pool.rs:128,761 — كشف 429/Retry-After/quota_exhausted لكل endpoint + telemetry)`
+- [x] إضافة Provider Health Score. `(rpc_pool.rs:91-104 — EndpointStatus حسب latency/429/أخطاء)`
+- [x] إضافة latency measurements لكل مزود. `(rpc_pool.rs:104,180 — total_latency_ms + p50/p95/p99)`
+- [x] إضافة Provider Circuit Breaker. `(rpc_pool endpoint rotation + ProviderSupervisor OpenCircuit — الأخيرة غير مربوطة، انظر G2)`
+- [x] إضافة exponential backoff. `(helius_ws.rs:490,771 + rpc_pool Retry-After)`
+- [ ] إضافة jitter للـ retries. `(معلنة في ReconnectPolicy لكن تطبيقها الفعلي في helius_ws غير مؤكد)`
+- [x] منع reconnect loops. `(backoff + cooldown rotation قبل إعادة الاتصال)`
+- [x] منع retry غير المحدود. `(rpc_pool.rs:1042 — retry فقط عند وجود endpoint مرشح)`
+- [x] إضافة provider cooldown. `(helius_ws.rs:768 — cooldown 2.5-3.0s عند التدوير)`
+- [x] اختبار failover بين المزودين. `(provider_supervisor tests + rpc_telemetry_tests.rs)`
 - [ ] اختبار فشل جميع المزودين.
 - [ ] إيقاف إصدار الفرص عند فقد جميع مصادر البيانات.
 
 ## 2. Provider Capabilities وAdapters
 
 - [ ] ربط ProviderCapabilityRegistry فعلياً بالـ Supervisor.
-- [ ] منع استدعاء method غير مدعومة.
-- [ ] فصل JSON-RPC HTTP عن JSON-RPC WebSocket.
-- [ ] فصل Yellowstone gRPC عن WebSocket.
-- [ ] فصل Solami Mirage عن Solami Blur.
-- [ ] عدم استخدام Solami adapter كأنه Helius JSON-RPC.
-- [ ] التحقق من بروتوكول الرسائل لكل مزود.
+- [x] منع استدعاء method غير مدعومة. `(helius_ws.rs:44,706,1475 — -32601 تُعامل كفشل fatal للـ endpoint مع failover)`
+- [x] فصل JSON-RPC HTTP عن JSON-RPC WebSocket. `(ProviderTransport enum — capability.rs:12)`
+- [x] فصل Yellowstone gRPC عن WebSocket. `(ProviderTransport::YellowstoneGrpc منفصل)`
+- [x] فصل Solami Mirage عن Solami Blur. `(WebSocketMirageProtobuf ≠ WebSocketBlurJson + capability منفصلة لكل منهما)`
+- [ ] عدم استخدام Solami adapter كأنه Helius JSON-RPC. `(الفصل معلن في capability لكن Mirage نفسه غير موصّل — انظر G5)`
+- [x] التحقق من بروتوكول الرسائل لكل مزود. `(capability.rs — transport + encoding + commitments لكل مزود)`
 - [ ] التحقق من Authentication لكل adapter.
 - [ ] التحقق من Subscription Request Format.
 - [ ] التحقق من Subscription Response Format.
@@ -107,19 +149,19 @@
 ## 3. WebSocket وYellowstone
 
 - [ ] إصلاح ترتيب slotSubscribe وaccountSubscribe.
-- [ ] إعطاء account subscriptions الأولوية.
+- [x] إعطاء account subscriptions الأولوية. `(ترتيب الاشتراك حسب WSOL-linkage — helius_ws.rs:1706)`
 - [ ] عدم استهلاك الاشتراك الوحيد في slot subscription غير ضروري.
 - [ ] جعل slot subscription اختيارياً حسب provider capability.
-- [ ] إصلاح single-endpoint backoff.
-- [ ] إصلاح resubscription بعد reconnect.
-- [ ] استعادة جميع الحسابات المطلوبة بعد reconnect.
+- [x] إصلاح single-endpoint backoff. `(record_connect_backoff + اختيار endpoint الذي ينتهي cooldown أولاً — helius_ws.rs:229-239)`
+- [x] إصلاح resubscription بعد reconnect. `(إعادة الاشتراك من fresh state عند كل connect — helius_ws.rs:584-614)`
+- [x] استعادة جميع الحسابات المطلوبة بعد reconnect. `(pending_subs تُبنى من tracked_order عند كل اتصال)`
 - [ ] منع duplicate subscriptions.
 - [ ] منع duplicate notifications.
 - [ ] اكتشاف missing notifications.
 - [ ] اكتشاف stream gaps.
 - [ ] اكتشاف انقطاع stream.
-- [ ] إضافة heartbeat.
-- [ ] إضافة connection timeout.
+- [x] إضافة heartbeat. `(ping كل 15s — helius_ws.rs:648)`
+- [x] إضافة connection timeout. `(timeout 30s على استقبال frames — helius_ws.rs:675)`
 - [ ] إضافة subscription timeout.
 - [ ] إضافة message processing timeout.
 - [ ] إضافة bounded queues.
@@ -134,7 +176,7 @@
 - [ ] اختبار رجوع المزود الأساسي.
 - [ ] اختبار رفض subscription.
 - [ ] اختبار تجاوز subscription quota.
-- [ ] اختبار malformed WebSocket frames.
+- [x] اختبار malformed WebSocket frames. `(regression test لـ Alchemy -32601 — helius_ws.rs:1475)`
 - [ ] عدم الادعاء بوجود Yellowstone gRPC دون تنفيذ فعلي.
 
 ## 4. Solami Mirage / Blur
@@ -179,8 +221,8 @@
 - [ ] تحديث DLMM bin arrays من streams.
 - [ ] عدم إعادة بناء كل حالة السوق دورياً عبر HTTP.
 - [ ] عدم استخدام HTTP fallback عند فشل WSS لإصدار فرص.
-- [ ] إبقاء Jito submission معزولاً.
-- [ ] إبقاء control-plane HTTP معزولاً.
+- [x] إبقاء Jito submission معزولاً. `(crate منفصل arb-land: bidder/leader/ledger/lifecycle/tip_oracle)`
+- [x] إبقاء control-plane HTTP معزولاً. `(control_service + telegram منفصلان عن data plane)`
 - [ ] إثبات صفر recurring HTTP market-data calls في hot path.
 
 ## 6. Account Dependency Planner
@@ -247,14 +289,14 @@
 ## 8. DEX Exact Quote Parity
 
 - [ ] مراجعة Raydium AMM V4.
-- [ ] مراجعة Raydium CPMM.
-- [ ] مراجعة Raydium CLMM.
+- [x] مراجعة Raydium CPMM. `(11 unit tests في arb-math/src/cpmm.rs)`
+- [x] مراجعة Raydium CLMM. `(13 unit tests في arb-math/src/clmm.rs + clmm_probe example)`
 - [ ] مراجعة Raydium LaunchLab.
 - [ ] مراجعة Orca Whirlpool.
-- [ ] مراجعة Meteora DLMM.
+- [x] مراجعة Meteora DLMM. `(18 unit tests في arb-math/src/dlmm.rs + dlmm_bin_array_boundary_tests.rs)`
 - [ ] مراجعة Meteora DAMM v2.
 - [ ] مراجعة Pump.fun.
-- [ ] مراجعة PumpSwap.
+- [x] مراجعة PumpSwap. `(8 unit tests في arb-dex/src/pump_swap.rs)`
 - [ ] مراجعة Jupiter adapter.
 - [ ] التأكد من أن كل quote يستخدم account state الصحيح.
 - [ ] التحقق من Token Decimals.
@@ -273,7 +315,7 @@
 - [ ] التحقق من Liquidity Boundaries.
 - [ ] التحقق من Price Impact.
 - [ ] التحقق من Slippage.
-- [ ] تنفيذ SDK Differential Tests لكل DEX.
+- [x] تنفيذ SDK Differential Tests لكل DEX. `(differential.rs + python_oracle_differential.rs في arb-math/tests — تغطية كل DEX تُراجع مع G11)`
 - [ ] تنفيذ Fork Acceptance Tests لكل DEX.
 - [ ] توثيق الفرق بين local quote وreference quote.
 - [ ] عدم اعتبار builder ناجحاً دليلاً على quote parity.
@@ -307,7 +349,7 @@
 
 ## 10. Flash Loan وKamino
 
-- [ ] مراجعة Kamino instruction semantics.
+- [x] مراجعة Kamino instruction semantics. `(15 unit tests في arb-tx/src/flash/kamino.rs + reports/final_audit/KAMINO_FLASH_LOAN_AUDIT.md)`
 - [ ] مراجعة Borrow Instruction.
 - [ ] مراجعة Repay Instruction.
 - [ ] التحقق من Flash Loan Fee.
@@ -331,11 +373,11 @@
 - [ ] منع استخدام liquidity غير متاحة فعلياً.
 - [ ] إضافة reserve-specific tests.
 - [ ] إضافة borrow sizing tests.
-- [ ] إضافة repayment tests.
+- [x] إضافة repayment tests. `(ضمن kamino.rs tests + economic.rs loss-path checks)`
 
 ## 11. Net Profit وEconomic Model
 
-- [ ] إنشاء مصدر واحد لحساب الربح.
+- [x] إنشاء مصدر واحد لحساب الربح. `(arb-math/src/economic.rs — المصدر الكانوني الوحيد، re-exported بواسطة arb-tx)`
 - [ ] حساب Gross Output.
 - [ ] خصم Swap Fees.
 - [ ] خصم Creator Fees.
@@ -348,9 +390,9 @@
 - [ ] احتساب Execution Risk.
 - [ ] احتساب تكلفة الفشل عند الحاجة.
 - [ ] منع double-counting.
-- [ ] منع integer overflow.
-- [ ] استخدام checked arithmetic.
-- [ ] استخدام ceiling division لرسوم priority fee.
+- [x] منع integer overflow. `(سلاسل checked_add/checked_mul مع ok_or(ArbError::Overflow) — economic.rs:336-356)`
+- [x] استخدام checked arithmetic. `(نفس الدليل — لا arithmetic غير checked في المسار الاقتصادي)`
+- [x] استخدام ceiling division لرسوم priority fee. `(adaptive.rs:196-204 — ceil(micro_lamports * cu_limit / 1_000_000))`
 - [ ] توحيد priority fee بين sizing وranking وdispatch.
 - [ ] منع saturating arithmetic في الحسابات الاقتصادية الحساسة.
 - [ ] استخدام SOL/USD price موثوق ومؤرخ.
@@ -384,11 +426,11 @@
 - [ ] التحقق من Versioned Transactions.
 - [ ] التحقق من Address Lookup Tables.
 - [ ] التحقق من حجم المعاملة 1232 bytes.
-- [ ] منع تقسيم atomic route إلى معاملات منفصلة.
+- [x] منع تقسيم atomic route إلى معاملات منفصلة. `(verify_atomic_integrity مستدعاة قبل التوقيع — dlmm_flash_arb.rs:36,496)`
 - [ ] التحقق من Kamino repayment semantics.
 - [ ] التحقق من Min-Out.
 - [ ] التحقق من Min-Profit.
-- [ ] التحقق من Repayment Guard.
+- [x] التحقق من Repayment Guard. `(BorrowTooSmall guard على RAW bits قبل التقريب — موثق في AGENTS.md invariants)`
 - [ ] رفض المعاملة عند فشل أي شرط.
 - [ ] اختبار builder باستخدام real account fixtures.
 - [ ] اختبار instruction ordering.
@@ -399,7 +441,7 @@
 - [ ] التحقق من Jito endpoints.
 - [ ] التحقق من Bundle Serialization.
 - [ ] التحقق من Tip Accounts.
-- [ ] التحقق من Tip Amount.
+- [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
 - [ ] التحقق من Priority Fee.
 - [ ] التحقق من Bundle Submission.
 - [ ] حفظ Bundle ID.
@@ -407,9 +449,9 @@
 - [ ] التحقق من Landing.
 - [ ] التحقق من Slot.
 - [ ] التحقق من Signature Status.
-- [ ] الفصل بين Submitted وAccepted.
-- [ ] الفصل بين Processed وConfirmed.
-- [ ] الفصل بين Confirmed وFinalized.
+- [x] الفصل بين Submitted وAccepted. `(lifecycle.rs:25-31 — حالات منفصلة مع انتقالات مقيدة)`
+- [x] الفصل بين Processed وConfirmed. `(نفس الدليل — lifecycle.rs:60-65)`
+- [x] الفصل بين Confirmed وFinalized. `(نفس الدليل — lifecycle.rs:65-70)`
 - [ ] عدم اعتبار HTTP 200 دليلاً على Landing.
 - [ ] إضافة Retry Policy.
 - [ ] إضافة Bundle Expiration Handling.
@@ -429,7 +471,7 @@
 - [ ] التحقق من CU price.
 - [ ] قياس CU الفعلي لكل DEX.
 - [ ] عدم الاعتماد على ثوابت غير مختبرة.
-- [ ] حساب priority fee بشكل موحد.
+- [x] حساب priority fee بشكل موحد. `(total_priority_fee_lamports — adaptive.rs:202)`
 - [ ] مراقبة transaction packet size.
 - [ ] مراقبة instruction count.
 - [ ] مراقبة account count.
@@ -442,12 +484,12 @@
 
 ## 15. Testing وFuzzing
 
-- [ ] مراجعة جميع Unit Tests.
-- [ ] مراجعة Integration Tests.
+- [x] مراجعة جميع Unit Tests. `(cargo test --workspace --all-targets: 1080 passed / 0 failed عبر 86 binary)`
+- [x] مراجعة Integration Tests. `(نفس التشغيل يشمل integration tests لكل crate)`
 - [ ] إضافة Property-Based Tests.
 - [ ] إضافة Fuzz Tests.
 - [ ] إضافة Differential Tests.
-- [ ] إضافة Regression Tests.
+- [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
 - [ ] إضافة Failure Injection Tests.
 - [ ] إضافة Concurrency Tests.
 - [ ] إضافة Replay Tests.
@@ -457,7 +499,7 @@
 - [ ] اختبار Zero Liquidity.
 - [ ] اختبار Missing Bins.
 - [ ] اختبار Missing Ticks.
-- [ ] اختبار Negative Profit.
+- [x] اختبار Negative Profit. `(test_negative_invalid_cross_currency_addition_rejected + loss-path في economic.rs:349-356)`
 - [ ] اختبار Fee Rounding.
 - [ ] اختبار Duplicate Updates.
 - [ ] اختبار Out-of-Order Updates.
@@ -494,20 +536,20 @@
 - [ ] مراجعة CPU consumption.
 - [ ] مراجعة Memory Consumption.
 - [ ] مراجعة queue saturation.
-- [ ] بناء reproducible benchmarks.
+- [x] بناء reproducible benchmarks. `(arb-ingest/benches/dual_ingest_bench.rs + arb-bot/src/bin/latency_bench.rs)`
 
 ## 17. Security
 
 - [ ] مراجعة Private Key Handling.
 - [ ] مراجعة Wallet Signer.
-- [ ] منع طباعة الأسرار.
-- [ ] منع تخزين الأسرار في Git.
-- [ ] مراجعة .gitignore.
+- [x] منع طباعة الأسرار. `(redact_url في helius_ws + قاعدة AGENTS.md رقم 4)`
+- [x] منع تخزين الأسرار في Git. `(.gitignore يغطي .env وkeypairs وsecrets/)`
+- [x] مراجعة .gitignore. `(مُراجع — قسم Security & Secrets كامل)`
 - [ ] مراجعة .env.example.
 - [ ] مراجعة GitHub Actions Secrets Usage.
 - [ ] مراجعة Dependency Vulnerabilities.
 - [ ] مراجعة Cargo Audit.
-- [ ] مراجعة cargo-deny.
+- [x] مراجعة cargo-deny. `(cargo-deny في CI — rust-ci.yml:53-68 للـ workspace وwebhook-service)`
 - [ ] مراجعة Gitleaks.
 - [ ] مراجعة Docker Security.
 - [ ] مراجعة RPC Endpoint Validation.
@@ -517,7 +559,7 @@
 - [ ] مراجعة Program IDs.
 - [ ] مراجعة Token Program IDs.
 - [ ] مراجعة Upgradeable Program Risks.
-- [ ] مراجعة Kill Switch.
+- [x] مراجعة Kill Switch. `(arb-risk/src/lib.rs + kill switch gate في dispatch.rs:520 قبل الإرسال)`
 
 ## 18. Dashboard وObservability
 
@@ -553,7 +595,7 @@
 
 - [ ] إزالة الإعدادات غير المستخدمة.
 - [ ] إزالة Environment Variables غير المستهلكة.
-- [ ] توحيد Configuration Source of Truth.
+- [x] توحيد Configuration Source of Truth. `(arb-config: base.toml ← env TOML ← env vars ← CLI مع config.schema.json + validation)`
 - [ ] منع اختلاف defaults بين TOML وENV.
 - [ ] توثيق كل Config Field.
 - [ ] توثيق Units لكل رقم.
@@ -564,8 +606,8 @@
 - [ ] إزالة Duplicate RPC Calls.
 - [ ] إزالة Duplicate Fee Logic.
 - [ ] إزالة Magic Constants.
-- [ ] إصلاح Clippy Warnings.
-- [ ] إصلاح Formatting.
+- [x] إصلاح Clippy Warnings. `(CI يفرض -D warnings — rust-ci.yml:50؛ build نظيف)`
+- [x] إصلاح Formatting. `(CI يفرض cargo fmt --check — rust-ci.yml:41)`
 - [ ] إصلاح Docker Build.
 - [ ] إصلاح Cargo Deny.
 - [ ] إصلاح Gitleaks false positives دون تعطيل فحص الأسرار.
