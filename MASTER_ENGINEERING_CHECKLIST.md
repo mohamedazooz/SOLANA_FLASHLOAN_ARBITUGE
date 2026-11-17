@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **277 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **296 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -368,29 +368,29 @@
 
 ## 9. Dynamic Pool Discovery
 
-- [ ] اكتشاف pools من البرنامج والحسابات.
-- [ ] دعم اكتشاف pools الجديدة من stream.
-- [ ] اكتشاف تغييرات pool configuration.
-- [ ] اكتشاف pool closure.
-- [ ] التحقق من pool owner.
-- [ ] التحقق من pool discriminator.
-- [ ] التحقق من protocol type.
-- [ ] اكتشاف Token Pair.
-- [ ] اكتشاف Token Mints.
-- [ ] اكتشاف Vault Relationships.
-- [ ] اكتشاف Tick Arrays المطلوبة.
-- [ ] اكتشاف DLMM Bin Arrays المطلوبة.
-- [ ] اكتشاف الحسابات الإضافية.
-- [ ] منع تكرار pool registration.
-- [ ] منع route duplication.
+- [x] اكتشاف pools من البرنامج والحسابات. `(VERIFIED OK — bounded hub discovery + تحقق on-chain لكل حساب pool قبل الثقة: fetch_live_pool_states (registry.rs:586) — discovery لا يوفر أي رقم يثق به الـ quote)`
+- [ ] دعم اكتشاف pools الجديدة من stream. `(PARTIAL — الاكتشاف دوري bounded عبر hubs/catalogs مع تحقق on-chain لكل pool (discovery.rs:1-40)؛ لا programSubscribe لحظي لاكتشاف pools جديدة — مقصود: gPA/program sweep غير عملي على free RPC (discovery.rs:3-14)؛ التحديث الدوري عبر 30s reconciliation sweep)`
+- [x] اكتشاف تغييرات pool configuration. `(VERIFIED OK — الرسوم تُقرأ حية من الـ pool account في كل fetch (decode_raydium_fee_bps — registry.rs:881,1484,1804)؛ أي تغيير fee/config ينعكس في الـ quote التالي)`
+- [x] اكتشاف pool closure. `(VERIFIED OK — pool مغلق → حساب غائب → decode/fetch يفشل fail-closed → MissingAccount في بوابة dependencies يرفض أي route عليه + is_active gate)`
+- [x] التحقق من pool owner. `(VERIFIED OK — protocol_owner_program يربط كل DexProtocol بـ program ID رسمي (dependency_manifest.rs:11-25) + owner gate في quote readiness)`
+- [x] التحقق من pool discriminator. `(VERIFIED OK — decoders تفرض discriminator + طول قبل decode (registry.rs:1830, kamino.rs)؛ حساب فاسد → رفض fail-closed)`
+- [x] التحقق من protocol type. `(VERIFIED OK — DexProtocol تصنيف مصدري + فلتر DLMM label يمنع خلط DAMM بـ LbPair (discovery.rs:20-21) + protocol_owner_program)`
+- [x] اكتشاف Token Pair. `(VERIFIED OK — mints تُقرأ من حساب الـ pool على السلسلة وليس من الـ hub metadata (PROTOCOL_VERIFICATION.md — كل الـ offsets live-verified)`
+- [x] اكتشاف Token Mints. `(VERIFIED OK — نفس الآلية + resolve_mint_decimals (discovery.rs:798) مع فحص owner=Token program (discovery.rs:833))`
+- [x] اكتشاف Vault Relationships. `(VERIFIED OK — decode_raydium_vaults/cpmm_vaults/clmm_vaults (discovery.rs:24-26) + اختبار raydium_vaults_decode_from_real_offsets (discovery.rs:1198)`
+- [x] اكتشاف Tick Arrays المطلوبة. `(VERIFIED OK — raydium_clmm_tick_array_pdas مشتقة من الـ active tick + required_tick_arrays في dependency resolver)`
+- [x] اكتشاف DLMM Bin Arrays المطلوبة. `(VERIFIED OK — bin_array_index_for_bin + required_bin_arrays (dependency resolver) + dlmm_bin_array_boundary_tests)`
+- [x] اكتشاف الحسابات الإضافية. `(VERIFIED OK — resolve_protocol_dependencies يفرض Oracle/Observation/BitmapExtension/GlobalConfig/FeeConfig/CreatorVault حسب البروتوكول مع 8 اختبارات)`
+- [x] منع تكرار pool registration. `(VERIFIED OK — dedup بـ pool id في discovery (discovery.rs:319) + DuplicatePool error في registry وdependency manifests)`
+- [x] منع route duplication. `(VERIFIED OK — route_sig dedup في opportunity pipeline (opportunity.rs:111,922) + template cache keyed بـ route_sig)`
 - [x] بناء route graph ديناميكي. `(bellman_ford.rs + discovery — 9 unit tests)`
 - [x] بناء دورات من ثلاثة pools. `(find_base_cycles + reports/final_audit/THREE_POOL_EXECUTION_AUDIT.md)`
-- [ ] دعم أكثر من أصل وسيط.
-- [ ] تحديث graph عند تغير liquidity.
+- [x] دعم أكثر من أصل وسيط. `(VERIFIED OK — دورات 3-pool بأصلين وسيطين (find_base_cycles + three_leg_meme_pipeline + THREE_POOL_EXECUTION_AUDIT.md) + bellman_ford graph عام)`
+- [x] تحديث graph عند تغير liquidity. `(VERIFIED OK — الـ graph يُبنى من الـ cache الحالية في كل دورة مسح؛ تحديثات stream/refresh تحدث reserves فتتغير أوزان الـ graph تلقائياً)`
 - [x] فصل Candidate Discovery عن Exact Quote. `(discovery منفصل + exact quote validation protocol-adapter driven — strategy.rs:20)`
-- [ ] عدم فرض spread ثابت أثناء discovery.
-- [ ] عدم اعتبار وجود pool فرصة تداول.
-- [ ] رفض pool غير المكتمل أو غير الموثوق.
+- [x] عدم فرض spread ثابت أثناء discovery. `(VERIFIED OK — فصل Candidate Discovery عن Exact Quote (strategy.rs:20)؛ التقييم عبر net-profit economics وليس spread threshold)`
+- [x] عدم اعتبار وجود pool فرصة تداول. `(VERIFIED OK — وجود pool = مرشح فقط؛ الفرصة تتطلب exact quote + net profit بعد كل التكاليف + dependency gate)`
+- [x] رفض pool غير المكتمل أو غير الموثوق. `(VERIFIED OK — fail-closed decode + is_active + has_risky_token + transfer_fee_bps != 0 rejection + dependency completeness gate)`
 
 ## 10. Flash Loan وKamino
 
