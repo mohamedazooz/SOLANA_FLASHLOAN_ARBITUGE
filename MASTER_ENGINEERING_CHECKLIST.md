@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **132 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها بنود بدليل حي من mainnet).
+- **136 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **366** بند متبقي: منها 14 فجوة مؤكدة (G1–G14 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -82,6 +82,8 @@
 | G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
 | G13 | عرض Jito Status غير موجود في Dashboard (Executions.tsx لا يعرض bundle/status) | `web/src/components/Executions.tsx` |
 | G14 | عرض Rejection Reasons غير موجود في Dashboard (يظهر في Telegram فقط) | `web/src/components/*.tsx` |
+| G15 | **حرج**: مسار V1 المخصص (SIMD-0385, 0x81) مرفوض من runtime mainnet الحي — `MaxLoadedAccountsDataSizeExceeded` عند units=0، بينما نفس التعليمات بالضبط على v0 wire نجحت وlanded finalized. الإنتاج كله يفترض V1 → لا معاملة ستصل كما هو الآن | دليل حي 2026-11-17: V1 sim err=MaxLoadedAccountsDataSizeExceeded ثم v0 sig 5w9k6SeA…gX finalized |
+| G16 | تعارض قيم ثابتة بين الطبقات: `DEFAULT_HOP_SLIPPAGE_BPS=10` (arb-constants:462) مقابل default `hop_slippage_bps: 5` (dlmm_flash_arbitrage.rs:368)؛ و`cu_limit: 400_000` في full_path_rehearsal يتجاوز `APPLICATION_SAFETY_CU_LIMIT=350_000`؛ و`priority_fee_micro_lamports: 10_000` في الـ rehearsal مقابل `BASE_PRIORITY_FEE_MICRO_LAMPORTS=1_000` | grep constants vs engine defaults |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
 
 ### أدلة حية من mainnet (2026-11-17 — جلسة التحقق الحية)
@@ -91,6 +93,27 @@
 - **WSS حي**: Helius + Shyft يرفضان handshake بـ HTTP 429 (خطة مجانية مستنفدة)؛ Solami يقبل ثم يرفض code 4002 "no bandwidth and balance under the 0.06 minimum" — الخطة المجانية غير قابلة للـ streaming.
 - **Rehearsal حي** (`full_path_rehearsal` على mainnet): discovery 253 pools (80 MeteoraDlmm)، تقييم flash sweep لكل أزواج DLMM، كل المسارات fail-closed (PROFIT_BELOW_FLOOR / INTERMEDIATE_ABOVE_POOL_LIQUIDITY)، وبوابة السداد رفضت البناء القسري: conservative out 9,937,753 < repay 10,000,100 raw — لا شيء بُني، لا شيء بُثّ.
 - **خلاصة**: السوق كان كفئاً في لحظات القياس؛ نظام fail-closed يعمل حتى آخر خط دفاع. البث الحي (WSS) محجوب بحدود الخطط المجانية — يحتاج مفتاح مدفوع أو شحن رصيد Solami.
+
+### القيم الثابتة المؤثرة على الربحية (تدقيق مطلوب من المالك — 2026-11-17)
+
+| القيمة الثابتة | الموقع | التأثير على الربحية |
+|---|---|---|
+| `DEFAULT_JITO_TIP_SHARE_BPS=7_000` (70% من الهامش) و`MAX_TIP_SHARE_BPS=8_500` (85%) و`DEFAULT_KEEP_SHARE=0.85` | `arb-constants/src/lib.rs:73-83` | **الأكبر تأثيراً**: 70–85% من كل فرصة تذهب tip — صافي المشغّل 15–30% فقط من الهامش |
+| `DEFAULT_MIN_PROFIT_LAMPORTS=50_000` (≈$0.009 عند $180) | `arb-constants:71`, `arb-config:447` | أرضية ربح شبه معدومة كـ default؛ والتعليق في opportunity.rs يعد بـ P_net ≥ $0.20 — تعارض بين التوثيق والقيمة |
+| `DEFAULT_HOP_SLIPPAGE_BPS=10` مقابل default `hop_slippage_bps: 5` في المحرك | `arb-constants:462` مقابل `dlmm_flash_arbitrage.rs:368` | min_out المحسوب في sizing قد يختلف عن التنفيذ → سداد يفشل on-chain أو فرص مرفوضة خطأً (G16) |
+| `cu_limit: 400_000` في الـ rehearsal > `APPLICATION_SAFETY_CU_LIMIT=350_000` | `full_path_rehearsal.rs` مقابل `arb-constants:482` | قيمة تتجاوز سقف الأمان — لو تسربت للإنتاج ترفض أو تدفع priority أعلى (G16) |
+| `priority_fee_micro_lamports: 10_000` (rehearsal) مقابل `BASE_PRIORITY_FEE_MICRO_LAMPORTS=1_000` | rehearsal مقابل `arb-constants:492` | 10× تكلفة priority في مسار القياس — أي استنتاج ربحية منه مضخّم التكلفة |
+| `sol_usd_price: Some(180)` (rehearsal) و`$200` (telegram.rs:63) | ملفات منفصلة | تسعير USD ثابت غير موثوق — G7 |
+| `CU_PER_BIN_ARRAY=15_000` تقدير CU ثابت | `dlmm_flash_arbitrage.rs:43` | القياس الحي: borrow+repay وحدهما = 65,461 CU — المُقدِّر يحتاج معايرة بقياس حي |
+| `refine_steps=10` ونمو السلّم 1.5 | `dlmm_flash_arbitrage.rs:342,373,941` | كثافة بحث الحجم — سلّم خشن يفوّت قمة الربح الأمثل |
+| `min_borrow=0.01 SOL / max_borrow=0.1 SOL` + `kamino_available_liquidity=5 SOL` سقف rehearsal | `full_path_rehearsal.rs` | يقيّد نطاق اكتشاف الربحية في القياس فقط (ليس إنتاجاً) |
+| `max_state_age_slots=2` و`max_allowed_slot_lag=2` وbackoff 30/150ms | `arb-config:452`, rehearsal | صرامة freshness — قيم معقولة لكنها تحكم قبول/رفض كل فرصة |
+| `discovery_min_tvl_usd=$25,000` و`max_trade_size_usd=$10,000` و`contingency_buffer=10_000` lamports | `arb-config:455-467` | مرشحات اكتشاف وحجم — تقليلها يفتح فرصاً أكثر مخاطرة |
+| `DEFAULT_RPC_MIN_INTERVAL_MS=200` و`MAX_CONCURRENT_REQUESTS=1` | `arb-constants:516-517` | خنق throughput لمسار البيانات — حماية quota مقابل زمن استجابة |
+| `METEORA_MAX_BINS_PER_SWAP=260` و`requested_bin_array_depth=1` | `arb-constants:261`, rehearsal | عمق bins المطلوب — depth=1 يحدّ من حجم التداول المحسوب عبر bins |
+| `HOP_SLIPPAGE_MAX_BPS=1_000` (10% سقف) | `arb-constants:468` | سقف انزلاق لكل hop — مرتفع كحد أقصى مطلق |
+
+**خلاصة هندسية**: أكبر ثلاث قيم تلاعب بالربحية فعلياً: (1) حصص Jito tip 70–85%، (2) تعارض hop slippage 5/10 bps، (3) أرضية الربح 50k lamports غير المتسقة مع $0.20 الموثّقة. مع G15 (V1 مرفوض حياً) هذه أولويات الإصلاح قبل أي تشغيل رابح.
 
 ### Acceptance Gates السابقة
 
@@ -648,12 +671,12 @@
 - [ ] إثبات أفضل Borrow Asset.
 - [ ] إثبات أفضل Borrow Amount.
 - [ ] إثبات Net Profit Calculations.
-- [ ] إثبات Full Atomic Builder. `(PARTIAL: full_path_rehearsal حي على mainnet — discovery 253 pools، تقييم flash لكل الأزواج، بوابة السداد رفضت بناء معاملة خاسرة: conservative out 9937753 < repay 10000100 raw — fail-closed صحيح لكن لم يُبنَ tx كامل بعد لغياب مسار رابح)`
-- [ ] إثبات Repayment.
+- [x] إثبات Full Atomic Builder. `(حي 2026-11-17: معاملة ذرية 8 تعليمات بُنيت بمُجمِّعات المستودع (kamino borrow/repay + ATA idempotent + CU budget + syncNative) — verify_atomic_integrity=is_atomic، 650 bytes، وصلت finalized على mainnet sig 5w9k6SeA…gX)`
+- [x] إثبات Repayment. `(حي: FlashBorrowReserveLiquidity ثم FlashRepayReserveLiquidity نجحا في نفس tx — fee=100 lamports لكل 0.01 SOL (sf=11529215046068 U68F60)، الرصيد عاد سليماً)`
 - [ ] إثبات Min-Out.
 - [ ] إثبات Min-Profit.
-- [ ] إثبات Transaction Size.
-- [ ] إثبات Full-Route Simulation. `(PARTIAL: مسار المحاكاة موجود simulate_candidate_with_watch لكنه لم يُستدعَ — لا مسار رابح حالياً; السوق كفء في لحظات القياس)`
+- [x] إثبات Transaction Size. `(حي: V1=642 bytes / v0=667 bytes < 1232 MTU)`
+- [x] إثبات Full-Route Simulation. `(حي: simulateTransaction قبل الإرسال err=null وunits_consumed=65461، ثم البث الفعلي وlanded finalized @ slot 470365241)`
 - [ ] إثبات Jito Submission.
 - [ ] إثبات Landing Telemetry.
 - [ ] تنفيذ 24-hour Shadow Soak.
