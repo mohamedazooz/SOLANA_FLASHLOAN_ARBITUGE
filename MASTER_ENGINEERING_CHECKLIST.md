@@ -563,24 +563,24 @@
 ## 16. Performance وHFT
 
 - [x] قياس Provider Latency. `(rpc_pool p50/p95/p99 + RttTracker بنصف عمر إحصائي — arb-math/src/latency.rs:38-134)`
-- [ ] قياس Account Update Latency.
-- [ ] قياس State Processing Latency.
-- [ ] قياس Route Discovery Latency.
-- [ ] قياس Exact Quote Latency.
-- [ ] قياس Borrow Sizing Latency.
-- [ ] قياس Transaction Build Latency.
-- [ ] قياس Simulation Latency.
-- [ ] قياس Submission Latency.
-- [ ] قياس Landing Latency.
-- [ ] مراجعة unnecessary cloning.
-- [ ] مراجعة heap allocations.
-- [ ] مراجعة lock contention.
-- [ ] مراجعة async task scheduling.
-- [ ] مراجعة serialization overhead.
-- [ ] مراجعة duplicate calculations.
-- [ ] مراجعة CPU consumption.
-- [ ] مراجعة Memory Consumption.
-- [ ] مراجعة queue saturation.
+- [x] قياس Account Update Latency. `(dual_ingest_bench.rs يقيس end-to-end ingest latency لمجموعة pool updates حقيقية — arb-ingest/benches:51-63)`
+- [ ] قياس State Processing Latency. `(PARTIAL — مُغطى داخل dual_ingest_bench كوحدة واحدة؛ لا توجد metric منفصلة في runtime)`
+- [ ] قياس Route Discovery Latency. `(PARTIAL — مدمجة مع quote في t_ingest_to_quote_us — strategy.rs:463؛ لا فصل بين discovery وquote)`
+- [ ] قياس Exact Quote Latency. `(PARTIAL — نفس t_ingest_to_quote_us مدمجة + latency_bench يقيس math engine منفصلة في bench mode)`
+- [x] قياس Borrow Sizing Latency. `(latency_bench مرحلة 3: closed-form sizing & equal marginal split ببيانات حية — bin/latency_bench.rs:3-4)`
+- [x] قياس Transaction Build Latency. `(t_assembly_us — opportunity.rs:758,916 + يظهر في تقرير Telegram E2E — dispatch.rs:837-845)`
+- [ ] قياس Simulation Latency. `(MISSING — preflight sim يُنفذ لكن مدته لا تُقاس ولا تُسجل)`
+- [x] قياس Submission Latency. `(rtt_ms = sent_at.elapsed + observe_bundle_rtt — dispatch.rs:626,641-644)`
+- [x] قياس Landing Latency. `(land_start → landing_ms + total_e2e_ms شامل — dispatch.rs:756,830-846)`
+- [ ] مراجعة unnecessary cloning. `(NOT AUDITED — التصميم Arc-heavy؛ 26 clone في opportunity.rs لم تُراجع سطراً سطراً)`
+- [ ] مراجعة heap allocations. `(NOT AUDITED — لا يوجد تتبع allocation في hot path)`
+- [ ] مراجعة lock contention. `(NOT AUDITED — measured_cu/previous_tips تستخدم std Mutex؛ لا قياس contention)`
+- [ ] مراجعة async task scheduling. `(NOT AUDITED — tokio::spawn لكل landing tracker؛ لا قياس task pileup)`
+- [ ] مراجعة serialization overhead. `(NOT AUDITED — bincode/JSON paths لم تُقاس)`
+- [ ] مراجعة duplicate calculations. `(NOT AUDITED — توجد إزالة مكرر في quote paths لكن لم تُراجع شمولياً)`
+- [ ] مراجعة CPU consumption. `(MISSING — لا توجد metric CPU في arb-metrics)`
+- [ ] مراجعة Memory Consumption. `(MISSING — لا توجد metric RSS/allocator)`
+- [ ] مراجعة queue saturation. `(PARTIAL — MAX_WS_ACCOUNT_SUBS يحد الاشتراكات — helius_ws.rs:648؛ لا bounded channel مقيسة للرسائل الواردة)`
 - [x] بناء reproducible benchmarks. `(arb-ingest/benches/dual_ingest_bench.rs + arb-bot/src/bin/latency_bench.rs)`
 
 ## 17. Security
