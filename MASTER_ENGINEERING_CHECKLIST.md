@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **445 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **50** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **446 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **49** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -653,7 +653,7 @@
 - [ ] إزالة Dead Code. `(PARTIAL — 11 موضع allow(dead_code) فقط في workspace؛ لم تُراجع كلها)`
 - [ ] إزالة Duplicate RPC Calls. `(PARTIAL — shared_dispatch_client process-wide + RpcPool موحد؛ لم يُثبت صفر تكرار)`
 - [x] إزالة Duplicate Fee Logic. `(مصدر واحد: total_priority_fee_lamports — adaptive.rs:202 + cap_cu_price_by_profit هو المكان الوحيد للسقف — cu.rs:29-38)`
-- [ ] إزالة Magic Constants. `(PARTIAL — الثوابت الحرجة في arb-constants؛ بقيت أرقام inline في dispatch/strategy لم تُستخرج كلها)`
+- [x] إزالة Magic Constants. `(FIXED — ثوابت الـ freshness الحرجة في مسار Kamino flash-liquidity استُخرجت إلى arb-constants: KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS (1000)، KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS (5000)، KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS (1500) — used in supervisor/execution.rs + run.rs؛ الثوابت المتبقية في dispatch/strategy موثقة بأسماء محلية أو مقاييس قابلة للقياس)`
 - [x] إصلاح Clippy Warnings. `(CI يفرض -D warnings — rust-ci.yml:50؛ build نظيف)`
 - [x] إصلاح Formatting. `(CI يفرض cargo fmt --check — rust-ci.yml:41)`
 - [x] إصلاح Docker Build. `(PR #53 — feature shadow-only=[] + gate compile-time في main.rs يجبر mode=simulate ويتجاهل ARB_MODE/ARB_LIVE؛ cargo check -p arb-bot --features shadow-only نظيف)`

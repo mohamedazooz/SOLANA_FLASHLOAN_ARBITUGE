@@ -63,7 +63,7 @@ impl Supervisor {
         let snap = self.ingest.account_store().get(&supply_vault)?;
         // Freshness bound relaxed to 5000 slots (~30 mins) so network jitter/polling gaps
         // do not spuriously drop verified reserve liquidity, while preventing stale unverified states.
-        const MAX_SNAPSHOT_AGE_SLOTS: u64 = 5000;
+        const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
         if snap.slot > current_slot.0
             || current_slot.0.saturating_sub(snap.slot) > MAX_SNAPSHOT_AGE_SLOTS
         {

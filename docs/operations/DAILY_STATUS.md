@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-8 commit (this push) — docs(audit): program upgradeability risk register — 445/495
+* **Commit:** batch-9 commit (this push) — refactor(constants): kamino freshness constants to arb-constants — 446/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -87,9 +87,17 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 8: 445 / 495 — 50 remaining.**
 
+### Batch 9 — checklist 656 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 656 Magic constants | Three Kamino freshness bounds extracted from the hot path into named, documented workspace constants: `KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS` (1000, was inline `<= 1000` twice in flash-liquidity fallback matching), `KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS` (1500, was the raw RPC-snapshot substitution bound), `KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS` (5000, was a function-local `const` documented ~30 min). No behavior change — same values, single source of truth | `crates/arb-constants/src/lib.rs`, `supervisor/execution.rs`, `supervisor/run.rs` |
+
+**Checklist after batch 9: 446 / 495 — 49 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656.
 
 ## Problems discovered (this session)
 

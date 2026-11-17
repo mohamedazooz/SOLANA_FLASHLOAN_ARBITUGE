@@ -177,8 +177,10 @@ impl Supervisor {
         let primary_fresh = matches!(
             (store.get(&reserve), store.get(&base_mint.0)),
             (Some(r), Some(m))
-                if current_slot.0.saturating_sub(r.slot) <= 1000
-                    && current_slot.0.saturating_sub(m.slot) <= 1000
+                if current_slot.0.saturating_sub(r.slot)
+                    <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
+                    && current_slot.0.saturating_sub(m.slot)
+                        <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
         );
         let fallback_fresh = !primary_fresh
             && matches!(
@@ -187,8 +189,10 @@ impl Supervisor {
                     self.kamino_fallback_store.get(&base_mint.0),
                 ),
                 (Some(r), Some(m))
-                    if current_slot.0.saturating_sub(r.slot) <= 1000
-                        && current_slot.0.saturating_sub(m.slot) <= 1000
+                    if current_slot.0.saturating_sub(r.slot)
+                        <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
+                        && current_slot.0.saturating_sub(m.slot)
+                            <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
             );
 
         let mut use_fallback_store = fallback_fresh;
@@ -262,7 +266,10 @@ impl Supervisor {
                     decoded_both += 1;
                 }
 
-                if decoded_both == 2 && current_slot.0.saturating_sub(snap_slot) <= 1500 {
+                if decoded_both == 2
+                    && current_slot.0.saturating_sub(snap_slot)
+                        <= arb_constants::KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS
+                {
                     use_fallback_store = true;
                     eval_slot = Slot(current_slot.0.max(snap_slot));
                 }
