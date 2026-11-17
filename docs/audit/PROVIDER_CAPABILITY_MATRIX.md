@@ -35,3 +35,20 @@ Method: direct WebSocket/HTTP JSON-RPC probes (python `websockets` + `urllib`), 
 - Concurrent-subscription and WS-connection limits are *declared* per provider (`RateLimitPolicy`) and observed live (Solami plan: "Concurrent websocket subscription limit reached: 1"), but are not yet probed exhaustively per plan tier.
 - Per-method quota accounting exists (`method_metrics` per endpoint) but per-method *provider-side* limits are not separately verified.
 - Monthly CU/RU limits: Helius 429-after-cooldown behavior is consistent with credit exhaustion but cannot be distinguished from burst limiting without provider dashboard access.
+
+## Adapter inventory — hot-path consumption & retention reasons (2026-11-17)
+
+| Adapter / module | In supervisor hot path? | Status | Retention reason |
+|---|---|---|---|
+| `helius_ws` (multi-endpoint WS JSON-RPC) | ✅ YES — `run.rs:485-507` drives the whole pipeline | ACTIVE | Primary live account/slot stream |
+| `rpc_pool` (HTTP JSON-RPC, per-endpoint limits) | ✅ YES — bootstrap, hydration, dispatch support | ACTIVE | Isolated from hot-path market state (bootstrap + submission only) |
+| `registry` / `discovery` / `PoolDiscovery` | ✅ YES — `run.rs:422-465` | ACTIVE | Pool discovery + decode |
+| `provider_supervisor` | ✅ YES — `run.rs:845-854` | ACTIVE | Circuit breaker / health |
+| `capability` | ✅ YES — fail-closed startup gate | ACTIVE | Capability enforcement |
+| `slot_integrity`, `quote_readiness`, `dependency_manifest`, `rpc_reconcile` | ✅ YES | ACTIVE | State integrity + pre-dispatch guards |
+| `solami_mirage` / `solami_blur` / `solami_stream` | ❌ NO — registered in capability registry only | DISABLED (fail-closed) | Free plan closes stream (WS 4002 "no bandwidth", G5). Kept: complete client code ready when plan allows; capability registry prevents mislabeling as JSON-RPC |
+| `yellowstone_grpc` | ❌ NO — `yellowstone-grpc` cargo feature, off by default | FEATURE-GATED | No free gRPC provider available; code exists and is gated, never mislabeled as WS |
+| `bitquery`, `solami_stream` | ❌ NO — `extra-ingest` feature | FEATURE-GATED | Optional enrichment feeds; excluded from default build |
+| `dexscreener`, `meteora_data_api`, `gmgn`, `oxylabs`, `pumpdev_stream`, `pumpfun_discovery` | ❌ Not in supervisor loop | RETAINED (documented) | Used by auxiliary bins/tests/benches (e.g. `live_scanner` uses `gmgn`; `oxylabs_mock` test); candidate-discovery enrichment only, never market-state source of truth |
+
+Authentication handling per active adapter: keys are read exclusively from environment (`HeliusWsClient::from_env`, `RpcPool::collect_rpc_urls`); URLs are redacted in all logs (`redacted_hosts`, `test_redact_url_and_hosts_hide_credentials`); no key is ever embedded in source or telemetry labels (only `..xxxx` suffix hints).

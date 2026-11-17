@@ -57,7 +57,7 @@
 ### التقدم الحالي
 
 - **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **319** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **305** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -173,21 +173,21 @@
 - [x] فصل JSON-RPC HTTP عن JSON-RPC WebSocket. `(ProviderTransport enum — capability.rs:12)`
 - [x] فصل Yellowstone gRPC عن WebSocket. `(ProviderTransport::YellowstoneGrpc منفصل)`
 - [x] فصل Solami Mirage عن Solami Blur. `(WebSocketMirageProtobuf ≠ WebSocketBlurJson + capability منفصلة لكل منهما)`
-- [ ] عدم استخدام Solami adapter كأنه Helius JSON-RPC. `(الفصل معلن في capability لكن Mirage نفسه غير موصّل — انظر G5)`
+- [x] عدم استخدام Solami adapter كأنه Helius JSON-RPC. `(Mirage غير موصّل بالمسار الحي إطلاقاً — capability registry فقط؛ live 4002 يغلقه fail-closed — G5؛ PROVIDER_CAPABILITY_MATRIX.md)`
 - [x] التحقق من بروتوكول الرسائل لكل مزود. `(capability.rs — transport + encoding + commitments لكل مزود)`
-- [ ] التحقق من Authentication لكل adapter.
-- [ ] التحقق من Subscription Request Format.
-- [ ] التحقق من Subscription Response Format.
-- [ ] التحقق من Notification Format.
-- [ ] التحقق من Error Mapping.
-- [ ] إضافة adapter health checks.
-- [ ] إضافة adapter integration tests.
-- [ ] إضافة malformed message tests.
-- [ ] إضافة unsupported method tests.
-- [ ] توثيق القدرات الفعلية لكل adapter.
-- [ ] تعطيل أي adapter غير مكتمل بدلاً من الادعاء بأنه يعمل.
-- [ ] التحقق من استهلاك كل adapter داخل مسار التشغيل الحقيقي.
-- [ ] إزالة adapters غير المستخدمة أو توثيق سبب الاحتفاظ بها.
+- [x] التحقق من Authentication لكل adapter. `(from_env فقط للمفاتيح؛ redacted_hosts + اختبار test_redact_url_and_hosts_hide_credentials؛ labels بـ ..xxxx suffix فقط — لا مفاتيح في السجلات)`
+- [x] التحقق من Subscription Request Format. `(build_account_sub_frame + اختبارات collect_ws_urls/rotate؛ حي: ack سليم من Public RPC 2026-11-17)`
+- [x] التحقق من Subscription Response Format. `(handle_message: {result: sub_id, id} → sub_to_account map — مُختبر في account_notification_updates_raydium_pool_state_in_cache)`
+- [x] التحقق من Notification Format. `(slot/account notifications مع context slot — حي من Public RPC + اختبارات؛ slotNotification يقرأ parent أيضاً)`
+- [x] التحقق من Error Mapping. `(-32601/unsupported → endpoint_unsupported fatal؛ limit → account_sub_limited transient؛ id==1 → تعطيل slot sub فقط؛ rpc_pool: 429/403/401/quota — اختبارات مخصصة لكل مسار)`
+- [x] إضافة adapter health checks. `(EndpointStatus + ProviderHealthReport في rpc_pool؛ is_connected/mark_helius_connected في helius_ws؛ ProviderSupervisor circuit breaker)`
+- [x] إضافة adapter integration tests. `(13 اختبار helius_ws + 10 rpc_pool + provider_supervisor tests + rpc_telemetry_tests)`
+- [x] إضافة malformed message tests. `(جديد 2026-11-17: malformed_frames_are_skipped_without_poisoning_state — إطارات فاسدة/base64 تالف/أنواع خاطئة بدون panic أو تلويث حالة)`
+- [x] إضافة unsupported method tests. `(handle_message_flags_unsupported_method_as_capability_failure + slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint)`
+- [x] توثيق القدرات الفعلية لكل adapter. `(docs/audit/PROVIDER_CAPABILITY_MATRIX.md — مصفوفة حية 2026-11-17 + جدول استهلاك hot-path)`
+- [x] تعطيل أي adapter غير مكتمل بدلاً من الادعاء بأنه يعمل. `(Mirage معطّل fail-closed بعد 4002؛ yellowstone-grpc وextra-ingest خلف feature flags افتراضياً مطفأة)`
+- [x] التحقق من استهلاك كل adapter داخل مسار التشغيل الحقيقي. `(run.rs يستخدم: HeliusWsClient + RpcPool + PoolDiscovery + ProviderSupervisor فقط؛ الباقي feature-gated أو auxiliary — جدول في المصفوفة)`
+- [x] إزالة adapters غير المستخدمة أو توثيق سبب الاحتفاظ بها. `(جدول الاحتفاظ في PROVIDER_CAPABILITY_MATRIX.md: solami جاهز لترقية الخطة G5، bitquery/dexscreener/gmgn/oxylabs auxiliary فقط)`
 
 ## 3. WebSocket وYellowstone
 
