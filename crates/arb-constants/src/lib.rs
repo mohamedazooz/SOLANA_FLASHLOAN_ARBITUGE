@@ -478,10 +478,10 @@ pub const HOP_SLIPPAGE_MAX_BPS: u64 = 1_000;
 // Compute Budget Limits
 // ============================================================================
 
-/// Compute budget limit for 2-hop arbitrage.
-pub const COMPUTE_BUDGET_LIMIT_2HOP: u32 = 260_000;
-/// Compute budget limit for 3-hop arbitrage.
-pub const COMPUTE_BUDGET_LIMIT_3HOP: u32 = 320_000;
+/// Compute budget limit for 2-hop arbitrage (initial fallback before first measured CU).
+pub const COMPUTE_BUDGET_LIMIT_2HOP: u32 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS;
+/// Compute budget limit for 3-hop arbitrage (initial fallback before first measured CU).
+pub const COMPUTE_BUDGET_LIMIT_3HOP: u32 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS;
 /// Solana runtime protocol consensus maximum compute units per transaction.
 pub const SOLANA_RUNTIME_MAX_COMPUTE_UNITS: u32 = 1_400_000;
 /// Application-level ceiling for arbitrage execution.

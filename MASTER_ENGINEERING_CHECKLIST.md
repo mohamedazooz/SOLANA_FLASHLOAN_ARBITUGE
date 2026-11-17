@@ -518,7 +518,7 @@
 - [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route — السقف التطبيقي APPLICATION_SAFETY_CU_LIMIT = 1,400,000 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS بقرار صريح لرفع headroom للمسارات المركّبة، وحماية الرسوم تبقى عبر cap_cu_price_by_profit — arb-constants:489-495، اختبار compute_budget_instructions محدَّث)`
 - [x] التحقق من CU price. `(cap_cu_price_by_profit — سقف ديناميكي حسب share bps وعامل المنافسة)`
 - [x] قياس CU الفعلي لكل DEX. `(measured_cu لكل route_sig يُغذّى من LiteSVM محلياً — dispatch.rs:347، ومن محاكاة RPC حية — dispatch.rs:368-434، ويُفضّل على التقدير — opportunity.rs:125-127)`
-- [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP ثوابت fallback فقط — arb-constants:482-484؛ measured_cu.unwrap_or(estimated_cu) يجعلها initial-fallback قبل أول قياس — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`
+- [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP رُفِعت إلى 1,400,000 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS كـ initial-fallback قبل أول قياس — arb-constants:482-485، لا تُسقِّف المسارات قبل القياس؛ measured_cu.unwrap_or(estimated_cu) — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`
 - [x] حساب priority fee بشكل موحد. `(total_priority_fee_lamports — adaptive.rs:202)`
 - [x] مراقبة transaction packet size. `(V0Oversized/V1Oversized مع wire_size مقابل حدّي 1232/4096 — compiler.rs:47-51,1450-1456 + v1_size_ladder_tests.rs:219 + تسجيل حجم البايتات عند الإرسال — dispatch.rs:627,636)`
 - [x] مراقبة instruction count. `(MAX_V1_INSTRUCTIONS=64 — adaptive.rs:32 + رفض V1InstructionCount — compiler.rs:1023-1027)`
