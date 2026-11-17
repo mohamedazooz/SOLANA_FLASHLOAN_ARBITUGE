@@ -585,25 +585,25 @@
 
 ## 17. Security
 
-- [ ] مراجعة Private Key Handling.
-- [ ] مراجعة Wallet Signer.
+- [x] مراجعة Private Key Handling. `(KeypairSigner::from_base58 بفحص طول 64 byte + Debug يُخفي signing_key بـ [REDACTED_SECURE] — arb-tx/src/primitives/signer.rs:14-46)`
+- [x] مراجعة Wallet Signer. `(توقيع Ed25519 حقيقي عبر ed25519-dalek SigningKey — signer.rs:26,36 + KeypairSigner::from_seed/generate للاختبار فقط)`
 - [x] منع طباعة الأسرار. `(redact_url في helius_ws + قاعدة AGENTS.md رقم 4)`
 - [x] منع تخزين الأسرار في Git. `(.gitignore يغطي .env وkeypairs وsecrets/)`
 - [x] مراجعة .gitignore. `(مُراجع — قسم Security & Secrets كامل)`
-- [ ] مراجعة .env.example.
-- [ ] مراجعة GitHub Actions Secrets Usage.
-- [ ] مراجعة Dependency Vulnerabilities.
-- [ ] مراجعة Cargo Audit.
+- [x] مراجعة .env.example. `(placeholders REPLACE_ME فقط + مفاتيح غير مستهلكة أُزيلت بعد consumption audit كامل — .env.example:1-14)`
+- [x] مراجعة GitHub Actions Secrets Usage. `(كل الوصول عبر ${{ secrets.* }} — VPS_HOST/USER/PORT/SSH_KEY deploy-vps.yml:32-35 + GITHUB_TOKEN rust-ci.yml:90؛ لا أسرار hardcoded)`
+- [x] مراجعة Dependency Vulnerabilities. `(cargo-deny advisories job على workspace وwebhook-service — rust-ci.yml:56-71)`
+- [x] مراجعة Cargo Audit. `(مُغطى بـ cargo-deny advisories — rust-ci.yml:56؛ cargo-audit منفصل غير موجود لكن التغطية مكافئة للـ RUSTSEC advisories)`
 - [x] مراجعة cargo-deny. `(cargo-deny في CI — rust-ci.yml:53-68 للـ workspace وwebhook-service)`
 - [x] مراجعة Gitleaks. `(PR #53: سياسة .gitleaks.toml مُتحقَّق بغرس 5 أسرار حقيقية 5/5 و76→0 false positives؛ + هذا PR: خطوة gitleaks في rust-ci.yml job «secrets» بـ gitleaks-action@v2 مع fetch-depth: 0 وGITLEAKS_CONFIG=.gitleaks.toml — فحص تاريخ كامل)`
-- [ ] مراجعة Docker Security.
+- [x] مراجعة Docker Security. `(pinned rust:1.99.1-slim-bookworm + --locked + multi-stage + USER arb غير جذر + HEALTHCHECK + default mode shadow — Dockerfile:8,55,64-72)`
 - [x] مراجعة RPC Endpoint Validation. `(فرض http/https scheme على primary/failover/base URLs — arb-config/src/validation.rs:50-68,169)`
-- [ ] منع untrusted account data من تجاوز validation.
-- [ ] منع malformed instructions.
-- [ ] منع arbitrary program invocation.
-- [ ] مراجعة Program IDs.
-- [ ] مراجعة Token Program IDs.
-- [ ] مراجعة Upgradeable Program Risks.
+- [x] منع untrusted account data من تجاوز validation. `(expected_owner لكل dependency — dependency_manifest.rs:94-155 + quote_readiness gates + slot_integrity tombstoning)`
+- [x] منع malformed instructions. `(رفض compiler: V0Oversized/V1Oversized/TooManyBinArrays/MissingAltAddress/AltAccountAsSigner — compiler.rs:46-65 + fuzzing_templates.rs)`
+- [x] منع arbitrary program invocation. `(protocol_owner_program يحدد program IDs الثابتة لكل بروتوكول — dependency_manifest.rs:11 + كل program IDs في arb-constants)`
+- [x] مراجعة Program IDs. `(hardcoded في arb-constants + اختبارات p0_golden_vectors تثبت العناوين)`
+- [x] مراجعة Token Program IDs. `(TokenProgramKind::{SplToken,Token2022} كـ expected_owner للـ token accounts — dependency_manifest.rs:140-146)`
+- [ ] مراجعة Upgradeable Program Risks. `(NOT VERIFIED — لا يوجد سجل مخاطر لبرامج upgradeable (admin key / upgrade authority) في docs)`
 - [x] مراجعة Kill Switch. `(arb-risk/src/lib.rs + kill switch gate في dispatch.rs:520 قبل الإرسال)`
 
 ## 18. Dashboard وObservability
