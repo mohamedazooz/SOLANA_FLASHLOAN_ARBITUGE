@@ -1926,4 +1926,62 @@ mod tests {
         // Untracked account: no linkage, lowest priority.
         assert_eq!(client.account_wsol_linkage(&Pubkey::new_unique()), 1);
     }
+
+    /// Provider recovery cycle (checklist 222): rate-limited endpoints are
+    /// rotated away from, and once their backoff expires the selector returns
+    /// to the recovered endpoints while still-limited ones stay excluded.
+    #[test]
+    fn provider_recovery_cycle_backoff_rotation_then_return_after_expiry() {
+        let client = HeliusWsClient::new_with_options(
+            vec![
+                "wss://ws1.example.com".to_string(),
+                "wss://ws2.example.com".to_string(),
+                "wss://ws3.example.com".to_string(),
+            ],
+            false,
+        );
+
+        // Primary (0) is rate-limited during connect: classify backoff, then rotate.
+        client.record_connect_backoff(0, "handshake error: HTTP 429 too many requests");
+        assert_eq!(client.select_active_endpoint_index(), 1);
+        // Fallback 1 gets limited too: rotation must land on 2.
+        client.record_connect_backoff(1, "handshake error: HTTP 429");
+        assert_eq!(client.select_active_endpoint_index(), 2);
+
+        // Both rate-limit cooldowns expire; endpoint 2 is still backed off.
+        {
+            let mut backoffs = client.ws_backoffs.write();
+            backoffs.insert(0, Instant::now() - Duration::from_secs(1));
+            backoffs.insert(1, Instant::now() - Duration::from_secs(1));
+            backoffs.insert(2, Instant::now() + Duration::from_secs(60));
+        }
+        // current_idx == 2: selection skips the still-limited candidate and
+        // returns to the recovered endpoints (earliest expired first).
+        assert_eq!(client.select_active_endpoint_index(), 0);
+        assert_eq!(client.current_idx.load(Ordering::Acquire), 0);
+    }
+
+    /// When every endpoint is in backoff the selector must elect the one whose
+    /// cooldown expires earliest and update the rotation cursor (no deadlock,
+    /// no panic, deterministic choice).
+    #[test]
+    fn recovery_cycle_all_endpoints_backoff_elects_earliest_expiry() {
+        let client = HeliusWsClient::new_with_options(
+            vec![
+                "wss://ws1.example.com".to_string(),
+                "wss://ws2.example.com".to_string(),
+                "wss://ws3.example.com".to_string(),
+            ],
+            false,
+        );
+        let now = Instant::now();
+        {
+            let mut backoffs = client.ws_backoffs.write();
+            backoffs.insert(0, now + Duration::from_secs(30));
+            backoffs.insert(1, now + Duration::from_secs(5));
+            backoffs.insert(2, now + Duration::from_secs(60));
+        }
+        assert_eq!(client.select_active_endpoint_index(), 1);
+        assert_eq!(client.current_idx.load(Ordering::Acquire), 1);
+    }
 }

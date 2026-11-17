@@ -4,10 +4,10 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-4 commit (this push) — feat(dashboard): per-hop exact-quote chain display + jito-rejection/failure-injection evidence — 436/495
-* **Previous commits:** `e5a56c8` (batch 3), `924bdaa` (batch 2), `337a458` (batch 1), `7144709` (live mainnet evidence)
+* **Commit:** batch-5 commit (this push) — test(concurrency): provider recovery cycle + concurrency hardening + re-dispatch policy — 439/495
+* **Previous commits:** `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2), `337a458` (batch 1)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1184 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1189 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
 
 ## In progress right now (not yet committed)
 
@@ -54,9 +54,17 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 4: 436 / 495 — 59 remaining.**
 
+### Batch 5 — checklist 542, 222, 504 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 222 Provider recovery cycle | 2 new tests on `HeliusWsClient` endpoint election: 429 backoff → rotation to healthy endpoints → cooldown expiry → return to the recovered endpoint while still-limited ones stay excluded; and all-endpoints-backoff elects the earliest-expiring cooldown + updates `current_idx` | `crates/arb-ingest/src/helius_ws.rs` (tests) |
+| 542 Concurrency/lock contention | New test suite with observable invariants (not just no-panic): 8 threads hammer `SlotIntegrity` (bounded wall clock, finalized ≤ highest, gap accounting still counts after contention); concurrent `rotate_endpoint`/`track_account` on `HeliusWsClient` (valid indices, no stall); 12 concurrent calls against 3 mock 429 endpoints → all fail closed, and after cooldown a further 3 calls issue **zero** new HTTP requests (counted at the mock origins) | `crates/arb-ingest/tests/concurrency_tests.rs` (new) |
+| 504 Re-dispatch decision | Design decision documented as D-18 in DECISIONS_AND_CONFLICTS.md: no automatic same-slot re-dispatch of a dropped Jito bundle (edge decay, duplicate-landing risk, tip ladder covers escalation, reconciliation gate requires on-chain evidence); current dispatch behaviour already matches the contract | `docs/audit/DECISIONS_AND_CONFLICTS.md` |
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 563, 542, 222, 504.
 
 ## Problems discovered (this session)
 
@@ -69,21 +77,21 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 ## Remaining work
 
 * **P1:** None open.
-* **P2:** Concurrency/lock-contention test (542); provider-recovery cycle test (222); Domain 13 re-dispatch design decision (504).
+* **P2:** None open. — all three P2 items (542, 222, 504) completed in batch 5.
 * **P3:** Daily aggregated report (637); Domain 16 NOT-AUDITED performance reviews (10 items); Domain 19 TOML/ENV defaults sweep, files >1000 lines, dead code, magic constants.
 * **P4:** Docs consolidation.
 * **BLOCKED (external):** 30-min data-plane session, dual-provider WSS, quota compliance proof, live Jito bundle submission, 24-hour shadow soak (run-shadow.sh ready), Solami Mirage protobuf parser (G5, provider quota).
 
 ## Acceptance gate
 
-* **Passed:** unit/integration suites (1184), clippy -D warnings, fmt, web build, checklist evidence updates.
+* **Passed:** unit/integration suites (1189), clippy -D warnings, fmt, web build, checklist evidence updates.
 * **Failed:** none.
 * **Not tested:** differential quote parity for CLMM tick-crossing/multi-bin (no oracle coverage — documented PARTIAL).
 * **Blocked:** 24h shadow soak, dual-provider WSS proof, live Jito bundle, quota-compliance proof, Solami Mirage parser (free-plan limits).
 
 ## Next single priority
 
-Batch 5: (542) dedicated concurrency/lock-contention test on the bounded ingest/hot-path channels, then (222) provider-recovery cycle test in `rpc_pool` (cooldown expiry → endpoint re-election with a mock server), then (504) Domain-13 re-dispatch design decision doc. All three are offline-testable and close the remaining actionable P2 items; everything after them is NOT-AUDITED reviews (Domain 16/19) or externally BLOCKED evidence.
+Batch 6 (P3, last mostly-actionable tier): (637) daily aggregated report (digest pipeline already exists — aggregate into a daily rolling report); then Domain 16 NOT-AUDITED performance reviews (578–583, 586) starting with lock-contention now that the concurrency harness exists. After that, only Domain 19 sweeps and externally BLOCKED evidence remain.
 
 ## Capital safety
 

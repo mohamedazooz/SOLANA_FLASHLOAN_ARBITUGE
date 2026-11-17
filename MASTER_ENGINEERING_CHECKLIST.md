@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **436 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **59** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **439 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **56** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -219,7 +219,7 @@
 - [x] اختبار اتصال مزود واحد. `(اختبارات helius_ws تُبنى على endpoint واحد: handle_message_* + slot_notification_* + account_notification_*)`
 - [x] اختبار اتصال مزودين. `(dual_ingest — 4 tests + dual_ingest_bench)`
 - [x] اختبار انقطاع المزود الأساسي. `(rotate_endpoint_wraps_across_all_endpoints + مسار connect-failure مع record_connect_backoff + endpoint_unsupported failover — مُختبرة)`
-- [ ] اختبار رجوع المزود الأساسي. `(PARTIAL: انتهاء backoff يسمح بالعودة عبر select_active_endpoint_index (الأبكر انتهاءً)؛ لا يوجد اختبار مخصص لدورة العودة)`
+- [x] اختبار رجوع المزود الأساسي. `(FIXED/TESTED — دورتان جديدتان في helius_ws.rs tests: provider_recovery_cycle_backoff_rotation_then_return_after_expiry (429→backoff→rotation→انتهاء backoff→عودة للـ endpoint المستعاد وسkip لما زال محدودًا) + recovery_cycle_all_endpoints_backoff_elects_earliest_expiry (كل endpoints في backoff → الأبكر انتهاءً + تحديث current_idx))`
 - [x] اختبار رفض subscription. `(slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + handle_message_treats_subscription_errors_as_non_fatal)`
 - [x] اختبار تجاوز subscription quota. `(handle_message_treats_subscription_errors_as_non_fatal: "Concurrent websocket subscription limit" → account_sub_limited بدون تصنيفه capability failure)`
 - [x] اختبار malformed WebSocket frames. `(regression test لـ Alchemy -32601 — helius_ws.rs:1475)`
@@ -501,7 +501,7 @@
 - [x] الفصل بين Processed وConfirmed. `(نفس الدليل — lifecycle.rs:60-65)`
 - [x] الفصل بين Confirmed وFinalized. `(نفس الدليل — lifecycle.rs:65-70)`
 - [x] عدم اعتبار HTTP 200 دليلاً على Landing. `(HTTP 200+result ⇒ accepted فقط: record_outcome "sent" — dispatch.rs:693؛ landing يُثبت حصراً بالتحقق المزدوج؛ اختبار invalid_is_not_landing_evidence — lib.rs:731)`
-- [ ] إضافة Retry Policy. `(PARTIAL — سُلّم retry بحد escalation موجود: previous_tips dispatch.rs:688-691 + اختبار a_retry_cannot_escalate_past_the_ladder_cap jito_service.rs:973؛ reconciliation عند الإقلاع لا يعيد الإرسال أبداً إلا بدليل on-chain — recovery.rs:22-27؛ لا يوجد re-dispatch تلقائي لـ bundle بعد Dropped في نفس الslot — قرار تصميمي بحاجة توثيق)`
+- [x] إضافة Retry Policy. `(PARTIAL — سُلّم retry بحد escalation موجود: previous_tips dispatch.rs:688-691 + اختبار a_retry_cannot_escalate_past_the_ladder_cap jito_service.rs:973؛ reconciliation عند الإقلاع لا يعيد الإرسال أبداً إلا بدليل on-chain — recovery.rs:22-27؛ لا يوجد re-dispatch تلقائي لـ bundle بعد Dropped في نفس الslot — قرار التصميم مُوثق الآن — DECISIONS_AND_CONFLICTS.md D-18: لا إعادة-إرسال تلقائية لنفس slot بعد Dropped (تدهور الحافة الاقتصادية، خطر landing مزدوج، سلّم tips يغطي التصعيد، reconciliation لا يعيد الإرسال إلا بدليل on-chain)؛ السلوك الحالي مطابق للعقد)`
 - [x] إضافة Bundle Expiration Handling. `(last_valid_block_height يُحفظ مع dispatch intent عند الإرسال + evaluate_lifecycle_with_block_height + الانتهاء يتطلب دليل block-height حي — recovery.rs:148`expiry_requires_block_height_evidence` + dispatch.rs:798)`
 - [x] إضافة Rejection Handling. `(مسار send Err: alert_execution_failed + record_outcome "failed" + resolve_dispatch_intent "send_failed" + لا يُحتسب خبر tip — dispatch.rs:1013-1022)`
 - [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
@@ -539,7 +539,7 @@
 - [x] إضافة Differential Tests. `(arb-math/tests/differential.rs + orca_sdk_parity.rs + meteora_mainnet_sdk_differential.rs + python_oracle_differential.rs + v1_header_differential.rs)`
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
 - [x] إضافة Failure Injection Tests. `(FIXED/TESTED — حقن أخطاء شبكة/provider فعلي عبر mock servers: quota_exhaustion_tests.rs (429 quota-exhausted→cooldown 1800s+QuotaExhausted؛ 429+Retry-After failover؛ in-body -32005) + bundle_rejection_tests.rs (mock block engine) + failover circuit-breaker provider_supervisor.rs:207)`
-- [ ] إضافة Concurrency Tests. `(PARTIAL — failover circuit-breaker tests — provider_supervisor.rs:207؛ لا يوجد اختبار مخصص لـ lock contention أو races)`
+- [x] إضافة Concurrency Tests. `(FIXED/TESTED — arb-ingest/tests/concurrency_tests.rs: 3 اختبارات — 8 threads تُقيّم SlotIntegrity بتداخل SLOT_CONFIRMED مع تحدّ زمني + ثبات invariants؛ rotation/tracking متزامن على HeliusWsClient؛ انفجار 429 متزامن ×12 ضد 3 endpoints → صفر HTTP requests بعد cooldown (إغلاق العاصفة))`
 - [x] إضافة Replay Tests. `(shadow_replay_tests.rs + arb-bot/src/bin/replay.rs)`
 - [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
 - [x] اختبار Invalid Decimals. `(test_negative_decimals_mismatch_rejected — arb-types/tests/dimensional_currency_tests.rs:63)`
