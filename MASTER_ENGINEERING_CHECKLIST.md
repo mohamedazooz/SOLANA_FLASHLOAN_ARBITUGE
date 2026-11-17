@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **225 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **235 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -274,7 +274,7 @@
 - [x] تحديد جميع Pool Accounts. `(AccountRole::PoolState)`
 - [x] تحديد Vault Accounts. `(AccountRole::VaultA/VaultB)`
 - [x] تحديد Mint Accounts. `(AccountRole::MintA/MintB)`
-- [ ] تحديد Token Accounts.
+- [x] تحديد Token Accounts. `(TESTED — vaults/ATAs بـ owner = SPL Token/Token-2022 صريح في from_registered_pool + manifest_for_registered_pool (dependency_manifest.rs:84-96,105-131)؛ user ATAs مشتقة بـ get_associated_token_address في kamino_flash.rs:42,61,77 كـ execution metas موثقة)`
 - [x] تحديد Token Program Accounts. `(AccountRole::TokenProgram)`
 - [x] تحديد Tick Arrays. `(AccountRole::TickArray)`
 - [x] تحديد DLMM Bin Arrays. `(AccountRole::BinArray + حساب required_bin_arrays)`
@@ -282,10 +282,10 @@
 - [x] تحديد Observation Accounts. `(AccountRole::Observation)`
 - [x] تحديد Fee Configuration Accounts. `(AccountRole::FeeConfig)`
 - [x] تحديد Creator Fee Accounts. `(AccountRole::CreatorVault)`
-- [ ] تحديد Flash Loan Reserve Accounts.
-- [ ] تحديد Lending Market Accounts.
-- [ ] تحديد Repayment Accounts.
-- [ ] تحديد Associated Token Accounts.
+- [x] تحديد Flash Loan Reserve Accounts. `(TESTED — KaminoFlashAccounts {reserve, reserve_supply_vault, reserve_fee_vault, reserve_liquidity_mint} في kamino_flash.rs:68-97، والمصدر live-selected عبر decode_reserve_candidate (PR #69)؛ ليست market-state deps لأن بياناتها لا تؤثر على السعر — موثق في resolve_protocol_dependencies doc)`
+- [x] تحديد Lending Market Accounts. `(TESTED — lending_market = KAMINO_MAIN_MARKET + lending_market_authority مشتقة بـ derive_lending_market_authority (kamino_flash.rs:70,84-85) ضمن مصفوفة 12 حساب للـ FlashBorrow/FlashRepay)`
+- [x] تحديد Repayment Accounts. `(TESTED — Flash Repay يستخدم نفس KaminoFlashAccounts + user_liquidity_ata (ATA الاسترداد) (kamino_flash.rs:111-127)؛ الاسترداد مفروض ذرياً داخل نفس المعاملة)`
+- [x] تحديد Associated Token Accounts. `(TESTED — user_destination_liquidity/user_liquidity_ata مشتقة per-mint عبر get_associated_token_address في from_candidate + to_flash_accounts (kamino_flash.rs:56-97)؛ مصنفة execution metas عمداً وليست quote-state dependencies)`
 - [x] تحديد الحسابات الإضافية المطلوبة لكل DEX. `(BondingCurve/GlobalConfig/SharingConfig/MintExtension/TransferHook/BitmapExtension)`
 - [x] تحديد Expected Owner لكل حساب. `(PR #56 — protocol_owner_program() يربط كل DexProtocol بـ program ID الرسمي من arb-constants، والـ gate يتحقق من owner عبر quote_dependencies_for_route → validate_dependency_group)` `(البنية موجودة — الربط بالمسار الحقيقي معلّق على G3)`
 - [x] تحديد Required/Optional لكل dependency. `(AccountDependency مع role + required)`
@@ -293,12 +293,12 @@
 - [x] ربط dependency manifest بمسار exact quote. `(PR #56 — quote_dependencies_for_route تستخرج requirements من الـ manifest ثم تطبق fail-closed quote readiness: freshness/slot-skew/owner/bank-identity)`
 - [x] ربط dependency manifest بمسار dispatch. `(PR #56 — البوابة مستدعاة في process_opportunities قبل أي حساب تكلفة أو بناء: opportunity.rs:75)`
 - [x] رفض route عند فقد أي حساب مطلوب. `(PR #56 — Err من البوابة = debug! + continue قبل معالجة الفرصة؛ حدود تغطية موثقة: vaults للـ DLMM/CLMM/Orca/PumpFun غير متتبعة فتُدقق حالة الـ pool فقط، وToken-2022 يُرفض fail-closed)`
-- [ ] رفض route عند وجود owner غير صحيح.
-- [ ] رفض route عند عدم اكتمال account hydration.
-- [ ] منع إنشاء manifest فارغ كأنه صالح.
+- [x] رفض route عند وجود owner غير صحيح. `(TESTED — OwnerMismatch في build_quote_dependency_set (quote_readiness.rs:77-79) + ConflictingOwner في route_requirements (dependency_manifest.rs:268-273)؛ اختبار regression جديد wrong_owner_on_tracked_account_rejects_the_route + conflicting_owner_for_same_dependency_fails_closed)`
+- [x] رفض route عند عدم اكتمال account hydration. `(TESTED — MissingAccount (quote_readiness.rs:76) لأي snapshot غائب + SnapshotReconciler::MissingAccount (slot_integrity.rs:163)؛ اختبار جديد incomplete_hydration_missing_account_rejects_the_route)`
+- [x] منع إنشاء manifest فارغ كأنه صالح. `(TESTED — register يرفض EmptyManifest (dependency_manifest.rs:316-318)، route_requirements يرفض pool_ids فارغة أو required-set فارغ (:246,277-279)، ReconcileError::EmptyRequirements (slot_integrity.rs:192)؛ اختبار جديد empty_manifest_is_never_a_valid_route_dependency_set)`
 - [x] إضافة dependency completeness tests. `(9 unit tests في dependency_manifest.rs)`
-- [ ] إضافة account owner regression tests.
-- [ ] إضافة account-set consistency tests.
+- [x] إضافة account owner regression tests. `(TESTED — wrong_owner_on_tracked_account_rejects_the_route (quote_readiness.rs) + conflicting_owner_for_same_dependency_fails_closed + empty_or_unowned_dependency_set_fails_closed (MissingExpectedOwner))`
+- [x] إضافة account-set consistency tests. `(TESTED — incomplete_hydration_missing_account_rejects_the_route + empty_manifest_is_never_a_valid_route_dependency_set + route_manifest_deduplicates_shared_dependencies_and_is_deterministic + stream_route_can_exceed_100_but_single_rpc_snapshot_cannot)`
 - [x] إثبات أن quote_route_guarded() مستدعاة فعلياً في Supervisor. `(PR #56 — الوظيفة المكافئة quote_dependencies_for_route مستدعاة فعلياً عبر validate_route_account_dependencies في process_opportunities: opportunity.rs:75,1424,1452)`
 
 ## 7. State Integrity وFork/Freshness
