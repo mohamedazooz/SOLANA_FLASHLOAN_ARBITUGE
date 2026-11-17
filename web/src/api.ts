@@ -66,6 +66,8 @@ export interface ObservabilitySnapshot {
   fork_invalidations_total: number;
   resyncs_total: number;
   stream_gaps_total: number;
+  process_rss_bytes: number;
+  process_cpu_percent: number;
   decode_errors_total: number;
 }
 

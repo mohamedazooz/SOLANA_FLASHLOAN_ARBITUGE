@@ -510,6 +510,8 @@ impl Supervisor {
                 fork_invalidations_total: arb_metrics::get_fork_invalidations_total(),
                 resyncs_total: arb_metrics::get_resyncs_total(),
                 stream_gaps_total: arb_metrics::get_stream_slot_gaps_total(),
+                process_rss_bytes: arb_metrics::get_process_rss_bytes(),
+                process_cpu_percent: arb_metrics::get_process_cpu_percent(),
                 decode_errors_total: arb_metrics::get_decode_errors_total(),
             },
             providers_health: serde_json::to_value(self.rpc_pool.health_snapshot()).ok(),

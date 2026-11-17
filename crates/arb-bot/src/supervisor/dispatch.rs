@@ -368,8 +368,15 @@ impl Supervisor {
 
                 if sim_enabled {
                     // RPC simulation: fail-closed safety check before dispatch
+                    let sim_started = std::time::Instant::now();
                     match self.simulator.simulate_async(tx_bytes.as_slice()).await {
                         Ok(sim_res) => {
+                            let sim_us = sim_started.elapsed().as_micros() as f64;
+                            arb_metrics::observe_simulation_latency_us(sim_us);
+                            debug!(
+                                "Pre-flight simulation latency: {:.0} µs (CU={:?})",
+                                sim_us, sim_res.units_consumed
+                            );
                             if sim_res.success && sim_res.units_consumed > 0 {
                                 self.measured_cu.lock().insert(
                                     route_sig.to_owned(),
@@ -421,8 +428,12 @@ impl Supervisor {
                             let max_version = arb_tx::rpc_max_supported_version_from_wire(tx_bytes)
                                 .ok()
                                 .flatten();
+                            let sim_started = std::time::Instant::now();
                             match self.rpc_pool.simulate_transaction(&b64, max_version).await {
                                 Ok(sim_val) => {
+                                    arb_metrics::observe_simulation_latency_us(
+                                        sim_started.elapsed().as_micros() as f64,
+                                    );
                                     let sim_err = sim_val.get("err").and_then(|ev| {
                                         if ev.is_null() {
                                             None

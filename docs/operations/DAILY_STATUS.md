@@ -8,7 +8,8 @@
 * **Previous commit:** `337a458` — feat(dashboard): quota utilization, subscription counts, stale/fork counters, gross profit + /assets static route + start_dashboard.bat — 424/495
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1183 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
-* **Last verified test run:** `cargo test --workspace --all-targets` → **passed=1183 failed=0** (EXIT=0); `cargo clippy --workspace --all-targets` → 0 warnings; `cargo fmt --all` clean; `npm run build` (web/) → 170.37 kB JS bundle OK.
+* **Last verified test run:** `cargo test --workspace --all-targets` → **passed=1184 failed=0** (EXIT=0); `cargo clippy --workspace --all-targets` → 0 warnings; `cargo fmt --all` clean; `npm run build` (web/) → 170.54 kB JS bundle OK.
+* **Checklist:** 433 / 495 verified — 62 remaining (all classified PARTIAL / MISSING / BLOCKED / NOT AUDITED).
 
 ## What changed (this session, in order)
 
@@ -53,14 +54,20 @@
 * **P4:** Docs consolidation.
 * **BLOCKED (external):** 30-min data-plane session, dual-provider WSS, quota compliance proof, live Jito bundle submission, 24-hour shadow soak (run-shadow.sh ready), Solami Mirage protobuf parser (G5, provider quota).
 
+### Batch 3 — checklist 575, 634, 638, 584/585 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 575 Simulation Latency | `SIMULATION_LATENCY_US` Prometheus Histogram (buckets 1k–5M µs) + `observe_simulation_latency_us`; measured around `simulate_async` (primary) and `RpcPool::simulate_transaction` (fallback) in dispatch; debug log with measured µs; exported via /metrics | `arb-metrics/src/lib.rs`, `supervisor/dispatch.rs` |
+| 634 Structured JSON logs | `LOG_FORMAT=json` gate in `init_event_logger()`: both stdout and file layers switch to `.json().flatten_event(true)`; default text format unchanged; Err-fallback branch covered | `main.rs` |
+| 638 30-day retention | `Store::prune_older_than_days(u32)` (default no-op) + SqliteStore impl deleting fills→outcomes→dispatch_intents→attempts by `created_at < datetime('now', ?1)` (bound param, no string concat); periodic caller every 6h in run.rs via `DATA_RETENTION_DAYS` (default 30); test `retention_prune_deletes_old_rows_and_keeps_recent` (40-day-old backdated rows deleted, recent kept, second call = 0) | `arb-store/src/lib.rs`, `supervisor/run.rs` |
+| 584/585 CPU/RSS metrics | `process_cpu_percent` Gauge + `process_rss_bytes` IntGauge; sampler task every 30s reads `/proc/self/stat` utime+stime (cpu % over interval via tick delta, CLK_TCK=100) and `/proc/self/status` VmRSS (Linux `cfg`-gated; no-ops elsewhere); surfaced through `ObservabilitySnapshot` → Overview cards "RSS (MB)" and "CPU %" | `arb-metrics/src/lib.rs`, `supervisor/run.rs`, `control_service.rs`, `supervisor.rs`, `api.ts`, `Overview.tsx` |
+
+**Checklist after batch 3: 433 / 495 — 62 remaining.**
+
 ## In progress right now (not yet committed)
 
-Batch 3 was just started — **no code written yet, only inspection completed**:
-
-1. **Item 575 — Simulation Latency:** plan = `SIMULATION_LATENCY_US` Prometheus Histogram in arb-metrics (`observe_simulation_latency_us`), measured around `simulate_async` + RpcPool fallback in `supervisor/dispatch.rs` (~lines 366, 410). Inspection done: arb-metrics uses `prometheus::{Counter, Gauge, IntCounter, IntGauge}` — Histogram import needed.
-2. **Item 634 — Structured JSON logs:** plan = `LOG_FORMAT=json` env gate in `init_event_logger()` (main.rs:218) adding `.json()` to file/stdout fmt layers (if/else registry init due to layer type change).
-3. **Item 638 — 30-day retention:** plan = `prune_older_than_days(u32)` on `Store` trait (default no-op) + SqliteStore impl deleting fills→outcomes→dispatch_intents→attempts by `created_at < datetime('now', ?1)`; schema confirmed to have `created_at TIMESTAMP` on all 4 tables (001_init.sql); periodic caller every 6h in supervisor run.rs; test with backdated rows.
-4. **Items 584/585 — CPU/RSS metrics:** plan = `PROCESS_RSS_BYTES` IntGauge + `PROCESS_CPU_PERCENT` Gauge in arb-metrics; Linux `/proc/self/status` VmRSS + `/proc/self/stat` utime/stime sampler every 30s spawned in arb-bot; fields added to `ObservabilitySnapshot` + Overview cards.
+Nothing in flight — batch 3 complete, committed and pushed.
 
 ## Acceptance gate
 

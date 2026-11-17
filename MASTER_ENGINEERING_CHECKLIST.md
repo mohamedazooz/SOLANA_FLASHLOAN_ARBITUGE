@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **428 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **67** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **433 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **62** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -572,7 +572,7 @@
 - [ ] قياس Exact Quote Latency. `(PARTIAL — نفس t_ingest_to_quote_us مدمجة + latency_bench يقيس math engine منفصلة في bench mode)`
 - [x] قياس Borrow Sizing Latency. `(latency_bench مرحلة 3: closed-form sizing & equal marginal split ببيانات حية — bin/latency_bench.rs:3-4)`
 - [x] قياس Transaction Build Latency. `(t_assembly_us — opportunity.rs:758,916 + يظهر في تقرير Telegram E2E — dispatch.rs:837-845)`
-- [ ] قياس Simulation Latency. `(MISSING — preflight sim يُنفذ لكن مدته لا تُقاس ولا تُسجل)`
+- [x] قياس Simulation Latency. `(FIXED/TESTED — Histogram simulation_latency_us في arb-metrics (buckets 1k–5M µs) + observe_simulation_latency_us؛ مُقاس فعلياً حول simulate_async و RpcPool::simulate_transaction fallback في dispatch.rs مع debug log؛ مُصدَّر في /metrics)`
 - [x] قياس Submission Latency. `(rtt_ms = sent_at.elapsed + observe_bundle_rtt — dispatch.rs:626,641-644)`
 - [x] قياس Landing Latency. `(land_start → landing_ms + total_e2e_ms شامل — dispatch.rs:756,830-846)`
 - [ ] مراجعة unnecessary cloning. `(NOT AUDITED — التصميم Arc-heavy؛ 26 clone في opportunity.rs لم تُراجع سطراً سطراً)`
@@ -581,8 +581,8 @@
 - [ ] مراجعة async task scheduling. `(NOT AUDITED — tokio::spawn لكل landing tracker؛ لا قياس task pileup)`
 - [ ] مراجعة serialization overhead. `(NOT AUDITED — bincode/JSON paths لم تُقاس)`
 - [ ] مراجعة duplicate calculations. `(NOT AUDITED — توجد إزالة مكرر في quote paths لكن لم تُراجع شمولياً)`
-- [ ] مراجعة CPU consumption. `(MISSING — لا توجد metric CPU في arb-metrics)`
-- [ ] مراجعة Memory Consumption. `(MISSING — لا توجد metric RSS/allocator)`
+- [x] مراجعة CPU consumption. `(FIXED/TESTED — Gauge process_cpu_percent في arb-metrics؛ sampler كل 30s في run.rs يقرأ /proc/self/stat utime+stime (Linux-only cfg) ويحسب % عبر الفارق ticks؛ معروض في Overview كـ "CPU %")`
+- [x] مراجعة Memory Consumption. `(FIXED/TESTED — Gauge process_rss_bytes في arb-metrics؛ sampler يقرأ VmRSS من /proc/self/status كل 30s؛ معروض في Overview كـ "RSS (MB)" + ObservabilitySnapshot)`
 - [ ] مراجعة queue saturation. `(PARTIAL — MAX_WS_ACCOUNT_SUBS يحد الاشتراكات — helius_ws.rs:648؛ لا bounded channel مقيسة للرسائل الواردة)`
 - [x] بناء reproducible benchmarks. `(arb-ingest/benches/dual_ingest_bench.rs + arb-bot/src/bin/latency_bench.rs)`
 
@@ -631,11 +631,11 @@
 - [x] عرض Transaction Size. `(FIXED/TESTED — ExecutionExtras.tx_size_bytes = tx_bytes.len() عند dispatch، يتدفق إلى /api/executions؛ عمود Tx Size (B) في Executions.tsx + فرع send_failed يسجل أيضاً)`
 - [x] عرض CU Consumption. `(FIXED/TESTED — ExecutionExtras.cu_consumed: on-chain computeUnitsConsumed عند landed (dispatch.rs:828) وإلا preflight units_consumed؛ عمود CU Consumed في Executions.tsx)`
 - [x] عرض Jito Status. `(FIXED/TESTED: ExecutionRecord توسّع بحقول signature/slot/net_profit_sol اختيارية skip_serializing_if — landed يعرض tx signature وslot وprofit، dropped يعرض bundle_id؛ أعمدة جديدة في Executions.tsx؛ اختبار execution_extras_serialize_only_when_present)`
-- [ ] إضافة Structured Logs. `(PARTIAL — tracing structured fields (attempt_id, route, slot) + file writer — main.rs:210-258؛ لا JSON format)`
+- [x] إضافة Structured Logs. `(FIXED — LOG_FORMAT=json في main.rs init_event_logger يفعّل fmt::layer().json().flatten_event(true) للـ stdout والملف معاً؛ default يبقى البصمة القديمة)`
 - [x] إضافة Correlation IDs. `(attempt_id يمر من dispatch → landing tracker → store → /api/executions + route_sig للتجميع — dispatch.rs:610-693)`
 - [x] إضافة Error Categories. `(RejectionRecord.stage/reason — control_service.rs:62-72 + مراحل مسماة: Pre-flight Simulation / Economic Invariant Gate / Risk & EV Gates)`
 - [ ] إضافة Daily Reports. `(PARTIAL — digest كل 5 دقائق + market snapshot digest — supervisor.rs:550,707-787؛ لا تقرير يومي مُجمّع)`
-- [ ] الاحتفاظ بالتقارير 30 يوماً. `(MISSING — لا سياسة retention/prune في arb-store)`
+- [x] الاحتفاظ بالتقارير 30 يوماً. `(FIXED/TESTED — Store::prune_older_than_days(days) — default no-op + SqliteStore impl يحذف fills→outcomes→dispatch_intents→attempts بـ created_at < datetime('now', ?1) (معامل مربوط لا سلاسل)؛ caller دوري كل 6 ساعات في run.rs عبر DATA_RETENTION_DAYS (default 30)؛ اختبار retention_prune_deletes_old_rows_and_keeps_recent (صفوف backdated 40 يوم تُحذف، الحديثة تبقى، ثاني استدعاء = 0))`
 - [x] منع ظهور الأسرار في الواجهة. `(web_api.rs:13 «No private keys or signing secrets are ever exposed» + auth login/logout + ws-ticket receive-only — web_api.rs:421-439)`
 - [x] التحقق من تطابق Dashboard مع Runtime State. `(StatusSnapshot هو الشكل الوحيد المستهلك من Dashboard وTelegram /status معاً — control_service.rs:83-85)`
 

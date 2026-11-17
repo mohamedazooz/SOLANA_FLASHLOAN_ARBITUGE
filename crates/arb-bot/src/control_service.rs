@@ -169,6 +169,8 @@ pub struct ObservabilitySnapshot {
     pub fork_invalidations_total: u64,
     pub resyncs_total: u64,
     pub stream_gaps_total: u64,
+    pub process_rss_bytes: u64,
+    pub process_cpu_percent: f64,
     pub decode_errors_total: u64,
 }
 

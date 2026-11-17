@@ -2,6 +2,48 @@
 use super::*;
 
 impl Supervisor {
+    /// Cumulative user+system CPU ticks for this process (Linux `/proc/self/stat`).
+    /// Field indices 11/12 after `(comm)` correspond to utime/stime (fields 14/15).
+    #[cfg(target_os = "linux")]
+    fn process_cpu_ticks() -> Option<(u64, u64)> {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        let rest = stat.split(") ").nth(1)?;
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let utime: u64 = fields.get(11)?.parse().ok()?;
+        let stime: u64 = fields.get(12)?.parse().ok()?;
+        Some((utime, stime))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_cpu_ticks() -> Option<(u64, u64)> {
+        None
+    }
+
+    /// CPU percent over the sample interval. Can exceed 100 on multi-core
+    /// hosts; only negative drift is clamped.
+    fn cpu_percent(prev: (u64, u64), now: (u64, u64), interval_secs: f64) -> f64 {
+        const CLK_TCK: f64 = 100.0;
+        let ticks = now
+            .0
+            .saturating_sub(prev.0)
+            .saturating_add(now.1.saturating_sub(prev.1));
+        ticks as f64 / CLK_TCK / interval_secs * 100.0
+    }
+
+    /// Resident set size in bytes (Linux `/proc/self/status` VmRSS).
+    #[cfg(target_os = "linux")]
+    fn process_rss_bytes() -> Option<u64> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+        let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb.saturating_mul(1024))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_rss_bytes() -> Option<u64> {
+        None
+    }
+
     /// Serialize current RPC pool health (if available) and write the heartbeat
     /// atomically. Failures are logged, never fatal: liveness reporting must not
     /// take down the trading loop.
@@ -476,6 +518,59 @@ impl Supervisor {
 
         // 2. Ingestion: WebSocket streaming worker
         let cancel_token = CancellationToken::new();
+
+        // Maintenance: process CPU/RSS sampler (Linux /proc) and store
+        // retention prune. Both are observability/hygiene only — failures are
+        // logged, never fatal to the trading loop.
+        let cancel_sampler = cancel_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut prev_ticks: Option<(u64, u64)> = None;
+            loop {
+                tokio::select! {
+                    _ = cancel_sampler.cancelled() => break,
+                    _ = interval.tick() => {
+                        let ticks = Self::process_cpu_ticks();
+                        if let Some((now, prev)) = ticks.zip(prev_ticks) {
+                            let pct = Self::cpu_percent(prev, now, 30.0);
+                            arb_metrics::set_process_cpu_percent(pct);
+                        }
+                        if let Some(t) = ticks {
+                            prev_ticks = Some(t);
+                        }
+                        if let Some(rss) = Self::process_rss_bytes() {
+                            arb_metrics::set_process_rss_bytes(rss);
+                        }
+                    }
+                }
+            }
+        });
+        {
+            let cancel_prune = cancel_token.clone();
+            let store = self.store.clone();
+            let retention_days: u32 = std::env::var("DATA_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|d| *d > 0)
+                .unwrap_or(30);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = cancel_prune.cancelled() => break,
+                        _ = interval.tick() => {
+                            match store.prune_older_than_days(retention_days) {
+                                Ok(n) if n > 0 => info!(deleted = n, retention_days, "store retention pruned"),
+                                Ok(_) => {}
+                                Err(e) => warn!("store retention prune failed: {}", e),
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         info!(
             "⚡ Pure WebSocket Ingestion Engine Active (Helius & RPCFast WebSockets driving pipeline)"

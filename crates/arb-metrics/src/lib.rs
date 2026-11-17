@@ -4,7 +4,9 @@
 use std::net::SocketAddr;
 
 use once_cell::sync::Lazy;
-use prometheus::{Counter, Encoder, Gauge, IntCounter, IntGauge, Registry, TextEncoder};
+use prometheus::{
+    Counter, Encoder, Gauge, Histogram, HistogramOpts, IntCounter, IntGauge, Registry, TextEncoder,
+};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tracing::{debug, error};
@@ -30,6 +32,9 @@ pub mod metric_names {
     pub const FORK_INVALIDATIONS_TOTAL: &str = "fork_invalidations_total";
     pub const STREAM_SLOT_GAPS_TOTAL: &str = "stream_slot_gaps_total";
     pub const WS_SUBSCRIPTIONS_ACTIVE: &str = "ws_subscriptions_active";
+    pub const SIMULATION_LATENCY_US: &str = "simulation_latency_us";
+    pub const PROCESS_RSS_BYTES: &str = "process_rss_bytes";
+    pub const PROCESS_CPU_PERCENT: &str = "process_cpu_percent";
 }
 
 static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
@@ -211,6 +216,51 @@ static FORK_INVALIDATIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     counter
 });
 
+static SIMULATION_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::SIMULATION_LATENCY_US,
+            "Pre-flight RPC simulation duration in microseconds",
+        )
+        .buckets(vec![
+            1_000.0,
+            5_000.0,
+            10_000.0,
+            25_000.0,
+            50_000.0,
+            100_000.0,
+            250_000.0,
+            500_000.0,
+            1_000_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static PROCESS_RSS_BYTES: Lazy<IntGauge> = Lazy::new(|| {
+    let gauge = IntGauge::new(
+        metric_names::PROCESS_RSS_BYTES,
+        "Resident set size in bytes",
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(gauge.clone()));
+    gauge
+});
+
+static PROCESS_CPU_PERCENT: Lazy<Gauge> = Lazy::new(|| {
+    let gauge = Gauge::new(
+        metric_names::PROCESS_CPU_PERCENT,
+        "Process CPU usage percent averaged over the sample interval",
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(gauge.clone()));
+    gauge
+});
+
 static STREAM_SLOT_GAPS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     let counter = IntCounter::new(
         metric_names::STREAM_SLOT_GAPS_TOTAL,
@@ -353,6 +403,18 @@ pub fn inc_stream_slot_gaps(n: u64) {
     STREAM_SLOT_GAPS_TOTAL.inc_by(n);
 }
 
+pub fn observe_simulation_latency_us(us: f64) {
+    SIMULATION_LATENCY_US.observe(us);
+}
+
+pub fn set_process_rss_bytes(v: u64) {
+    PROCESS_RSS_BYTES.set(v as i64);
+}
+
+pub fn set_process_cpu_percent(v: f64) {
+    PROCESS_CPU_PERCENT.set(v);
+}
+
 pub fn get_stale_rejections_total() -> u64 {
     STALE_REJECTIONS_TOTAL.get()
 }
@@ -379,6 +441,14 @@ pub fn get_fork_invalidations_total() -> u64 {
 
 pub fn get_stream_slot_gaps_total() -> u64 {
     STREAM_SLOT_GAPS_TOTAL.get()
+}
+
+pub fn get_process_rss_bytes() -> u64 {
+    PROCESS_RSS_BYTES.get().max(0) as u64
+}
+
+pub fn get_process_cpu_percent() -> f64 {
+    PROCESS_CPU_PERCENT.get()
 }
 
 #[cfg(test)]

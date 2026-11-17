@@ -61,6 +61,14 @@ export default function Overview({ status }: { status: StatusSnapshot | null }) 
               tone={status.observability.stream_gaps_total > 0 ? "tone-red" : ""}
             />
             <Stat
+              label="RSS (MB)"
+              value={(status.observability.process_rss_bytes / 1_048_576).toFixed(1)}
+            />
+            <Stat
+              label="CPU %"
+              value={status.observability.process_cpu_percent.toFixed(1)}
+            />
+            <Stat
               label="Decode errors"
               value={String(status.observability.decode_errors_total)}
               tone={status.observability.decode_errors_total > 0 ? "tone-red" : ""}

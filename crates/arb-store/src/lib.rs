@@ -76,6 +76,12 @@ pub trait Store: Send + Sync {
     fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()>;
     fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>>;
     fn resolve_dispatch_intent(&self, attempt_id: i64, resolved_status: &str) -> Result<()>;
+
+    /// Delete rows older than `days`, newest-first safe order (fills → outcomes →
+    /// dispatch_intents → attempts). Default no-op for stores without SQL pruning.
+    fn prune_older_than_days(&self, _days: u32) -> Result<u64> {
+        Ok(0)
+    }
 }
 
 /// Persistent SQLite Store enforcing WAL Pragmas.
@@ -408,6 +414,31 @@ impl Store for SqliteStore {
         .map_err(|e| ArbError::Internal(format!("Failed to resolve dispatch intent: {e}")))?;
         Ok(())
     }
+
+    /// Retention policy: delete all attempt-row families whose `created_at`
+    /// timestamp is older than `days`. Child tables are pruned before the
+    /// attempts rows they reference. Returns total rows deleted.
+    fn prune_older_than_days(&self, days: u32) -> Result<u64> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        let modifier = format!("-{days} days");
+        let mut deleted: u64 = 0;
+        for table in ["fills", "outcomes", "dispatch_intents", "attempts"] {
+            let sql = format!(
+                "DELETE FROM {table} WHERE created_at IS NOT NULL\n                 AND created_at < datetime('now', ?1)"
+            );
+            let n = conn.execute(&sql, params![modifier]).map_err(|e| {
+                ArbError::Internal(format!("retention prune failed on {table}: {e}"))
+            })?;
+            deleted += u64::try_from(n).unwrap_or(0);
+        }
+        if deleted > 0 {
+            info!(deleted, days, "store retention prune completed");
+        }
+        Ok(deleted)
+    }
 }
 #[derive(Debug, Default)]
 pub struct MemoryStore {
@@ -685,5 +716,65 @@ mod tests {
             store.resolve_dispatch_intent(1, "expired").unwrap();
             assert_eq!(store.pending_dispatch_intents(16).unwrap().len(), 1);
         }
+    }
+
+    #[test]
+    fn retention_prune_deletes_old_rows_and_keeps_recent() {
+        let store = SqliteStore::open_in_memory().expect("invariant");
+        for id in [1i64, 2] {
+            store
+                .record_attempt(&AttemptRecord {
+                    id,
+                    slot: 700,
+                    route_id: "r".into(),
+                    expected_net: Lamports(1),
+                    tip_lamports: None,
+                    decision: "sent".into(),
+                })
+                .unwrap();
+            store
+                .record_outcome(id, "landed", Some(Lamports(1)))
+                .unwrap();
+            store
+                .record_fill(&FillRecord {
+                    attempt_id: id,
+                    token: "mint".into(),
+                    amount: arb_types::TokenAmount(1),
+                })
+                .unwrap();
+            store
+                .record_dispatch_intent(&DispatchIntentRecord {
+                    attempt_id: id,
+                    signature: format!("sig{id}"),
+                    provider: "swqos".into(),
+                    dispatch_slot: 700,
+                    last_valid_block_height: None,
+                    resolved_status: None,
+                })
+                .unwrap();
+        }
+        // Backdate attempt 1 (and its children) beyond the retention window.
+        {
+            let conn = store.conn.lock().unwrap();
+            for table in ["attempts", "outcomes", "fills", "dispatch_intents"] {
+                let key = if table == "attempts" {
+                    "id"
+                } else {
+                    "attempt_id"
+                };
+                conn.execute(
+                    &format!(
+                        "UPDATE {table} SET created_at = datetime('now', '-40 days') WHERE {key} = 1"
+                    ),
+                    [],
+                )
+                .unwrap();
+            }
+        }
+        let deleted = store.prune_older_than_days(30).expect("invariant");
+        assert!(deleted >= 4, "expected old rows deleted, got {deleted}");
+        assert!(store.get_attempt(1).unwrap().is_none());
+        assert!(store.get_attempt(2).unwrap().is_some());
+        assert_eq!(store.prune_older_than_days(30).unwrap(), 0);
     }
 }
