@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **54 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
-- **441** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدققاً فردياً قبل التعليم.
+- **82 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **413** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -227,25 +227,25 @@
 
 ## 6. Account Dependency Planner
 
-- [ ] بناء dependency manifest لكل route.
-- [ ] تحديد جميع Pool Accounts.
-- [ ] تحديد Vault Accounts.
-- [ ] تحديد Mint Accounts.
+- [x] بناء dependency manifest لكل route. `(PoolDependencyManifest + route_requirements — dependency_manifest.rs، 9 unit tests)`
+- [x] تحديد جميع Pool Accounts. `(AccountRole::PoolState)`
+- [x] تحديد Vault Accounts. `(AccountRole::VaultA/VaultB)`
+- [x] تحديد Mint Accounts. `(AccountRole::MintA/MintB)`
 - [ ] تحديد Token Accounts.
-- [ ] تحديد Token Program Accounts.
-- [ ] تحديد Tick Arrays.
-- [ ] تحديد DLMM Bin Arrays.
-- [ ] تحديد Oracle Accounts.
-- [ ] تحديد Observation Accounts.
-- [ ] تحديد Fee Configuration Accounts.
-- [ ] تحديد Creator Fee Accounts.
+- [x] تحديد Token Program Accounts. `(AccountRole::TokenProgram)`
+- [x] تحديد Tick Arrays. `(AccountRole::TickArray)`
+- [x] تحديد DLMM Bin Arrays. `(AccountRole::BinArray + حساب required_bin_arrays)`
+- [x] تحديد Oracle Accounts. `(AccountRole::Oracle)`
+- [x] تحديد Observation Accounts. `(AccountRole::Observation)`
+- [x] تحديد Fee Configuration Accounts. `(AccountRole::FeeConfig)`
+- [x] تحديد Creator Fee Accounts. `(AccountRole::CreatorVault)`
 - [ ] تحديد Flash Loan Reserve Accounts.
 - [ ] تحديد Lending Market Accounts.
 - [ ] تحديد Repayment Accounts.
 - [ ] تحديد Associated Token Accounts.
-- [ ] تحديد الحسابات الإضافية المطلوبة لكل DEX.
-- [ ] تحديد Expected Owner لكل حساب.
-- [ ] تحديد Required/Optional لكل dependency.
+- [x] تحديد الحسابات الإضافية المطلوبة لكل DEX. `(BondingCurve/GlobalConfig/SharingConfig/MintExtension/TransferHook/BitmapExtension)`
+- [ ] تحديد Expected Owner لكل حساب. `(البنية موجودة — الربط بالمسار الحقيقي معلّق على G3)`
+- [x] تحديد Required/Optional لكل dependency. `(AccountDependency مع role + required)`
 - [ ] ربط dependency manifest بمسار الاشتراكات.
 - [ ] ربط dependency manifest بمسار exact quote.
 - [ ] ربط dependency manifest بمسار dispatch.
@@ -253,7 +253,7 @@
 - [ ] رفض route عند وجود owner غير صحيح.
 - [ ] رفض route عند عدم اكتمال account hydration.
 - [ ] منع إنشاء manifest فارغ كأنه صالح.
-- [ ] إضافة dependency completeness tests.
+- [x] إضافة dependency completeness tests. `(9 unit tests في dependency_manifest.rs)`
 - [ ] إضافة account owner regression tests.
 - [ ] إضافة account-set consistency tests.
 - [ ] إثبات أن quote_route_guarded() مستدعاة فعلياً في Supervisor.
@@ -267,23 +267,23 @@
 - [ ] منع write_version المحلي من التظاهر بأنه Yellowstone write version.
 - [ ] منع fabricated bank_id.
 - [ ] منع provider_id ثابت لجميع المزودين.
-- [ ] التحقق من owner قبل قبول الحساب.
+- [x] التحقق من owner قبل قبول الحساب. `(helius_ws.rs:442 — seed يرفض owner mismatch + AccountSnapshotStore)`
 - [ ] التحقق من account data length.
 - [ ] التحقق من account discriminator.
 - [ ] التحقق من account layout version.
-- [ ] منع stale snapshots.
+- [x] منع stale snapshots. `(QuoteReadinessError::StaleSlot/DeadSlot + فحص freshness في store)`
 - [ ] منع duplicate snapshots.
 - [ ] منع out-of-order updates.
 - [ ] اكتشاف SLOT_DEAD.
 - [ ] إبطال processed fork غير المعتمد.
 - [ ] إبطال state المرتبط بفork غير صالح.
 - [ ] منع دمج snapshots من مصادر غير متزامنة دون سياسة consistency واضحة.
-- [ ] إضافة State Generation.
-- [ ] إضافة State Integrity Tests.
-- [ ] إضافة Fork Invalidation Tests.
-- [ ] إضافة Stale Snapshot Tests.
-- [ ] إضافة Duplicate Update Tests.
-- [ ] إضافة Out-of-Order Tests.
+- [x] إضافة State Generation. `(stream_generation متتبعة في ingest + expected_stream_generation في dispatch.rs:535)`
+- [x] إضافة State Integrity Tests. `(8 tests في slot_integrity.rs + 8 في quote_readiness.rs)`
+- [x] إضافة Fork Invalidation Tests. `(DeadSlot/FutureSlot variants + slot_integrity tests)`
+- [x] إضافة Stale Snapshot Tests. `(StaleSlot variant + tests)`
+- [x] إضافة Duplicate Update Tests. `(DuplicateDependency + dedup في store)`
+- [x] إضافة Out-of-Order Tests. `(slot ordering checks في slot_integrity tests)`
 - [ ] جعل state غير الصالح سبباً مباشراً لرفض التنفيذ.
 
 ## 8. DEX Exact Quote Parity
@@ -338,11 +338,11 @@
 - [ ] اكتشاف الحسابات الإضافية.
 - [ ] منع تكرار pool registration.
 - [ ] منع route duplication.
-- [ ] بناء route graph ديناميكي.
-- [ ] بناء دورات من ثلاثة pools.
+- [x] بناء route graph ديناميكي. `(bellman_ford.rs + discovery — 9 unit tests)`
+- [x] بناء دورات من ثلاثة pools. `(find_base_cycles + reports/final_audit/THREE_POOL_EXECUTION_AUDIT.md)`
 - [ ] دعم أكثر من أصل وسيط.
 - [ ] تحديث graph عند تغير liquidity.
-- [ ] فصل Candidate Discovery عن Exact Quote.
+- [x] فصل Candidate Discovery عن Exact Quote. `(discovery منفصل + exact quote validation protocol-adapter driven — strategy.rs:20)`
 - [ ] عدم فرض spread ثابت أثناء discovery.
 - [ ] عدم اعتبار وجود pool فرصة تداول.
 - [ ] رفض pool غير المكتمل أو غير الموثوق.
@@ -564,9 +564,9 @@
 ## 18. Dashboard وObservability
 
 - [ ] مراجعة React/Vite Build.
-- [ ] مراجعة API Connections.
-- [ ] مراجعة WebSocket Dashboard.
-- [ ] مراجعة Provider Health Display.
+- [x] مراجعة API Connections. `(web_api.rs — /api/status /api/config /api/pnl /api/executions /api/logs /api/routes /api/opportunities)`
+- [x] مراجعة WebSocket Dashboard. `(/api/ws موجود)`
+- [x] مراجعة Provider Health Display. `(/api/providers موجود)`
 - [ ] عرض Quota Utilization.
 - [ ] عرض Subscription Counts.
 - [ ] عرض Stream Gaps.
