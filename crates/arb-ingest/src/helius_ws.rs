@@ -1560,6 +1560,74 @@ mod tests {
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
     }
 
+    /// Malformed / hostile frames must be skipped without panicking, without
+    /// poisoning slot state, and without tearing down the endpoint.
+    #[test]
+    fn malformed_frames_are_skipped_without_poisoning_state() {
+        let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        let yellowstone = IngestClient::new();
+        let slot_before = client.latest_slot.load(Ordering::Acquire);
+
+        // Structurally valid JSON but semantically empty.
+        assert_eq!(client.handle_message(&json!({}), &yellowstone), Ok(false));
+        assert_eq!(
+            client.handle_message(&json!({"jsonrpc": "2.0"}), &yellowstone),
+            Ok(false)
+        );
+        // Wrong types for known fields.
+        assert_eq!(
+            client.handle_message(&json!({"method": 12345}), &yellowstone),
+            Ok(false)
+        );
+        assert_eq!(
+            client.handle_message(&json!({"id": "not-a-number", "result": {}}), &yellowstone),
+            Ok(false)
+        );
+        // Notifications with missing / malformed payloads.
+        assert_eq!(
+            client.handle_message(&json!({"method": "slotNotification"}), &yellowstone),
+            Ok(false)
+        );
+        assert_eq!(
+            client.handle_message(
+                &json!({"method": "slotNotification", "params": {"result": {"slot": "NaN"}}}),
+                &yellowstone
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            client.handle_message(
+                &json!({"method": "accountNotification", "params": {"subscription": null}}),
+                &yellowstone
+            ),
+            Ok(false)
+        );
+        // No valid slot metadata so far: slot state must be untouched.
+        assert_eq!(client.latest_slot.load(Ordering::Acquire), slot_before);
+
+        // accountNotification with an unknown subscription id and corrupt
+        // base64 payload: no panic, no endpoint teardown. The provider-supplied
+        // context slot is legitimate metadata and is recorded, but no snapshot
+        // can be applied because the subscription id is unknown.
+        assert_eq!(
+            client.handle_message(
+                &json!({
+                    "method": "accountNotification",
+                    "params": {
+                        "subscription": 999_999,
+                        "result": {"context": {"slot": 123}, "value": {"owner": "not-a-pubkey", "data": ["!!!not-base64!!!", "base64"]}}
+                    }
+                }),
+                &yellowstone
+            ),
+            Ok(false)
+        );
+        assert_eq!(client.latest_slot.load(Ordering::Acquire), 123);
+
+        assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
+        assert!(!client.account_sub_limited.load(Ordering::Acquire));
+    }
+
     /// G8: a provider that rejects `slotSubscribe` (request id 1) may still
     /// deliver account updates. The rejection must disable the slot sub for
     /// this client -- NOT fail the endpoint -- because slot freshness falls
