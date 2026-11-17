@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-7 commit (this push) — test(config): cross-file toml/env default-consistency sweep — 444/495
+* **Commit:** batch-8 commit (this push) — docs(audit): program upgradeability risk register — 445/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -79,9 +79,17 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 7: 444 / 495 — 51 remaining.**
 
+### Batch 8 — checklist 609 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 609 Upgradeable-program risks | New risk register: impact matrix of program upgrades on decode/fee/dispatch, per-program register for every execution-path program ID with expected upgrade-authority behavior and risk levels, special ArbExecutor case (source builds locally but **no retained deployment evidence → UNVERIFIED** — executor-dependent paths stay in shadow mode), standing in-code mitigations, and an operational re-verification duty (upgrade-authority + deployment-slot diff check) binding a change to a re-run of the differential suite | `docs/audit/PROGRAM_UPGRADEABILITY_RISKS.md` (new) |
+
+**Checklist after batch 8: 445 / 495 — 50 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609.
 
 ## Problems discovered (this session)
 

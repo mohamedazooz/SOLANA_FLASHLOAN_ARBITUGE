@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **444 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **51** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **445 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **50** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -606,7 +606,7 @@
 - [x] منع arbitrary program invocation. `(protocol_owner_program يحدد program IDs الثابتة لكل بروتوكول — dependency_manifest.rs:11 + كل program IDs في arb-constants)`
 - [x] مراجعة Program IDs. `(hardcoded في arb-constants + اختبارات p0_golden_vectors تثبت العناوين)`
 - [x] مراجعة Token Program IDs. `(TokenProgramKind::{SplToken,Token2022} كـ expected_owner للـ token accounts — dependency_manifest.rs:140-146)`
-- [ ] مراجعة Upgradeable Program Risks. `(NOT VERIFIED — لا يوجد سجل مخاطر لبرامج upgradeable (admin key / upgrade authority) في docs)`
+- [x] مراجعة Upgradeable Program Risks. `(REVIEWED — docs/audit/PROGRAM_UPGRADEABILITY_RISKS.md: سجل مخاطر لكل برامج مسار التنفيذ (Kamino/Meteora×4/Raydium×4/Orca/Pump×3/Token) بمستويات مخاطر وسلوك upgrade authority متوقع + حالة ArbExecutor (UNVERIFIED — مصدر يبني لكن لا دليل deployment محفوظ) + إجراء إعادة-تحقق قبل أي توقيع حي)`
 - [x] مراجعة Kill Switch. `(arb-risk/src/lib.rs + kill switch gate في dispatch.rs:520 قبل الإرسال)`
 
 ## 18. Dashboard وObservability
