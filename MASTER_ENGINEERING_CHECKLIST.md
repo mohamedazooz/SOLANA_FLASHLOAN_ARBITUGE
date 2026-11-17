@@ -484,30 +484,30 @@
 ## 13. Jito وLanding
 
 - [x] التحقق من Jito endpoints. `(regional Block Engine endpoints: Amsterdam/Frankfurt/NY + fanout — arb-land/src/lib.rs:29,219-261)`
-- [ ] التحقق من Bundle Serialization.
-- [ ] التحقق من Tip Accounts.
+- [x] التحقق من Bundle Serialization. `(base64 + params [{txs},{encoding,bundleOnly:true}] + حد 1..=5 txs — arb-land/src/lib.rs:264-283)`
+- [x] التحقق من Tip Accounts. `(JITO_TIP_ACCOUNTS في arb-constants + get_random_tip_account/get_tip_account_for_slot lib.rs:33-48 + اختبار كون حسابات tip الثمانية داخل master ALT — compiler.rs:1323-1334)`
 - [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
-- [ ] التحقق من Priority Fee.
+- [x] التحقق من Priority Fee. `(adaptive_cu_price p75-escalation lib.rs:164-188 + cap_cu_price_by_profit + total_priority_fee_lamports موحّد — adaptive.rs:202)`
 - [x] التحقق من Bundle Submission. `(send_bundle + send_bundle_multi_region — arb-land/src/lib.rs:264,323)`
 - [x] حفظ Bundle ID. `(bundle_id: String — lib.rs:82 + استرجاعه من الرد lib.rs:395)`
 - [x] متابعة Bundle Status. `(get_bundle_status — lib.rs:366-395 + signature-status polling في dispatch.rs)`
-- [ ] التحقق من Landing.
-- [ ] التحقق من Slot.
+- [x] التحقق من Landing. `(dual-track verify_landing_with_height: Jito getBundleStatuses ↔ RPC getSignatureStatuses، وDropped/Expired يُعاد فحصهما على السلسلة قبل القبول — jito_service.rs:502-758)`
+- [x] التحقق من Slot. `(record.slot → landed_slot jito_service.rs:503-510، وeffective_slot = landed_slot.unwrap_or(slot_val) في telemetry — dispatch.rs:821)`
 - [x] التحقق من Signature Status. `(SignatureStatus::Pending/Processed/Confirmed/Finalized/Failed polling في dispatch.rs:751-768)`
 - [x] الفصل بين Submitted وAccepted. `(lifecycle.rs:25-31 — حالات منفصلة مع انتقالات مقيدة)`
 - [x] الفصل بين Processed وConfirmed. `(نفس الدليل — lifecycle.rs:60-65)`
 - [x] الفصل بين Confirmed وFinalized. `(نفس الدليل — lifecycle.rs:65-70)`
-- [ ] عدم اعتبار HTTP 200 دليلاً على Landing.
-- [ ] إضافة Retry Policy.
-- [ ] إضافة Bundle Expiration Handling.
-- [ ] إضافة Rejection Handling.
+- [x] عدم اعتبار HTTP 200 دليلاً على Landing. `(HTTP 200+result ⇒ accepted فقط: record_outcome "sent" — dispatch.rs:693؛ landing يُثبت حصراً بالتحقق المزدوج؛ اختبار invalid_is_not_landing_evidence — lib.rs:731)`
+- [ ] إضافة Retry Policy. `(PARTIAL — سُلّم retry بحد escalation موجود: previous_tips dispatch.rs:688-691 + اختبار a_retry_cannot_escalate_past_the_ladder_cap jito_service.rs:973؛ reconciliation عند الإقلاع لا يعيد الإرسال أبداً إلا بدليل on-chain — recovery.rs:22-27؛ لا يوجد re-dispatch تلقائي لـ bundle بعد Dropped في نفس الslot — قرار تصميمي بحاجة توثيق)`
+- [x] إضافة Bundle Expiration Handling. `(last_valid_block_height يُحفظ مع dispatch intent عند الإرسال + evaluate_lifecycle_with_block_height + الانتهاء يتطلب دليل block-height حي — recovery.rs:148`expiry_requires_block_height_evidence` + dispatch.rs:798)`
+- [x] إضافة Rejection Handling. `(مسار send Err: alert_execution_failed + record_outcome "failed" + resolve_dispatch_intent "send_failed" + لا يُحتسب خبر tip — dispatch.rs:1013-1022)`
 - [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
-- [ ] تسجيل Actual Balance Changes.
+- [ ] تسجيل Actual Balance Changes. `(PARTIAL — arb-sim يفكك preBalances/postBalances/preTokenBalances/postTokenBalances مع fee_payer_lamport_delta وtoken_delta — fork_sim.rs:388-396، وreal_net_profit يُحسب من balance changes محاكاة قبل الإرسال — opportunity.rs:1343,1405؛ لكن مسار landing في dispatch.rs:822-829 يستخرج computeUnitsConsumed فقط ولا يُسوّي realized_net مع دلتا الرصيد الفعلية على السلسلة)`
 - [x] تسجيل Realized Profit. `(realized_net: Lamports مسجل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325)`
-- [ ] اختبار Jito Failure.
-- [ ] اختبار Jito Timeout.
-- [ ] اختبار Bundle Rejection.
-- [ ] اختبار Landing Confirmation.
+- [x] اختبار Jito Failure. `(recovery.rs:117-146 landed_and_failed_statuses_resolve_to_onchain_outcome + ledger_records_only_evidence + refuses_when_the_tip_market_is_missing — jito_service.rs:950)`
+- [x] اختبار Jito Timeout. `(processed_is_not_landed_and_timeout_is_ambiguous — recovery.rs:134 + poll_until_terminal يعيد Pending بعد استنفاد المحاولات — jito_service.rs:473-491)`
+- [ ] اختبار Bundle Rejection. `(PARTIAL — مسار الرفض مُعالج في dispatch.rs:1013-1022 لكن لا يوجد اختبار unit مخصص لفرع الخطأ هذا في dispatch)`
+- [x] اختبار Landing Confirmation. `(invalid_is_not_landing_evidence + unknown_status_is_not_terminal + missing_result_yields_no_statuses — arb-land lib.rs:731-756 + التحقق المزدوج في jito_service.rs:502-758)`
 
 ## 14. Compute Budget وTransaction Constraints
 
