@@ -2381,30 +2381,29 @@ pub fn decode_spl_token_amount_bytes(bytes: &[u8]) -> Option<u64> {
     Some(u64::from_le_bytes(arr))
 }
 
-/// Decode a u64 token amount from an SPL token account JSON value.
-/// SPL token accounts store the amount as a little-endian u64 at byte offset 64,
-/// base64-encoded in the `data[0]` field of the RPC response.
-#[allow(dead_code)]
-fn decode_token_amount(acc: Option<&serde_json::Value>) -> u64 {
-    let Some(acc) = acc else {
-        return 0;
-    };
-    let Some(data_str) = acc
-        .get("data")
-        .and_then(|d| d.get(0))
-        .and_then(|s| s.as_str())
-    else {
-        return 0;
-    };
-    let Ok(bytes) = BASE64_STANDARD.decode(data_str) else {
-        return 0;
-    };
-    decode_spl_token_amount_bytes(&bytes).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decode a u64 token amount from an SPL token account JSON value.
+    /// SPL token accounts store the amount as a little-endian u64 at byte offset 64,
+    /// base64-encoded in the `data[0]` field of the RPC response.
+    fn decode_token_amount(acc: Option<&serde_json::Value>) -> u64 {
+        let Some(acc) = acc else {
+            return 0;
+        };
+        let Some(data_str) = acc
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|s| s.as_str())
+        else {
+            return 0;
+        };
+        let Ok(bytes) = BASE64_STANDARD.decode(data_str) else {
+            return 0;
+        };
+        decode_spl_token_amount_bytes(&bytes).unwrap_or(0)
+    }
 
     #[test]
     fn mainnet_default_registers_all_venues() {

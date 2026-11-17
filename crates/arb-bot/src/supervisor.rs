@@ -64,7 +64,6 @@ pub struct Supervisor {
     ingest: Arc<IngestClient>,
     graph: parking_lot::Mutex<MarketGraph>,
     risk_gate: Arc<RiskGate>,
-    #[allow(dead_code)] // wired into dispatch when Jito bundles are enabled
     jito_lander: JitoLander,
     tip_strategy: TipStrategy,
     registry: Arc<parking_lot::RwLock<arb_ingest::MultiDexRegistry>>,
@@ -74,7 +73,6 @@ pub struct Supervisor {
     dependency_manifests: parking_lot::Mutex<arb_ingest::DependencyManifestRegistry>,
     /// Recent landed compute-unit prices for adaptive priority fee.
     recent_landed_cu: Vec<u64>,
-    #[allow(dead_code)]
     simulator: Simulator,
     store: Arc<dyn Store>,
     telegram: TelegramNotifier,

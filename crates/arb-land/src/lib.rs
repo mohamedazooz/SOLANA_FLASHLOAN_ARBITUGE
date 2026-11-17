@@ -181,8 +181,6 @@ pub struct JitoLander {
     /// once at construction (see [`JitoLander::resolved_override_url`]).
     override_url: Option<String>,
     client: reqwest::Client,
-    #[allow(dead_code)]
-    max_retries: u32,
 }
 
 impl JitoLander {
@@ -197,7 +195,6 @@ impl JitoLander {
             regions,
             override_url: Self::resolved_override_url(),
             client,
-            max_retries: 3,
         }
     }
 

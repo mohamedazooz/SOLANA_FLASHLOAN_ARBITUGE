@@ -51,10 +51,6 @@ pub struct BitqueryClient {
 #[derive(Debug, Deserialize)]
 struct OAuthTokenResponse {
     access_token: String,
-    #[allow(dead_code)]
-    expires_in: Option<u64>,
-    #[allow(dead_code)]
-    token_type: Option<String>,
 }
 
 /// Bitquery GraphQL Response wrapper.

@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-9 commit (this push) — refactor(constants): kamino freshness constants to arb-constants — 446/495
+* **Commit:** batch-10 commit (this push) — refactor(death): dead-code sweep 653 — 447/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -95,9 +95,17 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 9: 446 / 495 — 49 remaining.**
 
+### Batch 10 — checklist 653 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 653 Dead code | 12 of 17 `allow(dead_code)` sites resolved by deleting the dead item itself (JitoLander.max_retries field; bitquery OAuth unused Deserialize fields; `decode_token_amount` moved into the tests module — only its test called it; `decode_account_data` in route_worker; `RouteArchitectWorker` disconnected instance side `rpc_pool`/`new`/`start_worker_loop`/`stop` — already-disabled loop, no callers; unused arb-tx test helper) + 5 stale annotations removed where a real caller exists (daily_report.rs×5, supervisor jito_lander/simulator, registry test fn). Remaining 3 are documented: `tests/common/mod.rs` test-harness-wide allow + 2 inline-justified in dispatch.rs | `arb-tx/src/lib.rs`, `arb-land/src/lib.rs`, `arb-ingest/src/bitquery.rs`, `arb-ingest/src/registry.rs`, `arb-engine/src/route_worker.rs`, `arb-bot/src/supervisor.rs`, `arb-bot/src/daily_report.rs` |
+
+**Checklist after batch 10: 447 / 495 — 48 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653.
 
 ## Problems discovered (this session)
 

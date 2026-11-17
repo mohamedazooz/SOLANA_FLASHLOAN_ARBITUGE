@@ -58,17 +58,6 @@ mod tests {
     use arb_types::{Bps, DexProtocol, MintId, PoolId, RouteId, Slot, SwapHop, TokenAmount};
     use ed25519_dalek::Verifier;
 
-    /// `assemble_flash_arbitrage` returns `anyhow::Result`, so the typed
-    /// `TxError` may be wrapped. Accept either the downcast variant or the
-    /// rendered message, but require the specific fail-closed reason.
-    #[allow(dead_code)]
-    fn assert_pump_fun_fail_closed(err: &anyhow::Error) -> bool {
-        let typed = err.downcast_ref::<TxError>().is_some_and(|e| {
-            matches!(e, TxError::UnsupportedProtocol(msg) if msg.contains("Pump.fun live adapter disabled"))
-        });
-        typed || format!("{err:#}").contains("Pump.fun live adapter disabled")
-    }
-
     #[test]
     fn cu_model_is_protocol_aware_and_route_sized() {
         // CLMM/DLMM cost more than a CPMM swap.

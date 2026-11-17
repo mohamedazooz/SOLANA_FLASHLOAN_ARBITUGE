@@ -77,7 +77,6 @@ impl DailyReport {
 }
 
 /// Rank rejection reasons by count (stage-qualified), most frequent first, max 5.
-#[allow(dead_code)]
 fn rank_rejection_reasons(rejections: &[RejectionReasoning]) -> Vec<(String, u64)> {
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for r in rejections {
@@ -97,7 +96,6 @@ fn rank_rejection_reasons(rejections: &[RejectionReasoning]) -> Vec<(String, u64
 /// Build the aggregated daily report from durable + in-memory inputs.
 ///
 /// Pure so the aggregation contract is unit-testable without a store.
-#[allow(dead_code)]
 pub fn build_daily_report(
     date: String,
     slot: u64,
@@ -123,7 +121,6 @@ pub fn build_daily_report(
 }
 
 /// Current UTC calendar date as `YYYY-MM-DD` (civil-from-days, no deps).
-#[allow(dead_code)]
 pub fn current_utc_date() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -132,7 +129,6 @@ pub fn current_utc_date() -> String {
 }
 
 /// Howard Hinnant's `civil_from_days`: days since 1970-01-01 → (Y, M, D).
-#[allow(dead_code)]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
@@ -146,7 +142,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-#[allow(dead_code)]
 fn utc_date_from_epoch_days(days: i64) -> String {
     let (y, m, d) = civil_from_days(days);
     format!("{y:04}-{m:02}-{d:02}")
