@@ -616,10 +616,22 @@ impl Supervisor {
             guard.remove(0);
         }
         let route = trade.route.clone();
+        let signature = trade.signature.clone();
+        let slot = trade.slot;
+        let profit_sol = trade.profit_sol;
         guard.push(trade);
         drop(guard);
         if let Some(control) = control {
-            control.record_execution("landed", &route, "trade confirmed landed");
+            control.record_execution_with(
+                "landed",
+                &route,
+                "trade confirmed landed",
+                crate::control_service::ExecutionExtras {
+                    signature: Some(signature),
+                    slot: Some(slot),
+                    net_profit_sol: Some(profit_sol),
+                },
+            );
             control.record_execution_result(true);
         }
     }
@@ -639,10 +651,21 @@ impl Supervisor {
         }
         let route = dropped.route.clone();
         let status = dropped.reason.clone();
+        let bundle_id = dropped.bundle_id.clone();
+        let slot = dropped.slot;
         guard.push(dropped);
         drop(guard);
         if let Some(control) = control {
-            control.record_execution("dropped", &route, &status);
+            control.record_execution_with(
+                "dropped",
+                &route,
+                &status,
+                crate::control_service::ExecutionExtras {
+                    signature: (!bundle_id.is_empty()).then_some(bundle_id),
+                    slot: (slot > 0).then_some(slot),
+                    net_profit_sol: None,
+                },
+            );
             control.record_execution_result(false);
         }
     }
@@ -656,6 +679,7 @@ impl Supervisor {
                 &rejected.stage,
                 format!("{}: {}", rejected.route, rejected.reason),
             );
+            control.record_rejection(&rejected);
         }
         let mut guard = self.recent_rejected.lock();
         if guard.len() >= 100 {
