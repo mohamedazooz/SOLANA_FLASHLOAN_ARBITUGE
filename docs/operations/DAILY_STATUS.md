@@ -4,10 +4,10 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-15 commit (this push) — feat(runtime-guards): CPI stack depth + loaded-accounts-data guards — 528/529 — 453/495
+* **Commit:** batch-16 commit (this push) — test(bench): per-DEX CU regression envelopes anchored to mainnet evidence — 531 — 454/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1199 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1206 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
 
 ## In progress right now (not yet committed)
 
@@ -146,10 +146,19 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 15: 453 / 495 — 42 remaining.**
 
+### Batch 16 — checklist 531 (per-DEX CU regression benchmarks) (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 531 CU regression benchmarks | New integration test `cu_regression_benchmarks.rs` (7 tests): **(A)** `cu_estimate()` ranking table pinned literally for all 11 `DexProtocol` variants — any silent estimate drift fails the build; explicit exhaustive-variant coverage test; per-DEX <= 10% of runtime ceiling. **(B)** DLMM 3-leg flash CU model reproduced and pinned literally (`estimate_minimal_cu(true,2) + CU_PER_BIN_ARRAY×bins` = 450+28,000+70,000+30,000 = 128,450 at the minimal 2-bin plan; 4/8-bin pins too) and envelope-checked against the **retained mainnet measured evidence** 76,954–82,702 CU (`reports/phase15_2/mainnet_simulation_evidence.json`, `PHASE15_2_FINAL_REPORT.md`): estimate must cover the measured floor, stay <= 3x the measured ceiling, and <= 1,400,000 CU. **(C)** Route aggregation (`saturating_add` mirror of adapters.rs) with the heaviest hop mix (1–3 hops × DAMM v2) never exits `MAX_COMPUTE_UNIT_LIMIT` (1,400,000, Agave `execution_budget.rs`, verified 2026-11-17), and `calculate_dynamic_cu_limit` clamps exactly at the ceiling for 1.3M / 1.4M / u32::MAX while preserving the 15% buffer below the threshold. ESTIMATED vs MEASURED explicitly separated per evidence rules. Gates: fmt clean, clippy `-D warnings` clean, workspace **1206 tests passed / 0 failed** | `crates/arb-engine/tests/cu_regression_benchmarks.rs` (new), `MASTER_ENGINEERING_CHECKLIST.md` |
+
+**Checklist after batch 16: 454 / 495 — 41 remaining.**
+
 ### Checklist ledger
 
 * Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653, 570, 571, 572, 654.
-* In progress: 651 (1/7 files split).
+* In progress: 651 (2/7 files split).
+* Marked `[x]` batch 16: 531.
 
 ## Problems discovered (this session)
 

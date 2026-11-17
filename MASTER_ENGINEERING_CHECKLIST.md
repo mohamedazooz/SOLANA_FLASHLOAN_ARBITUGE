@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **453 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **42** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **454 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **41** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -528,7 +528,7 @@
 - [x] التحقق من Runtime Stack Requirements. `(VERIFIED — عمق stack CPI مُقاس الآن لا مُقدَّر بصمت: ثابت الإطار الأقصى موثّق من مصدر Agave الرسمي MAX_INSTRUCTION_STACK_DEPTH=5 (وSIMD-0268=9) في arb-constants/src/lib.rs؛ layout الـ executor (payer→executor→DEX→token=4 إطارات) يجتاز const-assert زمن التصريف + validate_executor_cpi_stack_depth() مستدعاة على مسار assemble_flash_funded_three_pool_cpi_instructions الحقيقي (Invariant 0، arb_executor.rs)؛ 5/4 إطارات ≤ 5. الاختبار: executor_stack_depth_budget_is_satisfied. المصدر: anza-xyz/agave program-runtime/src/execution_budget.rs مؤكَّد 2026-11-17. ملاحظة تصحيحية: مستند داخلي سابق أشار إلى opportunity.rs:1337 — المسار الحقيقي هو fork_sim.rs (inner_instruction_count)`
 - [x] التحقق من Account Data Limits. `(VERIFIED — الحد الافتراضي 64MiB = MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES تم جلبه من مصدر Agave الرسمي وتوثيقه في arb-constants؛ حارس fail-closed pre-dispatch: apply_runtime_limit_guards (fork_sim.rs) يقلب success=false مع خطأ صريح إذا جرّ sim loadedAccountsDataSize > 64MiB أو 0 مع logs تساوي غير فارغة (provenance غير قابل للتوليد)؛ 3 اختبارات: overflow/normal-already-failing. متبقٍ فقط: ضبط set_loaded_accounts_data_size_limit صريح في ixs (غير مطلوب — الحد الافتراضي أكبر من حجم مسار 3-leg بأضعاف)`
 - [x] التحقق من Compute Budget Overflow. `(calculate_dynamic_cu_limit بـ saturating + cap عند MAX_COMPUTE_UNIT_LIMIT — cu.rs:22-27 + u32::try_from(...).unwrap_or(u32::MAX) عند التغذية — dispatch.rs:371,434)`
-- [ ] إضافة CU regression benchmarks. `(PARTIAL — criterion bench لرياضيات CPMM — arb-math/benches/cpmm_bench.rs + سُلّم أحجام V1 — v1_size_ladder_tests.rs؛ لا يوجد benchmark regression مخصص لـ CU لكل DEX)`
+- [x] إضافة CU regression benchmarks. `(TESTED — 7 اختبارات في crates/arb-engine/tests/cu_regression_benchmarks.rs: جدول cu_estimate مُعيَنّ بالتثبيت الحرفي لكل 11 بروتوكول (أي انسياب صامت = فشل بناء) + تغطية إجبارية لكل variant + نموذج CU لمسار DLMM flash 3-leg مثنّى بالقيم الحرفية (estimate_minimal_cu(true,2)+CU_PER_BIN_ARRAY×bins = 128,450 عند حدّ bin-arrays الأدنى) + ظرف محافظ مقيَّد بالدليل المقاس المحتجَز من mainnet (76,954–82,702 CU — reports/phase15_2/mainnet_simulation_evidence.json و PHASE15_2_FINAL_REPORT.md، التقدير يغطي الدليل بحد 3x) + تثبيت MAX_COMPUTE_UNIT_LIMIT=1,400,000 (Agave execution_budget.rs، أُوكِّد 2026-11-17) + ختم calculate_dynamic_cu_limit على السقف عند 1.3M/1.4M/u32::MAX مع الحفاظ على buffer 15% تحت العتبة — فصل صريح ESTIMATED/MEASURED)`
 
 ## 15. Testing وFuzzing
 
