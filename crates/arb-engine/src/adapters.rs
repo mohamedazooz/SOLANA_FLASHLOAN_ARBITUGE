@@ -404,13 +404,29 @@ pub fn quote_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<H
     let received = amount_out;
 
     // Advance reserves for non-PumpFun constant-product pools (PumpFun hop updates its own reserves).
+    // Fail closed BEFORE any mutation: a quote whose output meets or exceeds
+    // the opposite reserve is a broken adapter (a constant-product swap can
+    // never drain the pool), so saturating here would silently corrupt the
+    // next hop's state and a partial mutation would poison retry attempts.
     if pool.kind == PoolKind::Cpmm && pool.protocol != DexProtocol::PumpFun {
-        if a_to_b {
-            pool.reserve_in = pool.reserve_in.saturating_add(effective_in as u128);
-            pool.reserve_out = pool.reserve_out.saturating_sub(amount_out as u128);
+        let (reserve_in_add, reserve_out_sub) = if a_to_b {
+            (pool.reserve_in, pool.reserve_out)
         } else {
-            pool.reserve_out = pool.reserve_out.saturating_add(effective_in as u128);
-            pool.reserve_in = pool.reserve_in.saturating_sub(amount_out as u128);
+            (pool.reserve_out, pool.reserve_in)
+        };
+        let new_in_reserve = reserve_in_add
+            .checked_add(u128::from(effective_in))
+            .ok_or(ArbError::Overflow)?;
+        if u128::from(amount_out) >= reserve_out_sub {
+            return Err(ArbError::Overflow);
+        }
+        let new_out_reserve = reserve_out_sub - u128::from(amount_out);
+        if a_to_b {
+            pool.reserve_in = new_in_reserve;
+            pool.reserve_out = new_out_reserve;
+        } else {
+            pool.reserve_out = new_in_reserve;
+            pool.reserve_in = new_out_reserve;
         }
     }
 
@@ -966,6 +982,37 @@ mod tests {
             "reverse output reserve must decrease"
         );
         assert_eq!(quote_mint, MintId(Pubkey::new_from_array([2; 32])));
+    }
+
+    #[test]
+    fn cpmm_reserve_advance_is_exact_and_never_saturates() {
+        // Forward hop: reserve_in += effective_in, reserve_out -= amount_out,
+        // with exact integer accounting (no saturation, no drift).
+        let mut p = cpmm_pool(1, 1_000_000, 2_000_000, 25);
+        let (r_in, r_out) = (p.reserve_in, p.reserve_out);
+        let amount_in = 500_000u64;
+        let q = quote_hop(&mut p, amount_in, true).unwrap();
+        assert!(
+            u128::from(q.amount_out) < r_out,
+            "a CPMM swap cannot drain the pool"
+        );
+        assert_eq!(p.reserve_in, r_in + u128::from(amount_in));
+        assert_eq!(p.reserve_out, r_out - u128::from(q.amount_out));
+
+        // Near-drain: a swap that consumes almost the entire output reserve
+        // still succeeds with exact bookkeeping.
+        let mut p = cpmm_pool(2, 10_000, 1_000_000, 25);
+        let q = quote_hop(&mut p, u64::MAX / 2, true).unwrap();
+        assert!(q.amount_out > 0);
+        assert!(p.reserve_out < 1_000_000);
+        assert_eq!(p.reserve_in, 10_000 + u128::from(u64::MAX / 2));
+
+        // Reverse hop advances the opposite pair exactly.
+        let mut p = cpmm_pool(3, 1_000_000, 2_000_000, 25);
+        let (r_in, r_out) = (p.reserve_in, p.reserve_out);
+        let q = quote_hop(&mut p, 10_000, false).unwrap();
+        assert_eq!(p.reserve_out, r_out + u128::from(10_000u64));
+        assert_eq!(p.reserve_in, r_in - u128::from(q.amount_out));
     }
 
     #[test]
