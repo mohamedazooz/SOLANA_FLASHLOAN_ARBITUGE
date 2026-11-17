@@ -504,8 +504,8 @@
 - [x] إضافة Bundle Expiration Handling. `(last_valid_block_height يُحفظ مع dispatch intent عند الإرسال + evaluate_lifecycle_with_block_height + الانتهاء يتطلب دليل block-height حي — recovery.rs:148`expiry_requires_block_height_evidence` + dispatch.rs:798)`
 - [x] إضافة Rejection Handling. `(مسار send Err: alert_execution_failed + record_outcome "failed" + resolve_dispatch_intent "send_failed" + لا يُحتسب خبر tip — dispatch.rs:1013-1022)`
 - [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
-- [ ] تسجيل Actual Balance Changes. `(PARTIAL — arb-sim يفكك preBalances/postBalances/preTokenBalances/postTokenBalances مع fee_payer_lamport_delta وtoken_delta — fork_sim.rs:388-396، وreal_net_profit يُحسب من balance changes محاكاة قبل الإرسال — opportunity.rs:1343,1405؛ لكن مسار landing في dispatch.rs:822-829 يستخرج computeUnitsConsumed فقط ولا يُسوّي realized_net مع دلتا الرصيد الفعلية على السلسلة)`
-- [x] تسجيل Realized Profit. `(realized_net: Lamports مسجل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325)`
+- [x] تسجيل Actual Balance Changes. `(FIXED/TESTED — parse_landed_balance_changes في arb-sim يستخرج fee_payer_lamport_delta + wsol_token_delta من metadata المعاملة الهابطة (5 اختبارات unit)، ومسار landing في dispatch.rs يسجّل realized_net الفعلي في store مفضّلاً على التقدير، مع warn صريح عند خسارة فعلية سالبة)`
+- [x] تسجيل Realized Profit. `(realized_net: Lamports مسجّل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325؛ الآن من دلتا الأرصدة الفعلية عند landing عند توفرها، والتقدير fallback موثّق)`
 - [x] اختبار Jito Failure. `(recovery.rs:117-146 landed_and_failed_statuses_resolve_to_onchain_outcome + ledger_records_only_evidence + refuses_when_the_tip_market_is_missing — jito_service.rs:950)`
 - [x] اختبار Jito Timeout. `(processed_is_not_landed_and_timeout_is_ambiguous — recovery.rs:134 + poll_until_terminal يعيد Pending بعد استنفاد المحاولات — jito_service.rs:473-491)`
 - [ ] اختبار Bundle Rejection. `(PARTIAL — مسار الرفض مُعالج في dispatch.rs:1013-1022 لكن لا يوجد اختبار unit مخصص لفرع الخطأ هذا في dispatch)`
