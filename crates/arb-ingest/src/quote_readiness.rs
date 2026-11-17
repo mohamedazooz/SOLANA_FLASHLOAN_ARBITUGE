@@ -14,6 +14,11 @@ pub struct QuoteReadinessContext {
     pub target_slot: u64,
     pub max_age_slots: u64,
     pub max_slot_skew: u64,
+    /// Set from the provider capability declaration: only transports that
+    /// actually supply upstream bank identities (e.g. Yellowstone gRPC) may
+    /// demand them here. Standard JSON-RPC WebSocket snapshots carry no bank
+    /// id; demanding one would reject every live snapshot.
+    pub require_bank_identity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +86,7 @@ pub fn build_quote_dependency_set(
         if snapshot.generation != context.generation {
             return Err(QuoteReadinessError::WrongGeneration);
         }
-        if snapshot.bank_id.is_none() {
+        if context.require_bank_identity && snapshot.bank_id.is_none() {
             return Err(QuoteReadinessError::MissingBankIdentity);
         }
         if slots.is_dead(snapshot.slot) || slots.is_bank_dead(snapshot.slot, snapshot.bank_id) {
@@ -189,6 +194,7 @@ mod tests {
             target_slot: 100,
             max_age_slots: 2,
             max_slot_skew: 0,
+            require_bank_identity: true,
         }
     }
 
@@ -316,6 +322,16 @@ mod tests {
         assert_eq!(
             validate_execution_readiness(true, 4, 4, 101, 100, 2),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn accepts_bankless_snapshots_only_when_provider_declares_no_bank_identity() {
+        let (store, slots, key, _, owners) = setup(false);
+        let mut capability_aware = context();
+        capability_aware.require_bank_identity = false;
+        assert!(
+            build_quote_dependency_set(&store, &slots, &[key], &owners, capability_aware).is_ok()
         );
     }
 
