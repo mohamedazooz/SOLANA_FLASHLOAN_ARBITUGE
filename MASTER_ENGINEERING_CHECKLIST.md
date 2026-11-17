@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **235 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **256 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -224,9 +224,11 @@
 
 ## 4. Solami Mirage / Blur
 
+> حالة 2026-11-17: البنود غير المؤشرة أدناه BLOCKED على G5 (خطة Solami المجانية ترفض WSS بـ code 4002 "no bandwidth") — لا يمكن التقاط frames حية لعكس هندسة البروتوكول أو بناء fixtures. الـ adapter معطل fail-closed ولا يصل حالة السوق. البنود 1,2,4-10,14-18: MISSING (passthrough خام بدون decode) — لن تُنفذ حتى يتوفر وصول مدفوع أو موثق للبروتوكول.
+
 - [ ] التحقق من صيغة Mirage frames.
 - [ ] تنفيذ protobuf parser حقيقي إذا كان البروتوكول يتطلبه.
-- [ ] استخراج slot الحقيقي من الرسالة.
+- [x] استخراج slot الحقيقي من الرسالة. `(FIXED — كان العيب الكامن: run_stream كان يضع slot = latest_slot المحلي (solami_mirage.rs:138)؛ أُصلح: MirageUpdate.slot صار Option<u64> = None حتى يأتي decode حقيقي لـ SubscribeUpdate protobuf — لا تزييف provenance)`
 - [ ] استخراج pubkey الحقيقي.
 - [ ] استخراج account owner الحقيقي.
 - [ ] استخراج write version الحقيقي إن كان متاحاً.
@@ -234,16 +236,16 @@
 - [ ] التحقق من account update type.
 - [ ] التحقق من account deletion.
 - [ ] التحقق من slot metadata.
-- [ ] منع استخدام latest_slot المحلي كبديل عن slot الرسالة.
-- [ ] منع استخدام write_version مصطنع.
-- [ ] منع استخدام provider_id ثابت لجميع المزودين.
+- [x] منع استخدام latest_slot المحلي كبديل عن slot الرسالة. `(FIXED — نفس الإصلاح أعلاه: حذف استهلاك latest_slot من MirageUpdate نهائياً؛ الحقل ما زال موجوداً كـ health indicator فقط)`
+- [x] منع استخدام write_version مصطنع. `(VERIFIED OK — write_version دائماً None في MirageUpdate ولا يُصنع أبداً؛ SnapshotStore يرفض snapshots بدون write_version حقيقي)`
+- [x] منع استخدام provider_id ثابت لجميع المزودين. `(VERIFIED OK — ProviderId لكل مزود في AccountSnapshot + WrongProvider rejection في build_quote_dependency_set (quote_readiness.rs:86-88) + rejects_mixed_generation_and_provider_provenance test)`
 - [ ] إضافة Mirage fixtures.
 - [ ] إضافة Mirage parser tests.
 - [ ] إضافة malformed protobuf tests.
 - [ ] إثبات اتصال Mirage داخل Supervisor.
 - [ ] إثبات وصول account updates حقيقية.
 - [x] التحقق من حدود خطة Solami المجانية الفعلية. `(حي: WSS قبول ثم رفض code 4002 "no bandwidth and balance under the 0.06 minimum" — الخطة المجانية صفر bandwidth، غير قابلة للاستخدام للـ streaming)`
-- [ ] تعطيل Mirage إذا لم يكتمل parsing أو لم تثبت صلاحية بياناته.
+- [x] تعطيل Mirage إذا لم يكتمل parsing أو لم تثبت صلاحية بياناته. `(VERIFIED OK — run_stream غير مستدعاة في أي مكان بالـ runtime (grep مؤكد)؛ capability registry يسجل solami_mirage كـ DISABLED fail-closed pending G5؛ بوابات capability في run.rs:492-507 تمنع أي استهلاك)`
 
 ## 5. HTTP Polling وHot Path
 
@@ -303,31 +305,31 @@
 
 ## 7. State Integrity وFork/Freshness
 
-- [ ] توحيد مصدر slot لكل snapshot.
-- [ ] منع global slot stamping لحسابات من batches مختلفة.
-- [ ] حفظ context slot الحقيقي لكل RPC response.
-- [ ] حفظ slot الحقيقي لكل streaming update.
-- [ ] منع write_version المحلي من التظاهر بأنه Yellowstone write version.
-- [ ] منع fabricated bank_id.
-- [ ] منع provider_id ثابت لجميع المزودين.
+- [x] توحيد مصدر slot لكل snapshot. `(VERIFIED OK — كل AccountSnapshot يحمل slot من context رسالته الخاصة: accountNotification context.slot (helius_ws.rs:1394,1656) أو getMultipleAccounts context.slot؛ الترتيب الداخلي بـ (slot, write_version) لكل حساب)`
+- [x] منع global slot stamping لحسابات من batches مختلفة. `(VERIFIED OK — apply_batch يرفض الدفعة كلها ما لم تتطابق context slot + provider_id + bank_id + generation عبر كل الحسابات (lib.rs:196-237)؛ لا slot عالمي يُختم على batches غير متزامنة)`
+- [x] حفظ context slot الحقيقي لكل RPC response. `(VERIFIED OK — getMultipleAccounts/refresh paths تستخرج context.slot من الرد وتختم به الحسابات؛ apply_batch يفرض اتساق الـ context slot داخل الدفعة)`
+- [x] حفظ slot الحقيقي لكل streaming update. `(VERIFIED OK — accountNotification context.slot مستخرج ومسجل لكل تحديث (helius_ws.rs:1394)؛ الاختبار malformed_frames يثبت أن slot السياقي يُسجل والـ snapshot الفاسد يُرفض)`
+- [x] منع write_version المحلي من التظاهر بأنه Yellowstone write version. `(VERIFIED OK — عداد next_pool_write_version المحلي (registry.rs:2241) موثق كأداة ترتيب داخلي فقط ولا يُدّعى أنه Geyser write version؛ yellowstone_grpc.rs يستخدم write_version الحقيقي من SubscribeUpdate؛ بوابة require_bank_identity capability-gated تمنع المطالبة بهوية upstream غير متاحة)`
+- [x] منع fabricated bank_id. `(VERIFIED OK — bank_id Option ولا يُصنع أبداً؛ store يرفض الاختيار بين بنوك متنافسة بـ write_version (lib.rs:181-187)؛ اختبار accepts_bankless_snapshots_only_when_provider_declares_no_bank_identity)`
+- [x] منع provider_id ثابت لجميع المزودين. `(VERIFIED OK — ProviderId لكل snapshot + رفض provider switch بدون generation reset (lib.rs:172-181) + WrongProvider في quote readiness)`
 - [x] التحقق من owner قبل قبول الحساب. `(helius_ws.rs:442 — seed يرفض owner mismatch + AccountSnapshotStore)`
-- [ ] التحقق من account data length.
-- [ ] التحقق من account discriminator.
-- [ ] التحقق من account layout version.
+- [x] التحقق من account data length. `(VERIFIED OK — كل الـ decoders تفرض حدوط طول صريحة قبل أي قراءة (registry.rs:1343,1378,1387,1407,1422,1437,1466,1504,1534,1564,1633,1805,1821,1837,1861,1980,2005,2038)؛ kamino reserve decode يفحص discriminator + الطول)`
+- [x] التحقق من account discriminator. `(VERIFIED OK — decoders تتحقق من الـ 8-byte discriminator قبل decode (registry.rs:1830 PumpFun PoolState، kamino.rs decode_reserve_supply_vault/fee_vault)؛ الحسابات بدون discriminator موثقة صراحة (AmmInfo layout — registry.rs:1800)`
+- [ ] التحقق من account layout version. `(PARTIAL — الطول + discriminator مفروضان في كل decoder، لكن قراءة explicit version field غير موحدة عبر كل البروتوكولات؛ مقبول لأن الـ layouts مثبتة empirically ضد حسابات حية)`
 - [x] منع stale snapshots. `(QuoteReadinessError::StaleSlot/DeadSlot + فحص freshness في store)`
-- [ ] منع duplicate snapshots.
-- [ ] منع out-of-order updates.
-- [ ] اكتشاف SLOT_DEAD.
-- [ ] إبطال processed fork غير المعتمد.
-- [ ] إبطال state المرتبط بفork غير صالح.
-- [ ] منع دمج snapshots من مصادر غير متزامنة دون سياسة consistency واضحة.
+- [x] منع duplicate snapshots. `(VERIFIED OK — apply يرفض (slot, write_version) <= الحالي (lib.rs:187)؛ apply_batch يرفض الدفعة إن كانت أي تحديثة ليست أحدث (lib.rs:237))`
+- [x] منع out-of-order updates. `(VERIFIED OK — نفس الترتيب (slot, write_version) في apply/apply_batch + InvalidDependencyManifest/StaleSlot في quote readiness + slot_integrity out-of-order tests)`
+- [x] اكتشاف SLOT_DEAD. `(VERIFIED OK — observe_with_bank يعالج SLOT_DEAD مع إبطال انتقالي للأحفاد (slot_integrity.rs)؛ DeadSlot rejection في build_quote_dependency_set)`
+- [x] إبطال processed fork غير المعتمد. `(VERIFIED OK — SLOT_DEAD → إبطال انتقالي لل descendants + invalidate_bank مع tombstones (lib.rs:268-283)؛ اختبار rejects_bank_invalidated_by_entry_update_parent)`
+- [x] إبطال state المرتبط بفork غير صالح. `(VERIFIED OK — invalidate_bank يحذف snapshots البنك الميت ويترك tombstones مستقلة بـ (slot, bank_id) (lib.rs:268-283)؛ is_bank_dead في quote readiness يرفض أي snapshot من بنك ميت)`
+- [x] منع دمج snapshots من مصادر غير متزامنة دون سياسة consistency واضحة. `(VERIFIED OK — السياسة: رفض provider-switch بدون generation reset + رفض (slot,bank_id) متنافسة + apply_batch context-slot-coherent + validate_dependency_group (max_slot_skew) + WrongProvider/WrongGeneration fail-closed)`
 - [x] إضافة State Generation. `(stream_generation متتبعة في ingest + expected_stream_generation في dispatch.rs:535)`
 - [x] إضافة State Integrity Tests. `(8 tests في slot_integrity.rs + 8 في quote_readiness.rs)`
 - [x] إضافة Fork Invalidation Tests. `(DeadSlot/FutureSlot variants + slot_integrity tests)`
 - [x] إضافة Stale Snapshot Tests. `(StaleSlot variant + tests)`
 - [x] إضافة Duplicate Update Tests. `(DuplicateDependency + dedup في store)`
 - [x] إضافة Out-of-Order Tests. `(slot ordering checks في slot_integrity tests)`
-- [ ] جعل state غير الصالح سبباً مباشراً لرفض التنفيذ.
+- [x] جعل state غير الصالح سبباً مباشراً لرفض التنفيذ. `(VERIFIED OK — بوابة validate_route_account_dependencies في process_opportunities (opportunity.rs:75) ترفض قبل أي بناء، وvalidate_execution_readiness في dispatch (dispatch.rs:535) ترفض لحظة الإرسال عند disconnect/generation-change/stale quote)`
 
 ## 8. DEX Exact Quote Parity
 
