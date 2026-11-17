@@ -26,6 +26,8 @@ pub mod metric_names {
     pub const PUMP_OPPORTUNITIES_TOTAL: &str = "pump_opportunities_total";
     pub const PUMP_SPREAD_BPS: &str = "pump_spread_bps";
     pub const GRADUATION_EVENTS_TOTAL: &str = "graduation_events_total";
+    pub const WS_RECONNECTS_TOTAL: &str = "ws_reconnects_total";
+    pub const WS_SUBSCRIPTIONS_ACTIVE: &str = "ws_subscriptions_active";
 }
 
 static REGISTRY: Lazy<Registry> = Lazy::new(Registry::new);
@@ -171,6 +173,30 @@ static GRADUATION_EVENTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     counter
 });
 
+static WS_RECONNECTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        metric_names::WS_RECONNECTS_TOTAL,
+        "WebSocket reconnect attempts across all endpoints",
+    )
+    .unwrap_or_else(|_| {
+        IntCounter::new(metric_names::WS_RECONNECTS_TOTAL, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(counter.clone()));
+    counter
+});
+
+static WS_SUBSCRIPTIONS_ACTIVE: Lazy<IntGauge> = Lazy::new(|| {
+    let gauge = IntGauge::new(
+        metric_names::WS_SUBSCRIPTIONS_ACTIVE,
+        "Confirmed live account subscriptions on the active WS endpoint",
+    )
+    .unwrap_or_else(|_| {
+        IntGauge::new(metric_names::WS_SUBSCRIPTIONS_ACTIVE, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(gauge.clone()));
+    gauge
+});
+
 #[derive(Debug)]
 pub struct MetricsHandle {
     handle: JoinHandle<()>,
@@ -285,6 +311,12 @@ pub fn set_pump_spread_bps(bps: f64) {
 }
 pub fn inc_graduation_events() {
     GRADUATION_EVENTS_TOTAL.inc();
+}
+pub fn inc_ws_reconnects() {
+    WS_RECONNECTS_TOTAL.inc();
+}
+pub fn set_ws_subscriptions_active(v: u64) {
+    WS_SUBSCRIPTIONS_ACTIVE.set(v as i64);
 }
 
 #[cfg(test)]
