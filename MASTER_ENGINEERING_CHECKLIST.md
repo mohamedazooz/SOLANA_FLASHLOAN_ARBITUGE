@@ -57,7 +57,7 @@
 ### التقدم الحالي
 
 - **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **333** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **319** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -135,35 +135,35 @@
 
 ## 1. Provider Infrastructure — مزودو البيانات
 
-- [ ] مراجعة جميع مزودي RPC المستخدمين.
-- [ ] التحقق من كل API endpoint.
-- [ ] تحديد نوع كل endpoint: HTTP أو WebSocket أو gRPC.
-- [ ] التحقق من دعم كل مزود لـ accountSubscribe.
-- [ ] التحقق من دعم programSubscribe.
-- [ ] التحقق من دعم logsSubscribe.
-- [ ] التحقق من دعم slotSubscribe.
-- [ ] التحقق من دعم blockSubscribe إن كان مطلوباً.
-- [ ] التحقق من دعم getMultipleAccounts.
-- [ ] التحقق من حدود الاشتراكات المتزامنة.
-- [ ] التحقق من عدد اتصالات WebSocket المسموح بها.
+- [x] مراجعة جميع مزودي RPC المستخدمين. `(حي 2026-11-17: probes لـ Public/Helius/Shyft/Solami — docs/audit/PROVIDER_CAPABILITY_MATRIX.md)`
+- [x] التحقق من كل API endpoint. `(حي: Public HTTP+WS OK؛ Shyft HTTP OK؛ Helius 429 مستمر؛ Solami 4002 no bandwidth)`
+- [x] تحديد نوع كل endpoint: HTTP أو WebSocket أو gRPC. `(capability.rs ProviderTransport {HttpJsonRpc, WebSocketJsonRpc, WebSocketMirageProtobuf, WebSocketBlurJson, YellowstoneGrpc})`
+- [x] التحقق من دعم كل مزود لـ accountSubscribe. `(حي: Public ack + accountNotification فعلي؛ Helius/Shyft WS مرفوض 429 حالياً — موثّق)`
+- [x] التحقق من دعم programSubscribe. `(حي: Public ack سليم 2026-11-17)`
+- [x] التحقق من دعم logsSubscribe. `(حي: Public ack — يتطلب صيغة config struct {"commitment":"confirmed"} وليس string)`
+- [x] التحقق من دعم slotSubscribe. `(حي: Public ack + slotNotification فعلي)`
+- [x] التحقق من دعم blockSubscribe إن كان مطلوباً. `(غير مطلوب في المسار الحالي؛ Public يرفضه -32602 — موثّق في المصفوفة)`
+- [x] التحقق من دعم getMultipleAccounts. `(حي: Shyft 200 + Public 200 بقيمتين؛ Helius 429)`
+- [ ] التحقق من حدود الاشتراكات المتزامنة. `(PARTIAL: معلنة في RateLimitPolicy + ملاحظة حية "Concurrent websocket subscription limit reached: 1" من Solami؛ ليست مُثبتة لكل خطة)`
+- [ ] التحقق من عدد اتصالات WebSocket المسموح بها. `(PARTIAL: WS_MAX_ACCOUNT_SUBS سقف داخلي + rotation؛ حد المزود الفعلي غير مُثبت لكل خطة)`
 - [x] التحقق من حدود RPS الرسمية. `(حي: Helius/Shyft/Solami ردّت HTTP 429 عند التجاوز — سلوك quota مؤكد فعلياً 2026-11-17; registry يضع cooldown 60s ويدوّر)`
-- [ ] التحقق من حدود burst.
-- [ ] التحقق من حدود CU/RU الشهرية.
-- [ ] التحقق من حدود كل RPC method بشكل منفصل.
-- [ ] منع افتراض أن جميع المزودين يدعمون نفس القدرات.
-- [ ] فصل Provider Identity عن Endpoint Identity.
-- [ ] منع تكرار استهلاك quota لنفس المفتاح عبر endpoints مختلفة.
+- [x] التحقق من حدود burst. `(حي: Helius 429 فوري على استدعاءين متوازيين؛ حدود burst المقاسة مُرمّزة في classify_provider: rpc_pool.rs:271-335)`
+- [ ] التحقق من حدود CU/RU الشهرية. `(PARTIAL: Helius 429 مستمر حتى بعد cooldown 65s — متسق مع استنزاف credits (cooldown 1800s في الكود) لكن لا يمكن التمييز عن burst دون لوحة المزود)`
+- [ ] التحقق من حدود كل RPC method بشكل منفصل. `(PARTIAL: method_metrics لكل endpoint موجود؛ حدود المزود لكل method غير مُتحقق منها حياً)`
+- [x] منع افتراض أن جميع المزودين يدعمون نفس القدرات. `(capability.rs: تعريفات لكل مزود + validate_subscription يرفض accountSubscribe على Blur — اختبار test_registry_validation)`
+- [x] فصل Provider Identity عن Endpoint Identity. `(rpc_pool.rs: classify_provider لكل URL + label مع key_suffix_hint آمن ..xxxx؛ كل endpoint له TokenBucket وtelemetry مستقلان)`
+- [ ] منع تكرار استهلاك quota لنفس المفتاح عبر endpoints مختلفة. `(PARTIAL: المحاسبة لكل endpoint وليست مجمّعة لكل مفتاح — قيد موثّق في PROVIDER_CAPABILITY_MATRIX.md)`
 - [x] إضافة quota accounting مركزي. `(rpc_pool.rs:128,761 — كشف 429/Retry-After/quota_exhausted لكل endpoint + telemetry)`
 - [x] إضافة Provider Health Score. `(rpc_pool.rs:91-104 — EndpointStatus حسب latency/429/أخطاء)`
 - [x] إضافة latency measurements لكل مزود. `(rpc_pool.rs:104,180 — total_latency_ms + p50/p95/p99)`
 - [x] إضافة Provider Circuit Breaker. `(rpc_pool endpoint rotation + ProviderSupervisor OpenCircuit — مربوطة الآن بحلقة التشغيل: record_success/record_failure + select() fail-closed، PR #56/G2)`
 - [x] إضافة exponential backoff. `(helius_ws.rs:490,771 + rpc_pool Retry-After)`
-- [ ] إضافة jitter للـ retries. `(معلنة في ReconnectPolicy لكن تطبيقها الفعلي في helius_ws غير مؤكد)`
+- [x] إضافة jitter للـ retries. `(FIXED 2026-11-17: helius_ws reconnect الآن ±25% jitter overlay فوق 2.5-3.0s؛ backoff_delay في lib.rs فيه exponential+jitter — FIXED→TESTED عبر 12 helius_ws tests)`
 - [x] منع reconnect loops. `(backoff + cooldown rotation قبل إعادة الاتصال)`
 - [x] منع retry غير المحدود. `(rpc_pool.rs:1042 — retry فقط عند وجود endpoint مرشح)`
 - [x] إضافة provider cooldown. `(helius_ws.rs:768 — cooldown 2.5-3.0s عند التدوير)`
 - [x] اختبار failover بين المزودين. `(provider_supervisor tests + rpc_telemetry_tests.rs; حي: الـ 3 endpoints دخلوا 429-cooldown ودار التدوير ثم نجح discovery — 253 pools بعد التعافي)`
-- [ ] اختبار فشل جميع المزودين.
+- [x] اختبار فشل جميع المزودين. `(TESTED: اختبار جديد all_endpoints_failing_fails_closed_without_storm — 429 من كل endpoints → خطأ واحد محدود + cooldown بدون retry storm؛ + دليل حي من الـ soak: 0/148 success → صفر فرص/بث)`
 - [x] إيقاف إصدار الفرص عند فقد جميع مصادر البيانات. `(validate_execution_readiness مع stream_connected fail-closed عند لحظة الإطلاق — dispatch.rs:535)`
 
 ## 2. Provider Capabilities وAdapters

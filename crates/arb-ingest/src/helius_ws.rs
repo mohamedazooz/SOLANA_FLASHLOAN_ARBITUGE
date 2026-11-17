@@ -802,11 +802,20 @@ impl HeliusWsClient {
             // Apply a 2.5s to 3.0s cooldown when rotating or reconnecting to prevent
             // hitting provider limits ("Concurrent websocket subscription limit reached: 1")
             // due to lingering dead TCP/WS sessions on the peer side.
-            let backoff_ms = if consecutive_failures < total_endpoints {
+            // A ±25% jitter overlay desynchronizes reconnect storms when several
+            // endpoints fail at once (thundering herd) instead of retrying in lockstep.
+            let base_backoff_ms: u64 = if consecutive_failures < total_endpoints {
                 2500
             } else {
                 3000
             };
+            let jitter_span = (base_backoff_ms / 4).max(1);
+            let entropy = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as u64)
+                .unwrap_or(0);
+            let jitter_ms = entropy % (jitter_span * 2);
+            let backoff_ms = base_backoff_ms - jitter_span / 2 + jitter_ms;
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = sleep(Duration::from_millis(backoff_ms)) => {}

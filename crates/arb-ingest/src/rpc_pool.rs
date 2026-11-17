@@ -1688,4 +1688,49 @@ mod tests {
             ]
         );
     }
+
+    /// Every provider failing (HTTP 429 from the only endpoint) must fail closed:
+    /// a single bounded error, no infinite retry storm, and the endpoint enters
+    /// cooldown so the next call skips it immediately.
+    #[tokio::test]
+    async fn all_endpoints_failing_fails_closed_without_storm() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::Write;
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 429 Too Many Requests\r\ncontent-length: 0\r\nretry-after: 60\r\nconnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        let pool = RpcPool::new(vec![format!("http://{addr}")]);
+        let started = std::time::Instant::now();
+        let err = pool
+            .call("getSlot", serde_json::json!([]))
+            .await
+            .expect_err("all-fail must return Err, not a stale fallback");
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "fail-closed must be bounded, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            err.to_string()
+                .contains("All 1 matching RPC endpoints failed"),
+            "unexpected error: {err}"
+        );
+        // The endpoint entered 429 cooldown: a follow-up call must fail fast
+        // without issuing another HTTP request (fail-closed, no retry storm).
+        let started2 = std::time::Instant::now();
+        let err2 = pool
+            .call("getSlot", serde_json::json!([]))
+            .await
+            .unwrap_err();
+        assert!(err2.to_string().contains("cooldown"));
+        assert!(started2.elapsed() < std::time::Duration::from_secs(5));
+        server.join().unwrap();
+    }
 }
