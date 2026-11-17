@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-11-16",
+  "target_repo": "https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE",
+  "package_type": "curated-reference-dossier",
+  "contains_full_upstream_repositories": false,
+  "projects": [
+    {
+      "name": "Cetipoo on-chain arbitrage",
+      "repo": "https://github.com/Cetipoo/solana-onchain-arbitrage-bot",
+      "branch": "master"
+    },
+    {
+      "name": "Lorenz",
+      "repo": "https://github.com/lorenz-protocol/lorenz",
+      "branch": "main"
+    },
+    {
+      "name": "FnZero sol-trade-sdk",
+      "repo": "https://github.com/0xfnzero/sol-trade-sdk",
+      "branch": "main"
+    },
+    {
+      "name": "FnZero sol-parser-sdk",
+      "repo": "https://github.com/0xfnzero/sol-parser-sdk",
+      "branch": "main"
+    },
+    {
+      "name": "FnZero solana-streamer",
+      "repo": "https://github.com/0xfnzero/solana-streamer",
+      "branch": "main"
+    },
+    {
+      "name": "Meteora DLMM SDK",
+      "repo": "https://github.com/MeteoraAg/dlmm-sdk",
+      "branch": "main"
+    }
+  ],
+  "important": "Upstream branch refs are mutable; pin commit SHAs before code comparison or reuse."
+}
