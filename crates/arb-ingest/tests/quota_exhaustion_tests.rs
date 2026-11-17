@@ -14,10 +14,12 @@ use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
 
+type MockResponse = (u16, Vec<(&'static str, String)>, String);
+
 /// Serve `responses` sequentially (one per accepted connection) on a random
 /// local port and return its URL. Each connection is read then answered with
 /// the next queued HTTP response.
-fn spawn_rpc(responses: Vec<(u16, Vec<(&'static str, String)>, String)>) -> String {
+fn spawn_rpc(responses: Vec<MockResponse>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = mpsc::channel::<(u16, Vec<(&'static str, String)>, String)>();
