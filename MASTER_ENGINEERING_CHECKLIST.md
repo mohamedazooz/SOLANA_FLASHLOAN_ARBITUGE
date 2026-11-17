@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **108 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
-- **387** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **120 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **375** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -128,7 +128,7 @@
 - [x] إضافة provider cooldown. `(helius_ws.rs:768 — cooldown 2.5-3.0s عند التدوير)`
 - [x] اختبار failover بين المزودين. `(provider_supervisor tests + rpc_telemetry_tests.rs)`
 - [ ] اختبار فشل جميع المزودين.
-- [ ] إيقاف إصدار الفرص عند فقد جميع مصادر البيانات.
+- [x] إيقاف إصدار الفرص عند فقد جميع مصادر البيانات. `(validate_execution_readiness مع stream_connected fail-closed عند لحظة الإطلاق — dispatch.rs:535)`
 
 ## 2. Provider Capabilities وAdapters
 
@@ -162,7 +162,7 @@
 - [x] إصلاح single-endpoint backoff. `(record_connect_backoff + اختيار endpoint الذي ينتهي cooldown أولاً — helius_ws.rs:229-239)`
 - [x] إصلاح resubscription بعد reconnect. `(إعادة الاشتراك من fresh state عند كل connect — helius_ws.rs:584-614)`
 - [x] استعادة جميع الحسابات المطلوبة بعد reconnect. `(pending_subs تُبنى من tracked_order عند كل اتصال)`
-- [ ] منع duplicate subscriptions.
+- [x] منع duplicate subscriptions. `(multi_sub.dedup() + اختبار مخصص — helius_ws.rs:206,1382)`
 - [ ] منع duplicate notifications.
 - [ ] اكتشاف missing notifications.
 - [ ] اكتشاف stream gaps.
@@ -178,7 +178,7 @@
 - [ ] إضافة reconnect metrics.
 - [ ] إضافة subscription count metrics.
 - [ ] اختبار اتصال مزود واحد.
-- [ ] اختبار اتصال مزودين.
+- [x] اختبار اتصال مزودين. `(dual_ingest — 4 tests + dual_ingest_bench)`
 - [ ] اختبار انقطاع المزود الأساسي.
 - [ ] اختبار رجوع المزود الأساسي.
 - [ ] اختبار رفض subscription.
@@ -408,17 +408,17 @@
 - [ ] إصلاح اختلاف حدود min profit بين المسارات.
 - [x] مراجعة MIN_NET_PROFIT_USD. `(config.rs:385-399 — configurable، >=0 validation، f64 محصور عند config boundary فقط)`
 - [x] مراجعة SOL_USD_PRICE. `(مُراجع — الافتراضي $200 ما زال في مسار التنبيهات فقط: G7)`
-- [ ] مراجعة min_net_profit_abs.
+- [x] مراجعة min_net_profit_abs. `(يمرر إلى to_economic_config — strategy.rs:51)`
 - [ ] إزالة بوابات gross spread الثابتة. `(CONFIRMED: min_spread_bps ما زال موجوداً — config.rs:285 + strategy.rs:217)`
 - [ ] فصل gross spread عن net profit.
-- [ ] ترتيب الفرص حسب صافي الربح القابل للتنفيذ.
+- [x] ترتيب الفرص حسب صافي الربح القابل للتنفيذ. `(sort_by_key Reverse(net_profit) — strategy.rs:316,394)`
 - [ ] رفض الفرصة إذا كان أي عنصر تكلفة مجهولاً.
 - [ ] إضافة economic regression tests.
 
 ## 12. Atomic Transaction Builder
 
 - [ ] التحقق من ترتيب التعليمات.
-- [ ] التحقق من Compute Budget Instructions.
+- [x] التحقق من Compute Budget Instructions. `(budget في compiler — message_version_prefix + CU limit/price صريحون في الرسالة — compiler.rs:758)`
 - [ ] التحقق من Flash Borrow.
 - [ ] التحقق من Swap 1.
 - [ ] التحقق من Swap 2.
@@ -435,7 +435,7 @@
 - [ ] التحقق من حجم المعاملة 1232 bytes.
 - [x] منع تقسيم atomic route إلى معاملات منفصلة. `(verify_atomic_integrity مستدعاة قبل التوقيع — dlmm_flash_arb.rs:36,496)`
 - [ ] التحقق من Kamino repayment semantics.
-- [ ] التحقق من Min-Out.
+- [x] التحقق من Min-Out. `(FinalOutputBelowRepayment guard: min_out < repay يرفض — dlmm_flash_arb.rs:70-71,325)`
 - [ ] التحقق من Min-Profit.
 - [x] التحقق من Repayment Guard. `(BorrowTooSmall guard على RAW bits قبل التقريب — موثق في AGENTS.md invariants)`
 - [ ] رفض المعاملة عند فشل أي شرط.
@@ -445,7 +445,7 @@
 
 ## 13. Jito وLanding
 
-- [ ] التحقق من Jito endpoints.
+- [x] التحقق من Jito endpoints. `(regional Block Engine endpoints: Amsterdam/Frankfurt/NY + fanout — arb-land/src/lib.rs:29,219-261)`
 - [ ] التحقق من Bundle Serialization.
 - [ ] التحقق من Tip Accounts.
 - [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
@@ -524,7 +524,7 @@
 
 ## 16. Performance وHFT
 
-- [ ] قياس Provider Latency.
+- [x] قياس Provider Latency. `(rpc_pool p50/p95/p99 + RttTracker بنصف عمر إحصائي — arb-math/src/latency.rs:38-134)`
 - [ ] قياس Account Update Latency.
 - [ ] قياس State Processing Latency.
 - [ ] قياس Route Discovery Latency.
@@ -559,7 +559,7 @@
 - [x] مراجعة cargo-deny. `(cargo-deny في CI — rust-ci.yml:53-68 للـ workspace وwebhook-service)`
 - [ ] مراجعة Gitleaks.
 - [ ] مراجعة Docker Security.
-- [ ] مراجعة RPC Endpoint Validation.
+- [x] مراجعة RPC Endpoint Validation. `(فرض http/https scheme على primary/failover/base URLs — arb-config/src/validation.rs:50-68,169)`
 - [ ] منع untrusted account data من تجاوز validation.
 - [ ] منع malformed instructions.
 - [ ] منع arbitrary program invocation.
@@ -604,9 +604,9 @@
 - [ ] إزالة Environment Variables غير المستهلكة.
 - [x] توحيد Configuration Source of Truth. `(arb-config: base.toml ← env TOML ← env vars ← CLI مع config.schema.json + validation)`
 - [ ] منع اختلاف defaults بين TOML وENV.
-- [ ] توثيق كل Config Field.
+- [x] توثيق كل Config Field. `(config/config.schema.json + doc comments على الحقول)`
 - [ ] توثيق Units لكل رقم.
-- [ ] التحقق من Valid Ranges.
+- [x] التحقق من Valid Ranges. `(arb-config/src/validation.rs:19 — validate() مع قيود زمنية وأمنية)`
 - [ ] مراجعة ملفات Rust الأكبر من 1000 سطر.
 - [ ] تقسيم Supervisor إلى Modules واضحة.
 - [ ] إزالة Dead Code.
