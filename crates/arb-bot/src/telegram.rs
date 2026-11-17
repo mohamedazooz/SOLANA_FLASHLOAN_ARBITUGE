@@ -26,6 +26,10 @@ pub struct TelegramNotifier {
     chat_id: Option<String>,
     client: Client,
     sol_price: std::sync::Arc<parking_lot::RwLock<f64>>,
+    /// True only after a verified live source (Binance/Coinbase feed, on-chain
+    /// SOL/USDC pool, or an operator-provided SOL_USD_PRICE) set the price.
+    /// The 200.0 seed is a placeholder, never economic evidence.
+    sol_price_live: std::sync::Arc<std::sync::atomic::AtomicBool>,
     min_rejected_alert_sol: f64,
     min_rejected_alert_pct: f64,
     tx: Option<tokio::sync::mpsc::Sender<String>>,
@@ -60,12 +64,14 @@ impl TelegramNotifier {
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
             .unwrap_or(1.0);
-        let initial_sol_price = std::env::var("SOL_USD_PRICE")
+        let env_sol_price = std::env::var("SOL_USD_PRICE")
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
-            .filter(|p| *p > 0.0)
-            .unwrap_or(200.0);
+            .filter(|p| *p > 0.0);
+        let initial_sol_price = env_sol_price.unwrap_or(200.0);
         let sol_price = std::sync::Arc::new(parking_lot::RwLock::new(initial_sol_price));
+        let sol_price_live =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(env_sol_price.is_some()));
 
         let min_rejected_alert_sol = std::env::var("TELEGRAM_REJECTED_ALERT_MIN_SOL")
             .ok()
@@ -160,6 +166,7 @@ impl TelegramNotifier {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let client_price = client.clone();
             let sol_price_bg = sol_price.clone();
+            let sol_price_live_bg = sol_price_live.clone();
             handle.spawn(async move {
                 loop {
                     let mut fetched = None;
@@ -207,6 +214,7 @@ impl TelegramNotifier {
 
                     if let Some(p) = fetched {
                         *sol_price_bg.write() = p;
+                        sol_price_live_bg.store(true, std::sync::atomic::Ordering::Relaxed);
                         debug!("Live SOL/USD price updated from market feed: ${:.2}", p);
                     }
 
@@ -220,6 +228,7 @@ impl TelegramNotifier {
             chat_id,
             client,
             sol_price,
+            sol_price_live,
             min_rejected_alert_sol,
             min_rejected_alert_pct,
             tx: tx_opt,
@@ -240,12 +249,30 @@ impl TelegramNotifier {
     pub fn update_sol_price(&self, price: f64) {
         if price > 0.0 && price.is_finite() {
             *self.sol_price.write() = price;
+            self.sol_price_live
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     pub fn sol_price(&self) -> f64 {
         let p = *self.sol_price.read();
         if p > 0.0 && p.is_finite() { p } else { 200.0 }
+    }
+
+    /// True only when the current SOL/USD price came from a verified live
+    /// source; the 200.0 placeholder never claims to be market evidence.
+    pub fn sol_price_is_live(&self) -> bool {
+        self.sol_price_live
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Provenance label for alert messages: honest about unverified prices.
+    pub fn sol_price_provenance_label(&self) -> &'static str {
+        if self.sol_price_is_live() {
+            "سعر حي من السوق"
+        } else {
+            "سعر غير موثّق (افتراضي — لا يوجد بث حي بعد)"
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -347,6 +374,7 @@ impl TelegramNotifier {
             return;
         }
         let live_sol_price = self.sol_price();
+        let price_label = self.sol_price_provenance_label();
         let computed_net_usd = if net_usd > 0.0 {
             net_usd
         } else {
@@ -395,7 +423,7 @@ impl TelegramNotifier {
              📈 <b>الربح الإجمالي قبل التكاليف:</b> {:.6} SOL (~${:.2})\n\
              📉 <b>أثر السعر (Price Impact):</b> {} bps\n\
              🎚️ <b>الأبناء النشطة (DLMM Bins):</b> <code>{}</code>\n\
-             💵 <b>سعر SOL اللحظي المستخدم:</b> ${:.2} USD (سعر حي من السوق)\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> ${:.2} USD ({price_label})\n\
              🧊 <b>السلوت (Slot):</b> <code>{}</code>\n\
              👑 <b>البيلدر / الليدر المستهدف (Target Builder/Leader):</b> <code>{}</code>\n\
              🔗 <b>Blockhash:</b> <code>{}...</code>\n\
@@ -484,6 +512,7 @@ impl TelegramNotifier {
         }
 
         let live_sol_price = self.sol_price();
+        let price_label = self.sol_price_provenance_label();
         let gross_usd = gross_sol * live_sol_price;
         let loan_usd = loan_size_sol * live_sol_price;
         let net_display = match net_sol {
@@ -512,7 +541,7 @@ impl TelegramNotifier {
              💰 <b>صافي الربح التقديري:</b> <code>{}</code>\n\
              🏊 <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
              🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
-             💵 <b>سعر SOL اللحظي المستخدم:</b> <code>${:.2} USD (سعر حي من السوق)</code>\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> <code>${:.2} USD ({price_label})</code>\n\
              🧊 <b>السلوت (Slot):</b> <code>{}</code>",
             esc(reason),
             esc(stage),
@@ -578,6 +607,7 @@ impl TelegramNotifier {
         leader: &str,
     ) {
         let live_sol_price = self.sol_price();
+        let price_label = self.sol_price_provenance_label();
         let net_usd = net_sol * live_sol_price;
         let loan_usd = loan_size_sol * live_sol_price;
         let pool_desc = if pools_count == 2 {
@@ -598,7 +628,7 @@ impl TelegramNotifier {
              🏦 <b>حجم قرض الفلاش (Flash Loan):</b> <code>{:.4} SOL (~${:.2} USD)</code>\n\
              🏊 <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
              🛣️ <b>المسار والقفزات:</b> <code>{}</code>\n\
-             💵 <b>سعر SOL اللحظي المستخدم:</b> <code>${:.2} USD (سعر حي من السوق)</code>\n\
+             💵 <b>سعر SOL اللحظي المستخدم:</b> <code>${:.2} USD ({price_label})</code>\n\
              👑 <b>البيلدر / الليدر المستهدف (Target Builder):</b> <code>{}</code>\n\
              🆔 <b>معرف الحزمة (Bundle ID):</b> <code>{}</code>\n\
              ⏳ <b>الحالة:</b> تم التوجيه للبيلدر وبانتظار النزول في البلوك (In-Flight)",
@@ -643,6 +673,7 @@ impl TelegramNotifier {
         let solscan_link = format!("https://solscan.io/tx/{sig_display}");
         let solana_fm_link = format!("https://solana.fm/tx/{sig_display}");
         let live_sol_price = self.sol_price();
+        let price_label = self.sol_price_provenance_label();
         let profit_usd = if passed_profit_usd > 0.0 {
             passed_profit_usd
         } else {
@@ -674,7 +705,7 @@ impl TelegramNotifier {
              • <b>عدد الأحواض:</b> <code>{} أحواض ({})</code>\n\
              • <b>المسار والقفزات:</b> <code>{}</code>\n\
              • <b>المنصات (DEXes):</b> <code>{}</code>\n\n\
-             💵 <b>سعر SOL اللحظي المستخدم في الحساب:</b> <code>${:.2} USD (سعر السوق الحقيقي)</code>\n\n\
+             💵 <b>سعر SOL اللحظي المستخدم في الحساب:</b> <code>${:.2} USD ({price_label})</code>\n\n\
              🧱 <b>إثبات النزول في البلوك (Block Landing Proof):</b>\n\
              • <b>حالة الهبوط:</b> <code>{}</code> ✅\n\
              • <b>رقم السلوت (Block Slot):</b> <code>{}</code>\n\
@@ -1020,6 +1051,36 @@ mod tests {
         assert!(n.min_rejected_alert_sol() >= 0.0);
     }
 
+    /// G7: the 200.0 placeholder must never be presented as market evidence.
+    /// A notifier seeded without SOL_USD_PRICE reports its price as unverified
+    /// until a live source updates it; update_sol_price flips the provenance.
+    #[test]
+    fn unverified_sol_price_is_labeled_as_such() {
+        let n = TelegramNotifier {
+            bot_token: None,
+            chat_id: None,
+            client: reqwest::Client::new(),
+            sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            min_rejected_alert_sol: 0.005,
+            min_rejected_alert_pct: 0.01,
+            tx: None,
+            rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+        };
+        assert!(!n.sol_price_is_live());
+        assert_eq!(
+            n.sol_price_provenance_label(),
+            "سعر غير موثّق (افتراضي — لا يوجد بث حي بعد)"
+        );
+
+        // A live source update flips the provenance flag.
+        n.update_sol_price(215.5);
+        assert!(n.sol_price_is_live());
+        assert_eq!(n.sol_price_provenance_label(), "سعر حي من السوق");
+    }
+
     #[tokio::test]
     async fn notify_trade_executed_includes_all_five_mandatory_fields() {
         // We set up a channel so we can capture the actual formatted message.
@@ -1029,6 +1090,7 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.005,
             min_rejected_alert_pct: 0.01,
             tx: Some(tx),
@@ -1092,6 +1154,7 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.001,
             min_rejected_alert_pct: 0.01,
             tx: Some(tx),
@@ -1137,6 +1200,7 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.001,
             min_rejected_alert_pct: 0.01,
             tx: Some(tx),
@@ -1174,6 +1238,7 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(215.50)),
+            sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.001,
             // 0.02% (2 bps) percentage threshold
             min_rejected_alert_pct: 0.02,

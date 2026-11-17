@@ -270,6 +270,13 @@ async fn executions(State(state): State<WebState>, headers: HeaderMap) -> Respon
     Json(state.control.executions(128)).into_response()
 }
 
+async fn rejections(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Err(resp) = authed(&state, &headers) {
+        return resp;
+    }
+    Json(state.control.rejections(128)).into_response()
+}
+
 async fn logs(State(state): State<WebState>, headers: HeaderMap) -> Response {
     if let Err(resp) = authed(&state, &headers) {
         return resp;
@@ -501,6 +508,7 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/status", get(status))
         .route("/api/opportunities", get(opportunities))
         .route("/api/executions", get(executions))
+        .route("/api/rejections", get(rejections))
         .route("/api/logs", get(logs))
         .route("/api/pnl", get(pnl))
         .route("/api/providers", get(providers))
@@ -634,6 +642,7 @@ mod tests {
             "/api/status",
             "/api/opportunities",
             "/api/executions",
+            "/api/rejections",
             "/api/pnl",
             "/api/providers",
             "/api/config",

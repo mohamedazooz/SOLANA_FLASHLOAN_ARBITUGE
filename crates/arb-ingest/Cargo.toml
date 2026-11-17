@@ -7,6 +7,7 @@ edition = "2024"
 [features]
 default = []
 extra-ingest = []
+yellowstone-grpc = ["tonic", "prost", "yellowstone-grpc-proto"]
 
 [dependencies]
 arb-types = { path = "../arb-types" }
@@ -34,6 +35,11 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["r
 # acceptance task. Types are solana-* 4.x.
 solami = { workspace = true, optional = true }
 arb-metrics = { path = "../arb-metrics" }
+
+# Yellowstone gRPC dependencies (feature-gated)
+tonic = { version = "0.12", optional = true, features = ["tls", "tls-roots"] }
+prost = { version = "0.12", optional = true, features = ["std"] }
+yellowstone-grpc-proto = { version = "14.0", optional = true }
 
 [[test]]
 name = "bitquery_ws_live"

@@ -2,12 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api, getToken, setToken } from "./api";
 import Login from "./components/Login";
-import Dashboard from "./components/Dashboard";
-import Terminal from "./components/Terminal";
 import Overview from "./components/Overview";
 import Opportunities from "./components/Opportunities";
 import Pools from "./components/Pools";
 import Executions from "./components/Executions";
+import Rejections from "./components/Rejections";
 import StrategyConfig from "./components/StrategyConfig";
 import Providers from "./components/Providers";
 import RouteMonitor from "./components/RouteMonitor";
@@ -15,28 +14,25 @@ import RiskControl from "./components/RiskControl";
 import Logs from "./components/Logs";
 import TelegramPanel from "./components/TelegramPanel";
 import type { StatusSnapshot } from "./api";
-import { ArabicToggle, ExplanationPanel } from "./components/ArabicTooltips";
 
-const SECTIONS = [
-  { id: "dashboard", label: "🏠 Dashboard" },
-  { id: "terminal", label: "💻 Terminal" },
-  { id: "overview", label: "📊 Overview" },
-  { id: "opportunities", label: "🎯 Opportunities" },
-  { id: "pools", label: "💧 Pools" },
-  { id: "executions", label: "📋 Executions" },
-  { id: "strategy", label: "⚙️ Strategy" },
-  { id: "providers", label: "📡 Providers" },
-  { id: "routes", label: "🌐 Routes" },
-  { id: "risk", label: "🛡️ Risk" },
-  { id: "logs", label: "📝 Logs" },
-  { id: "telegram", label: "📱 Telegram" },
+const SECTIONS: { id: string; label: string; el: (status: StatusSnapshot | null, reload: () => void) => ReactNode }[] = [
+  { id: "overview", label: "A · Overview", el: (s) => <Overview status={s} /> },
+  { id: "opportunities", label: "B · Live Opportunities", el: () => <Opportunities /> },
+  { id: "pools", label: "C · Pools & Liquidity", el: () => <Pools /> },
+  { id: "executions", label: "D · Execution Monitor", el: () => <Executions /> },
+  { id: "rejections", label: "D2 · Rejections", el: () => <Rejections /> },
+  { id: "strategy", label: "E · Strategy Config", el: (_s, reload) => <StrategyConfig onSaved={reload} /> },
+  { id: "providers", label: "F · Providers", el: () => <Providers /> },
+  { id: "routes", label: "J · Route Monitor", el: () => <RouteMonitor /> },
+  { id: "risk", label: "G · Risk & Emergency", el: (s, reload) => <RiskControl status={s} onChanged={reload} /> },
+  { id: "logs", label: "H · Logs & Analytics", el: () => <Logs /> },
+  { id: "telegram", label: "I · Telegram", el: () => <TelegramPanel /> },
 ];
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(!!getToken());
   const [status, setStatus] = useState<StatusSnapshot | null>(null);
-  const [section, setSection] = useState("dashboard");
-  const [showArabic, setShowArabic] = useState(true);
+  const [section, setSection] = useState("overview");
   const wsRef = useRef<WebSocket | null>(null);
   const timerRef = useRef<number | null>(null);
 
@@ -52,12 +48,19 @@ export default function App() {
     reload();
     timerRef.current = window.setInterval(reload, 5_000);
 
+    // Reconnect with capped exponential backoff + jitter so a fleet of tabs
+    // never reconnects in lockstep (thundering herd). Bounded attempts; the
+    // REST poller keeps the UI fresh regardless. A 401/expired token surfaces
+    // through the next REST poll instead of a reload loop.
     let attempt = 0;
     let reconnectTimer: number | null = null;
     let disposed = false;
 
     const connect = () => {
       if (disposed) return;
+      // The WS URL carries a single-use ticket fetched per connection; if the
+      // ticket request fails (e.g. expired session) the REST poller keeps the
+      // UI fresh and the next poll surfaces the 401.
       api
         .wsUrl()
         .then((url) => {
@@ -112,7 +115,7 @@ export default function App() {
     );
   }
 
-  const active = SECTIONS.find((s) => s.id === section);
+  const active = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
 
   return (
     <div className="app">
@@ -134,7 +137,6 @@ export default function App() {
               <span className="mono">slot {status.slot.toLocaleString()}</span>
             </>
           )}
-          <ArabicToggle showArabic={showArabic} onToggle={setShowArabic} />
           <button
             className="btn btn-ghost"
             onClick={async () => {
@@ -147,12 +149,10 @@ export default function App() {
           </button>
         </div>
       </header>
-      <nav className="tabs" role="tablist" aria-label="Main navigation">
+      <nav className="tabs">
         {SECTIONS.map((s) => (
           <button
             key={s.id}
-            role="tab"
-            aria-selected={section === s.id}
             className={`tab ${section === s.id ? "active" : ""}`}
             onClick={() => setSection(s.id)}
           >
@@ -160,51 +160,7 @@ export default function App() {
           </button>
         ))}
       </nav>
-      <main>
-        {section === "dashboard" && <Dashboard />}
-        {section === "terminal" && <Terminal />}
-        {section === "overview" && <Overview status={status} />}
-        {section === "opportunities" && <Opportunities />}
-        {section === "pools" && <Pools />}
-        {section === "executions" && <Executions />}
-        {section === "strategy" && <StrategyConfig onSaved={reload} />}
-        {section === "providers" && <Providers />}
-        {section === "routes" && <RouteMonitor />}
-        {section === "risk" && <RiskControl status={status} onChanged={reload} />}
-        {section === "logs" && <Logs />}
-        {section === "telegram" && <TelegramPanel />}
-        
-        {/* Server Info Panel */}
-        <div style={{ marginTop: "24px" }}>
-          <ExplanationPanel
-            title="Server & Deployment"
-            titleAr="الخادم والنشر"
-            icon="🖥️"
-            showArabic={showArabic}
-          >
-            <p>
-              <strong>Bot Server:</strong> The arbitrage bot runs as a systemd service on the VPS.
-              <code>arb-bot.service</code> manages the Rust binary with auto-restart on failure.
-            </p>
-            <p>
-              <strong>Start Script:</strong> <code>scripts/deploy_vps.sh</code> deploys the bot to the server.
-              <code>scripts/arb-bot.service</code> is the systemd unit file.
-            </p>
-            <p>
-              <strong>Windows Batch:</strong> <code>scripts/start-bot-server.bat</code> starts the bot locally on Windows for testing.
-              <code>scripts/run-dashboard.bat</code> starts the web dashboard.
-            </p>
-            <p>
-              <strong>Shadow Mode:</strong> <code>docker-compose.shadow.yml</code> runs the bot in shadow mode
-              with simulated execution for safe testing.
-            </p>
-            <p>
-              <strong>Logs:</strong> Bot logs are at <code>/var/log/arb-bot/</code> on the server.
-              Use <code>journalctl -u arb-bot -f</code> to follow live logs.
-            </p>
-          </ExplanationPanel>
-        </div>
-      </main>
+      <main>{active.el(status, reload)}</main>
     </div>
   );
 }

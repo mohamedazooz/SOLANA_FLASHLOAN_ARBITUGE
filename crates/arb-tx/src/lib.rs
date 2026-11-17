@@ -192,28 +192,43 @@ mod tests {
     #[test]
     fn builder_encodes_authoritative_cu_price_verbatim() {
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
         let opp = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000),
             expected_out: TokenAmount(1_050_000_000),
-            hop_inputs: vec![1_000_000_000, 1_050_000_000],
+            // 2 hops: WSOL -> USDC -> WSOL (return to borrowed mint)
+            hop_inputs: vec![1_000_000_000, 1_025_000_000, 1_050_000_000],
             gross_profit: Lamports(50_000_000),
             net_profit: Lamports(45_000_000),
             base_decimals: 9,
             price_impact_bps: Bps(10),
-            hops: vec![SwapHop {
-                pool_id: PoolId::new([10; 32]),
-                protocol: DexProtocol::RaydiumV4,
-                mint_in: MintId(wsol),
-                mint_out: MintId(wsol),
-                fee_bps: 25,
-                active_bin_id: None,
-                token_programs: [arb_types::TokenProgramKind::SplToken; 2],
-                trade_intent: Default::default(),
-                execution_accounts: Some(mock_raydium_v4_exec_accounts()),
-            }],
+            hops: vec![
+                SwapHop {
+                    pool_id: PoolId::new([10; 32]),
+                    protocol: DexProtocol::RaydiumV4,
+                    mint_in: MintId(wsol),
+                    mint_out: MintId(usdc),
+                    fee_bps: 25,
+                    active_bin_id: None,
+                    token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                    trade_intent: Default::default(),
+                    execution_accounts: Some(mock_raydium_v4_exec_accounts()),
+                },
+                SwapHop {
+                    pool_id: PoolId::new([11; 32]),
+                    protocol: DexProtocol::RaydiumV4,
+                    mint_in: MintId(usdc),
+                    mint_out: MintId(wsol),
+                    fee_bps: 25,
+                    active_bin_id: None,
+                    token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+                    trade_intent: Default::default(),
+                    execution_accounts: Some(mock_raydium_v4_exec_accounts()),
+                },
+            ],
             expected_min_final_output: 0,
         };
 
