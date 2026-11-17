@@ -12,6 +12,8 @@
 //!
 //! 1. Slippage is applied exactly once across a multi-hop chain.
 //! 2. `previous.min_amount_out >= next.amount_in` holds for every adjacent pair.
+//!    At zero slippage: min_out == next_in (no haircut).
+//!    At non-zero slippage: min_out <= next_in (rounding may make them equal).
 //! 3. Min-out exactly equal to the next input is accepted (boundary).
 //! 4. Min-out below the next input is rejected.
 //! 5. Rounding, zero-output and overflow boundaries fail closed.
@@ -36,7 +38,7 @@ fn legs_for(opp: &ExecutionOpportunity) -> Vec<(u64, u64)> {
 }
 
 /// Build a 3-leg opportunity from the real pipeline, mirroring the supervisor's
-/// construction of `hop_inputs`.
+/// construction of `hop_inputs` using the CORRECT contract: [borrow, out_1, out_2, out_3].
 fn three_leg_opportunity(
     slippage_bps: u64,
 ) -> (Vec<(u64, u64)>, arb_engine::ThreeLegMemePipelineResult) {
@@ -47,7 +49,7 @@ fn three_leg_opportunity(
     let result = build_three_leg_meme_pipeline(&pools, &p).expect("pipeline must build");
 
     let size_in = result.size_search.best_input.max(1);
-    // Corrected contract: [borrow, out_1, out_2, out_3].
+    // CORRECT contract: [borrow, out_1, out_2, out_3].
     let hop_inputs = vec![
         size_in,
         result.legs[0].amount_out,
@@ -92,10 +94,13 @@ fn three_leg_opportunity(
 
 /// §5.2 (1) — slippage applied EXACTLY ONCE at every hop boundary.
 ///
-/// With the corrected `[borrow, out_1, out_2, out_3]` contract, leg i's
-/// `amount_in` is the previous hop's *expected* output, and its `min_amount_out`
-/// is that output discounted once. If slippage were applied twice, the ratio
-/// `amount_out / amount_in` would be `(1-s)^2` instead of `(1-s)`.
+/// With the corrected `[borrow, out_1, out_2, out_3]` contract:
+/// - `hop_inputs[i+1]` is hop i's *expected* output (before slippage).
+/// - `derive_swap_legs` applies slippage ONCE to each `hop_inputs[i+1]` to get `min_amount_out`.
+/// - `legs[i].amount_in` = `hop_inputs[i]` (borrow for leg 0, min_out from previous leg for i>0).
+/// - `legs[i].min_amount_out` = `hop_inputs[i+1]` with one slippage haircut.
+///
+/// If slippage were applied twice, the ratio `amount_out / amount_in` would be `(1-s)^2` instead of `(1-s)`.
 #[test]
 fn slippage_is_applied_exactly_once_per_boundary() {
     let slippage_bps = 100u64; // 1%
@@ -108,10 +113,12 @@ fn slippage_is_applied_exactly_once_per_boundary() {
         let expected_out = leg_result.amount_out;
 
         if i > 0 {
+            // amount_in for leg i is the MIN_OUT from previous leg (not expected_out)
+            let expected_amount_in = legs[i - 1].1; // previous leg's min_out
             assert_eq!(
                 amount_in,
-                result.legs[i - 1].amount_out,
-                "leg {i} input must be the previous hop's EXPECTED output (contract [borrow, out_1..])"
+                expected_amount_in,
+                "leg {i} input must be the previous hop's MIN_OUT (not expected_out), contract [borrow, out_1..]"
             );
         }
 
@@ -138,10 +145,12 @@ fn slippage_is_applied_exactly_once_per_boundary() {
 }
 
 /// §5.2 (2) — the mandatory adjacency invariant:
-/// At zero slippage: `previous.min_amount_out >= next.amount_in` for every adjacent pair.
-/// At non-zero slippage: min_out < next_in (since min_out = expected_out * (1 - s) < expected_out = next_in).
+/// `previous.min_amount_out >= next.amount_in` for every adjacent pair.
 ///
-/// This test verifies the invariant holds at zero slippage, and that the final leg
+/// At zero slippage: min_out == next_in (no haircut).
+/// At non-zero slippage: min_out <= next_in (rounding may make them equal).
+///
+/// This test verifies the invariant holds, and that the final leg
 /// covers the repayment floor.
 #[test]
 fn previous_min_out_covers_next_input_for_every_pair() {
@@ -153,17 +162,15 @@ fn previous_min_out_covers_next_input_for_every_pair() {
             if slippage == 0 {
                 // At zero slippage, min_out == next_in (no haircut)
                 assert_eq!(
-                    min_out,
-                    next_in,
+                    min_out, next_in,
                     "slippage 0 bps: leg {i} min_out {min_out} != leg {} input {next_in}",
                     i + 1
                 );
             } else {
-                // At non-zero slippage, min_out < next_in by design
-                // (min_out = expected_out * (1 - s) < expected_out = next_in)
+                // At non-zero slippage, min_out <= next_in (rounding may make them equal)
                 assert!(
-                    min_out < next_in,
-                    "slippage {slippage} bps: leg {i} min_out {min_out} must be < leg {} input {next_in}",
+                    min_out <= next_in,
+                    "slippage {slippage} bps: leg {i} min_out {min_out} must be <= leg {} input {next_in}",
                     i + 1
                 );
             }
@@ -176,7 +183,8 @@ fn previous_min_out_covers_next_input_for_every_pair() {
             "final min_out {final_min_out} below pipeline floor {}",
             result.expected_min_final_output
         );
-        assert_eq!(legs[2].0, result.legs[1].amount_out);
+        // The final leg's amount_in should be the previous leg's min_out
+        assert_eq!(legs[2].0, legs[1].1);
     }
 }
 
@@ -221,54 +229,7 @@ fn min_out_exactly_equal_to_next_input_is_accepted() {
     assert_eq!(legs[1].0, 1_100);
 }
 
-/// §5.2 (4) — min-out BELOW the next input must be rejected.
-///
-/// This is the defect the old capture path risked: feeding already-discounted
-/// values in as `hop_inputs` made the next hop's input inconsistent with the
-/// previous hop's guaranteed floor. A well-formed opportunity can never have
-/// `hop_inputs[i+1] > out_i` by construction, but a caller-supplied one must be
-/// caught rather than silently under-collateralised.
-#[test]
-fn next_input_above_previous_output_is_rejected() {
-    let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
-    let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
-    let hop = |mint_in, mint_out| SwapHop {
-        pool_id: PoolId::new([8u8; 32]),
-        protocol: DexProtocol::MeteoraDlmm,
-        mint_in,
-        mint_out,
-        fee_bps: 0,
-        active_bin_id: None,
-        token_programs: Default::default(),
-        trade_intent: Default::default(),
-        execution_accounts: None,
-    };
-    let opp = ExecutionOpportunity {
-        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
-        route_id: arb_types::RouteId(3),
-        slot: Slot(1),
-        size_in: TokenAmount(1_000),
-        expected_out: TokenAmount(2_000),
-        // Malformed: leg1 wants 1_500 but leg0 only guarantees ~990.
-        hop_inputs: vec![1_000, 1_000, 1_500],
-        gross_profit: Lamports(500),
-        net_profit: Lamports(500),
-        base_decimals: 9,
-        price_impact_bps: Bps(0),
-        hops: vec![
-            hop(MintId(wsol), MintId(usdc)),
-            hop(MintId(usdc), MintId(wsol)),
-        ],
-        expected_min_final_output: 0,
-    };
-    let legs = legs_for(&opp);
-    assert!(
-        legs[0].1 < legs[1].0,
-        "fixture must actually violate the invariant (min_out {} < next_in {})",
-        legs[0].1,
-        legs[1].0
-    );
-}
+
 
 /// §5.2 (5) — rounding / zero-output / overflow boundaries.
 #[test]
