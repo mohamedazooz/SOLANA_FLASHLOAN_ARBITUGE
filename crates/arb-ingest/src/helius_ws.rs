@@ -671,11 +671,14 @@ impl HeliusWsClient {
                         raw.into_iter().take(max_ws_account_subs()).collect()
                     };
                     let mut next_req_id = 100u64;
-                    if let Some(first_acc) = pending_subs.pop_front() {
+                    let probe_sent_at = if let Some(first_acc) = pending_subs.pop_front() {
                         let frame = self.build_account_sub_frame(next_req_id, first_acc);
                         next_req_id += 1;
                         let _ = ws_stream.send(frame).await;
-                    }
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
 
                     // 3. Ingestion Loop with 15s Heartbeat Ping and Resilient Streaming
                     let mut received_account_update = false;
@@ -693,6 +696,23 @@ impl HeliusWsClient {
                                 next_req_id += 1;
                                 let _ = ws_stream.send(frame).await;
                             }
+                            arb_metrics::set_ws_subscriptions_active(
+                                self.sub_to_account.read().len() as u64,
+                            );
+                        }
+
+                        // Subscription-ack timeout: if the probe subscription was
+                        // never acknowledged while the transport itself is alive
+                        // (pings/pongs still flowing), this connection is blind —
+                        // fail over instead of sitting on it forever.
+                        if let Some(sent_at) = probe_sent_at
+                            && !self.probe_confirmed.load(Ordering::Acquire)
+                            && sent_at.elapsed() > Duration::from_secs(15)
+                        {
+                            warn!(
+                                "WebSocket [{endpoint_num}/{total_endpoints}] {safe_url} probe subscription unacknowledged for 15s (transport alive); failing over"
+                            );
+                            break;
                         }
 
                         tokio::select! {
@@ -771,6 +791,7 @@ impl HeliusWsClient {
                     }
 
                     let next_idx = self.rotate_endpoint();
+                    arb_metrics::inc_ws_reconnects();
                     if !received_account_update {
                         consecutive_failures += 1;
                     } else {
@@ -786,6 +807,7 @@ impl HeliusWsClient {
                     self.is_connected.store(false, Ordering::Release);
                     self.record_connect_backoff(idx, &e.to_string());
                     let next_idx = self.rotate_endpoint();
+                    arb_metrics::inc_ws_reconnects();
                     consecutive_failures += 1;
                     warn!(
                         "WebSocket [{endpoint_num}/{total_endpoints}] connect failed on {safe_url} ({e}); rotating to [{}/{}] (attempt={attempt})",

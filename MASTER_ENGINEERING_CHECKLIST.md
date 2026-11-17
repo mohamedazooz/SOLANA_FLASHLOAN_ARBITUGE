@@ -57,7 +57,7 @@
 ### التقدم الحالي
 
 - **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **305** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **288** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -191,7 +191,7 @@
 
 ## 3. WebSocket وYellowstone
 
-- [ ] إصلاح ترتيب slotSubscribe وaccountSubscribe.
+- [x] إصلاح ترتيب slotSubscribe وaccountSubscribe. `(حسم G8: slot sub اختياري capability-gated ولا يستهلك ميزانية الاشتراكات؛ حسابات WSOL-linkage أولاً — helius_ws.rs:655-676)`
 - [x] إعطاء account subscriptions الأولوية. `(ترتيب الاشتراك حسب WSOL-linkage — helius_ws.rs:1706)`
 - [x] عدم استهلاك الاشتراك الوحيد في slot subscription غير ضروري. `(G8: WS_SLOT_SUBSCRIBE=0 يعطّل slotSubscribe؛ وعند provider بعدد اشتراكات = 1 يبقى الميزان كاملاً للحسابات)`
 - [x] جعل slot subscription اختيارياً حسب provider capability. `(G8: helius_ws.rs — slot_subscribe_enabled gate عند connect؛ رفض slotSubscribe (id=1) يعطّل slot sub فقط دون إسقاط endpoint، وslot freshness يعتمد accountNotification context.slot؛ اختباران: slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + slot_subscribe_env_gate_parses_strict_values)`
@@ -199,28 +199,28 @@
 - [x] إصلاح resubscription بعد reconnect. `(إعادة الاشتراك من fresh state عند كل connect — helius_ws.rs:584-614)`
 - [x] استعادة جميع الحسابات المطلوبة بعد reconnect. `(pending_subs تُبنى من tracked_order عند كل اتصال)`
 - [x] منع duplicate subscriptions. `(multi_sub.dedup() + اختبار مخصص — helius_ws.rs:206,1382)`
-- [ ] منع duplicate notifications.
-- [ ] اكتشاف missing notifications.
-- [ ] اكتشاف stream gaps.
-- [ ] اكتشاف انقطاع stream.
+- [x] منع duplicate notifications. `(DeduKey {pool_id, slot, write_version} في apply_pool_update — lib.rs:580؛ AccountSnapshotStore.apply يرفض (slot,wv) <= الحالي)`
+- [x] اكتشاف missing notifications. `(stale/freshness gates تُسقط pools التي لم تصلك تحديثاتها + SnapshotReconciler::MissingAccount + quote_readiness max_age_slots)`
+- [ ] اكتشاف stream gaps. `(PARTIAL: slot_integrity يتتبع parents وSLOT_DEAD وinvalidation، لكن لا يوجد إنذار صريح لكل slot مفقود — يُكتشف عبر staleness)`
+- [x] اكتشاف انقطاع stream. `(30s stall timeout → failover؛ mark_helius_disconnected + is_connected + stream_generation)`
 - [x] إضافة heartbeat. `(ping كل 15s — helius_ws.rs:648)`
 - [x] إضافة connection timeout. `(timeout 30s على استقبال frames — helius_ws.rs:675)`
-- [ ] إضافة subscription timeout.
-- [ ] إضافة message processing timeout.
-- [ ] إضافة bounded queues.
-- [ ] إضافة backpressure.
-- [ ] منع تراكم الرسائل القديمة.
-- [ ] إضافة stream sequence tracking.
-- [ ] إضافة reconnect metrics.
-- [ ] إضافة subscription count metrics.
-- [ ] اختبار اتصال مزود واحد.
+- [x] إضافة subscription timeout. `(FIXED 2026-11-17: probe sub غير مُقرّ خلال 15s مع بقاء النقل حياً → failover — سدّ حالة "أعمى للأبد" عند ضياع ack)`
+- [x] إضافة message processing timeout. `(N/A بحجة: handle_message متزامنة bounded بدون await — الـ 30s recv timeout يحدّ وصول الإطارات، والمعالجة decode-only)`
+- [x] إضافة bounded queues. `(pending_subs محدودة بـ WS_MAX_ACCOUNT_SUBS؛ pending_derived map مُزيلة التكرار بنافذة 1500ms؛ latencies مسقوفة 256)`
+- [x] إضافة backpressure. `(account_sub_limited يوقف الـ queueing عند رفض المزود دون teardown؛ covered-window يمنع إغراق hydration)`
+- [x] منع تراكم الرسائل القديمة. `(ترتيب (slot, write_version) + رفض dead slots + freshness filter — لا تُطبَّق تحديثات أقدم)`
+- [x] إضافة stream sequence tracking. `(write_version أحادي لكل pool + slot ordering + رفض provider switch دون generation reset — AccountSnapshotStore.apply)`
+- [x] إضافة reconnect metrics. `(جديد 2026-11-17: arb_metrics::ws_reconnects_total — يزيد عند كل rotate/fail-connect في helius_ws)`
+- [x] إضافة subscription count metrics. `(جديد 2026-11-17: arb_metrics::ws_subscriptions_active gauge — عدد الاشتراكات المؤكدة على الـ endpoint النشط)`
+- [x] اختبار اتصال مزود واحد. `(اختبارات helius_ws تُبنى على endpoint واحد: handle_message_* + slot_notification_* + account_notification_*)`
 - [x] اختبار اتصال مزودين. `(dual_ingest — 4 tests + dual_ingest_bench)`
-- [ ] اختبار انقطاع المزود الأساسي.
-- [ ] اختبار رجوع المزود الأساسي.
-- [ ] اختبار رفض subscription.
-- [ ] اختبار تجاوز subscription quota.
+- [x] اختبار انقطاع المزود الأساسي. `(rotate_endpoint_wraps_across_all_endpoints + مسار connect-failure مع record_connect_backoff + endpoint_unsupported failover — مُختبرة)`
+- [ ] اختبار رجوع المزود الأساسي. `(PARTIAL: انتهاء backoff يسمح بالعودة عبر select_active_endpoint_index (الأبكر انتهاءً)؛ لا يوجد اختبار مخصص لدورة العودة)`
+- [x] اختبار رفض subscription. `(slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + handle_message_treats_subscription_errors_as_non_fatal)`
+- [x] اختبار تجاوز subscription quota. `(handle_message_treats_subscription_errors_as_non_fatal: "Concurrent websocket subscription limit" → account_sub_limited بدون تصنيفه capability failure)`
 - [x] اختبار malformed WebSocket frames. `(regression test لـ Alchemy -32601 — helius_ws.rs:1475)`
-- [ ] عدم الادعاء بوجود Yellowstone gRPC دون تنفيذ فعلي.
+- [x] عدم الادعاء بوجود Yellowstone gRPC دون تنفيذ فعلي. `(yellowstone_grpc.rs: تنفيذ tonic/prost حقيقي 397 سطر — SubscribeUpdate decode + write_version حقيقي؛ feature-gated افتراضياً وموثّق FEATURE-GATED في المصفوفة)`
 
 ## 4. Solami Mirage / Blur
 
