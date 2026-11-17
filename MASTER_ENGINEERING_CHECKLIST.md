@@ -50,39 +50,39 @@
 
 ## Audit Ledger — نتائج التدقيق الفعلي
 
-> تدقيق فعلي منفَّذ على commit `72cc41c` (أحدث main وقت التدقيق).
+> تدقيق فعلي منفَّذ على commit `72cc41c` (أحدث main وقت التدقيق)؛ آخر تحديث للقائمة على main `4241e4c` (بعد دمج PR #53 و #55 و #56).
 > المنهج: قراءة الكود + تشغيل `cargo build --workspace` +
 > `cargo test --workspace --all-targets` كاملة.
 
 ### التقدم الحالي
 
-- **136 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **366** بند متبقي: منها 14 فجوة مؤكدة (G1–G14 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **146 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **349** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ ما زالت G5–G10 وG11 وG13 وG14 وG16 وG12 فجوات مؤكدة، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
 - `cargo build --workspace`: نجح (0 أخطاء).
-- `cargo test --workspace --all-targets`: **1080 اختبار ناجح، 0 فشل** عبر 86 test binary.
+- `cargo test --workspace --all-targets`: **1094 اختبار ناجح، 0 فشل** (بعد PR #55 و #56؛ كان 1080) عبر 86 test binary.
 - CI يفرض `cargo fmt --check` و `cargo clippy --workspace --all-targets -- -D warnings` و `cargo-deny` (rust-ci.yml).
 
 ### فجوات مؤكدة (CONFIRMED — لم تُعلَّم [x])
 
 | # | الفجوة | الدليل |
 |---|---|---|
-| G1 | `ProviderCapabilityRegistry` + `validate_execution_prerequisites` غير مربوطة بالـ Supervisor — معرّفة ومُصدَّرة فقط | `capability.rs`, `arb-ingest/src/lib.rs:70` — صفر استدعاءات في `arb-bot` |
-| G2 | `ProviderSupervisor` (health/circuit-breaker/failover selection) غير مستخدم في مسار التشغيل الحقيقي | صفر استدعاءات في `arb-bot` خارج re-export `lib.rs:24` |
-| G3 | `build_quote_dependency_set` / `QuoteReadinessContext` / `SlotIntegrity` / `DependencyManifest` (بوابة fail-closed للـ quotes) غير مستدعاة خارج `arb-ingest` | grep على `arb-bot` = 0 نتائج |
-| G4 | recurring HTTP market-data polling في hot path: `fetch_live_pool_states` تُستدعى دورياً عند كل slot notification + vault hydration عبر HTTP | `supervisor/run.rs:689`, `run.rs:705` |
+| G1 | **FIXED/TESTED (PR #56, commit 804d386)**: `ProviderCapabilityRegistry` مربوطة بالـ Supervisor — `run.rs` يبني الـ registry ويسجّل `standard_json_rpc_ws("Helius")` عند نجاح `HeliusWsClient::from_env()` ويستدعي `validate_execution_prerequisites()` قبل إقلاع WS worker؛ الفشل = `bail!` (إيقاف إقلاع fail-closed) | `supervisor/run.rs` — بوابة capability قبل بدء worker |
+| G2 | **FIXED/TESTED (PR #56, commit 804d386)**: `ProviderSupervisor` مستخدم في حلقة التشغيل — WS_STREAM_PROVIDER (أولوية 0) + RPC_FALLBACK_PROVIDER (أولوية 1)، record_success/record_failure على تقدّم slot وRPC fallback، و`select()` fail-closed قبل `strategy_cycle` | `supervisor/run.rs` — health observation + بوابة select |
+| G3 | **FIXED/TESTED (PR #56, commit 804d386)**: `QuoteReadinessContext`/`DependencyManifest` مربوطة — بوابة `validate_route_account_dependencies` في `process_opportunities` (opportunity.rs:75) تستدعي `quote_dependencies_for_route` مع manifests من `manifest_for_registered_pool` (مصدر وحيد)؛ + إصلاح provenance في `helius_ws.rs` (provider_id من yellowstone بدل ProviderId(2) الثابت) | `supervisor/opportunity.rs:75,1424`, `arb-ingest/src/lib.rs:766` |
+| G4 | **MITIGATED/VERIFIED (PR #53 + PR #56)**: reconcile sweep دوري بحد أدنى 30s بدل كل slot notification؛ والبوابات الجديدة (G2/G3) تمنع أي حالة قديمة من الوصول للتسعير/التنفيذ. الحد المتبقي: vault updates للـ DLMM/CLMM/Orca/PumpFun ما زالت عبر hydration وليست streams | `supervisor/run.rs` — min_gap reconciliation |
 | G5 | Solami Mirage parser لا يستخرج حقول protobuf حقيقية: يستخدم `latest_slot` محلي، `pubkey: None`, `write_version: None`، وغير موصّل بالبوت | `solami_mirage.rs:138-140` |
 | G6 | أصل الاقتراض hardcoded WSOL فقط دون تقييم باقي reserves | `dlmm_flash_arbitrage.rs:306` |
 | G7 | سعر SOL افتراضي $200 ما زال موجوداً (مسار التنبيهات) | `telegram.rs:63` |
 | G8 | `slotSubscribe` يُرسل دائماً دون gating حسب provider capability | `helius_ws.rs:602` |
 | G9 | لا يوجد cargo-fuzz harness منفصل — لكن proptest fuzzing suite موجود (500 cases، 4 crates) | `arb-math/tests/fuzzing_suite.rs` + proptest في arb-config/arb-dex/arb-tx |
-| G10 | لا توجد خطوة Gitleaks في CI | `rust-ci.yml` فيه cargo-deny فقط |
+| G10 | لا توجد خطوة Gitleaks في CI — **تحديث بعد PR #53**: سياسة `.gitleaks.toml` مُلتزمة (extend default + allowlist ضيّق 5 مسارات + 2 regex literal؛ مُتحقَّق بغرس 5 أسرار حقيقية اكتُشفت 5/5 و76→0 false positives)، لكن `rust-ci.yml` ما زال بدون خطوة gitleaks | `rust-ci.yml` فيه cargo-deny فقط؛ `.gitleaks.toml` جاهز |
 | G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
 | G13 | عرض Jito Status غير موجود في Dashboard (Executions.tsx لا يعرض bundle/status) | `web/src/components/Executions.tsx` |
 | G14 | عرض Rejection Reasons غير موجود في Dashboard (يظهر في Telegram فقط) | `web/src/components/*.tsx` |
-| G15 | **تم تشخيصه بدقة (تصحيح التشخيص الأول)**: سبب الرفض الحي ليس الـ wire encoder — الـ encoder مطابق بايت-بايت للتنفيذ الرسمي `solana-message::v1` (تمت مقارنة كل الحقول: header/mask/lifetime/addresses/config-values/instruction-headers/payloads/signature-at-tail). السبب المؤكد تجريبياً: قيمة `loaded_accounts_data_size_limit` القريحة في الـ config. القياس الحي على mainnet (Agave 4.4.1): عمود kamino flash يحمّل فعلياً **10,714,291 بايت (~10.2MiB)** لأن بيانات البرامج التنفيذية (klend + SPL Token + ATA) تُحتسب ضمن الحد؛ أي حد < ~10.72MiB يُرفض فوراً بـ `MaxLoadedAccountsDataSizeExceeded` عند units=0 قبل تنفيذ أي instruction. مغلف V1 بحد 64MiB (67,108,864) مرّ المحاكاة الحية err=None. مسارات الإنتاج الصحيحة (opportunity.rs:1050,1108 وselection.rs:481 وtemplate.rs:529) تستخدم 64MiB؛ المسارات المعطوبة: `dlmm_4leg_flash_arb.rs:621,704`=256,000 و`compiler.rs:1047`=262,144 و`dlmm_3leg_flash_arb.rs:531`=1,048,576 — كلها ستُرفض حياً | دليل حي 2026-11-17 على Solami Agave 4.4.1: limit=64MiB → err=None loaded=10,714,291؛ limit=4MiB/1MiB/256KiB/32KiB → err=MaxLoadedAccountsDataSizeExceeded units=0 (مكرر 4 مرات)؛ v0 sig 5w9k6SeA…gX finalized |
+| G15 | **FIXED/TESTED (PR #55, commit 92e1612)** — **تم تشخيصه بدقة (تصحيح التشخيص الأول)**: سبب الرفض الحي ليس الـ wire encoder — الـ encoder مطابق بايت-بايت للتنفيذ الرسمي `solana-message::v1` (تمت مقارنة كل الحقول: header/mask/lifetime/addresses/config-values/instruction-headers/payloads/signature-at-tail). السبب المؤكد تجريبياً: قيمة `loaded_accounts_data_size_limit` القريحة في الـ config. القياس الحي على mainnet (Agave 4.4.1): عمود kamino flash يحمّل فعلياً **10,714,291 بايت (~10.2MiB)** لأن بيانات البرامج التنفيذية (klend + SPL Token + ATA) تُحتسب ضمن الحد؛ أي حد < ~10.72MiB يُرفض فوراً بـ `MaxLoadedAccountsDataSizeExceeded` عند units=0 قبل تنفيذ أي instruction. مغلف V1 بحد 64MiB (67,108,864) مرّ المحاكاة الحية err=None. مسارات الإنتاج الصحيحة (opportunity.rs:1050,1108 وselection.rs:481 وtemplate.rs:529) تستخدم 64MiB؛ المسارات المعطوبة: `dlmm_4leg_flash_arb.rs:621,704`=256,000 و`compiler.rs:1047`=262,144 و`dlmm_3leg_flash_arb.rs:531`=1,048,576 — كلها ستُرفض حياً — **أُصلحت كلها في PR #55** بثابت `V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT=67,108,864` + 5 اختبارات wire-decoding regression (`v1_loaded_data_limit_regression.rs`)؛ `meteora_atomic_builder.rs:53` (8MiB) أُصلحت أيضاً | دليل حي 2026-11-17 على Solami Agave 4.4.1: limit=64MiB → err=None loaded=10,714,291؛ limit=4MiB/1MiB/256KiB/32KiB → err=MaxLoadedAccountsDataSizeExceeded units=0 (مكرر 4 مرات)؛ v0 sig 5w9k6SeA…gX finalized |
 | G16 | تعارض قيم ثابتة بين الطبقات: `DEFAULT_HOP_SLIPPAGE_BPS=10` (arb-constants:462) مقابل default `hop_slippage_bps: 5` (dlmm_flash_arbitrage.rs:368)؛ و`cu_limit: 400_000` في full_path_rehearsal يتجاوز `APPLICATION_SAFETY_CU_LIMIT=350_000`؛ و`priority_fee_micro_lamports: 10_000` في الـ rehearsal مقابل `BASE_PRIORITY_FEE_MICRO_LAMPORTS=1_000` | grep constants vs engine defaults |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
 
@@ -128,8 +128,8 @@
 ### ملاحظة منهجية
 
 البند المتعلم `[x]` أدناه يعني: الكود موجود **ومُختبر** في crate الخاص به
-بالدليل المذكور. البنود المتعلقة بالربط بالمسار الحقيقي (wiring) لم تُعلَّم
-حتى يكتمل الربط الموثق في G1–G4.
+بالدليل المذكور. البنود المتعلقة بالربط بالمسار الحقيقي (wiring) صارت مُعلَّمة بعد إثبات الربط الموثق
+في PR #56 (G1–G3) و PR #55 (G15).
 
 ---
 
@@ -156,7 +156,7 @@
 - [x] إضافة quota accounting مركزي. `(rpc_pool.rs:128,761 — كشف 429/Retry-After/quota_exhausted لكل endpoint + telemetry)`
 - [x] إضافة Provider Health Score. `(rpc_pool.rs:91-104 — EndpointStatus حسب latency/429/أخطاء)`
 - [x] إضافة latency measurements لكل مزود. `(rpc_pool.rs:104,180 — total_latency_ms + p50/p95/p99)`
-- [x] إضافة Provider Circuit Breaker. `(rpc_pool endpoint rotation + ProviderSupervisor OpenCircuit — الأخيرة غير مربوطة، انظر G2)`
+- [x] إضافة Provider Circuit Breaker. `(rpc_pool endpoint rotation + ProviderSupervisor OpenCircuit — مربوطة الآن بحلقة التشغيل: record_success/record_failure + select() fail-closed، PR #56/G2)`
 - [x] إضافة exponential backoff. `(helius_ws.rs:490,771 + rpc_pool Retry-After)`
 - [ ] إضافة jitter للـ retries. `(معلنة في ReconnectPolicy لكن تطبيقها الفعلي في helius_ws غير مؤكد)`
 - [x] منع reconnect loops. `(backoff + cooldown rotation قبل إعادة الاتصال)`
@@ -168,7 +168,7 @@
 
 ## 2. Provider Capabilities وAdapters
 
-- [ ] ربط ProviderCapabilityRegistry فعلياً بالـ Supervisor.
+- [x] ربط ProviderCapabilityRegistry فعلياً بالـ Supervisor. `(PR #56 — run.rs يبني registry ويسجّل Helius WS capability ويستدعي validate_execution_prerequisites قبل إقلاع worker؛ Err = bail! fail-closed، commit 804d386)`
 - [x] منع استدعاء method غير مدعومة. `(helius_ws.rs:44,706,1475 — -32601 تُعامل كفشل fatal للـ endpoint مع failover)`
 - [x] فصل JSON-RPC HTTP عن JSON-RPC WebSocket. `(ProviderTransport enum — capability.rs:12)`
 - [x] فصل Yellowstone gRPC عن WebSocket. `(ProviderTransport::YellowstoneGrpc منفصل)`
@@ -287,19 +287,19 @@
 - [ ] تحديد Repayment Accounts.
 - [ ] تحديد Associated Token Accounts.
 - [x] تحديد الحسابات الإضافية المطلوبة لكل DEX. `(BondingCurve/GlobalConfig/SharingConfig/MintExtension/TransferHook/BitmapExtension)`
-- [ ] تحديد Expected Owner لكل حساب. `(البنية موجودة — الربط بالمسار الحقيقي معلّق على G3)`
+- [x] تحديد Expected Owner لكل حساب. `(PR #56 — protocol_owner_program() يربط كل DexProtocol بـ program ID الرسمي من arb-constants، والـ gate يتحقق من owner عبر quote_dependencies_for_route → validate_dependency_group)` `(البنية موجودة — الربط بالمسار الحقيقي معلّق على G3)`
 - [x] تحديد Required/Optional لكل dependency. `(AccountDependency مع role + required)`
-- [ ] ربط dependency manifest بمسار الاشتراكات.
-- [ ] ربط dependency manifest بمسار exact quote.
-- [ ] ربط dependency manifest بمسار dispatch.
-- [ ] رفض route عند فقد أي حساب مطلوب.
+- [x] ربط dependency manifest بمسار الاشتراكات. `(PR #56 — manifest_for_registered_pool مصدر وحيد لتحديد الحسابات المطلوبة لكل pool مسجَّل، يُبني ويُسجَّل lazily في DependencyManifestRegistry داخل Supervisor)`
+- [x] ربط dependency manifest بمسار exact quote. `(PR #56 — quote_dependencies_for_route تستخرج requirements من الـ manifest ثم تطبق fail-closed quote readiness: freshness/slot-skew/owner/bank-identity)`
+- [x] ربط dependency manifest بمسار dispatch. `(PR #56 — البوابة مستدعاة في process_opportunities قبل أي حساب تكلفة أو بناء: opportunity.rs:75)`
+- [x] رفض route عند فقد أي حساب مطلوب. `(PR #56 — Err من البوابة = debug! + continue قبل معالجة الفرصة؛ حدود تغطية موثقة: vaults للـ DLMM/CLMM/Orca/PumpFun غير متتبعة فتُدقق حالة الـ pool فقط، وToken-2022 يُرفض fail-closed)`
 - [ ] رفض route عند وجود owner غير صحيح.
 - [ ] رفض route عند عدم اكتمال account hydration.
 - [ ] منع إنشاء manifest فارغ كأنه صالح.
 - [x] إضافة dependency completeness tests. `(9 unit tests في dependency_manifest.rs)`
 - [ ] إضافة account owner regression tests.
 - [ ] إضافة account-set consistency tests.
-- [ ] إثبات أن quote_route_guarded() مستدعاة فعلياً في Supervisor.
+- [x] إثبات أن quote_route_guarded() مستدعاة فعلياً في Supervisor. `(PR #56 — الوظيفة المكافئة quote_dependencies_for_route مستدعاة فعلياً عبر validate_route_account_dependencies في process_opportunities: opportunity.rs:75,1424,1452)`
 
 ## 7. State Integrity وFork/Freshness
 
@@ -651,9 +651,9 @@
 - [ ] إزالة Magic Constants.
 - [x] إصلاح Clippy Warnings. `(CI يفرض -D warnings — rust-ci.yml:50؛ build نظيف)`
 - [x] إصلاح Formatting. `(CI يفرض cargo fmt --check — rust-ci.yml:41)`
-- [ ] إصلاح Docker Build.
-- [ ] إصلاح Cargo Deny.
-- [ ] إصلاح Gitleaks false positives دون تعطيل فحص الأسرار.
+- [x] إصلاح Docker Build. `(PR #53 — feature shadow-only=[] + gate compile-time في main.rs يجبر mode=simulate ويتجاهل ARB_MODE/ARB_LIVE؛ cargo check -p arb-bot --features shadow-only نظيف)`
+- [x] إصلاح Cargo Deny. `(PR #53 — 0BSD مضافة للـ licenses + 4 RUSTSEC unmaintained موثقة كـ ignores (ansi_term/derivative/paste/libsecp256k1 — transitive لـ Solana/litesvm بلا ترقية آمنة)؛ vulnerability advisories ما زالت مفروضة، CI أخضر)`
+- [x] إصلاح Gitleaks false positives دون تعطيل فحص الأسرار. `(PR #53 — .gitleaks.toml بـ extend default + allowlist ضيّق 5 مسارات و2 regex literal؛ إثبات: نتائج CI 76→0، وغرس 5 أسرار حقيقية ghp_ في .md/.txt/fixtures/src/reports اكتُشفت 5/5)`
 - [ ] إصلاح Regression Tests ذات false positives.
 - [ ] توحيد CI على نفس commit.
 - [ ] اختبار كل PR قبل الدمج.
