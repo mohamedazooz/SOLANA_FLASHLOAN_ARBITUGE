@@ -608,33 +608,33 @@
 
 ## 18. Dashboard وObservability
 
-- [ ] مراجعة React/Vite Build.
+- [x] مراجعة React/Vite Build. `(web-builder node:22-slim stage يبني web/ ويُخدم من Rust API — Dockerfile:24-28 + CI)`
 - [x] مراجعة API Connections. `(web_api.rs — /api/status /api/config /api/pnl /api/executions /api/logs /api/routes /api/opportunities)`
 - [x] مراجعة WebSocket Dashboard. `(/api/ws موجود)`
 - [x] مراجعة Provider Health Display. `(/api/providers موجود)`
-- [ ] عرض Quota Utilization.
-- [ ] عرض Subscription Counts.
-- [ ] عرض Stream Gaps.
-- [ ] عرض Stale Accounts.
-- [ ] عرض Fork Invalidations.
+- [ ] عرض Quota Utilization. `(MISSING — لا يوجد quota utilization في /api/providers أو Providers.tsx)`
+- [ ] عرض Subscription Counts. `(MISSING — غير موجود في StatusSnapshot ولا /api/providers)`
+- [ ] عرض Stream Gaps. `(MISSING — gaps تُكتشف داخلياً لكن لا تُعرض)`
+- [ ] عرض Stale Accounts. `(MISSING — inc_stale_rejections metric موجودة لكن غير معروضة في Dashboard)`
+- [ ] عرض Fork Invalidations. `(MISSING — slot_integrity tombstones غير معروضة)`
 - [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
-- [ ] عرض Exact Quotes.
+- [ ] عرض Exact Quotes. `(PARTIAL — /api/opportunities + opportunities_digest — control_service.rs:645؛ لا يوجد عرض تفصيلي لكل hop quote)`
 - [x] عرض Rejection Reasons. `(FIXED/TESTED: ring مخصص RejectionRecord في control_service + /api/rejections + مكوّن Rejections.tsx جديد في Dashboard يعرض stage/reason/gross/net/loan/pools؛ record_rejected_opportunity يسجّل الآن في control؛ اختبار rejection_ring_is_dedicated_and_ordered)`
-- [ ] عرض Gross Profit.
+- [ ] عرض Gross Profit. `(PARTIAL — gross_sol في Rejections.tsx؛ Opportunities.tsx يعرض net فقط)`
 - [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`
 - [x] عرض Borrow Asset. `(Opportunities.tsx — borrow معروض)`
 - [x] عرض Borrow Amount. `(نفس المكوّن)`
-- [ ] عرض Simulation Results.
-- [ ] عرض Transaction Size.
-- [ ] عرض CU Consumption.
+- [ ] عرض Simulation Results. `(PARTIAL — نتائج المحاكاة تُسجل كمراحل رفض (Pre-flight Simulation) وتُعرض في Rejections.tsx؛ لا عمود sim مخصص)`
+- [ ] عرض Transaction Size. `(PARTIAL — الحجم يُسجل في logs عند الإرسال — dispatch.rs:627,636؛ غير معروض في Dashboard)`
+- [ ] عرض CU Consumption. `(PARTIAL — cu_limit في تنبيهات Telegram + computeUnitsConsumed في logs — dispatch.rs:820-829؛ غير معروض في Dashboard)`
 - [x] عرض Jito Status. `(FIXED/TESTED: ExecutionRecord توسّع بحقول signature/slot/net_profit_sol اختيارية skip_serializing_if — landed يعرض tx signature وslot وprofit، dropped يعرض bundle_id؛ أعمدة جديدة في Executions.tsx؛ اختبار execution_extras_serialize_only_when_present)`
-- [ ] إضافة Structured Logs.
-- [ ] إضافة Correlation IDs.
-- [ ] إضافة Error Categories.
-- [ ] إضافة Daily Reports.
-- [ ] الاحتفاظ بالتقارير 30 يوماً.
-- [ ] منع ظهور الأسرار في الواجهة.
-- [ ] التحقق من تطابق Dashboard مع Runtime State.
+- [ ] إضافة Structured Logs. `(PARTIAL — tracing structured fields (attempt_id, route, slot) + file writer — main.rs:210-258؛ لا JSON format)`
+- [x] إضافة Correlation IDs. `(attempt_id يمر من dispatch → landing tracker → store → /api/executions + route_sig للتجميع — dispatch.rs:610-693)`
+- [x] إضافة Error Categories. `(RejectionRecord.stage/reason — control_service.rs:62-72 + مراحل مسماة: Pre-flight Simulation / Economic Invariant Gate / Risk & EV Gates)`
+- [ ] إضافة Daily Reports. `(PARTIAL — digest كل 5 دقائق + market snapshot digest — supervisor.rs:550,707-787؛ لا تقرير يومي مُجمّع)`
+- [ ] الاحتفاظ بالتقارير 30 يوماً. `(MISSING — لا سياسة retention/prune في arb-store)`
+- [x] منع ظهور الأسرار في الواجهة. `(web_api.rs:13 «No private keys or signing secrets are ever exposed» + auth login/logout + ws-ticket receive-only — web_api.rs:421-439)`
+- [x] التحقق من تطابق Dashboard مع Runtime State. `(StatusSnapshot هو الشكل الوحيد المستهلك من Dashboard وTelegram /status معاً — control_service.rs:83-85)`
 
 ## 19. Configuration وCode Quality وCI/CD
 
