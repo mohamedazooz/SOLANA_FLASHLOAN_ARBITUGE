@@ -109,6 +109,8 @@ pub struct Supervisor {
     /// Dedicated fallback snapshot store for RPC-refreshed Kamino reserve & WSOL mint
     /// accounts so live WS provider invariants in `AccountSnapshotStore` remain intact.
     kamino_fallback_store: arb_ingest::AccountSnapshotStore,
+    /// Provider capability registry verifying transport methods and prerequisites (G1, G2).
+    capability_registry: Arc<arb_ingest::ProviderCapabilityRegistry>,
     pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
     pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
     pub recent_rejected: Arc<parking_lot::Mutex<Vec<crate::telegram::RejectedTradeSummary>>>,
@@ -425,6 +427,15 @@ impl Supervisor {
             measured_cu: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             ram_templates: parking_lot::Mutex::new(std::collections::HashMap::new()),
             kamino_fallback_store: arb_ingest::AccountSnapshotStore::default(),
+            capability_registry: Arc::new({
+                let mut reg = arb_ingest::ProviderCapabilityRegistry::new();
+                reg.register(arb_ingest::ProviderCapabilities::standard_json_rpc_ws(
+                    "Helius",
+                ));
+                reg.register(arb_ingest::ProviderCapabilities::solami_blur());
+                reg.register(arb_ingest::ProviderCapabilities::solami_mirage());
+                reg
+            }),
             recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_rejected: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -439,6 +450,11 @@ impl Supervisor {
 
     pub fn ingest(&self) -> Arc<IngestClient> {
         Arc::clone(&self.ingest)
+    }
+
+    /// Access the provider capability registry to validate prerequisites (G1, G2).
+    pub fn capability_registry(&self) -> Arc<arb_ingest::ProviderCapabilityRegistry> {
+        Arc::clone(&self.capability_registry)
     }
 
     /// Shared heartbeat writer, so the main loop can record liveness and gates

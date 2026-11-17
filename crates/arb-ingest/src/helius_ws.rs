@@ -595,19 +595,28 @@ impl HeliusWsClient {
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
 
-                    // 1. Subscribe to real-time slot notifications
-                    let slot_sub = json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "slotSubscribe"
-                    });
-                    if let Err(e) = ws_stream.send(Message::Text(slot_sub.to_string())).await {
-                        warn!(
-                            "WebSocket [{endpoint_num}/{total_endpoints}] failed to send slotSubscribe: {e}"
-                        );
+                    // 1. Subscribe to real-time slot notifications (conditional on provider capability / config)
+                    let slot_sub_enabled = std::env::var("WS_SLOT_SUBSCRIBE")
+                        .map(|v| v != "0" && v.to_lowercase() != "false")
+                        .unwrap_or(true);
+                    if slot_sub_enabled {
+                        let slot_sub = json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "slotSubscribe"
+                        });
+                        if let Err(e) = ws_stream.send(Message::Text(slot_sub.to_string())).await {
+                            warn!(
+                                "WebSocket [{endpoint_num}/{total_endpoints}] failed to send slotSubscribe: {e}"
+                            );
+                        } else {
+                            debug!(
+                                "WebSocket [{endpoint_num}/{total_endpoints}] subscribed to slotSubscribe"
+                            );
+                        }
                     } else {
-                        debug!(
-                            "WebSocket [{endpoint_num}/{total_endpoints}] subscribed to slotSubscribe"
+                        info!(
+                            "WebSocket [{endpoint_num}/{total_endpoints}] slotSubscribe skipped per provider capability configuration"
                         );
                     }
 

@@ -1,11 +1,207 @@
 {
   "version": 2,
   "skills": {
+    "animation-reverse-engineering": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/animation-reverse-engineering/SKILL.md",
+      "computedHash": "04b496acdff314b43bd82454789805a9d3a39f62560058d59152e3d81a26b844"
+    },
+    "arcium": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/arcium/SKILL.md",
+      "computedHash": "f39bf7436849a2f59e3dc0db6e5ccf2d0dfda630700ce0462e6909aac3ca0230"
+    },
+    "birdeye": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/birdeye/SKILL.md",
+      "computedHash": "04f0216884d13ca29d4ebb06d4cb44faa8fd649b65cf4ae38f1a703fa9ba0dfb"
+    },
+    "carbium": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/carbium/SKILL.md",
+      "computedHash": "927f147b60e908d8ca6da123cc33cbf76196795c98ef70bdb93184fcf3f0cad6"
+    },
+    "coingecko": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/coingecko/SKILL.md",
+      "computedHash": "fb463b20d634bd2075b0e95b3bd54508493012b54da49de24c046c3b06f4dc22"
+    },
+    "ct-alpha": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/ct-alpha/SKILL.md",
+      "computedHash": "f728238b1ca720adc3526c1f81c8dbe8c711c52fba1a706532f38601b8e66351"
+    },
+    "debridge": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/debridge/SKILL.md",
+      "computedHash": "d704e5b55f28909f04ce36a4fde445bd34ac7d6787e60d2f56cba163b701545c"
+    },
+    "dflow": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/dflow/SKILL.md",
+      "computedHash": "9fbeab5f82da122ccd61ebd18e332e0e5dc0d4bf825472df28664075b9b0e30e"
+    },
+    "example-skill": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/example-skill/SKILL.md",
+      "computedHash": "61addfc1c13687e0e3a85ea626c4a1bcdfbd0d8a5af81096ad8c0efb0b8a77bc"
+    },
+    "glam": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/glam/SKILL.md",
+      "computedHash": "fb607ac463b930868c03c074c2cf6732852995537182e7138c109a26dfaac261"
+    },
+    "helius": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/helius/SKILL.md",
+      "computedHash": "be3e1a0f08b2eb0614c364603017f2e5da74f368adec5f35325e846d5519187a"
+    },
+    "helius-dflow": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/helius-dflow/SKILL.md",
+      "computedHash": "18e1cfd475459665d90e24159339f6e807a8d9ec76112bdd119f247a287776fc"
+    },
+    "helius-phantom": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/helius-phantom/SKILL.md",
+      "computedHash": "ff6c95c069449746e92d7494bd492c5234ab0925c5d14645c0ea51336161dda0"
+    },
+    "inco-svm": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/inco/SKILL.md",
+      "computedHash": "e3c0fa9d0f7cfdda80adbec5818739b95c04c1e5a6b9043f12c72c4fe7e184f9"
+    },
+    "integrating-jupiter": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/jupiter/SKILL.md",
+      "computedHash": "2d218530224968fb87d15ab75c6923feefa73a08b8809a58f7a5390191769a17"
+    },
+    "kamino": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/kamino/SKILL.md",
+      "computedHash": "bc4b787bb6e9e4a8054bcbf5989e9c20edce09996dbb67ef862ba9fd53ad3557"
+    },
+    "lavarage": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/lavarage/SKILL.md",
+      "computedHash": "2617adb95c157d29f6c32aba652a99c8b7240ffb2f1087c44b964c0bc8f6ff49"
+    },
+    "lifi": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/lifi/SKILL.md",
+      "computedHash": "2d7b4feaf2680388c9b899c30d1bc095182ac4e441678ff357568be7aec06635"
+    },
+    "light-protocol": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/light-protocol/SKILL.md",
+      "computedHash": "891d78f1ae50b7185aee8ba7b5820021e844d405fdd4df2354f0318be70a697d"
+    },
+    "lulo": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/lulo/SKILL.md",
+      "computedHash": "84c73002f77fc75da6ffa86af435d1c3a30446891e80e34d1ec6b9a18123ec43"
+    },
+    "magicblock": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/magicblock/SKILL.md",
+      "computedHash": "f68fe282dced3ab68e87259ab95da7f198dd9043f0654f9955dd233b91c36fc3"
+    },
+    "manifest": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/manifest/SKILL.md",
+      "computedHash": "8e39132dfda295b91aa4fea284835cab2d1f58921ecf5ee95c299b18b4be67cb"
+    },
+    "marginfi": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/marginfi/SKILL.md",
+      "computedHash": "c5d6b4c5d13d8b5fe21102bf4461b26c9dd9dca1561675c98028a1668540edd8"
+    },
+    "metaplex": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/metaplex/SKILL.md",
+      "computedHash": "07a8dec58ccd1f2381f2c39069923def647b89bef22091305f9a70ec0a3497c4"
+    },
+    "metengine-data-agent": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/metengine/SKILL.md",
+      "computedHash": "26c5fff5551278d6e67ca55077012e066a9415d0ca3166dd74509c50aa7dd8e5"
+    },
+    "meteora": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/meteora/SKILL.md",
+      "computedHash": "c8548524f45e25753ad63aa670e86a17506b68f5f0af06eb1e31da26d2286bfd"
+    },
     "migrate-to-oxylabs": {
       "source": "oxylabs/web-api-skills",
       "sourceType": "github",
       "skillPath": "skills/migrate-to-oxylabs/SKILL.md",
       "computedHash": "058f74001b89bb85239c629dc36bfe39a98761a5f4ea0ab339947c4ba35788f5"
+    },
+    "my-skill-name": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "template/SKILL.md",
+      "computedHash": "7bd7b156497d0fe1302e8ee9dcde0f5b21cd36815f3cd1b78a27641ef347dbd8"
+    },
+    "orca": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/orca/SKILL.md",
+      "computedHash": "fe313df35caa0c6dcb687e0452e1cf2f20f6a4e5bde417c981c28f0776ef8a6c"
     },
     "oxylabs-web-api": {
       "source": "oxylabs/web-api-skills",
@@ -18,6 +214,153 @@
       "sourceType": "github",
       "skillPath": "skills/oxylabs-web-research/SKILL.md",
       "computedHash": "cc46e80d6f0ac37f0a87ec48f25344c215d042cdf6d3d3bdd48bd496bef8f419"
+    },
+    "phantom-connect": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/phantom-connect/SKILL.md",
+      "computedHash": "d8a307d056455860fc2096e9c1a580b45f9798a4b0c20793836b8d562406acea"
+    },
+    "phantom-wallet-mcp": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/phantom-wallet-mcp/SKILL.md",
+      "computedHash": "b77d02e7c0b84b5a23404b6574e54e2c2230bcd944eae35085d36d8ca74900d1"
+    },
+    "phoenix": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/phoenix/SKILL.md",
+      "computedHash": "5bfc72e1ef11452abb0460eca0fb4c926700d737ec7b18979a4e713f1c55e843"
+    },
+    "pinocchio-development": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/pinocchio-development/SKILL.md",
+      "computedHash": "13fe11af3e8cd097ae948ea5fe6494a61663c1b10e77be00e06b738078856230"
+    },
+    "pumpfun": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/pumpfun/SKILL.md",
+      "computedHash": "e7d66c19a164caae810637521a90abdd8e14b35ac8807f94565555da14e22e10"
+    },
+    "pyth": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/pyth/SKILL.md",
+      "computedHash": "e5aef77c1c1321a80cc91ceed7243d7edfe142fdf9a5df58809e3c56733fd327"
+    },
+    "quicknode": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/quicknode/SKILL.md",
+      "computedHash": "0512e4f5ebb9d04fd75087aa031682d7020ff510a6a6423b200c05870dc10c25"
+    },
+    "ranger-finance": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/ranger-finance/SKILL.md",
+      "computedHash": "4cdcc6b6237ed42e0f77e4f5004b965702dbf38e6183224ddf44eeda6fb15894"
+    },
+    "raydium": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/raydium/SKILL.md",
+      "computedHash": "627883054090a14d143f45d29ae95cb2b8ee715d7d9137617ecbd4604a7e0a8a"
+    },
+    "sanctum": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/sanctum/SKILL.md",
+      "computedHash": "34698ff537461d88eab2a55542278165da5c62ee666b43f058b959bfff51d20e"
+    },
+    "sol-incinerator": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/sol-incinerator/SKILL.md",
+      "computedHash": "cc8fa53198b88f550e3f74eae518622e279a257397ec6212c37e7dbf0ec44a70"
+    },
+    "solana-agent-kit": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/solana-agent-kit/SKILL.md",
+      "computedHash": "be40861f6a1d79b85bcfe64bd7e05691cfcb2c29cb9a922e7e9944c4d806b51d"
+    },
+    "solana-kit": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/solana-kit/SKILL.md",
+      "computedHash": "671666aab54c096b4290d657e67c35e4cf853a70ca578fb7814073b424dcad21"
+    },
+    "solana-kit-migration": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/solana-kit-migration/SKILL.md",
+      "computedHash": "f4db184bc887a577fa53deb1f7e29938c014655a72c503625e26469b7a7d9f8d"
+    },
+    "squads": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/squads/SKILL.md",
+      "computedHash": "c6c9e3ac0c3851a396cb7fffca1827f405a906571309019e3f5a505375994f04"
+    },
+    "surfpool": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/surfpool/SKILL.md",
+      "computedHash": "e424c2214db970d4c589164e72270edc1bfa4d0281ada682a489b22c70310d7b"
+    },
+    "svm": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/svm/SKILL.md",
+      "computedHash": "263b6baa6a45758263cfd58960cd7874a387da2aadaad46f65595aa15cff3119"
+    },
+    "switchboard": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/switchboard/SKILL.md",
+      "computedHash": "2d2e18a7488de53ebe8f85aded9ad3295b2ea39cb0566d4579c5c228b364d648"
+    },
+    "vulnhunter": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/vulnhunter/SKILL.md",
+      "computedHash": "36f783f05870a63392641c78f5d1730886fc3737a62943cf89517c7eb94595cd"
+    },
+    "wallet-analysis": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/wallet-analysis/SKILL.md",
+      "computedHash": "9ffb8db3aac0d35c6880f21750a5a571feeb8879d2f5f1d67126ce629e602ecf"
+    },
+    "zz-code-recon": {
+      "source": "sendaifun/skills",
+      "commit": "06b36b8b420e705ffd57b29e463f01093959d8d4",
+      "sourceType": "github",
+      "skillPath": "skills/zz-code-recon/SKILL.md",
+      "computedHash": "c1945b623b8853dc109f2c9970913da55119521c0a556429b460a6e33710374c"
     }
   }
 }

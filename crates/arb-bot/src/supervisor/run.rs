@@ -35,45 +35,16 @@ impl Supervisor {
         arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &wsol).ok()
     }
 
-    /// Conservative flat network cost used by the 3-leg size search: base fee,
-    /// dynamic Jito tip floor (p50 from TipOracle or fallback to verified tip),
-    /// priority-fee estimate at the adaptive price for the 3-hop flash-funded route shape,
-    /// and rent for WSOL settlement ATA if uninitialized.
-    /// Rent-exempt minimum for one SPL token account (165 bytes).
-    const ATA_RENT_LAMPORTS: u64 = 2_039_280;
-
-    fn three_leg_network_cost_lamports(&self, tip_lamports: u64, payer: Pubkey) -> u64 {
-        let hop_protocols = [arb_types::DexProtocol::MeteoraDlmm; 3];
-        let base_cu = arb_tx::estimate_route_cu(true, &hop_protocols, 3);
-        let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
-        let cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
-        let priority_fee = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
-
-        // Dynamic tip floor: query live p50 from tip_oracle if fresh, capped by tip_lamports ceiling
-        let dynamic_tip = self
-            .jito_service
+    /// Conservative flat network cost used by the 3-leg size search:
+    /// dynamic Jito tip floor (p50 from TipOracle or fallback to verified tip).
+    /// Base transaction fees and priority fees are evaluated downstream at the
+    /// authoritative economic dispatch gate to eliminate duplicate fee deductions.
+    fn three_leg_network_cost_lamports(&self, tip_lamports: u64) -> u64 {
+        self.jito_service
             .oracle()
             .current(arb_land::now_ms())
             .map(|f| f.p50.0.min(tip_lamports))
-            .unwrap_or(tip_lamports);
-
-        // The WSOL settlement ATA is created when missing and never closed (it
-        // holds the profit), so its rent is a real execution cost. Intermediate
-        // meme ATAs are created AND closed inside the same transaction and
-        // reclaim their rent, so only the settlement account is charged.
-        let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap_or_default();
-        let spl = Pubkey::from_str(arb_tx::TOKEN_PROGRAM_ID).unwrap_or_default();
-        let settlement_ata =
-            arb_tx::get_associated_token_address_with_program_id(&payer, &wsol, &spl);
-        let ata_rent = if self.ingest.account_store().get(&settlement_ata).is_some() {
-            0
-        } else {
-            Self::ATA_RENT_LAMPORTS
-        };
-        BASE_FEE_LAMPORTS
-            .saturating_add(dynamic_tip)
-            .saturating_add(priority_fee)
-            .saturating_add(ata_rent)
+            .unwrap_or(tip_lamports)
     }
 
     /// Meteora 3-leg (WSOL -> A -> B -> WSOL) capture: run the chained-quote
@@ -242,8 +213,7 @@ impl Supervisor {
                     .max(self.config.strategy.min_net_profit_abs),
             ),
             flash_loan_fee_sf,
-            network_cost_lamports: self
-                .three_leg_network_cost_lamports(dynamic_tip_lamports, payer),
+            network_cost_lamports: self.three_leg_network_cost_lamports(dynamic_tip_lamports),
             kamino_available_liquidity,
             input_size: tuning.input_size.min(max_sizing).max(1),
             size_search_sizes,
@@ -367,7 +337,7 @@ impl Supervisor {
             RouteId(THREE_LEG_ROUTE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
 
         vec![ExecutionOpportunity {
-            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            hop_slippage_bps: tuning.slippage_bps,
             route_id,
             slot: current_slot,
             size_in: TokenAmount(size_in),
@@ -387,6 +357,13 @@ impl Supervisor {
 
     pub async fn run(&self) -> Result<()> {
         info!("Starting Supervisor — Mode: {}", self.mode());
+
+        // Validate execution prerequisites across registered provider capabilities (G1, G2).
+        if let Err(e) = self.capability_registry.validate_execution_prerequisites() {
+            error!("Provider capability validation failed (fail-closed): {e}");
+            return Err(anyhow::anyhow!("Provider capability check failed: {e}"));
+        }
+        info!("✅ Provider capability prerequisites validated successfully");
 
         // R12: reconcile dispatch intents left pending by a previous run
         // before dispatching anything new.
@@ -592,15 +569,41 @@ impl Supervisor {
             "Successfully seeded {seeded_cache_count} verified live pools into MarketStateCache (slot={reported_seed_slot})"
         );
 
-        // Pre-hydrate Kamino WSOL supply vault immediately at startup
+        // Pre-hydrate Kamino WSOL supply vault and payer WSOL settlement ATA immediately at startup
         let startup_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
         let startup_vault_str = startup_vault.to_string();
-        if let Ok(mut accounts) = self
-            .rpc_pool
-            .get_multiple_accounts(&[&startup_vault_str])
-            .await
-        {
-            if let Some(Some(acc)) = accounts.pop() {
+        let mut startup_accounts_to_fetch = vec![startup_vault_str];
+
+        let mut payer_settlement_ata_opt = None;
+        if let Some(ref kp) = self.keypair {
+            let payer_pk = kp.pubkey();
+            let wsol_mint = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+            let token_prog = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+            let settlement_ata = arb_tx::get_associated_token_address_with_program_id(
+                &payer_pk,
+                &wsol_mint,
+                &token_prog,
+            );
+            payer_settlement_ata_opt = Some(settlement_ata);
+            startup_accounts_to_fetch.push(settlement_ata.to_string());
+        }
+
+        let fetch_strs: Vec<&str> = startup_accounts_to_fetch
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        if let Ok(accounts) = self.rpc_pool.get_multiple_accounts(&fetch_strs).await {
+            use base64::prelude::*;
+            for (idx, acc_opt) in accounts.into_iter().enumerate() {
+                let Some(acc) = acc_opt else { continue };
+                let target_pk = if idx == 0 {
+                    startup_vault
+                } else if let Some(ata) = payer_settlement_ata_opt {
+                    ata
+                } else {
+                    continue;
+                };
+
                 if let (Some(owner_str), Some(data_arr)) = (
                     acc.get("owner").and_then(|o| o.as_str()),
                     acc.get("data").and_then(|d| d.as_array()),
@@ -609,10 +612,9 @@ impl Supervisor {
                         Pubkey::from_str(owner_str),
                         data_arr.first().and_then(|s| s.as_str()),
                     ) {
-                        use base64::prelude::*;
                         if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
                             let snap = arb_ingest::AccountSnapshot {
-                                pubkey: startup_vault,
+                                pubkey: target_pk,
                                 owner,
                                 slot: reported_seed_slot,
                                 write_version: 1,
@@ -623,9 +625,15 @@ impl Supervisor {
                                 data: Arc::new(bytes),
                             };
                             self.ingest.account_store().apply(snap);
-                            info!(
-                                "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={reported_seed_slot})"
-                            );
+                            if idx == 0 {
+                                info!(
+                                    "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={reported_seed_slot})"
+                                );
+                            } else {
+                                info!(
+                                    "💧 Payer WSOL settlement ATA successfully hydrated at startup ({target_pk}, slot={reported_seed_slot})"
+                                );
+                            }
                         }
                     }
                 }
