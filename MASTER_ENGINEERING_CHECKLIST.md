@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **417 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **78** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **419 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **76** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -553,10 +553,10 @@
 - [x] اختبار Out-of-Order Updates. `(نفس الاختبار: slot أقدم يُرفض بعد slot أحدث — dual_ingest.rs:300-312 + reconciliation_rejects_old_context_and_stale_generation — slot_integrity.rs:335)`
 - [x] اختبار Fork Invalidation. `(8 اختبارات slot_integrity: dead_slot_invalidates_known_descendants_only + tombstoning + recreated_bank — slot_integrity.rs:249-341)`
 - [x] اختبار Provider Disconnect. `(rejects_startup_disconnected_stale_and_dead_data — quote_readiness.rs:256 + failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + execution_guard_rejects_disconnect_generation_change_and_stale_quote — quote_readiness.rs:348)`
-- [ ] اختبار Quota Exhaustion. `(PARTIAL — token bucket + provider classification limits — rpc_pool.rs:1525,1545؛ لا يوجد اختبار لاستجابة 429/quota-exhausted من المزود)`
+- [x] اختبار Quota Exhaustion. `(TESTED — 3 اختبارات ضد خوادم RPC محلية: 429 quota-exhausted يفشل-مغلق مع cooldown 1800s ويوسم QuotaExhausted، 429 rate-limit يجري failover لنقطة سليمة في نفس الـ dispatch مع احترام Retry-After، خطأ -32005 داخل الجسم يُصنَّف rate-limit — arb-ingest/tests/quota_exhaustion_tests.rs)`
 - [x] اختبار Transaction Overflow. `(v1_size_ladder_tests.rs + V0Oversized/V1Oversized حدود 1232/4096 — compiler.rs:1450-1456 + adversarial_tests.rs — arb-tx)`
 - [x] اختبار Account Lock Conflicts. `(TESTED — inflight_bundle_limit_rejects_third_concurrent_send_and_recovers_on_landing + inflight_bundle_limit_honors_configured_maximum — arb-risk: الحارس التطبيقي ضد تعارض locks عبر حد max_inflight_bundles لكل slot)`
-- [ ] اختبار Compute Budget Exhaustion. `(PARTIAL — preflight simulation تفشل-مغلقة عند استنفاد CU — dispatch.rs:366-380؛ لا يوجد اختبار unit مخصص لسيناريو CU-exhaustion)`
+- [x] اختبار Compute Budget Exhaustion. `(TESTED — 5 اختبارات: measured CU > runtime max يُسقَّف عند 1,400,000 بالضبط، الحد الديناميكي = measured+15% دائماً إلا عند السقف، المُقدِّر لا ينتج ميزانية تنهك نفسها، تكلفة priority fee عند حد 1.4M تبقى داخل ميزانية الربح (سقف دقيق وليس فضفاضاً)، تعليمة CU limit تُشفِّر 1.4M حرفياً — arb-tx/tests/compute_budget_exhaustion_tests.rs + preflight fail-closed dispatch.rs:366-380)`
 - [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
 - [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
 - [x] اختبار Failed Min-Profit. `(gross_positive_net_negative_fails_closed + flash_fee_exceeding_gross_profit_fails_closed — three_leg_net_economics_tests.rs:69,83 + refuses_edge_below_hurdle — bidder.rs:481)`
