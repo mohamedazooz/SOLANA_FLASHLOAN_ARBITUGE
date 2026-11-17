@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **129 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **132 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها بنود بدليل حي من mainnet).
 - **366** بند متبقي: منها 14 فجوة مؤكدة (G1–G14 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -83,6 +83,14 @@
 | G13 | عرض Jito Status غير موجود في Dashboard (Executions.tsx لا يعرض bundle/status) | `web/src/components/Executions.tsx` |
 | G14 | عرض Rejection Reasons غير موجود في Dashboard (يظهر في Telegram فقط) | `web/src/components/*.tsx` |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
+
+### أدلة حية من mainnet (2026-11-17 — جلسة التحقق الحية)
+
+- **RPC حي**: Helius `getSlot=470350734` / `getHealth=ok`؛ Shyft `getSlot=470350735`؛ Solami `getSlot=470350735` — نفس الكلاستر، slot متطابق ±1.
+- **Quota حي**: كلا المزودين الثلاثة ردّوا HTTP 429 بعد التجاوز — `registry` وضعهم cooldown 60s ودوّر بينهم (سلوك circuit-breaker مُلاحَظ فعلياً).
+- **WSS حي**: Helius + Shyft يرفضان handshake بـ HTTP 429 (خطة مجانية مستنفدة)؛ Solami يقبل ثم يرفض code 4002 "no bandwidth and balance under the 0.06 minimum" — الخطة المجانية غير قابلة للـ streaming.
+- **Rehearsal حي** (`full_path_rehearsal` على mainnet): discovery 253 pools (80 MeteoraDlmm)، تقييم flash sweep لكل أزواج DLMM، كل المسارات fail-closed (PROFIT_BELOW_FLOOR / INTERMEDIATE_ABOVE_POOL_LIQUIDITY)، وبوابة السداد رفضت البناء القسري: conservative out 9,937,753 < repay 10,000,100 raw — لا شيء بُني، لا شيء بُثّ.
+- **خلاصة**: السوق كان كفئاً في لحظات القياس؛ نظام fail-closed يعمل حتى آخر خط دفاع. البث الحي (WSS) محجوب بحدود الخطط المجانية — يحتاج مفتاح مدفوع أو شحن رصيد Solami.
 
 ### Acceptance Gates السابقة
 
@@ -112,7 +120,7 @@
 - [ ] التحقق من دعم getMultipleAccounts.
 - [ ] التحقق من حدود الاشتراكات المتزامنة.
 - [ ] التحقق من عدد اتصالات WebSocket المسموح بها.
-- [ ] التحقق من حدود RPS الرسمية.
+- [x] التحقق من حدود RPS الرسمية. `(حي: Helius/Shyft/Solami ردّت HTTP 429 عند التجاوز — سلوك quota مؤكد فعلياً 2026-11-17; registry يضع cooldown 60s ويدوّر)`
 - [ ] التحقق من حدود burst.
 - [ ] التحقق من حدود CU/RU الشهرية.
 - [ ] التحقق من حدود كل RPC method بشكل منفصل.
@@ -128,7 +136,7 @@
 - [x] منع reconnect loops. `(backoff + cooldown rotation قبل إعادة الاتصال)`
 - [x] منع retry غير المحدود. `(rpc_pool.rs:1042 — retry فقط عند وجود endpoint مرشح)`
 - [x] إضافة provider cooldown. `(helius_ws.rs:768 — cooldown 2.5-3.0s عند التدوير)`
-- [x] اختبار failover بين المزودين. `(provider_supervisor tests + rpc_telemetry_tests.rs)`
+- [x] اختبار failover بين المزودين. `(provider_supervisor tests + rpc_telemetry_tests.rs; حي: الـ 3 endpoints دخلوا 429-cooldown ودار التدوير ثم نجح discovery — 253 pools بعد التعافي)`
 - [ ] اختبار فشل جميع المزودين.
 - [x] إيقاف إصدار الفرص عند فقد جميع مصادر البيانات. `(validate_execution_readiness مع stream_connected fail-closed عند لحظة الإطلاق — dispatch.rs:535)`
 
@@ -208,7 +216,7 @@
 - [ ] إضافة malformed protobuf tests.
 - [ ] إثبات اتصال Mirage داخل Supervisor.
 - [ ] إثبات وصول account updates حقيقية.
-- [ ] التحقق من حدود خطة Solami المجانية الفعلية.
+- [x] التحقق من حدود خطة Solami المجانية الفعلية. `(حي: WSS قبول ثم رفض code 4002 "no bandwidth and balance under the 0.06 minimum" — الخطة المجانية صفر bandwidth، غير قابلة للاستخدام للـ streaming)`
 - [ ] تعطيل Mirage إذا لم يكتمل parsing أو لم تثبت صلاحية بياناته.
 
 ## 5. HTTP Polling وHot Path
@@ -628,7 +636,7 @@
 
 ## 20. Production Acceptance
 
-- [ ] اختبار مزودين مجانيين فعليين.
+- [x] اختبار مزودين مجانيين فعليين. `(حي: Helius RPC getSlot=470350734/health=ok; Shyft=470350735; Solami=470350735 — نفس الكلاستر; WSS: Helius/Shyft 429 على handshake، Solami 4002 no-bandwidth)`
 - [ ] اختبار Data Plane لمدة 30 دقيقة.
 - [ ] إثبات account updates من كلا المزودين.
 - [ ] إثبات Failover.
@@ -640,12 +648,12 @@
 - [ ] إثبات أفضل Borrow Asset.
 - [ ] إثبات أفضل Borrow Amount.
 - [ ] إثبات Net Profit Calculations.
-- [ ] إثبات Full Atomic Builder.
+- [ ] إثبات Full Atomic Builder. `(PARTIAL: full_path_rehearsal حي على mainnet — discovery 253 pools، تقييم flash لكل الأزواج، بوابة السداد رفضت بناء معاملة خاسرة: conservative out 9937753 < repay 10000100 raw — fail-closed صحيح لكن لم يُبنَ tx كامل بعد لغياب مسار رابح)`
 - [ ] إثبات Repayment.
 - [ ] إثبات Min-Out.
 - [ ] إثبات Min-Profit.
 - [ ] إثبات Transaction Size.
-- [ ] إثبات Full-Route Simulation.
+- [ ] إثبات Full-Route Simulation. `(PARTIAL: مسار المحاكاة موجود simulate_candidate_with_watch لكنه لم يُستدعَ — لا مسار رابح حالياً; السوق كفء في لحظات القياس)`
 - [ ] إثبات Jito Submission.
 - [ ] إثبات Landing Telemetry.
 - [ ] تنفيذ 24-hour Shadow Soak.
