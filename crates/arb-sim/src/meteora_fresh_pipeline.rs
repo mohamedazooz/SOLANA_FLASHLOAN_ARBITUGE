@@ -89,8 +89,8 @@ impl Default for MeteoraFreshPipelineConfig {
             base_backoff_ms: 30,
             max_backoff_ms: 150,
             slippage_bps: 100, // 1% tolerance
-            cu_limit: 400_000,
-            priority_fee_micro_lamports: 10_000,
+            cu_limit: arb_constants::APPLICATION_SAFETY_CU_LIMIT,
+            priority_fee_micro_lamports: arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS,
             min_input_amount: 100_000,    // 0.10 USDC
             max_input_amount: 10_000_000, // 10.00 USDC
             sol_usd_price: Some(180),

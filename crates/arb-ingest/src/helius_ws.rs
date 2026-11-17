@@ -55,6 +55,17 @@ fn max_ws_account_subs() -> usize {
         .min(1_024)
 }
 
+fn slot_subscribe_enabled_from_env_value(v: Option<String>) -> bool {
+    !matches!(
+        v.as_deref().map(str::trim),
+        Some("0") | Some("false") | Some("off") | Some("no")
+    )
+}
+
+fn slot_subscribe_enabled_from_env() -> bool {
+    slot_subscribe_enabled_from_env_value(std::env::var("WS_SLOT_SUBSCRIBE").ok())
+}
+
 pub struct HeliusWsClient {
     pub ws_urls: Vec<String>,
     pub current_idx: Arc<AtomicUsize>,
@@ -68,6 +79,13 @@ pub struct HeliusWsClient {
     sub_to_account: parking_lot::RwLock<HashMap<u64, Pubkey>>,
     ws_backoffs: parking_lot::RwLock<HashMap<usize, Instant>>,
     account_sub_limited: AtomicBool,
+    /// Whether to send `slotSubscribe` on connect. Gated by the
+    /// `WS_SLOT_SUBSCRIBE` env flag and by live capability: a provider that
+    /// rejects the slot subscription keeps streaming accounts, and slot
+    /// freshness falls back to `accountNotification` context slots. Slot
+    /// subscriptions share the same concurrent-subscription budget as account
+    /// subscriptions, so on a 1-sub provider the slot sub must not consume it.
+    slot_subscribe_enabled: AtomicBool,
     /// Current endpoint cannot stream accounts at all (capability failure).
     /// Reset on every successful connect; checked by the stream loop to break
     /// and fail over instead of sitting on a blind connection.
@@ -86,6 +104,12 @@ pub struct HeliusWsClient {
 
 impl HeliusWsClient {
     pub fn new(ws_urls: Vec<String>) -> Self {
+        Self::new_with_options(ws_urls, slot_subscribe_enabled_from_env())
+    }
+
+    /// Deterministic constructor for capability-gating tests and callers that
+    /// already know the provider's slot-subscription capability.
+    pub fn new_with_options(ws_urls: Vec<String>, slot_subscribe_enabled: bool) -> Self {
         Self {
             ws_urls,
             current_idx: Arc::new(AtomicUsize::new(0)),
@@ -99,6 +123,7 @@ impl HeliusWsClient {
             sub_to_account: parking_lot::RwLock::new(HashMap::new()),
             ws_backoffs: parking_lot::RwLock::new(HashMap::new()),
             account_sub_limited: AtomicBool::new(false),
+            slot_subscribe_enabled: AtomicBool::new(slot_subscribe_enabled),
             endpoint_unsupported: AtomicBool::new(false),
             probe_confirmed: AtomicBool::new(false),
             slot_notify: Arc::new(Notify::new()),
@@ -595,19 +620,28 @@ impl HeliusWsClient {
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
 
-                    // 1. Subscribe to real-time slot notifications
-                    let slot_sub = json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "slotSubscribe"
-                    });
-                    if let Err(e) = ws_stream.send(Message::Text(slot_sub.to_string())).await {
-                        warn!(
-                            "WebSocket [{endpoint_num}/{total_endpoints}] failed to send slotSubscribe: {e}"
-                        );
+                    // 1. Subscribe to real-time slot notifications (capability-gated:
+                    //    skipped when WS_SLOT_SUBSCRIBE=0 or when this provider
+                    //    rejected the slot subscription before). Slot freshness
+                    //    still advances via accountNotification context slots.
+                    if self.slot_subscribe_enabled.load(Ordering::Acquire) {
+                        let slot_sub = json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "slotSubscribe"
+                        });
+                        if let Err(e) = ws_stream.send(Message::Text(slot_sub.to_string())).await {
+                            warn!(
+                                "WebSocket [{endpoint_num}/{total_endpoints}] failed to send slotSubscribe: {e}"
+                            );
+                        } else {
+                            debug!(
+                                "WebSocket [{endpoint_num}/{total_endpoints}] subscribed to slotSubscribe"
+                            );
+                        }
                     } else {
                         debug!(
-                            "WebSocket [{endpoint_num}/{total_endpoints}] subscribed to slotSubscribe"
+                            "WebSocket [{endpoint_num}/{total_endpoints}] slotSubscribe disabled (config/capability); slot freshness via account context slots"
                         );
                     }
 
@@ -1262,6 +1296,18 @@ impl HeliusWsClient {
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown JSON-RPC error");
             let lower = err_msg.to_ascii_lowercase();
+            // Slot-subscription rejection (request id 1): this endpoint cannot
+            // (or will not) stream slot notifications, but it may still deliver
+            // account updates. Disable the slot sub for this client instead of
+            // failing the endpoint — slot freshness falls back to the context
+            // slot carried by every accountNotification.
+            if req_id == Some(1) {
+                self.slot_subscribe_enabled.store(false, Ordering::Release);
+                warn!(
+                    "WS: slotSubscribe rejected on this endpoint (slot subs disabled, accounts unaffected): {err_msg}"
+                );
+                return Ok(false);
+            }
             // Capability failure: the endpoint does not implement the method at
             // all (e.g. Alchemy WS: -32601 "Method 'accountSubscribe' not found").
             // Retrying on this endpoint is pointless — it can NEVER deliver
@@ -1503,6 +1549,66 @@ mod tests {
             Ok(false)
         );
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
+    }
+
+    /// G8: a provider that rejects `slotSubscribe` (request id 1) may still
+    /// deliver account updates. The rejection must disable the slot sub for
+    /// this client -- NOT fail the endpoint -- because slot freshness falls
+    /// back to the context slot carried by every accountNotification.
+    #[test]
+    fn slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint() {
+        let client =
+            HeliusWsClient::new_with_options(vec!["wss://ws1.example.com".to_string()], true);
+        let yellowstone = IngestClient::new();
+        assert!(client.slot_subscribe_enabled.load(Ordering::Acquire));
+
+        let slot_err = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32601, "message": "Method 'slotSubscribe' not found" }
+        });
+        assert_eq!(client.handle_message(&slot_err, &yellowstone), Ok(false));
+        assert!(!client.slot_subscribe_enabled.load(Ordering::Acquire));
+        // The endpoint still streams accounts: it must NOT be torn down.
+        assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
+
+        // An account-sub capability failure on the same client still fails the
+        // endpoint: the two capability gates are orthogonal.
+        let acc_err = json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "error": { "code": -32601, "message": "Method 'accountSubscribe' not found" }
+        });
+        assert_eq!(client.handle_message(&acc_err, &yellowstone), Ok(false));
+        assert!(client.endpoint_unsupported.load(Ordering::Acquire));
+    }
+
+    /// G8: the slot subscription is opt-out via WS_SLOT_SUBSCRIBE and the
+    /// deterministic constructor; strict value parsing keeps typos fail-open
+    /// only for unrecognized values while explicit off values are honored.
+    #[test]
+    fn slot_subscribe_env_gate_parses_strict_values() {
+        assert!(slot_subscribe_enabled_from_env_value(None));
+        assert!(slot_subscribe_enabled_from_env_value(Some("1".to_string())));
+        assert!(slot_subscribe_enabled_from_env_value(Some(
+            " true ".to_string()
+        )));
+        assert!(!slot_subscribe_enabled_from_env_value(Some(
+            "0".to_string()
+        )));
+        assert!(!slot_subscribe_enabled_from_env_value(Some(
+            "false".to_string()
+        )));
+        assert!(!slot_subscribe_enabled_from_env_value(Some(
+            " off ".to_string()
+        )));
+        assert!(!slot_subscribe_enabled_from_env_value(Some(
+            "no".to_string()
+        )));
+
+        let client =
+            HeliusWsClient::new_with_options(vec!["wss://ws1.example.com".to_string()], false);
+        assert!(!client.slot_subscribe_enabled.load(Ordering::Acquire));
     }
 
     #[tokio::test]

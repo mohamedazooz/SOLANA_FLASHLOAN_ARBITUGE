@@ -26,6 +26,9 @@ export default function Executions() {
             <th>Time (UTC)</th>
             <th>Outcome</th>
             <th>Route</th>
+            <th>Signature / Bundle</th>
+            <th>Slot</th>
+            <th>Net Profit (SOL)</th>
             <th>Detail</th>
           </tr>
         </thead>
@@ -47,12 +50,19 @@ export default function Executions() {
                 </span>
               </td>
               <td className="mono route">{r.route}</td>
+              <td className="mono" title={r.signature ?? undefined}>
+                {r.signature ? `${r.signature.slice(0, 8)}…${r.signature.slice(-6)}` : "—"}
+              </td>
+              <td className="mono">{r.slot ?? "—"}</td>
+              <td className="mono">
+                {r.net_profit_sol != null ? r.net_profit_sol.toFixed(6) : "—"}
+              </td>
               <td>{r.detail}</td>
             </tr>
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={4} className="muted">
+              <td colSpan={7} className="muted">
                 No executions recorded yet (shadow mode records would appear here).
               </td>
             </tr>

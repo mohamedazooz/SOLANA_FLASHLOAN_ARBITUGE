@@ -70,6 +70,25 @@ jobs:
           command: check advisories bans sources licenses
           manifest-path: webhook-service/Cargo.toml
 
+  secrets:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks (full history, policy .gitleaks.toml)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+        # v2 exits non-zero on any finding; the repo policy file keeps all
+        # default rules active and allowlists only verified false positives.
+
   web:
     name: Web app build (React + Vite)
     runs-on: ubuntu-latest

@@ -6,6 +6,7 @@ import Overview from "./components/Overview";
 import Opportunities from "./components/Opportunities";
 import Pools from "./components/Pools";
 import Executions from "./components/Executions";
+import Rejections from "./components/Rejections";
 import StrategyConfig from "./components/StrategyConfig";
 import Providers from "./components/Providers";
 import RouteMonitor from "./components/RouteMonitor";
@@ -19,6 +20,7 @@ const SECTIONS: { id: string; label: string; el: (status: StatusSnapshot | null,
   { id: "opportunities", label: "B · Live Opportunities", el: () => <Opportunities /> },
   { id: "pools", label: "C · Pools & Liquidity", el: () => <Pools /> },
   { id: "executions", label: "D · Execution Monitor", el: () => <Executions /> },
+  { id: "rejections", label: "D2 · Rejections", el: () => <Rejections /> },
   { id: "strategy", label: "E · Strategy Config", el: (_s, reload) => <StrategyConfig onSaved={reload} /> },
   { id: "providers", label: "F · Providers", el: () => <Providers /> },
   { id: "routes", label: "J · Route Monitor", el: () => <RouteMonitor /> },

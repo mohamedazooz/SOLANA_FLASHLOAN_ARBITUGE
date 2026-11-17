@@ -365,15 +365,15 @@ impl Default for DlmmFlashArbConfig {
             kamino_available_liquidity: 1_000_000_000,
             kamino_flash_fee_sf: 11_529_215_046_068,
             min_profit_raw: 0,
-            hop_slippage_bps: 5,
-            cu_limit: 400_000,
+            hop_slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_limit: arb_constants::APPLICATION_SAFETY_CU_LIMIT,
             max_bin_arrays_per_hop: 4,
             max_tx_bytes: arb_constants::SOLANA_PACKET_MTU_LIMIT,
             coarse_samples: 24,
             refine_steps: 10,
             network_cost_lamports: 9_000,
             priority_fee_lamports: 4_000,
-            priority_fee_micro_lamports: 10_000,
+            priority_fee_micro_lamports: arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS,
             payer: Pubkey::default(),
             kamino: KaminoFlashParams::default(),
         }
@@ -395,6 +395,19 @@ impl DlmmFlashArbConfig {
             .saturating_mul(scale)
             .saturating_add(lamport_scale.saturating_sub(1));
         u64::try_from(numerator / lamport_scale).unwrap_or(u64::MAX)
+    }
+
+    /// Fail-closed guard: the flash mint must agree with the Kamino reserve
+    /// the borrow instructions actually draw from. A non-WSOL flash mint with
+    /// the WSOL reserve (the default params) would borrow the wrong asset and
+    /// mix units across the whole evaluation, so it must never be quoted.
+    pub fn flash_mint_matches_kamino_reserve(&self) -> bool {
+        let wsol_mint = Pubkey::from_str(arb_constants::WSOL_MINT).expect("valid WSOL mint");
+        let wsol_reserve =
+            Pubkey::from_str(arb_constants::KAMINO_WSOL_RESERVE).expect("valid WSOL reserve");
+        let flash_is_wsol = self.flash_mint == MintId(wsol_mint);
+        let reserve_is_wsol = self.kamino.reserve == wsol_reserve;
+        flash_is_wsol == reserve_is_wsol
     }
 
     /// Total non-pool cost of one execution, in flash-mint raw units.
@@ -423,6 +436,7 @@ pub enum FlashArbRejection {
     ProfitBelowFloor { net: i64, floor: u64 },
     PoolNotAllowlisted { pool: Pubkey },
     MismatchedMints,
+    FlashMintReserveMismatch,
 }
 
 impl FlashArbRejection {
@@ -443,6 +457,7 @@ impl FlashArbRejection {
             Self::ProfitBelowFloor { .. } => "PROFIT_BELOW_FLOOR",
             Self::PoolNotAllowlisted { .. } => "POOL_NOT_ALLOWLISTED",
             Self::MismatchedMints => "MISMATCHED_MINTS",
+            Self::FlashMintReserveMismatch => "FLASH_MINT_RESERVE_MISMATCH",
         }
     }
 }
@@ -560,6 +575,12 @@ impl DlmmFlashArbEvaluator<'_> {
         }
         if route.pool_a.pool_id == route.pool_b.pool_id {
             return DlmmFlashArbEvaluation::reject(borrow, FlashArbRejection::MismatchedMints);
+        }
+        if !cfg.flash_mint_matches_kamino_reserve() {
+            return DlmmFlashArbEvaluation::reject(
+                borrow,
+                FlashArbRejection::FlashMintReserveMismatch,
+            );
         }
 
         let flash_fee = arb_tx::kamino::calculate_kamino_flash_fee(borrow, cfg.kamino_flash_fee_sf);
@@ -1108,6 +1129,35 @@ fn other_mint(pool: &DlmmFlashArbPool, mint: MintId) -> Option<MintId> {
     }
 }
 
+/// Resolve the flash-borrow asset from environment overrides.
+///
+/// `FLASH_BORROW_MINT` (base58 pubkey) with optional
+/// `FLASH_BORROW_MINT_DECIMALS` (default 9) selects a non-WSOL borrow asset
+/// so rehearsal and runtime configs are not silently pinned to WSOL. Returns
+/// `Ok(None)` when unset. The Kamino reserve must be overridden separately;
+/// `evaluate` fails closed with `FlashMintReserveMismatch` when the mint and
+/// the reserve disagree.
+pub fn flash_borrow_mint_from_env_value(
+    mint: Option<&str>,
+    decimals: Option<&str>,
+) -> Result<Option<(MintId, u8)>, String> {
+    let Some(mint) = mint.map(str::trim).filter(|m| !m.is_empty()) else {
+        if decimals.is_some() {
+            return Err("FLASH_BORROW_MINT_DECIMALS set without FLASH_BORROW_MINT".into());
+        }
+        return Ok(None);
+    };
+    let parsed =
+        Pubkey::from_str(mint).map_err(|e| format!("FLASH_BORROW_MINT invalid pubkey: {e}"))?;
+    let decimals = match decimals.map(str::trim) {
+        None | Some("") => 9u8,
+        Some(d) => d
+            .parse::<u8>()
+            .map_err(|e| format!("FLASH_BORROW_MINT_DECIMALS invalid: {e}"))?,
+    };
+    Ok(Some((MintId(parsed), decimals)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1117,6 +1167,92 @@ mod tests {
     }
     fn pool_y() -> MintId {
         MintId(Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap())
+    }
+
+    #[test]
+    fn defaults_match_canonical_constants() {
+        let cfg = DlmmFlashArbConfig::default();
+        assert_eq!(
+            cfg.hop_slippage_bps,
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+        );
+        assert_eq!(
+            cfg.cu_limit,
+            arb_constants::APPLICATION_SAFETY_CU_LIMIT,
+            "engine default must not exceed the encode-time safety clamp"
+        );
+        assert_eq!(
+            cfg.priority_fee_micro_lamports,
+            arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS
+        );
+    }
+
+    #[test]
+    fn wsol_default_consistency_guard_passes() {
+        let cfg = DlmmFlashArbConfig::default();
+        assert!(cfg.flash_mint_matches_kamino_reserve());
+    }
+
+    #[test]
+    fn non_wsol_flash_mint_with_wsol_reserve_is_rejected() {
+        let usdc = Pubkey::from_str(arb_constants::USDC_MINT).expect("valid USDC mint");
+        let pool_a = dlmm_pool(1, vec![(1, 1_000_000u128, 1_000_000u128)]);
+        let pool_b = dlmm_pool(1, vec![(1, 1_000_000u128, 1_000_000u128)]);
+        let cfg = DlmmFlashArbConfig {
+            flash_mint: MintId(usdc),
+            flash_mint_decimals: 6,
+            allowlist: DlmmPoolAllowlist::new(vec![pool_a.pool_id, pool_b.pool_id]),
+            ..Default::default()
+        };
+        assert!(!cfg.flash_mint_matches_kamino_reserve());
+
+        let route = DlmmFlashArbRoute {
+            pool_a,
+            pool_b,
+            flash_mint: MintId(usdc),
+            mid_mint: MintId(Pubkey::new_unique()),
+        };
+        let evaluator = DlmmFlashArbEvaluator { config: &cfg };
+        let eval = evaluator.evaluate(&route, cfg.min_borrow);
+        assert_eq!(
+            eval.rejection,
+            Some(FlashArbRejection::FlashMintReserveMismatch)
+        );
+        assert!(!eval.feasible);
+    }
+
+    #[test]
+    fn flash_borrow_mint_env_parsing() {
+        assert_eq!(flash_borrow_mint_from_env_value(None, None).unwrap(), None);
+        assert_eq!(
+            flash_borrow_mint_from_env_value(Some(""), None).unwrap(),
+            None
+        );
+        assert!(flash_borrow_mint_from_env_value(Some(" "), Some("6")).is_err());
+
+        let (mint, dec) =
+            flash_borrow_mint_from_env_value(Some(arb_constants::USDC_MINT), Some("6"))
+                .unwrap()
+                .expect("some");
+        assert_eq!(
+            mint,
+            MintId(Pubkey::from_str(arb_constants::USDC_MINT).unwrap())
+        );
+        assert_eq!(dec, 6);
+
+        let (mint, dec) = flash_borrow_mint_from_env_value(Some(arb_constants::WSOL_MINT), None)
+            .unwrap()
+            .expect("some");
+        assert_eq!(
+            mint,
+            MintId(Pubkey::from_str(arb_constants::WSOL_MINT).unwrap())
+        );
+        assert_eq!(dec, 9, "decimals default to 9");
+
+        assert!(flash_borrow_mint_from_env_value(Some("not-a-pubkey"), None).is_err());
+        assert!(
+            flash_borrow_mint_from_env_value(Some(arb_constants::WSOL_MINT), Some("x")).is_err()
+        );
     }
 
     #[test]
