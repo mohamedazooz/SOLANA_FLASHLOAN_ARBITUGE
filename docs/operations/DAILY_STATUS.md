@@ -4,10 +4,10 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-14 commit (this push) — refactor(ingest): split registry.rs into fetcher/decoders/hydration — 651 (2/7) — 451/495
+* **Commit:** batch-15 commit (this push) — feat(runtime-guards): CPI stack depth + loaded-accounts-data guards — 528/529 — 453/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1199 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
 
 ## In progress right now (not yet committed)
 
@@ -136,6 +136,15 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 | 651 — arb-ingest/registry.rs split (2861 → 4 files) | `fetcher.rs` (300): `PacedAccountFetcher` + shared `pub(crate) static CONSECUTIVE_RPC_FAILURES` (moved out of decoders where it sat unused). `decoders.rs` (1532): all pool/vault/fee/state decoders, PDA derivation, fetch helpers + both test modules. `registry.rs` (203): `RegisteredPool` + `MultiDexRegistry` (registration/mainnet_default) + `pub use crate::{decoders::*, fetcher::PacedAccountFetcher};` re-exports. `hydration.rs` (861): `batch_fetch_accounts` + `fetch_live_pool_states` + `dlmm_mint_decimals` in a second `impl MultiDexRegistry` block; registry struct fields widened to `pub(crate)`. Zero downstream path churn (lib.rs re-export list unchanged). Full gate: fmt, clippy `-D warnings` clean, workspace tests **1195/0**. **651 stays `[ ]` PARTIAL — 5 files remain** | `crates/arb-ingest/src/{registry,fetcher,decoders,hydration}.rs` |
 
 **Checklist after batch 14: 451 / 495 — 44 remaining.**
+
+### Batch 15 — checklist 528 + 529 (runtime stack/data guards) (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 528 Runtime Stack Requirements | External research: Agave `execution_budget.rs` (anza-xyz/agave master, fetched raw) gives authoritative `MAX_INSTRUCTION_STACK_DEPTH=5` (SIMD-0268: 9) and `MAX_COMPUTE_UNIT_LIMIT=1_400_000` (matches current CU config). Added `arb_constants::{MAX_INSTRUCTION_STACK_DEPTH, MAX_INSTRUCTION_STACK_DEPTH_SIMD_0268}` with source+date; executor CPI chain (payer→arb-executor→DEX→SPL token = 4 frames) enforced by compile-time `const assert!` + `validate_executor_cpi_stack_depth()` wired as Invariant 0 into `assemble_flash_funded_three_pool_cpi_instructions`; new error variant `FlashArb3LegError::CpiStackDepthExceeded`. Tests: `executor_stack_depth_budget_is_satisfied` | `arb-constants/src/lib.rs`, `arb-tx/src/flash/arb_executor.rs`, `dlmm_3leg_flash_arb.rs` |
+| 529 Account Data Limits | Same Agave source: `MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES=64MiB`; added constant. New `apply_runtime_limit_guards` in fork_sim wired into the sim pipeline before dispatch: fail-closed (success=false + explicit error) when `loadedAccountsDataSize > 64MiB`, and when size==0 && inner==0 with non-empty logs (unreproducible provenance); never rescues an already-failing sim. 3 tests added. Stale evidence path `opportunity.rs:1337` corrected to fork_sim.rs | `arb-constants/src/lib.rs`, `arb-sim/src/fork_sim.rs` |
+
+**Checklist after batch 15: 453 / 495 — 42 remaining.**
 
 ### Checklist ledger
 

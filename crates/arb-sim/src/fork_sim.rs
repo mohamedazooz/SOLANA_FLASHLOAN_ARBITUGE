@@ -472,6 +472,8 @@ impl ForkSimulator {
             ));
         }
 
+        apply_runtime_limit_guards(&mut result);
+
         debug!(
             slot = ?result.context_slot,
             success = result.success,
@@ -485,6 +487,41 @@ impl ForkSimulator {
         }
 
         Ok(result)
+    }
+}
+
+/// Belt-and-braces pre-dispatch guards over Agave runtime budget limits that a
+/// simulation can already observe. Fail-closed: any violation turns the result
+/// into an explicit rejection so a prometheus-successful simulation can never
+/// reach dispatch with budget overflow evidence attached.
+/// Source: anza-xyz/agave `program-runtime/src/execution_budget.rs`
+/// (`MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES` = 64 MiB; CPI-stack-depth constexpr
+/// guard lives in `arb_tx::flash::arb_executor`), verified 2026-11-17.
+pub fn apply_runtime_limit_guards(result: &mut ForkSimResult) {
+    if result.success
+        && let Some(size) = result.loaded_accounts_data_size
+        && size > arb_constants::MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
+    {
+        result.success = false;
+        result.error = Some(format!(
+            "loaded accounts data size {size} exceeds runtime limit {} (fail closed)",
+            arb_constants::MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES
+        ));
+    }
+    if result.success
+        && let Some(size) = result.loaded_accounts_data_size
+        && size == 0
+        && result.inner_instruction_count == 0
+        && !result.logs.is_empty()
+    {
+        result.success = false;
+        result.error = Some(
+            "simulation reported zero loaded-account bytes and zero inner instructions              despite non-empty logs (fail closed: unreproducible provenance)"
+                .to_string(),
+        );
+    }
+    if !result.success {
+        warn!(error = ?result.error, "route simulation rejected");
     }
 }
 
@@ -763,6 +800,68 @@ mod tests {
             .block_on(sim.simulate_route(&[], &[], 0))
             .expect_err("empty payload must be rejected");
         assert!(err.to_string().contains("empty transaction"));
+    }
+
+    fn sim_result(
+        success: bool,
+        loaded_accounts_data_size: Option<u64>,
+        inner_instruction_count: usize,
+        logs: Vec<String>,
+    ) -> ForkSimResult {
+        ForkSimResult {
+            success,
+            context_slot: Some(1),
+            replacement_blockhash: None,
+            error: None,
+            units_consumed: 0,
+            loaded_accounts_data_size,
+            logs,
+            inner_instruction_count,
+            pre_balances: Vec::new(),
+            post_balances: Vec::new(),
+            fee_payer_lamport_delta: 0,
+            pre_token_balances: Vec::new(),
+            post_token_balances: Vec::new(),
+            realized_net_lamports: None,
+            expected_net_lamports: 0,
+            accounts: Vec::new(),
+            return_data: None,
+        }
+    }
+
+    #[test]
+    fn runtime_guard_fails_closed_on_account_data_limit_overflow() {
+        let mut r = sim_result(
+            true,
+            Some(arb_constants::MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES + 1),
+            3,
+            vec!["log".into()],
+        );
+        apply_runtime_limit_guards(&mut r);
+        assert!(!r.success);
+        assert!(r.error.as_deref().unwrap().contains("fail closed"));
+    }
+
+    #[test]
+    fn runtime_guard_keeps_normal_results_untouched() {
+        let mut r = sim_result(true, Some(1_000), 3, vec!["log".into()]);
+        apply_runtime_limit_guards(&mut r);
+        assert!(r.success);
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn runtime_guard_never_rescues_an_already_failing_simulation() {
+        let mut r = sim_result(
+            false,
+            Some(arb_constants::MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES + 1),
+            0,
+            Vec::new(),
+        );
+        r.error = Some("original failure".to_string());
+        apply_runtime_limit_guards(&mut r);
+        assert!(!r.success);
+        assert_eq!(r.error.as_deref(), Some("original failure"));
     }
 
     #[test]

@@ -70,6 +70,8 @@ pub enum FlashArb3LegError {
     AltCompilation(String),
     #[error("params.payer {} does not match the signing key {}", payer, signer)]
     PayerSignerMismatch { payer: String, signer: String },
+    #[error("executor CPI chain depth {depth} exceeds the Agave runtime limit {limit}")]
+    CpiStackDepthExceeded { depth: usize, limit: usize },
 }
 
 /// One Meteora DLMM swap leg of the 3-leg flash-funded route.

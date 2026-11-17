@@ -512,6 +512,23 @@ pub const DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS: u64 = 1_000;
 /// Default maximum priority fee share cap under peak competition (2,000 bps = 20%).
 pub const DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
 
+/// Agave runtime maximum instruction invocation stack depth (`MAX_INSTRUCTION_STACK_DEPTH`):
+/// the deepest chain of nested CPI frames a transaction may build. The executor-CPI
+/// flash layout (arb-executor -> DEX program -> token program) must stay inside this
+/// budget; enforced by `arb_tx::flash::arb_executor::validate_executor_cpi_stack_depth`.
+/// Source: anza-xyz/agave `program-runtime/src/execution_budget.rs` (verified 2026-11-17).
+pub const MAX_INSTRUCTION_STACK_DEPTH: usize = 5;
+/// SIMD-0268 raises the runtime stack depth to 9 when the feature is active on the
+/// cluster. Unknown until the fork advertises it; the conservative default above applies.
+pub const MAX_INSTRUCTION_STACK_DEPTH_SIMD_0268: usize = 9;
+/// Agave default per-transaction loaded-accounts data size limit, 64 MiB
+/// (`MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES`), unless a
+/// `set_loaded_accounts_data_size_limit` compute-budget instruction lowers it.
+/// Enforced fail-closed by the simulation guard
+/// `arb_sim::fork_sim::apply_runtime_limit_guards`.
+/// Source: anza-xyz/agave `program-runtime/src/execution_budget.rs` (verified 2026-11-17).
+pub const MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Freshness tolerance (slots) for accepting a Kamino reserve/mint snapshot read
 /// from either the live stream store or the fallback store during flash-liquidity
 /// evaluation (`supervisor/execution.rs`). ~1000 slots covers normal stream jitter
