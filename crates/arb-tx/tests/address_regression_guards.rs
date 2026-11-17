@@ -244,8 +244,12 @@ fn strip_test_modules(src: &str) -> String {
             continue;
         }
         // Only strip when the marker is followed by a `mod` item with a body.
-        let Some(rest) = src.get(search_from..) else { continue };
-        let Some(mod_at) = rest.find("mod ") else { continue };
+        let Some(rest) = src.get(search_from..) else {
+            continue;
+        };
+        let Some(mod_at) = rest.find("mod ") else {
+            continue;
+        };
         // Reject anything that is not whitespace between the attribute and `mod`
         // (e.g. a doc comment or a second attribute): those are not test modules.
         if !rest[..mod_at].trim().is_empty() {

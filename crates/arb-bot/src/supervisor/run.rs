@@ -370,9 +370,9 @@ impl Supervisor {
         // repayment guarantee was checked against — never the optimistic quote.
         let hop_inputs = vec![
             size_in,
-            result.legs[0].amount_in,           // CONSERVATIVE: in2 = floor(out1 * (1-s))
-            result.legs[1].amount_in,           // CONSERVATIVE: in3 = floor(out2 * (1-s))
-            result.legs[2].amount_in,           // CONSERVATIVE: in4 = floor(out3 * (1-s))
+            result.legs[0].amount_in, // CONSERVATIVE: in2 = floor(out1 * (1-s))
+            result.legs[1].amount_in, // CONSERVATIVE: in3 = floor(out2 * (1-s))
+            result.legs[2].amount_in, // CONSERVATIVE: in4 = floor(out3 * (1-s))
         ];
         debug_assert_eq!(
             hop_inputs.len(),
@@ -384,14 +384,20 @@ impl Supervisor {
         // route whose on-chain min-out does not match its quote.
         for i in 0..hops.len() {
             let prev_min_out = result.legs[i].amount_out;
-            let next_in = result.legs
+            let next_in = result
+                .legs
                 .get(i + 1)
                 .map(|l| l.amount_in)
                 .unwrap_or(expected_min_final_output);
             if next_in > prev_min_out {
                 warn!(
                     "3-leg route {} inconsistent: leg {i} min-out {prev_min_out} < next input {next_in}; skipping",
-                    result.pool_ids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+                    result
+                        .pool_ids
+                        .iter()
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
                 return Vec::new();
             }

@@ -1,8 +1,15 @@
-//! Market-state ingestion (WebSocket + RPC only). gRPC transport removed.
+//! Market-state ingestion (WebSocket + RPC + Yellowstone gRPC).
 //! Per-account snapshots and update-only market state.
+//! Yellowstone gRPC (Dragon's Mouth) provides 5-15ms latency real-time account streaming.
 
 pub mod gmgn;
+#[cfg(feature = "yellowstone-grpc")]
+pub mod yellowstone_grpc;
 pub use gmgn::{GmgnClient, TrendingToken};
+#[cfg(feature = "yellowstone-grpc")]
+pub use yellowstone_grpc::{
+    GeyserSubscribeRequest, YellowstoneClient, YellowstoneConfig, YellowstoneEvent,
+};
 pub mod meteora_data_api;
 pub use meteora_data_api::{DiscoveredMeteoraPool, MeteoraDataApiClient, MeteoraPoolItem};
 pub mod dependency_manifest;

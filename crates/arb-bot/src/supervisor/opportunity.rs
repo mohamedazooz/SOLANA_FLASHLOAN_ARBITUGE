@@ -132,8 +132,7 @@ impl Supervisor {
             // with the SAME function the builder's ceiling is derived from, so
             // the gate's cost and the encoded instruction cannot drift. Ceiling
             // rounding keeps this non-refundable cost from being understated.
-            let priority_fee_lamports =
-                arb_tx::priority_fee_lamports(cu_price, cu_limit);
+            let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
             let gross = opp.gross_profit.as_u64();
             let gross_sol = gross as f64 / 1e9;
             let loan_size_sol =

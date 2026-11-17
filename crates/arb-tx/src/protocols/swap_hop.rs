@@ -94,6 +94,11 @@ pub fn build_swap_hop_instruction(
                             PumpSwapTradeMode::SellExactBaseInV2
                         };
 
+                        // Remaining accounts: live observation shows +3 for buy, +2 for sell on mainnet
+                        // These are not in the IDL but observed on-chain; pass None for now
+                        // until registry provides them
+                        let remaining_accounts: Option<Vec<AccountMeta>> = None;
+
                         build_pump_swap_instruction_v2(
                             hop.pool_id.0,
                             user_authority,
@@ -112,6 +117,7 @@ pub fn build_swap_hop_instruction(
                             amount_in,
                             min_amount_out,
                             trade_mode,
+                            remaining_accounts,
                         )
                     }
                 }

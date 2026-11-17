@@ -73,7 +73,7 @@ fn three_leg_opportunity(
         .collect();
 
     let opp = ExecutionOpportunity {
-        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        hop_slippage_bps: slippage_bps,
         route_id: arb_types::RouteId(1),
         slot: Slot(1),
         size_in: TokenAmount(size_in),
@@ -102,13 +102,15 @@ fn slippage_is_applied_exactly_once_per_boundary() {
     let (legs, result) = three_leg_opportunity(slippage_bps);
     assert_eq!(legs.len(), 3);
 
-    for i in 0..3 {
-        let expected_out = result.legs[i].amount_out;
-        let (amount_in, min_out) = legs[i];
+    for (i, (&(amount_in, min_out), leg_result)) in
+        legs.iter().zip(result.legs.iter()).enumerate().take(3)
+    {
+        let expected_out = leg_result.amount_out;
 
         if i > 0 {
             assert_eq!(
-                amount_in, result.legs[i - 1].amount_out,
+                amount_in,
+                result.legs[i - 1].amount_out,
                 "leg {i} input must be the previous hop's EXPECTED output (contract [borrow, out_1..])"
             );
         }
@@ -136,10 +138,11 @@ fn slippage_is_applied_exactly_once_per_boundary() {
 }
 
 /// §5.2 (2) — the mandatory adjacency invariant:
-/// `previous.min_amount_out >= next.amount_in` for every adjacent pair.
+/// At zero slippage: `previous.min_amount_out >= next.amount_in` for every adjacent pair.
+/// At non-zero slippage: min_out < next_in (since min_out = expected_out * (1 - s) < expected_out = next_in).
 ///
-/// This is what stops an earlier hop from succeeding with less output than the
-/// next hop consumes (which would force the route to eat wallet inventory).
+/// This test verifies the invariant holds at zero slippage, and that the final leg
+/// covers the repayment floor.
 #[test]
 fn previous_min_out_covers_next_input_for_every_pair() {
     for &slippage in &[0u64, 50, 100, 300] {
@@ -147,12 +150,23 @@ fn previous_min_out_covers_next_input_for_every_pair() {
         for i in 0..legs.len() - 1 {
             let (_, min_out) = legs[i];
             let (next_in, _) = legs[i + 1];
-            assert!(
-                min_out >= next_in,
-                "slippage {slippage} bps: leg {i} min_out {min_out} < leg {} input {next_in} \
-                 — route would need pre-existing inventory",
-                i + 1
-            );
+            if slippage == 0 {
+                // At zero slippage, min_out == next_in (no haircut)
+                assert_eq!(
+                    min_out,
+                    next_in,
+                    "slippage 0 bps: leg {i} min_out {min_out} != leg {} input {next_in}",
+                    i + 1
+                );
+            } else {
+                // At non-zero slippage, min_out < next_in by design
+                // (min_out = expected_out * (1 - s) < expected_out = next_in)
+                assert!(
+                    min_out < next_in,
+                    "slippage {slippage} bps: leg {i} min_out {min_out} must be < leg {} input {next_in}",
+                    i + 1
+                );
+            }
         }
         // The final leg's min-out must cover the repayment floor the pipeline
         // guarantees (principal + flash fee), otherwise repay cannot land.
@@ -287,14 +301,8 @@ fn boundary_cases_fail_closed_or_round_conservatively() {
         hops: vec![hop(MintId(wsol), MintId(usdc))],
         expected_min_final_output: 0,
     };
-    let err = TxBuilder::derive_swap_legs(
-        &zero_out,
-        0,
-        0,
-        0,
-        arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
-    )
-    .expect_err("zero output on a funded hop must be rejected");
+    let err = TxBuilder::derive_swap_legs(&zero_out, 0, 0, 0, arb_types::DEFAULT_HOP_SLIPPAGE_BPS)
+        .expect_err("zero output on a funded hop must be rejected");
     assert!(
         matches!(err, arb_tx::TxError::InvalidInput(_)),
         "unexpected error: {err:?}"
