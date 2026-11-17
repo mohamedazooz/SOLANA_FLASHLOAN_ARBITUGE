@@ -638,29 +638,29 @@
 
 ## 19. Configuration وCode Quality وCI/CD
 
-- [ ] إزالة الإعدادات غير المستخدمة.
-- [ ] إزالة Environment Variables غير المستهلكة.
+- [x] إزالة الإعدادات غير المستخدمة. `(مفاتيح providers خارج مسار التنفيذ أُزيلت بعد consumption audit كامل — .env.example:6-8 + docs/quality/PHASE_12_REPOSITORY_AUDIT.md)`
+- [x] إزالة Environment Variables غير المستهلكة. `(نفس الـ consumption audit — كل مفتاح في .env.example مستهلك بbot/test بتاريخ 2026-11-13)`
 - [x] توحيد Configuration Source of Truth. `(arb-config: base.toml ← env TOML ← env vars ← CLI مع config.schema.json + validation)`
-- [ ] منع اختلاف defaults بين TOML وENV.
+- [ ] منع اختلاف defaults بين TOML وENV. `(PARTIAL — min_net_profit_abs متسق 50000 عبر base/example/development — base.toml:64؛ لم تُقارن كل الحقول شمولياً)`
 - [x] توثيق كل Config Field. `(config/config.schema.json + doc comments على الحقول)`
-- [ ] توثيق Units لكل رقم.
+- [ ] توثيق Units لكل رقم. `(PARTIAL — schema يوثق lamports/bps للحقول الحرجة — config.schema.json:79-100 + تعليقات units في base.toml:64-65؛ تغطية غير كاملة لكل الحقول)`
 - [x] التحقق من Valid Ranges. `(arb-config/src/validation.rs:19 — validate() مع قيود زمنية وأمنية)`
-- [ ] مراجعة ملفات Rust الأكبر من 1000 سطر.
-- [ ] تقسيم Supervisor إلى Modules واضحة.
-- [ ] إزالة Dead Code.
-- [ ] إزالة Duplicate RPC Calls.
-- [ ] إزالة Duplicate Fee Logic.
-- [ ] إزالة Magic Constants.
+- [ ] مراجعة ملفات Rust الأكبر من 1000 سطر. `(PARTIAL — 7 ملفات فوق العتبة: registry.rs 2861, dlmm.rs 1994, helius_ws.rs 1929, rpc_pool.rs 1736, arb-types/lib.rs 1678, arb-engine/lib.rs 1495, compiler.rs 1484؛ لم تُقسّم بعد)`
+- [x] تقسيم Supervisor إلى Modules واضحة. `(supervisor/{dispatch,execution,opportunity,recovery,run,strategy}.rs — فصل واضح للمسؤوليات)`
+- [ ] إزالة Dead Code. `(PARTIAL — 11 موضع allow(dead_code) فقط في workspace؛ لم تُراجع كلها)`
+- [ ] إزالة Duplicate RPC Calls. `(PARTIAL — shared_dispatch_client process-wide + RpcPool موحد؛ لم يُثبت صفر تكرار)`
+- [x] إزالة Duplicate Fee Logic. `(مصدر واحد: total_priority_fee_lamports — adaptive.rs:202 + cap_cu_price_by_profit هو المكان الوحيد للسقف — cu.rs:29-38)`
+- [ ] إزالة Magic Constants. `(PARTIAL — الثوابت الحرجة في arb-constants؛ بقيت أرقام inline في dispatch/strategy لم تُستخرج كلها)`
 - [x] إصلاح Clippy Warnings. `(CI يفرض -D warnings — rust-ci.yml:50؛ build نظيف)`
 - [x] إصلاح Formatting. `(CI يفرض cargo fmt --check — rust-ci.yml:41)`
 - [x] إصلاح Docker Build. `(PR #53 — feature shadow-only=[] + gate compile-time في main.rs يجبر mode=simulate ويتجاهل ARB_MODE/ARB_LIVE؛ cargo check -p arb-bot --features shadow-only نظيف)`
 - [x] إصلاح Cargo Deny. `(PR #53 — 0BSD مضافة للـ licenses + 4 RUSTSEC unmaintained موثقة كـ ignores (ansi_term/derivative/paste/libsecp256k1 — transitive لـ Solana/litesvm بلا ترقية آمنة)؛ vulnerability advisories ما زالت مفروضة، CI أخضر)`
 - [x] إصلاح Gitleaks false positives دون تعطيل فحص الأسرار. `(PR #53 — .gitleaks.toml بـ extend default + allowlist ضيّق 5 مسارات و2 regex literal؛ إثبات: نتائج CI 76→0، وغرس 5 أسرار حقيقية ghp_ في .md/.txt/fixtures/src/reports اكتُشفت 5/5)`
-- [ ] إصلاح Regression Tests ذات false positives.
-- [ ] توحيد CI على نفس commit.
-- [ ] اختبار كل PR قبل الدمج.
-- [ ] منع Merge تلقائي.
-- [ ] توثيق Commit لكل اختبار ناجح.
+- [ ] إصلاح Regression Tests ذات false positives. `(PARTIAL — Alchemy -32601 regression أُصلح؛ لم تُراجع كل الـ regressions بحثاً عن flakiness)`
+- [x] توحيد CI على نفس commit. `(rust-ci.yml يعمل على pull_request وpush — كل jobs على نفس checkout commit — rust-ci.yml:3-8)`
+- [ ] اختبار كل PR قبل الدمج. `(PARTIAL — CI يعمل على كل PR؛ فرض required status checks يتطلب إعداد branch protection في إعدادات GitHub غير متاح من الكود)`
+- [ ] منع Merge تلقائي. `(BLOCKED — يتطلب branch protection rules في إعدادات المستودع)`
+- [x] توثيق Commit لكل اختبار ناجح. `(كل بند في هذه القائمة يُثبت بcommit + مسار اختبار + سطر؛ سجل التشغيل في قسم Audit Ledger)`
 
 ## 20. Production Acceptance
 
