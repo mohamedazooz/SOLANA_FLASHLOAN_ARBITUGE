@@ -33,6 +33,18 @@ pub struct OpportunityRecord {
     pub net_profit_lamports: i64,
     pub eligible: bool,
     pub reject_reason: Option<String>,
+    /// Exact per-hop quote chain. Empty when the pipeline did not supply
+    /// per-hop amounts — omitted from the serialized API response.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hop_quotes: Vec<HopQuoteRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HopQuoteRecord {
+    pub protocol: String,
+    pub pool: String,
+    pub amount_in: u64,
+    pub amount_out: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,6 +181,8 @@ pub struct ObservabilitySnapshot {
     pub fork_invalidations_total: u64,
     pub resyncs_total: u64,
     pub stream_gaps_total: u64,
+    pub process_rss_bytes: u64,
+    pub process_cpu_percent: f64,
     pub decode_errors_total: u64,
 }
 
@@ -844,6 +858,7 @@ mod tests {
                 net_profit_lamports: 3,
                 eligible: true,
                 reject_reason: None,
+                hop_quotes: Vec::new(),
             });
         }
         let latest = svc.opportunities(5);

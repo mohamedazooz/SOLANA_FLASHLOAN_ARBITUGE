@@ -2,6 +2,48 @@
 use super::*;
 
 impl Supervisor {
+    /// Cumulative user+system CPU ticks for this process (Linux `/proc/self/stat`).
+    /// Field indices 11/12 after `(comm)` correspond to utime/stime (fields 14/15).
+    #[cfg(target_os = "linux")]
+    fn process_cpu_ticks() -> Option<(u64, u64)> {
+        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        let rest = stat.split(") ").nth(1)?;
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        let utime: u64 = fields.get(11)?.parse().ok()?;
+        let stime: u64 = fields.get(12)?.parse().ok()?;
+        Some((utime, stime))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_cpu_ticks() -> Option<(u64, u64)> {
+        None
+    }
+
+    /// CPU percent over the sample interval. Can exceed 100 on multi-core
+    /// hosts; only negative drift is clamped.
+    fn cpu_percent(prev: (u64, u64), now: (u64, u64), interval_secs: f64) -> f64 {
+        const CLK_TCK: f64 = 100.0;
+        let ticks = now
+            .0
+            .saturating_sub(prev.0)
+            .saturating_add(now.1.saturating_sub(prev.1));
+        ticks as f64 / CLK_TCK / interval_secs * 100.0
+    }
+
+    /// Resident set size in bytes (Linux `/proc/self/status` VmRSS).
+    #[cfg(target_os = "linux")]
+    fn process_rss_bytes() -> Option<u64> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+        let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        Some(kb.saturating_mul(1024))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn process_rss_bytes() -> Option<u64> {
+        None
+    }
+
     /// Serialize current RPC pool health (if available) and write the heartbeat
     /// atomically. Failures are logged, never fatal: liveness reporting must not
     /// take down the trading loop.
@@ -21,7 +63,7 @@ impl Supervisor {
         let snap = self.ingest.account_store().get(&supply_vault)?;
         // Freshness bound relaxed to 5000 slots (~30 mins) so network jitter/polling gaps
         // do not spuriously drop verified reserve liquidity, while preventing stale unverified states.
-        const MAX_SNAPSHOT_AGE_SLOTS: u64 = 5000;
+        const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
         if snap.slot > current_slot.0
             || current_slot.0.saturating_sub(snap.slot) > MAX_SNAPSHOT_AGE_SLOTS
         {
@@ -188,9 +230,10 @@ impl Supervisor {
         let params = arb_engine::ThreeLegMemeContextParams {
             snapshot_slot: current_slot.0,
             cu_limit: arb_tx::COMPUTE_BUDGET_LIMIT_3HOP,
-            priority_fee_micro_lamports: self
-                .tip_strategy
-                .adaptive_cu_price(&self.recent_landed_cu),
+            priority_fee_micro_lamports: {
+                let recent = self.recent_landed_cu.lock().clone();
+                self.tip_strategy.adaptive_cu_price(&recent)
+            },
             jito_tip_account: self.jito_service.tip_account_for_slot(current_slot),
             jito_tip_lamports: dynamic_tip_lamports,
             recent_blockhash: [0u8; 32],
@@ -220,7 +263,10 @@ impl Supervisor {
             ..arb_engine::ThreeLegMemeContextParams::for_discovery(payer)
         };
 
-        let result = match arb_engine::build_three_leg_meme_pipeline(fresh_pools, &params) {
+        let t_exact = std::time::Instant::now();
+        let pipeline = arb_engine::build_three_leg_meme_pipeline(fresh_pools, &params);
+        arb_metrics::observe_exact_quote_latency_us(t_exact.elapsed().as_micros() as f64);
+        let result = match pipeline {
             Ok(r) => r,
             Err(e) => {
                 debug!("Meteora 3-leg DLMM capture skipped: {e}");
@@ -476,6 +522,59 @@ impl Supervisor {
 
         // 2. Ingestion: WebSocket streaming worker
         let cancel_token = CancellationToken::new();
+
+        // Maintenance: process CPU/RSS sampler (Linux /proc) and store
+        // retention prune. Both are observability/hygiene only — failures are
+        // logged, never fatal to the trading loop.
+        let cancel_sampler = cancel_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut prev_ticks: Option<(u64, u64)> = None;
+            loop {
+                tokio::select! {
+                    _ = cancel_sampler.cancelled() => break,
+                    _ = interval.tick() => {
+                        let ticks = Self::process_cpu_ticks();
+                        if let Some((now, prev)) = ticks.zip(prev_ticks) {
+                            let pct = Self::cpu_percent(prev, now, 30.0);
+                            arb_metrics::set_process_cpu_percent(pct);
+                        }
+                        if let Some(t) = ticks {
+                            prev_ticks = Some(t);
+                        }
+                        if let Some(rss) = Self::process_rss_bytes() {
+                            arb_metrics::set_process_rss_bytes(rss);
+                        }
+                    }
+                }
+            }
+        });
+        {
+            let cancel_prune = cancel_token.clone();
+            let store = self.store.clone();
+            let retention_days: u32 = std::env::var("DATA_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|d| *d > 0)
+                .unwrap_or(30);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(6 * 3600));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = cancel_prune.cancelled() => break,
+                        _ = interval.tick() => {
+                            match store.prune_older_than_days(retention_days) {
+                                Ok(n) if n > 0 => info!(deleted = n, retention_days, "store retention pruned"),
+                                Ok(_) => {}
+                                Err(e) => warn!("store retention prune failed: {}", e),
+                            }
+                        }
+                    }
+                }
+            });
+        }
 
         info!(
             "⚡ Pure WebSocket Ingestion Engine Active (Helius & RPCFast WebSockets driving pipeline)"
@@ -833,6 +932,10 @@ impl Supervisor {
         };
 
         let mut last_snapshot_digest = Instant::now();
+        // Daily report (checklist 637): emitted at the first loop visit after
+        // the UTC date flips; the date check itself runs at most every 10 min.
+        let mut last_report_utc_date = crate::daily_report::current_utc_date();
+        let mut last_daily_check = Instant::now();
         let mut adaptive_delay_ms: u64 = 50;
 
         // Provider health/failover supervisor (G2): deterministic circuit
@@ -885,6 +988,16 @@ impl Supervisor {
                 self.emit_five_minute_digest(current_slot.0).await;
                 self.emit_market_snapshot(current_slot.0, false).await;
                 last_snapshot_digest = Instant::now();
+            }
+
+            // Daily aggregated report (checklist 637) on UTC date rollover.
+            if last_daily_check.elapsed() >= Duration::from_secs(600) {
+                last_daily_check = Instant::now();
+                let today = crate::daily_report::current_utc_date();
+                if today != last_report_utc_date {
+                    last_report_utc_date = today;
+                    self.emit_daily_report(current_slot.0).await;
+                }
             }
 
             // KillSwitch is checked on every loop, even while the stream is stalled.

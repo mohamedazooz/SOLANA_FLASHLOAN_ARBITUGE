@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod control_service;
+pub mod daily_report;
 pub mod errors;
 pub mod health_monitor;
 pub mod heartbeat;

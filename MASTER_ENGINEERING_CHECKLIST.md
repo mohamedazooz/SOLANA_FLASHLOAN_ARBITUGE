@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **428 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **67** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **454 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **41** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -219,7 +219,7 @@
 - [x] اختبار اتصال مزود واحد. `(اختبارات helius_ws تُبنى على endpoint واحد: handle_message_* + slot_notification_* + account_notification_*)`
 - [x] اختبار اتصال مزودين. `(dual_ingest — 4 tests + dual_ingest_bench)`
 - [x] اختبار انقطاع المزود الأساسي. `(rotate_endpoint_wraps_across_all_endpoints + مسار connect-failure مع record_connect_backoff + endpoint_unsupported failover — مُختبرة)`
-- [ ] اختبار رجوع المزود الأساسي. `(PARTIAL: انتهاء backoff يسمح بالعودة عبر select_active_endpoint_index (الأبكر انتهاءً)؛ لا يوجد اختبار مخصص لدورة العودة)`
+- [x] اختبار رجوع المزود الأساسي. `(FIXED/TESTED — دورتان جديدتان في helius_ws.rs tests: provider_recovery_cycle_backoff_rotation_then_return_after_expiry (429→backoff→rotation→انتهاء backoff→عودة للـ endpoint المستعاد وسkip لما زال محدودًا) + recovery_cycle_all_endpoints_backoff_elects_earliest_expiry (كل endpoints في backoff → الأبكر انتهاءً + تحديث current_idx))`
 - [x] اختبار رفض subscription. `(slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + handle_message_treats_subscription_errors_as_non_fatal)`
 - [x] اختبار تجاوز subscription quota. `(handle_message_treats_subscription_errors_as_non_fatal: "Concurrent websocket subscription limit" → account_sub_limited بدون تصنيفه capability failure)`
 - [x] اختبار malformed WebSocket frames. `(regression test لـ Alchemy -32601 — helius_ws.rs:1475)`
@@ -490,7 +490,7 @@
 - [x] التحقق من Bundle Serialization. `(base64 + params [{txs},{encoding,bundleOnly:true}] + حد 1..=5 txs — arb-land/src/lib.rs:264-283)`
 - [x] التحقق من Tip Accounts. `(JITO_TIP_ACCOUNTS في arb-constants + get_random_tip_account/get_tip_account_for_slot lib.rs:33-48 + اختبار كون حسابات tip الثمانية داخل master ALT — compiler.rs:1323-1334)`
 - [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
-- [x] التحقق من Priority Fee. `(adaptive_cu_price p75-escalation lib.rs:164-188 + cap_cu_price_by_profit + total_priority_fee_lamports موحّد — adaptive.rs:202)`
+- [x] التحقق من Priority Fee. `(adaptive_cu_price p75-escalation lib.rs:164-188 + cap_cu_price_by_profit + total_priority_fee_lamports موحّد — adaptive.rs:202. **إصلاح انفصال 2026-11-17 — batch 17**: مصدر p75 — حقل Supervisor.recent_landed_cu — كان يُترك فارغًا دائمًا (IMPLEMENTED_BUT_DISCONNECTED) فيسقط السعر كل دورة على الثابت 100,000. أُصلِح: الحقل Arc<Mutex<Vec>>، تعبئة من الهبوط المؤكَّد فقط (LandStatus::Landed) بسعر CU المُرمَّز فعليًا عبر arb-land::record_landed_cu_price بنافذة مُقيَّدة 64 (RECENT_LANDED_CU_WINDOW)، واستهلاكه بنسخة تحت القفل في opportunity.rs وrun.rs؛ السقف الحاكم يبقى cap_cu_price_by_profit. اختبار: landed_cu_price_window_is_bounded_and_order_sensitive — 1207/0)`
 - [x] التحقق من Bundle Submission. `(send_bundle + send_bundle_multi_region — arb-land/src/lib.rs:264,323)`
 - [x] حفظ Bundle ID. `(bundle_id: String — lib.rs:82 + استرجاعه من الرد lib.rs:395)`
 - [x] متابعة Bundle Status. `(get_bundle_status — lib.rs:366-395 + signature-status polling في dispatch.rs)`
@@ -501,7 +501,7 @@
 - [x] الفصل بين Processed وConfirmed. `(نفس الدليل — lifecycle.rs:60-65)`
 - [x] الفصل بين Confirmed وFinalized. `(نفس الدليل — lifecycle.rs:65-70)`
 - [x] عدم اعتبار HTTP 200 دليلاً على Landing. `(HTTP 200+result ⇒ accepted فقط: record_outcome "sent" — dispatch.rs:693؛ landing يُثبت حصراً بالتحقق المزدوج؛ اختبار invalid_is_not_landing_evidence — lib.rs:731)`
-- [ ] إضافة Retry Policy. `(PARTIAL — سُلّم retry بحد escalation موجود: previous_tips dispatch.rs:688-691 + اختبار a_retry_cannot_escalate_past_the_ladder_cap jito_service.rs:973؛ reconciliation عند الإقلاع لا يعيد الإرسال أبداً إلا بدليل on-chain — recovery.rs:22-27؛ لا يوجد re-dispatch تلقائي لـ bundle بعد Dropped في نفس الslot — قرار تصميمي بحاجة توثيق)`
+- [x] إضافة Retry Policy. `(PARTIAL — سُلّم retry بحد escalation موجود: previous_tips dispatch.rs:688-691 + اختبار a_retry_cannot_escalate_past_the_ladder_cap jito_service.rs:973؛ reconciliation عند الإقلاع لا يعيد الإرسال أبداً إلا بدليل on-chain — recovery.rs:22-27؛ لا يوجد re-dispatch تلقائي لـ bundle بعد Dropped في نفس الslot — قرار التصميم مُوثق الآن — DECISIONS_AND_CONFLICTS.md D-18: لا إعادة-إرسال تلقائية لنفس slot بعد Dropped (تدهور الحافة الاقتصادية، خطر landing مزدوج، سلّم tips يغطي التصعيد، reconciliation لا يعيد الإرسال إلا بدليل on-chain)؛ السلوك الحالي مطابق للعقد)`
 - [x] إضافة Bundle Expiration Handling. `(last_valid_block_height يُحفظ مع dispatch intent عند الإرسال + evaluate_lifecycle_with_block_height + الانتهاء يتطلب دليل block-height حي — recovery.rs:148`expiry_requires_block_height_evidence` + dispatch.rs:798)`
 - [x] إضافة Rejection Handling. `(مسار send Err: alert_execution_failed + record_outcome "failed" + resolve_dispatch_intent "send_failed" + لا يُحتسب خبر tip — dispatch.rs:1013-1022)`
 - [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
@@ -525,10 +525,10 @@
 - [x] مراقبة account count. `(count_unique_accounts — adaptive.rs:1095 + رفض TooManyBinArrays/PoolsNotDistinct — compiler.rs:52-58)`
 - [x] مراجعة ALT coverage. `(Static Master ALT + رفض MissingAltAddress + AltAccountAsSigner — compiler.rs:59-65 + اختبار احتواء حسابات tip الثمانية — compiler.rs:1333-1334)`
 - [x] التحقق من Heap Requirements. `(VERIFIED — V1ConfigParams.heap_size مُرمَّز في CONFIG_MASK_HEAP_SIZE — adaptive.rs:53,186-190 + dlmm_3leg_flash_arb.rs:533 يطلب 256KiB + property fuzz يرفض القيم خارج 32..=256KiB — v1_property_fuzz.rs:171-174 + اختبارات three_pool_flash_arb_tests)`
-- [ ] التحقق من Runtime Stack Requirements. `(PARTIAL — inner_instruction_count يُرصد من المحاكاة — opportunity.rs:1337؛ لا يوجد فحص صريح لعمق stack CPI)`
-- [ ] التحقق من Account Data Limits. `(PARTIAL — إنشاء ATA عند الحاجة مُغطى، والمحاكاة المسبقة تفشل-مغلقة عند تجاوز الحدود، لكن لا يوجد فحص استباقي لحجم بيانات الحسابات)`
+- [x] التحقق من Runtime Stack Requirements. `(VERIFIED — عمق stack CPI مُقاس الآن لا مُقدَّر بصمت: ثابت الإطار الأقصى موثّق من مصدر Agave الرسمي MAX_INSTRUCTION_STACK_DEPTH=5 (وSIMD-0268=9) في arb-constants/src/lib.rs؛ layout الـ executor (payer→executor→DEX→token=4 إطارات) يجتاز const-assert زمن التصريف + validate_executor_cpi_stack_depth() مستدعاة على مسار assemble_flash_funded_three_pool_cpi_instructions الحقيقي (Invariant 0، arb_executor.rs)؛ 5/4 إطارات ≤ 5. الاختبار: executor_stack_depth_budget_is_satisfied. المصدر: anza-xyz/agave program-runtime/src/execution_budget.rs مؤكَّد 2026-11-17. ملاحظة تصحيحية: مستند داخلي سابق أشار إلى opportunity.rs:1337 — المسار الحقيقي هو fork_sim.rs (inner_instruction_count)`
+- [x] التحقق من Account Data Limits. `(VERIFIED — الحد الافتراضي 64MiB = MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES تم جلبه من مصدر Agave الرسمي وتوثيقه في arb-constants؛ حارس fail-closed pre-dispatch: apply_runtime_limit_guards (fork_sim.rs) يقلب success=false مع خطأ صريح إذا جرّ sim loadedAccountsDataSize > 64MiB أو 0 مع logs تساوي غير فارغة (provenance غير قابل للتوليد)؛ 3 اختبارات: overflow/normal-already-failing. متبقٍ فقط: ضبط set_loaded_accounts_data_size_limit صريح في ixs (غير مطلوب — الحد الافتراضي أكبر من حجم مسار 3-leg بأضعاف)`
 - [x] التحقق من Compute Budget Overflow. `(calculate_dynamic_cu_limit بـ saturating + cap عند MAX_COMPUTE_UNIT_LIMIT — cu.rs:22-27 + u32::try_from(...).unwrap_or(u32::MAX) عند التغذية — dispatch.rs:371,434)`
-- [ ] إضافة CU regression benchmarks. `(PARTIAL — criterion bench لرياضيات CPMM — arb-math/benches/cpmm_bench.rs + سُلّم أحجام V1 — v1_size_ladder_tests.rs؛ لا يوجد benchmark regression مخصص لـ CU لكل DEX)`
+- [x] إضافة CU regression benchmarks. `(TESTED — 7 اختبارات في crates/arb-engine/tests/cu_regression_benchmarks.rs: جدول cu_estimate مُعيَنّ بالتثبيت الحرفي لكل 11 بروتوكول (أي انسياب صامت = فشل بناء) + تغطية إجبارية لكل variant + نموذج CU لمسار DLMM flash 3-leg مثنّى بالقيم الحرفية (estimate_minimal_cu(true,2)+CU_PER_BIN_ARRAY×bins = 128,450 عند حدّ bin-arrays الأدنى) + ظرف محافظ مقيَّد بالدليل المقاس المحتجَز من mainnet (76,954–82,702 CU — reports/phase15_2/mainnet_simulation_evidence.json و PHASE15_2_FINAL_REPORT.md، التقدير يغطي الدليل بحد 3x) + تثبيت MAX_COMPUTE_UNIT_LIMIT=1,400,000 (Agave execution_budget.rs، أُوكِّد 2026-11-17) + ختم calculate_dynamic_cu_limit على السقف عند 1.3M/1.4M/u32::MAX مع الحفاظ على buffer 15% تحت العتبة — فصل صريح ESTIMATED/MEASURED)`
 
 ## 15. Testing وFuzzing
 
@@ -538,8 +538,8 @@
 - [x] إضافة Fuzz Tests. `(fuzzing_suite.rs — never-panics + invariants؛ cargo-fuzz منفصل غير موجود — G9)`
 - [x] إضافة Differential Tests. `(arb-math/tests/differential.rs + orca_sdk_parity.rs + meteora_mainnet_sdk_differential.rs + python_oracle_differential.rs + v1_header_differential.rs)`
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
-- [ ] إضافة Failure Injection Tests. `(PARTIAL — adversarial/fuzz suites تحقن مدخلات مشوهة — arb-math/adversarial_tests.rs + fuzzing_suite.rs؛ لا يوجد harness حقن أخطاء شبكة/provider)`
-- [ ] إضافة Concurrency Tests. `(PARTIAL — failover circuit-breaker tests — provider_supervisor.rs:207؛ لا يوجد اختبار مخصص لـ lock contention أو races)`
+- [x] إضافة Failure Injection Tests. `(FIXED/TESTED — حقن أخطاء شبكة/provider فعلي عبر mock servers: quota_exhaustion_tests.rs (429 quota-exhausted→cooldown 1800s+QuotaExhausted؛ 429+Retry-After failover؛ in-body -32005) + bundle_rejection_tests.rs (mock block engine) + failover circuit-breaker provider_supervisor.rs:207)`
+- [x] إضافة Concurrency Tests. `(FIXED/TESTED — arb-ingest/tests/concurrency_tests.rs: 3 اختبارات — 8 threads تُقيّم SlotIntegrity بتداخل SLOT_CONFIRMED مع تحدّ زمني + ثبات invariants؛ rotation/tracking متزامن على HeliusWsClient؛ انفجار 429 متزامن ×12 ضد 3 endpoints → صفر HTTP requests بعد cooldown (إغلاق العاصفة))`
 - [x] إضافة Replay Tests. `(shadow_replay_tests.rs + arb-bot/src/bin/replay.rs)`
 - [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
 - [x] اختبار Invalid Decimals. `(test_negative_decimals_mismatch_rejected — arb-types/tests/dimensional_currency_tests.rs:63)`
@@ -560,30 +560,30 @@
 - [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
 - [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
 - [x] اختبار Failed Min-Profit. `(gross_positive_net_negative_fails_closed + flash_fee_exceeding_gross_profit_fails_closed — three_leg_net_economics_tests.rs:69,83 + refuses_edge_below_hurdle — bidder.rs:481)`
-- [ ] اختبار Jito Rejection. `(PARTIAL — مسار الرفض مُعالج dispatch.rs:1013-1022؛ لا يوجد اختبار unit لفرع رفض block engine)`
+- [x] اختبار Jito Rejection. `(FIXED/TESTED — 6 اختبارات contract ضد mock block engine محلي — crates/arb-land/tests/bundle_rejection_tests.rs: HTTP 400 يحمل status+سبب الرفض وErr وليس success؛ HTTP 200 بدون result ليس دليل هبوط؛ القبول يرجع bundle id؛ empty/6-tx مرفوضان محلياً 1..=5؛ unreachable = network error)`
 - [x] اختبار Full Route. `(cross_dex_three_pool_live_loop.rs + three_pool_flash_arb_tests.rs + meteora_cross_pool_vertical_slice.rs + pipeline.rs — arb-engine/tests)`
 
 ## 16. Performance وHFT
 
 - [x] قياس Provider Latency. `(rpc_pool p50/p95/p99 + RttTracker بنصف عمر إحصائي — arb-math/src/latency.rs:38-134)`
 - [x] قياس Account Update Latency. `(dual_ingest_bench.rs يقيس end-to-end ingest latency لمجموعة pool updates حقيقية — arb-ingest/benches:51-63)`
-- [ ] قياس State Processing Latency. `(PARTIAL — مُغطى داخل dual_ingest_bench كوحدة واحدة؛ لا توجد metric منفصلة في runtime)`
-- [ ] قياس Route Discovery Latency. `(PARTIAL — مدمجة مع quote في t_ingest_to_quote_us — strategy.rs:463؛ لا فصل بين discovery وquote)`
-- [ ] قياس Exact Quote Latency. `(PARTIAL — نفس t_ingest_to_quote_us مدمجة + latency_bench يقيس math engine منفصلة في bench mode)`
+- [x] قياس State Processing Latency. `(TESTED — histogram runtime منفصلة state_processing_latency_us في /metrics — strategy.rs يقيس من بداية strategy_cycle (ضعف promotion للـ PumpSwap) حتى جاهزية pools snapshot — arb-metrics ثبتت ومسجلة في REGISTRY)`
+- [x] قياس Route Discovery Latency. `(TESTED — histogram runtime منفصلة route_discovery_latency_us — strategy.rs يقيس من بداية phase 2 (graph build) حتى ترتيب merged (كل فئات الاكتشاف: base cycles، cross-pool، Bellman-Ford، multi-hop، 3-leg، boost))`
+- [x] قياس Exact Quote Latency. `(TESTED — histogram runtime منفصلة exact_quote_latency_us تقيس محركي التسعير الفعليين: find_cross_pool_dlmm_cycles (بحث الحجم) و build_three_leg_meme_pipeline (chained quotes) — strategy.rs + run.rs)`
 - [x] قياس Borrow Sizing Latency. `(latency_bench مرحلة 3: closed-form sizing & equal marginal split ببيانات حية — bin/latency_bench.rs:3-4)`
 - [x] قياس Transaction Build Latency. `(t_assembly_us — opportunity.rs:758,916 + يظهر في تقرير Telegram E2E — dispatch.rs:837-845)`
-- [ ] قياس Simulation Latency. `(MISSING — preflight sim يُنفذ لكن مدته لا تُقاس ولا تُسجل)`
+- [x] قياس Simulation Latency. `(FIXED/TESTED — Histogram simulation_latency_us في arb-metrics (buckets 1k–5M µs) + observe_simulation_latency_us؛ مُقاس فعلياً حول simulate_async و RpcPool::simulate_transaction fallback في dispatch.rs مع debug log؛ مُصدَّر في /metrics)`
 - [x] قياس Submission Latency. `(rtt_ms = sent_at.elapsed + observe_bundle_rtt — dispatch.rs:626,641-644)`
 - [x] قياس Landing Latency. `(land_start → landing_ms + total_e2e_ms شامل — dispatch.rs:756,830-846)`
-- [ ] مراجعة unnecessary cloning. `(NOT AUDITED — التصميم Arc-heavy؛ 26 clone في opportunity.rs لم تُراجع سطراً سطراً)`
-- [ ] مراجعة heap allocations. `(NOT AUDITED — لا يوجد تتبع allocation في hot path)`
-- [ ] مراجعة lock contention. `(NOT AUDITED — measured_cu/previous_tips تستخدم std Mutex؛ لا قياس contention)`
-- [ ] مراجعة async task scheduling. `(NOT AUDITED — tokio::spawn لكل landing tracker؛ لا قياس task pileup)`
-- [ ] مراجعة serialization overhead. `(NOT AUDITED — bincode/JSON paths لم تُقاس)`
-- [ ] مراجعة duplicate calculations. `(NOT AUDITED — توجد إزالة مكرر في quote paths لكن لم تُراجع شمولياً)`
-- [ ] مراجعة CPU consumption. `(MISSING — لا توجد metric CPU في arb-metrics)`
-- [ ] مراجعة Memory Consumption. `(MISSING — لا توجد metric RSS/allocator)`
-- [ ] مراجعة queue saturation. `(PARTIAL — MAX_WS_ACCOUNT_SUBS يحد الاشتراكات — helius_ws.rs:648؛ لا bounded channel مقيسة للرسائل الواردة)`
+- [x] مراجعة unnecessary cloning. `(REVIEWED — 26 استدعاء: ~20 على مسارات الرفض فقط، استنساخ واحد لكل candidate (تشكيل الإعدادات — opportunity.rs:87)، وpool.clone فقط أول مرة لكل pool في manifest cache (1436-1442) — لا استنساخ لكل pool-tick على مسار النجاح — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [ ] مراجعة heap allocations. `(PARTIAL — لا تحديق allocation في المسار الحار حتى الآن (التحديق الموجود بروسير RSS/CPU فقط) — التحسين بلا قياس مّلغى وقفه على جلسة قياس shadow — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [x] مراجعة lock contention. `(REVIEWED — كل الأقافل parking_lot مع أقسام حرجية صغيرة بلا await داخلها: measured_cu — opportunity.rs:125؛ previous_tips — 218؛ ترتيب الأقافل slot_clock→rtt ثابت بلا عكس ترتيب — dispatch.rs:517-519) + اختبارات التزامن الجديدة (concurrency_tests.rs) — تصحيح إدلة سابقة: الموجود parking_lot ليس std Mutex — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [x] مراجعة async task scheduling. `(REVIEWED — landing tracker لكل معاملة مع عمر محدود 20×400ms (~8s) — dispatch.rs:761؛ عدد المهام محدود بـ dispatches-in-flight، لهذا لا pileup غير محدود)`
+- [ ] مراجعة serialization overhead. `(PARTIAL — bincode في مسارات باردة فقط (محاكاة/ALT/compiler)؛ JSON المنشور كل تكرار للحلقة (publish_control_state) كلفته غير مقاسة حتى الآن — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [ ] مراجعة duplicate calculations. `(PARTIAL — مراجعة أولية: route_sig مفرد المصدر (مقاس + RAM templates)؛ إزالة التكرار الموجودة موثقة؛ إعادة حساب estimate_route_cu الباقية رخيصة ومّوثقة كـ fallback — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [x] مراجعة CPU consumption. `(FIXED/TESTED — Gauge process_cpu_percent في arb-metrics؛ sampler كل 30s في run.rs يقرأ /proc/self/stat utime+stime (Linux-only cfg) ويحسب % عبر الفارق ticks؛ معروض في Overview كـ "CPU %")`
+- [x] مراجعة Memory Consumption. `(FIXED/TESTED — Gauge process_rss_bytes في arb-metrics؛ sampler يقرأ VmRSS من /proc/self/status كل 30s؛ معروض في Overview كـ "RSS (MB)" + ObservabilitySnapshot)`
+- [x] مراجعة queue saturation. `(REVIEWED — لا يوجد unbounded_channel في الـ workspace إلطاًاً؛ Telegram bounded 1000 + try_send مع سياسة drop مُسجّلة — telegram.rs:99,296-306؛ رسائل WS معالجة inline بلا طابور وسيط — PERFORMANCE_HOT_PATH_REVIEW.md)`
 - [x] بناء reproducible benchmarks. `(arb-ingest/benches/dual_ingest_bench.rs + arb-bot/src/bin/latency_bench.rs)`
 
 ## 17. Security
@@ -606,7 +606,7 @@
 - [x] منع arbitrary program invocation. `(protocol_owner_program يحدد program IDs الثابتة لكل بروتوكول — dependency_manifest.rs:11 + كل program IDs في arb-constants)`
 - [x] مراجعة Program IDs. `(hardcoded في arb-constants + اختبارات p0_golden_vectors تثبت العناوين)`
 - [x] مراجعة Token Program IDs. `(TokenProgramKind::{SplToken,Token2022} كـ expected_owner للـ token accounts — dependency_manifest.rs:140-146)`
-- [ ] مراجعة Upgradeable Program Risks. `(NOT VERIFIED — لا يوجد سجل مخاطر لبرامج upgradeable (admin key / upgrade authority) في docs)`
+- [x] مراجعة Upgradeable Program Risks. `(REVIEWED — docs/audit/PROGRAM_UPGRADEABILITY_RISKS.md: سجل مخاطر لكل برامج مسار التنفيذ (Kamino/Meteora×4/Raydium×4/Orca/Pump×3/Token) بمستويات مخاطر وسلوك upgrade authority متوقع + حالة ArbExecutor (UNVERIFIED — مصدر يبني لكن لا دليل deployment محفوظ) + إجراء إعادة-تحقق قبل أي توقيع حي)`
 - [x] مراجعة Kill Switch. `(arb-risk/src/lib.rs + kill switch gate في dispatch.rs:520 قبل الإرسال)`
 
 ## 18. Dashboard وObservability
@@ -621,7 +621,7 @@
 - [x] عرض Stale Accounts. `(FIXED/TESTED — stale_rejections_total من arb-metrics في StatusSnapshot.observability + بطاقة Overview بلون تحذيري — dual_ingest.rs:135 يغذّي العداد)`
 - [x] عرض Fork Invalidations. `(FIXED/TESTED — عداد جديد fork_invalidations_total في arb-metrics يُغذَّى من مساري الإبطال الفعليين (SLOT_DEAD invalidate_slots+banks — lib.rs:641، entry-update parent clear — lib.rs:677)؛ معروض في Overview)`
 - [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
-- [ ] عرض Exact Quotes. `(PARTIAL — /api/opportunities + opportunities_digest — control_service.rs:645؛ لا يوجد عرض تفصيلي لكل hop quote)`
+- [x] عرض Exact Quotes. `(FIXED — عرض تفصيلي لكل hop: OpportunityRecord.hop_quotes (Vec<HopQuoteRecord>: protocol/pool/amount_in/amount_out) مشتقة من hop_inputs+hops في record_opportunity call site meteora-dlmm-3leg (strategy.rs)؛ عمود "Per-hop quotes" في Opportunities.tsx مع tooltip pool كامل؛ يُحذف من JSON عندما لا يوفره الـ pipeline)`
 - [x] عرض Rejection Reasons. `(FIXED/TESTED: ring مخصص RejectionRecord في control_service + /api/rejections + مكوّن Rejections.tsx جديد في Dashboard يعرض stage/reason/gross/net/loan/pools؛ record_rejected_opportunity يسجّل الآن في control؛ اختبار rejection_ring_is_dedicated_and_ordered)`
 - [x] عرض Gross Profit. `(FIXED/TESTED — OpportunityRecord.gross_profit_lamports = expected_output − borrow يُحسب في record_opportunity، عمود Gross profit جديد في Opportunities.tsx)`
 - [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`
@@ -631,11 +631,11 @@
 - [x] عرض Transaction Size. `(FIXED/TESTED — ExecutionExtras.tx_size_bytes = tx_bytes.len() عند dispatch، يتدفق إلى /api/executions؛ عمود Tx Size (B) في Executions.tsx + فرع send_failed يسجل أيضاً)`
 - [x] عرض CU Consumption. `(FIXED/TESTED — ExecutionExtras.cu_consumed: on-chain computeUnitsConsumed عند landed (dispatch.rs:828) وإلا preflight units_consumed؛ عمود CU Consumed في Executions.tsx)`
 - [x] عرض Jito Status. `(FIXED/TESTED: ExecutionRecord توسّع بحقول signature/slot/net_profit_sol اختيارية skip_serializing_if — landed يعرض tx signature وslot وprofit، dropped يعرض bundle_id؛ أعمدة جديدة في Executions.tsx؛ اختبار execution_extras_serialize_only_when_present)`
-- [ ] إضافة Structured Logs. `(PARTIAL — tracing structured fields (attempt_id, route, slot) + file writer — main.rs:210-258؛ لا JSON format)`
+- [x] إضافة Structured Logs. `(FIXED — LOG_FORMAT=json في main.rs init_event_logger يفعّل fmt::layer().json().flatten_event(true) للـ stdout والملف معاً؛ default يبقى البصمة القديمة)`
 - [x] إضافة Correlation IDs. `(attempt_id يمر من dispatch → landing tracker → store → /api/executions + route_sig للتجميع — dispatch.rs:610-693)`
 - [x] إضافة Error Categories. `(RejectionRecord.stage/reason — control_service.rs:62-72 + مراحل مسماة: Pre-flight Simulation / Economic Invariant Gate / Risk & EV Gates)`
 - [ ] إضافة Daily Reports. `(PARTIAL — digest كل 5 دقائق + market snapshot digest — supervisor.rs:550,707-787؛ لا تقرير يومي مُجمّع)`
-- [ ] الاحتفاظ بالتقارير 30 يوماً. `(MISSING — لا سياسة retention/prune في arb-store)`
+- [x] الاحتفاظ بالتقارير 30 يوماً. `(FIXED/TESTED — Store::prune_older_than_days(days) — default no-op + SqliteStore impl يحذف fills→outcomes→dispatch_intents→attempts بـ created_at < datetime('now', ?1) (معامل مربوط لا سلاسل)؛ caller دوري كل 6 ساعات في run.rs عبر DATA_RETENTION_DAYS (default 30)؛ اختبار retention_prune_deletes_old_rows_and_keeps_recent (صفوف backdated 40 يوم تُحذف، الحديثة تبقى، ثاني استدعاء = 0))`
 - [x] منع ظهور الأسرار في الواجهة. `(web_api.rs:13 «No private keys or signing secrets are ever exposed» + auth login/logout + ws-ticket receive-only — web_api.rs:421-439)`
 - [x] التحقق من تطابق Dashboard مع Runtime State. `(StatusSnapshot هو الشكل الوحيد المستهلك من Dashboard وTelegram /status معاً — control_service.rs:83-85)`
 
@@ -644,16 +644,16 @@
 - [x] إزالة الإعدادات غير المستخدمة. `(مفاتيح providers خارج مسار التنفيذ أُزيلت بعد consumption audit كامل — .env.example:6-8 + docs/quality/PHASE_12_REPOSITORY_AUDIT.md)`
 - [x] إزالة Environment Variables غير المستهلكة. `(نفس الـ consumption audit — كل مفتاح في .env.example مستهلك بbot/test بتاريخ 2026-11-13)`
 - [x] توحيد Configuration Source of Truth. `(arb-config: base.toml ← env TOML ← env vars ← CLI مع config.schema.json + validation)`
-- [ ] منع اختلاف defaults بين TOML وENV. `(PARTIAL — min_net_profit_abs متسق 50000 عبر base/example/development — base.toml:64؛ لم تُقارن كل الحقول شمولياً)`
+- [x] منع اختلاف defaults بين TOML وENV. `(TESTED — crates/arb-config/tests/toml_env_consistency_tests.rs: 3 اختبارات — (1) critical_strategy_defaults_match_across_all_toml_files: min_net_profit_abs=50000، min_net_profit_bps=5، max_price_impact_bps=40، max_state_age_slots=2، contingency_buffer_lamports=10000، hop_slippage_bps=10 عبر base/example/development/production/staging مع سماح بحذف المفتاح في overlays فقط؛ (2) graph_horizon_is_coherent_with_state_age_everywhere: graph_max_age_slots >= max_state_age_slots في كل ملف؛ (3) code_defaults_match_base_toml: يقرأ AppConfig::default_safe().strategy فعليًا ويطابقه مع base.toml)`
 - [x] توثيق كل Config Field. `(config/config.schema.json + doc comments على الحقول)`
 - [ ] توثيق Units لكل رقم. `(PARTIAL — schema يوثق lamports/bps للحقول الحرجة — config.schema.json:79-100 + تعليقات units في base.toml:64-65؛ تغطية غير كاملة لكل الحقول)`
 - [x] التحقق من Valid Ranges. `(arb-config/src/validation.rs:19 — validate() مع قيود زمنية وأمنية)`
-- [ ] مراجعة ملفات Rust الأكبر من 1000 سطر. `(PARTIAL — 7 ملفات فوق العتبة: registry.rs 2861, dlmm.rs 1994, helius_ws.rs 1929, rpc_pool.rs 1736, arb-types/lib.rs 1678, arb-engine/lib.rs 1495, compiler.rs 1484؛ لم تُقسّم بعد)`
+- [ ] مراجعة ملفات Rust الأكبر من 1000 سطر. `(PARTIAL — تقسيم مقسّم على 7 مراحل، 2/7 مكتمل: arb-types/lib.rs 1678→102+5 و Modules؛ arb-ingest/registry.rs 2861→registry 203 + fetcher 300 + decoders 1532 + hydration 861 مع glob re-exports تحفظ كل مسارات arb_types::/arb_ingest:: العامة؛ 1195 اختبار ناجح، clippy صفر تحذيرات. متبقٍ 5 ملفات: dlmm.rs 1994, helius_ws.rs 1929, rpc_pool.rs 1736, arb-engine/lib.rs 1495, compiler.rs 1484)`
 - [x] تقسيم Supervisor إلى Modules واضحة. `(supervisor/{dispatch,execution,opportunity,recovery,run,strategy}.rs — فصل واضح للمسؤوليات)`
-- [ ] إزالة Dead Code. `(PARTIAL — 11 موضع allow(dead_code) فقط في workspace؛ لم تُراجع كلها)`
-- [ ] إزالة Duplicate RPC Calls. `(PARTIAL — shared_dispatch_client process-wide + RpcPool موحد؛ لم يُثبت صفر تكرار)`
+- [x] إزالة Dead Code. `(FIXED — 12/17 موضعاً أُزيلت بإزالة الكود الميت نفسه: JitoLander.max_retries (حقل غير مقروء)، bitquery OAuth expires_in/token_type (حقول Deserialize غير مقروءة)، decode_token_amount (نُقل إلى mod tests — كان يستخدمه اختبار فقط)، decode_account_data في route_worker (بلا نداء)، RouteArchitectWorker side المُنفصل (rpc_pool/new/start_worker_loop/stop — بلا نداءات، حلقة الـ worker disabled أصلاً)، assert_pump_fun_fail_closed helper (بلا نداء)؛ و5 مواضع allow(dead_code) قديمة أُزيلت لأن الدوال مستخدمة فعلياً: daily_report×5، supervisor jito_lander+simulator، registry الاختباري. المتبقي 3 مواضع موثقة بعلة: arb-engine tests/common (harness-wide اختباري) و2 في dispatch.rs بعلة مكتوبة)`
+- [x] إزالة Duplicate RPC Calls. `(VERIFIED — docs/audit/RPC_CALL_AUDIT.md: جرد شامل لكل مواضع RPC في مسار التشغيل الحي — startup-only، freshness-gated، batched، أو cached؛ RpcPool هو نقطة بناء العميل الوحيدة + shared_dispatch_client process-wide؛ قراءات store الذاكرية بلا RPC؛	write_version=1 على لقطات HTTP موثقة كترتيبية token وليست تزويراً للمصدر)`
 - [x] إزالة Duplicate Fee Logic. `(مصدر واحد: total_priority_fee_lamports — adaptive.rs:202 + cap_cu_price_by_profit هو المكان الوحيد للسقف — cu.rs:29-38)`
-- [ ] إزالة Magic Constants. `(PARTIAL — الثوابت الحرجة في arb-constants؛ بقيت أرقام inline في dispatch/strategy لم تُستخرج كلها)`
+- [x] إزالة Magic Constants. `(FIXED — ثوابت الـ freshness الحرجة في مسار Kamino flash-liquidity استُخرجت إلى arb-constants: KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS (1000)، KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS (5000)، KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS (1500) — used in supervisor/execution.rs + run.rs؛ الثوابت المتبقية في dispatch/strategy موثقة بأسماء محلية أو مقاييس قابلة للقياس)`
 - [x] إصلاح Clippy Warnings. `(CI يفرض -D warnings — rust-ci.yml:50؛ build نظيف)`
 - [x] إصلاح Formatting. `(CI يفرض cargo fmt --check — rust-ci.yml:41)`
 - [x] إصلاح Docker Build. `(PR #53 — feature shadow-only=[] + gate compile-time في main.rs يجبر mode=simulate ويتجاهل ARB_MODE/ARB_LIVE؛ cargo check -p arb-bot --features shadow-only نظيف)`

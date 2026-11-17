@@ -226,7 +226,9 @@ fn init_event_logger() {
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
 
-    let stdout_layer = fmt::layer().with_target(true).with_ansi(true);
+    let json_format = std::env::var("LOG_FORMAT")
+        .map(|v| v.trim().eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
 
     match OpenOptions::new()
         .create(true)
@@ -242,26 +244,51 @@ fn init_event_logger() {
                 std::path::PathBuf::from(&log_file_path),
                 file_writer.clone(),
             );
-            let file_layer = fmt::layer()
-                .with_target(true)
-                .with_ansi(false)
-                .with_writer(file_writer);
-
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(stdout_layer)
-                .with(file_layer)
-                .init();
-            tracing::info!(
-                "Detailed event logging active: console + file '{}'",
-                log_file_path
-            );
+            if json_format {
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt::layer().json().flatten_event(true).with_ansi(true))
+                    .with(
+                        fmt::layer()
+                            .json()
+                            .flatten_event(true)
+                            .with_ansi(false)
+                            .with_writer(file_writer),
+                    )
+                    .init();
+                tracing::info!(
+                    "Structured JSON event logging active: console + file '{}'",
+                    log_file_path
+                );
+            } else {
+                let stdout_layer = fmt::layer().with_target(true).with_ansi(true);
+                let file_layer = fmt::layer()
+                    .with_target(true)
+                    .with_ansi(false)
+                    .with_writer(file_writer);
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(stdout_layer)
+                    .with(file_layer)
+                    .init();
+                tracing::info!(
+                    "Detailed event logging active: console + file '{}'",
+                    log_file_path
+                );
+            }
         }
         Err(e) => {
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(stdout_layer)
-                .init();
+            if json_format {
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt::layer().json().flatten_event(true).with_ansi(true))
+                    .init();
+            } else {
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt::layer().with_target(true).with_ansi(true))
+                    .init();
+            }
             tracing::warn!(
                 "Failed to open log file '{}': {}. Logging to stdout only.",
                 log_file_path,

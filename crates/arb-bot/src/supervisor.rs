@@ -64,7 +64,6 @@ pub struct Supervisor {
     ingest: Arc<IngestClient>,
     graph: parking_lot::Mutex<MarketGraph>,
     risk_gate: Arc<RiskGate>,
-    #[allow(dead_code)] // wired into dispatch when Jito bundles are enabled
     jito_lander: JitoLander,
     tip_strategy: TipStrategy,
     registry: Arc<parking_lot::RwLock<arb_ingest::MultiDexRegistry>>,
@@ -72,9 +71,10 @@ pub struct Supervisor {
     /// dependency gate. Registered lazily per pool from the same manifest
     /// builder that drives subscriptions.
     dependency_manifests: parking_lot::Mutex<arb_ingest::DependencyManifestRegistry>,
-    /// Recent landed compute-unit prices for adaptive priority fee.
-    recent_landed_cu: Vec<u64>,
-    #[allow(dead_code)]
+    /// Recent landed compute-unit prices (µlamports/CU) for adaptive priority fee.
+    /// Bounded window fed ONLY by confirmed landings (dispatch.rs) — the p75+25%
+    /// escalation in `adaptive_cu_price` never sees unconfirmed prices.
+    recent_landed_cu: Arc<parking_lot::Mutex<Vec<u64>>>,
     simulator: Simulator,
     store: Arc<dyn Store>,
     telegram: TelegramNotifier,
@@ -239,7 +239,7 @@ impl Supervisor {
         );
 
         // No synthetic CU seed: adaptive CU pricing learns only from measured observations.
-        let recent_landed_cu = Vec::<u64>::new();
+        let recent_landed_cu = Arc::new(parking_lot::Mutex::new(Vec::<u64>::new()));
 
         let jito_lander = JitoLander::new(config.jito.regions.clone());
 
@@ -510,6 +510,8 @@ impl Supervisor {
                 fork_invalidations_total: arb_metrics::get_fork_invalidations_total(),
                 resyncs_total: arb_metrics::get_resyncs_total(),
                 stream_gaps_total: arb_metrics::get_stream_slot_gaps_total(),
+                process_rss_bytes: arb_metrics::get_process_rss_bytes(),
+                process_cpu_percent: arb_metrics::get_process_cpu_percent(),
                 decode_errors_total: arb_metrics::get_decode_errors_total(),
             },
             providers_health: serde_json::to_value(self.rpc_pool.health_snapshot()).ok(),
@@ -724,6 +726,54 @@ impl Supervisor {
             guard.remove(0);
         }
         guard.push(rejected);
+    }
+
+    /// Daily aggregated operations report (checklist 637): durable today-PnL
+    /// from the store + rejection-ring breakdown + stream-integrity counters.
+    /// Written to `data/daily_report_<date>.json` and pushed to Telegram when
+    /// configured (send_message no-ops without credentials).
+    pub async fn emit_daily_report(&self, current_slot: u64) {
+        let date = crate::daily_report::current_utc_date();
+        let pnl = self.store.pnl_daily("today").unwrap_or_else(|e| {
+            warn!("daily report: pnl_daily failed: {}", e);
+            arb_store::PnlDaily {
+                realized_net: arb_types::Lamports(0),
+                attempts: 0,
+                successful: 0,
+            }
+        });
+        let dropped_recent = self.recent_dropped.lock().len() as u64;
+        let rejections: Vec<crate::daily_report::RejectionReasoning> = {
+            let guard = self.recent_rejected.lock();
+            guard
+                .iter()
+                .map(|r| crate::daily_report::RejectionReasoning {
+                    stage: r.stage.clone(),
+                    reason: r.reason.clone(),
+                })
+                .collect()
+        };
+        let rejected_recent = rejections.len() as u64;
+        let report = crate::daily_report::build_daily_report(
+            date.clone(),
+            current_slot,
+            pnl,
+            dropped_recent,
+            rejected_recent,
+            &rejections,
+            arb_metrics::get_opportunities_total(),
+            arb_metrics::get_stream_slot_gaps_total(),
+        );
+        let _ = std::fs::create_dir_all("data");
+        let path = format!("data/daily_report_{date}.json");
+        match std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).unwrap_or_default(),
+        ) {
+            Ok(_) => info!("daily report written to {}", path),
+            Err(e) => warn!("daily report write failed ({}): {}", path, e),
+        }
+        self.telegram.send_message(&report.render_text()).await;
     }
 
     /// Periodic 5-minute digest with detailed lists of successful, dropped, and rejected trades,

@@ -183,6 +183,48 @@ fix the sites (`LINT-02`). Test-only code is not exempt: it is compiled and run
 by CI, and lint drift hides real breakage. No crate-level lint suppressions were
 added.
 
+## D-18 - No automatic same-slot re-dispatch of a dropped Jito bundle (Domain 13, checklist 504)
+
+**Context:** when a Jito bundle comes back `Dropped` (landed nowhere: neither the
+block-engine nor the shared RPC shows it on-chain after its expiry) the dispatcher
+currently records the outcome and moves on. The open question was whether the
+bundle should be re-submitted automatically in the same slot.
+
+**Decision:** no automatic same-slot re-dispatch of a dropped bundle.
+
+1. **Economic edge decay** — an atomic-arb opportunity is priced against pool
+   state at capture time. By the time a bundle is observable as dropped, the
+   slot has usually advanced past the pools' competing activity (or the loss
+   landed in the mempool); re-sending the same signed transaction into the
+   same slot does not re-validate the economics that approved it.
+2. **Duplicate-fill risk** — the dropped verdict is indistinguishable from
+   "landed but the poll raced" at dispatch time. Re-submitting on that signal
+   risks a second landing of the same atomic borrow/repay (double fee, double
+   slippage) with no profit re-check. This is exactly the retry ambiguity the
+   retry best practices describe, resolved by on-chain evidence only.
+3. **Retry ladder already covers escalation** — tip escalation across
+   *opportunities* is the sanctioned congestion response
+   (`previous_tips` — `dispatch.rs`, capped by
+   `a_retry_cannot_escalate_past_the_ladder_cap` — `jito_service.rs`).
+4. **Reconciliation governs any resubmit** — `recovery.rs` never resubmits
+   automatically; any retry after restart requires proven expiry
+   (`lastValidBlockHeight` vs live `getBlockHeight`) plus on-chain
+   `getSignatureStatuses`. Extending automatic dispatch would create a second,
+   weaker path around that gate.
+
+**Contract:** a dropped bundle produces `record_execution_result(false)` (and its
+`DroppedTradeSummary`), the opportunity is not re-priced, and the same slot
+never receives an automatic retry of the same signature.
+
+**Residual:** a *newly re-quoted* opportunity on the same route is unaffected —
+the engine keeps producing candidates; each one is re-priced from live state and
+re-enters the ladder normally. If a future design wants same-slot re-send, it
+must add (a) an on-chain non-evidence check for the signature, (b) a re-quote of
+repeat economics, and (c) a duplicate-landing guard — none of which exist today.
+
+**Status:** decision documented in this session; behaviour already matches the
+contract in dispatch (no same-slot resubmit path exists).
+
 ## Open conflicts for the owner
 
 1. Confirm the license choice.

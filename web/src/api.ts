@@ -66,7 +66,16 @@ export interface ObservabilitySnapshot {
   fork_invalidations_total: number;
   resyncs_total: number;
   stream_gaps_total: number;
+  process_rss_bytes: number;
+  process_cpu_percent: number;
   decode_errors_total: number;
+}
+
+export interface HopQuoteRecord {
+  protocol: string;
+  pool: string;
+  amount_in: number;
+  amount_out: number;
 }
 
 export interface OpportunityRecord {
@@ -80,6 +89,7 @@ export interface OpportunityRecord {
   net_profit_lamports: number;
   eligible: boolean;
   reject_reason: string | null;
+  hop_quotes?: HopQuoteRecord[];
 }
 
 export interface ExecutionRecord {

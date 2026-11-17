@@ -18,6 +18,7 @@ impl Supervisor {
         // vaults, both mints and canonical Pump Fees FeeConfig at coherent slots.
         // The graph uses a conservative whole-BPS fee for candidate discovery;
         // exact route validation remains protocol-adapter driven.
+        let state_start = std::time::Instant::now();
         let pump_swap_report = self
             .ingest
             .refresh_pump_swap_states(self.config.strategy.max_state_age_slots);
@@ -64,6 +65,7 @@ impl Supervisor {
         let quote_ingest_time = std::time::Instant::now();
         let market_snap = self.ingest.snapshot();
         let pools: Vec<PoolState> = market_snap.snapshot_pools();
+        arb_metrics::observe_state_processing_latency_us(state_start.elapsed().as_micros() as f64);
         // Track live SOL price from any active SOL-USDC pool (Raydium, Orca, Meteora).
         // Using all three venues improves price freshness and cross-checks accuracy.
         let wsol_str = arb_tx::WSOL_MINT;
@@ -103,6 +105,8 @@ impl Supervisor {
                 *self.last_known_live_sol_price.write() = mkt_price;
             }
         }
+
+        let discovery_start = std::time::Instant::now();
 
         // 2. Update Graph using fresh states only. Trade sizing is governed by RiskGate.
         // Finite WSOL-denominated candidate ceiling derived from the
@@ -217,7 +221,10 @@ impl Supervisor {
                     min_spread_bps: dcp_cfg.min_spread_bps,
                     min_liquidity_bin_raw: dcp_cfg.min_liquidity_bin_raw,
                 };
-                graph.find_cross_pool_dlmm_cycles(current_slot, max_sizing, &cfg)
+                let t_exact = std::time::Instant::now();
+                let res = graph.find_cross_pool_dlmm_cycles(current_slot, max_sizing, &cfg);
+                arb_metrics::observe_exact_quote_latency_us(t_exact.elapsed().as_micros() as f64);
+                res
             };
             let mut cross_opps = scan.opportunities;
             let cross_stats = scan.stats;
@@ -324,6 +331,9 @@ impl Supervisor {
             (merged, seen_pool_sets)
         };
         let (mut merged, mut seen_pool_sets) = opportunities;
+        arb_metrics::observe_route_discovery_latency_us(
+            discovery_start.elapsed().as_micros() as f64
+        );
 
         // ── Meteora 3-leg (WSOL -> A -> B -> WSOL) pipeline ──
         // Third candidate class: three distinct DLMM pools on Meteora,
@@ -378,6 +388,21 @@ impl Supervisor {
                     gross_profit_lamports: 0,
                     net_profit_lamports: o.net_profit.0 as i64,
                     eligible: true,
+                    hop_quotes: o
+                        .hops
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, h)| {
+                            let amount_in = *o.hop_inputs.get(i)?;
+                            let amount_out = *o.hop_inputs.get(i + 1)?;
+                            Some(crate::control_service::HopQuoteRecord {
+                                protocol: format!("{:?}", h.protocol),
+                                pool: h.pool_id.0.to_string(),
+                                amount_in,
+                                amount_out,
+                            })
+                        })
+                        .collect(),
                     reject_reason: None,
                 });
             }
@@ -449,6 +474,7 @@ impl Supervisor {
                         gross_profit_lamports: 0,
                         net_profit_lamports: t.working_capital_eval.net_profit_lamports,
                         eligible: t.working_capital_eval.is_executable,
+                        hop_quotes: Vec::new(),
                         reject_reason: if t.working_capital_eval.is_executable {
                             None
                         } else {

@@ -368,8 +368,15 @@ impl Supervisor {
 
                 if sim_enabled {
                     // RPC simulation: fail-closed safety check before dispatch
+                    let sim_started = std::time::Instant::now();
                     match self.simulator.simulate_async(tx_bytes.as_slice()).await {
                         Ok(sim_res) => {
+                            let sim_us = sim_started.elapsed().as_micros() as f64;
+                            arb_metrics::observe_simulation_latency_us(sim_us);
+                            debug!(
+                                "Pre-flight simulation latency: {:.0} µs (CU={:?})",
+                                sim_us, sim_res.units_consumed
+                            );
                             if sim_res.success && sim_res.units_consumed > 0 {
                                 self.measured_cu.lock().insert(
                                     route_sig.to_owned(),
@@ -421,8 +428,12 @@ impl Supervisor {
                             let max_version = arb_tx::rpc_max_supported_version_from_wire(tx_bytes)
                                 .ok()
                                 .flatten();
+                            let sim_started = std::time::Instant::now();
                             match self.rpc_pool.simulate_transaction(&b64, max_version).await {
                                 Ok(sim_val) => {
+                                    arb_metrics::observe_simulation_latency_us(
+                                        sim_started.elapsed().as_micros() as f64,
+                                    );
                                     let sim_err = sim_val.get("err").and_then(|ev| {
                                         if ev.is_null() {
                                             None
@@ -738,6 +749,8 @@ impl Supervisor {
                         let rtt_ms = rtt.as_secs_f64() * 1000.0;
                         let land_start = std::time::Instant::now();
                         let recent_landed_task = self.recent_landed.clone();
+                        let recent_landed_cu_task = self.recent_landed_cu.clone();
+                        let encoded_cu_price_task = cu_price;
                         let recent_dropped_task = self.recent_dropped.clone();
                         let control_task = self.control().cloned();
                         let payer_pubkey_task = payer.to_string();
@@ -822,6 +835,14 @@ impl Supervisor {
                             let effective_slot = landed_slot.unwrap_or(slot_val);
                             match status {
                                 arb_land::LandStatus::Landed => {
+                                    // Feed the landed CU price (the number actually
+                                    // encoded on a confirmed bundle) into the bounded
+                                    // window behind `adaptive_cu_price` — the only
+                                    // confirmed-price source this ever consumes.
+                                    arb_land::record_landed_cu_price(
+                                        &mut recent_landed_cu_task.lock(),
+                                        encoded_cu_price_task,
+                                    );
                                     let mut onchain_cu: Option<u64> = None;
                                     if let Some(ref sig) = tx_signature {
                                         if let Ok(Some(meta)) =
