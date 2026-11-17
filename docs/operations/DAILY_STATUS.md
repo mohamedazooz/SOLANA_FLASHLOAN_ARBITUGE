@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-12 commit (this push) — docs(audit): rpc duplicate-call audit 654 — 451/495
+* **Commit:** batch-13 commit (this push) — refactor(types): split arb-types into responsibility submodules — 651 (1/7) — 451/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -121,9 +121,18 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 12: 451 / 495 — 44 remaining.**
 
+### Batch 13 — checklist 651 progress (1/7 files) (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 651 — arb-types/lib.rs split (1678 → 102-line lib) | Module split by responsibility: `primitives.rs` (Lamports..MintId, UsdMicros), `dex.rs` (DexProtocol, TokenProgramKind, Raydium/PumpSwap versions/intents, PoolExecutionAccounts), `pool.rs` (PoolKind/Curve/Snapshot, PlannedHop, CostBreakdown, SizedOpportunity, CLMM/DLMM/PumpFun state, SwapQuote, ArbRoute, HopExecutionPlan), `execution.rs` (tip market, posteriors, TipDecision/TipPlan, InflightStatus), `error.rs` (Result + ArbError). `lib.rs` keeps `pub use submodule::*;` glob re-exports so every historical `arb_types::X` path is preserved with zero downstream churn; submodules use explicit `use super::<sibling>::*;` (proven: circular glob `use super::*` does not resolve). Fixed 6× E0425 (`error.rs` missing primitives import) + pruned 7 unused-import warnings. Full gate: fmt, clippy `-D warnings` clean, `cargo test --workspace --all-targets` = **1195 passed / 0 failed**. **Item stays `[ ]` PARTIAL** — 6 files remain >1000 lines | `crates/arb-types/src/{lib,primitives,dex,pool,execution,error}.rs` |
+
+**Checklist after batch 13: 451 / 495 — 44 remaining** (651 stays `[ ]` PARTIAL; no counter change without complete evidence).
+
 ### Checklist ledger
 
 * Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653, 570, 571, 572, 654.
+* In progress: 651 (1/7 files split).
 
 ## Problems discovered (this session)
 
