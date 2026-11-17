@@ -199,3 +199,149 @@ pub fn damm_v2_virtual_reserves(sqrt_price_x64: u128, liquidity: u128) -> (u128,
         u128::try_from(r_b).unwrap_or(u128::MAX),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fee_bps_from_cliff_numerator() {
+        // 10_000_000 / 1e9 = 1% = 100 bps.
+        let f = DammV2FeeParams {
+            cliff_fee_numerator: 10_000_000,
+            ..Default::default()
+        };
+        assert_eq!(f.fee_bps(0, 0), 100);
+    }
+
+    #[test]
+    fn fee_bps_rounds_up_to_never_understate() {
+        // 1 lamport of 1e9 fee = 0.0000001% -> ceil to at least 1 bps? No:
+        // 1 * 10_000 / 1e9 ceil = 1 (since div_ceil of 0.00001 -> 1).
+        let f = DammV2FeeParams {
+            cliff_fee_numerator: 1,
+            ..Default::default()
+        };
+        assert_eq!(f.fee_bps(0, 0), 1);
+    }
+
+    #[test]
+    fn effective_fee_is_capped_at_fifty_percent() {
+        let f = DammV2FeeParams {
+            cliff_fee_numerator: u64::MAX,
+            dynamic_fee_initialized: true,
+            variable_fee_control: u32::MAX,
+            volatility_accumulator: u128::MAX,
+            ..Default::default()
+        };
+        assert_eq!(f.effective_fee_numerator(0, 0), DAMM_V2_MAX_FEE_NUMERATOR);
+        assert_eq!(f.fee_bps(0, 0), 5_000);
+    }
+
+    #[test]
+    fn linear_scheduler_reduces_fee_by_periods_passed() {
+        // cliff 1%, reduction 100_000/1e9 per period, 2 periods passed.
+        let f = DammV2FeeParams {
+            cliff_fee_numerator: 10_000_000,
+            fee_scheduler_mode: 0,
+            number_of_period: 5,
+            period_frequency: 10,
+            reduction_factor: 100_000,
+            ..Default::default()
+        };
+        // 0 elapsed -> no reduction.
+        assert_eq!(f.effective_fee_numerator(0, 0), 10_000_000);
+        // 25 elapsed -> 2 full periods -> 10_000_000 - 200_000.
+        assert_eq!(f.effective_fee_numerator(25, 0), 9_800_000);
+        // Elapsed beyond all periods clamps at number_of_period.
+        assert_eq!(f.effective_fee_numerator(1_000, 0), 9_500_000);
+    }
+
+    #[test]
+    fn quote_rejects_fee_at_or_above_denominator() {
+        assert!(
+            quote_damm_v2_exact_in(1_000, true, 1 << 64, 1_000, 0, 0, DAMM_V2_FEE_DENOMINATOR)
+                .is_none()
+        );
+        assert!(quote_damm_v2_exact_in(1_000, true, 1 << 64, 1_000, 0, 0, u128::MAX).is_none());
+    }
+
+    #[test]
+    fn quote_zero_inputs_or_liquidity_yields_zero() {
+        assert_eq!(
+            quote_damm_v2_exact_in(0, true, 1 << 64, 1_000, 0, 0, 0),
+            Some(0)
+        );
+        assert_eq!(
+            quote_damm_v2_exact_in(1_000, true, 0, 1_000, 0, 0, 0),
+            Some(0)
+        );
+        assert_eq!(
+            quote_damm_v2_exact_in(1_000, true, 1 << 64, 0, 0, 0, 0),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn quote_both_directions_agree_with_virtual_reserves_for_small_trades() {
+        // Full-range pool: sqrt_price = 1.0 (Q64.64), L = 1e12.
+        let (sp, l) = (1u128 << 64, 1_000_000_000_000u128);
+        let (r_a, r_b) = damm_v2_virtual_reserves(sp, l);
+        // r_a == r_b == L at sqrt_price 1.0.
+        assert_eq!(r_a, l);
+        assert_eq!(r_b, l);
+
+        let dx = 1_000u64;
+        let out_a_to_b = quote_damm_v2_exact_in(dx, true, sp, l, 0, 0, 0).expect("quote");
+        let out_b_to_a = quote_damm_v2_exact_in(dx, false, sp, l, 0, 0, 0).expect("quote");
+        // Symmetric reserves -> symmetric quotes (constant-product invariant,
+        // small rounding drift from the sqrt formulation is <= 1 unit).
+        assert!(
+            out_a_to_b.abs_diff(out_b_to_a) <= 1,
+            "a_to_b={out_a_to_b} b_to_a={out_b_to_a}"
+        );
+        // Constant-product sanity: dx * (r_b - out) approx out * (r_a + dx).
+        assert!(out_a_to_b > 0 && out_a_to_b < dx);
+    }
+
+    #[test]
+    fn price_impact_is_monotone_in_amount() {
+        // Amounts far above the 1-unit truncation floor so the monotone
+        // price-impact signal is not drowned by integer rounding.
+        let (sp, l) = (1u128 << 64, 1_000_000_000_000_000u128);
+        let small = quote_damm_v2_exact_in(1_000_000_000, true, sp, l, 0, 0, 0).unwrap();
+        let large = quote_damm_v2_exact_in(100_000_000_000, true, sp, l, 0, 0, 0).unwrap();
+        let rate_small = small as f64 / 1_000_000_000.0;
+        let rate_large = large as f64 / 100_000_000_000.0;
+        assert!(
+            rate_large < rate_small,
+            "larger trade must get a worse rate"
+        );
+    }
+
+    #[test]
+    fn range_clamp_limits_max_output() {
+        // Bounded range: selling B cannot push sqrt_price past sqrt_max.
+        let (sp, l) = (1u128 << 64, 1_000_000_000_000u128);
+        let sqrt_max = (1u128 << 64) + (1u128 << 32);
+        let unbounded = quote_damm_v2_exact_in(u64::MAX, false, sp, l, 0, 0, 0).unwrap();
+        let bounded = quote_damm_v2_exact_in(u64::MAX, false, sp, l, 0, sqrt_max, 0).unwrap();
+        assert!(bounded < unbounded, "range cap must reduce max output");
+        assert!(bounded > 0);
+    }
+
+    #[test]
+    fn fees_on_input_and_output_are_close_for_small_fees() {
+        let (sp, l) = (1u128 << 64, 1_000_000_000_000u128);
+        let dx = 1_000_000u64;
+        let fee = 5_000_000u128; // 0.5%
+        let on_output =
+            quote_damm_v2_exact_in_with_fee_mode(dx, false, sp, l, 0, 0, fee, false).unwrap();
+        let on_input =
+            quote_damm_v2_exact_in_with_fee_mode(dx, false, sp, l, 0, 0, fee, true).unwrap();
+        // Same fee rate applied at either end differs only by second-order
+        // price-impact on the (smaller) effective input.
+        assert!(on_input <= on_output);
+        assert!(on_output - on_input <= on_output / 1_000 + 1);
+    }
+}

@@ -57,12 +57,12 @@
 ### التقدم الحالي
 
 - **150 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **345** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG16؛ ما زالت G5 وG6 وG9 وG11 وG12 وG13 وG14 فجوات مؤكدة، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **345** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG16؛ ما زالت G5 وG6 وG9 وG12 وG13 وG14 فجوات مؤكدة، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
 - `cargo build --workspace`: نجح (0 أخطاء).
-- `cargo test --workspace --all-targets`: **1104 اختبار ناجح، 0 فشل** (بعد PR #57 + إصلاحات G16/G8/G7؛ كان 1094) عبر 88 test binary.
+- `cargo test --workspace --all-targets`: **1132 اختبار ناجح، 0 فشل** (بعد PR #57 + إصلاحات G16/G8/G7/G11؛ كان 1094) عبر 88 test binary.
 - CI يفرض `cargo fmt --check` و `cargo clippy --workspace --all-targets -- -D warnings` و `cargo-deny` (rust-ci.yml).
 
 ### فجوات مؤكدة (CONFIRMED — لم تُعلَّم [x])
@@ -79,7 +79,7 @@
 | G8 | **FIXED/TESTED**: gating ثنائي لـ slotSubscribe — env `WS_SLOT_SUBSCRIBE` + رفض حي (id=1) يعطّل slot sub فقط دون `endpoint_unsupported`؛ slot freshness يعتمد context.slot من accountNotification | helius_ws.rs — اختباران جديدان |
 | G9 | لا يوجد cargo-fuzz harness منفصل — لكن proptest fuzzing suite موجود (500 cases، 4 crates) | `arb-math/tests/fuzzing_suite.rs` + proptest في arb-config/arb-dex/arb-tx |
 | G10 | **FIXED (CI step added)**: job `secrets` في rust-ci.yml — gitleaks-action@v2، fetch-depth: 0 (تاريخ كامل)، GITLEAKS_CONFIG=.gitleaks.toml؛ سياسة PR #53 تبقي كل قواعد default نشطة وallowlist ضيّق فقط | rust-ci.yml — التحقق النهائي عند أول تشغيل CI لهذا PR |
-| G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
+| G11 | **FIXED/TESTED**: unit tests لكل من `damm_v2` (10: fee bps/ceil، cap 50%، linear scheduler، رفض fee≥denominator، صفر/سيولة، تناظر الاتجاهين مع virtual reserves، monotonicity، range clamp، fee mode على الدخل/المخرج)، `launchlab` (10: رسم الدخل المسبق مع إعادة حساب مستقلة، ثابت x·y=k الرسمي من docs.raydium.io، caps real reserves، round-trip خسارة صارمة، monotonicity)، `pump_fun_raydium` (8: ceil rounding، fee floor، رفض reserves منحلة، لا optimum عند تساوي الأسعار، اتساق داخلي للـ trade، bracketing للـ optimum عبر verify_marginal_decreasing) — 28 اختباراً جديداً | `cargo test -p arb-math --lib`: 148 passed / 0 failed |
 | G13 | عرض Jito Status غير موجود في Dashboard (Executions.tsx لا يعرض bundle/status) | `web/src/components/Executions.tsx` |
 | G14 | عرض Rejection Reasons غير موجود في Dashboard (يظهر في Telegram فقط) | `web/src/components/*.tsx` |
 | G15 | **FIXED/TESTED (PR #55, commit 92e1612)** — **تم تشخيصه بدقة (تصحيح التشخيص الأول)**: سبب الرفض الحي ليس الـ wire encoder — الـ encoder مطابق بايت-بايت للتنفيذ الرسمي `solana-message::v1` (تمت مقارنة كل الحقول: header/mask/lifetime/addresses/config-values/instruction-headers/payloads/signature-at-tail). السبب المؤكد تجريبياً: قيمة `loaded_accounts_data_size_limit` القريحة في الـ config. القياس الحي على mainnet (Agave 4.4.1): عمود kamino flash يحمّل فعلياً **10,714,291 بايت (~10.2MiB)** لأن بيانات البرامج التنفيذية (klend + SPL Token + ATA) تُحتسب ضمن الحد؛ أي حد < ~10.72MiB يُرفض فوراً بـ `MaxLoadedAccountsDataSizeExceeded` عند units=0 قبل تنفيذ أي instruction. مغلف V1 بحد 64MiB (67,108,864) مرّ المحاكاة الحية err=None. مسارات الإنتاج الصحيحة (opportunity.rs:1050,1108 وselection.rs:481 وtemplate.rs:529) تستخدم 64MiB؛ المسارات المعطوبة: `dlmm_4leg_flash_arb.rs:621,704`=256,000 و`compiler.rs:1047`=262,144 و`dlmm_3leg_flash_arb.rs:531`=1,048,576 — كلها ستُرفض حياً — **أُصلحت كلها في PR #55** بثابت `V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT=67,108,864` + 5 اختبارات wire-decoding regression (`v1_loaded_data_limit_regression.rs`)؛ `meteora_atomic_builder.rs:53` (8MiB) أُصلحت أيضاً | دليل حي 2026-11-17 على Solami Agave 4.4.1: limit=64MiB → err=None loaded=10,714,291؛ limit=4MiB/1MiB/256KiB/32KiB → err=MaxLoadedAccountsDataSizeExceeded units=0 (مكرر 4 مرات)؛ v0 sig 5w9k6SeA…gX finalized |
