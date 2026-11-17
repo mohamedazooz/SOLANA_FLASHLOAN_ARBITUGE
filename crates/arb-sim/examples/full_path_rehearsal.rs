@@ -217,7 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipeline = MeteoraDlmmFreshStatePipeline::new(rpc.clone(), pipeline_cfg);
 
     // ── 4. Flash evaluation sweep across all candidate pairs ─────────────────
-    let flash_cfg = DlmmFlashArbConfig {
+    let mut flash_cfg = DlmmFlashArbConfig {
         allowlist: DlmmPoolAllowlist::default(),
         min_borrow: 10_000_000,                    // 0.01 SOL
         max_borrow: 100_000_000,                   // 0.10 SOL
@@ -227,6 +227,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kamino: KaminoFlashParams::for_user(signer.pubkey()),
         ..Default::default()
     };
+    // Optional non-WSOL borrow asset (FLASH_BORROW_MINT + decimals). The
+    // Kamino reserve/vaults must be overridden too, or evaluate() fails
+    // closed with FLASH_MINT_RESERVE_MISMATCH.
+    match arb_engine::flash_borrow_mint_from_env_value(
+        std::env::var("FLASH_BORROW_MINT").ok().as_deref(),
+        std::env::var("FLASH_BORROW_MINT_DECIMALS").ok().as_deref(),
+    ) {
+        Ok(Some((mint, decimals))) => {
+            flash_cfg.flash_mint = mint;
+            flash_cfg.flash_mint_decimals = decimals;
+        }
+        Ok(None) => {}
+        Err(e) => return Err(e.into()),
+    }
 
     let loops: usize = std::env::var("REHEARSAL_LOOPS")
         .ok()

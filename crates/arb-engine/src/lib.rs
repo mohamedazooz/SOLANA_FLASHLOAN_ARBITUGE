@@ -28,6 +28,7 @@ pub mod dlmm_flash_arbitrage;
 pub use dlmm_flash_arbitrage::{
     DlmmFlashArbConfig, DlmmFlashArbEvaluation, DlmmFlashArbEvaluator, DlmmFlashArbPool,
     DlmmFlashArbRoute, DlmmHopQuote, DlmmPoolAllowlist, FlashArbRejection, enumerate_routes,
+    flash_borrow_mint_from_env_value,
 };
 pub mod meteora_pair_discovery;
 pub use meteora_pair_discovery::{

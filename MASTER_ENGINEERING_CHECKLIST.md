@@ -57,12 +57,12 @@
 ### التقدم الحالي
 
 - **157 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **338** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 وG6 وG9 وG12 فجوات مؤكدة (G13/G14 أُصلحت)، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **338** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 وG9 وG12 فجوات؛ G6 صارت PARTIAL (حارس mismatch + env override)، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
 - `cargo build --workspace`: نجح (0 أخطاء).
-- `cargo test --workspace --all-targets`: **1134 اختبار ناجح، 0 فشل** (بعد PR #57 + إصلاحات G16/G8/G7/G11؛ كان 1094) عبر 88 test binary.
+- `cargo test --workspace --all-targets`: **1137 اختبار ناجح، 0 فشل** (بعد PR #57 + إصلاحات G16/G8/G7/G11؛ كان 1094) عبر 88 test binary.
 - CI يفرض `cargo fmt --check` و `cargo clippy --workspace --all-targets -- -D warnings` و `cargo-deny` (rust-ci.yml).
 
 ### فجوات مؤكدة (CONFIRMED — لم تُعلَّم [x])
@@ -74,7 +74,7 @@
 | G3 | **FIXED/TESTED (PR #56, commit 804d386)**: `QuoteReadinessContext`/`DependencyManifest` مربوطة — بوابة `validate_route_account_dependencies` في `process_opportunities` (opportunity.rs:75) تستدعي `quote_dependencies_for_route` مع manifests من `manifest_for_registered_pool` (مصدر وحيد)؛ + إصلاح provenance في `helius_ws.rs` (provider_id من yellowstone بدل ProviderId(2) الثابت) | `supervisor/opportunity.rs:75,1424`, `arb-ingest/src/lib.rs:766` |
 | G4 | **MITIGATED/VERIFIED (PR #53 + PR #56)**: reconcile sweep دوري بحد أدنى 30s بدل كل slot notification؛ والبوابات الجديدة (G2/G3) تمنع أي حالة قديمة من الوصول للتسعير/التنفيذ. الحد المتبقي: vault updates للـ DLMM/CLMM/Orca/PumpFun ما زالت عبر hydration وليست streams | `supervisor/run.rs` — min_gap reconciliation |
 | G5 | Solami Mirage parser لا يستخرج حقول protobuf حقيقية: يستخدم `latest_slot` محلي، `pubkey: None`, `write_version: None`، وغير موصّل بالبوت | `solami_mirage.rs:138-140` |
-| G6 | أصل الاقتراض hardcoded WSOL فقط دون تقييم باقي reserves | `dlmm_flash_arbitrage.rs:306` |
+| G6 | **PARTIAL/MITIGATED**: حارس fail-closed جديد `flash_mint_matches_kamino_reserve()` — أي config بـ flash mint ≠ WSOL مع WSOL reserve (والعكس) يُرفض بـ `FLASH_MINT_RESERVE_MISMATCH` قبل أي حساب؛ هذا أكّد أن rehearsal كان سيقيّم USDC flash loan بمخاطبة WSOL reserve. `FLASH_BORROW_MINT`/`FLASH_BORROW_MINT_DECIMALS` env يسمحان بأصل اقتراض غير WSOL في الـ rehearsal. المتبقي: اختيار أفضل reserve اقتصادياً تلقائياً من مسح Kamino reserves الحي | dlmm_flash_arbitrage.rs — 3 اختبارات جديدة |
 | G7 | **FIXED/TESTED**: علم provenance `sol_price_live` في TelegramNotifier — قيمة $200 الافتراضية لم تعد تُقدَّم كدليل سوق؛ التنبيهات تعرض وسم «سعر غير موثّق» حتى يأتي سعر حي (Binance/Coinbase أو pool SOL/USDC أو SOL_USD_PRICE) | telegram.rs — `unverified_sol_price_is_labeled_as_such` |
 | G8 | **FIXED/TESTED**: gating ثنائي لـ slotSubscribe — env `WS_SLOT_SUBSCRIBE` + رفض حي (id=1) يعطّل slot sub فقط دون `endpoint_unsupported`؛ slot freshness يعتمد context.slot من accountNotification | helius_ws.rs — اختباران جديدان |
 | G9 | لا يوجد cargo-fuzz harness منفصل — لكن proptest fuzzing suite موجود (500 cases، 4 crates) | `arb-math/tests/fuzzing_suite.rs` + proptest في arb-config/arb-dex/arb-tx |
