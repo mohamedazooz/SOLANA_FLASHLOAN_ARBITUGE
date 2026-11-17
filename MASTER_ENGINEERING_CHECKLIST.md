@@ -56,13 +56,13 @@
 
 ### التقدم الحالي
 
-- **146 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **349** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ ما زالت G5–G10 وG11 وG13 وG14 وG16 وG12 فجوات مؤكدة، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **150 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **345** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG16؛ ما زالت G5 وG6 وG9 وG11 وG12 وG13 وG14 فجوات مؤكدة، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
 - `cargo build --workspace`: نجح (0 أخطاء).
-- `cargo test --workspace --all-targets`: **1094 اختبار ناجح، 0 فشل** (بعد PR #55 و #56؛ كان 1080) عبر 86 test binary.
+- `cargo test --workspace --all-targets`: **1104 اختبار ناجح، 0 فشل** (بعد PR #57 + إصلاحات G16/G8/G7؛ كان 1094) عبر 88 test binary.
 - CI يفرض `cargo fmt --check` و `cargo clippy --workspace --all-targets -- -D warnings` و `cargo-deny` (rust-ci.yml).
 
 ### فجوات مؤكدة (CONFIRMED — لم تُعلَّم [x])
@@ -75,15 +75,15 @@
 | G4 | **MITIGATED/VERIFIED (PR #53 + PR #56)**: reconcile sweep دوري بحد أدنى 30s بدل كل slot notification؛ والبوابات الجديدة (G2/G3) تمنع أي حالة قديمة من الوصول للتسعير/التنفيذ. الحد المتبقي: vault updates للـ DLMM/CLMM/Orca/PumpFun ما زالت عبر hydration وليست streams | `supervisor/run.rs` — min_gap reconciliation |
 | G5 | Solami Mirage parser لا يستخرج حقول protobuf حقيقية: يستخدم `latest_slot` محلي، `pubkey: None`, `write_version: None`، وغير موصّل بالبوت | `solami_mirage.rs:138-140` |
 | G6 | أصل الاقتراض hardcoded WSOL فقط دون تقييم باقي reserves | `dlmm_flash_arbitrage.rs:306` |
-| G7 | سعر SOL افتراضي $200 ما زال موجوداً (مسار التنبيهات) | `telegram.rs:63` |
-| G8 | `slotSubscribe` يُرسل دائماً دون gating حسب provider capability | `helius_ws.rs:602` |
+| G7 | **FIXED/TESTED**: علم provenance `sol_price_live` في TelegramNotifier — قيمة $200 الافتراضية لم تعد تُقدَّم كدليل سوق؛ التنبيهات تعرض وسم «سعر غير موثّق» حتى يأتي سعر حي (Binance/Coinbase أو pool SOL/USDC أو SOL_USD_PRICE) | telegram.rs — `unverified_sol_price_is_labeled_as_such` |
+| G8 | **FIXED/TESTED**: gating ثنائي لـ slotSubscribe — env `WS_SLOT_SUBSCRIBE` + رفض حي (id=1) يعطّل slot sub فقط دون `endpoint_unsupported`؛ slot freshness يعتمد context.slot من accountNotification | helius_ws.rs — اختباران جديدان |
 | G9 | لا يوجد cargo-fuzz harness منفصل — لكن proptest fuzzing suite موجود (500 cases، 4 crates) | `arb-math/tests/fuzzing_suite.rs` + proptest في arb-config/arb-dex/arb-tx |
-| G10 | لا توجد خطوة Gitleaks في CI — **تحديث بعد PR #53**: سياسة `.gitleaks.toml` مُلتزمة (extend default + allowlist ضيّق 5 مسارات + 2 regex literal؛ مُتحقَّق بغرس 5 أسرار حقيقية اكتُشفت 5/5 و76→0 false positives)، لكن `rust-ci.yml` ما زال بدون خطوة gitleaks | `rust-ci.yml` فيه cargo-deny فقط؛ `.gitleaks.toml` جاهز |
+| G10 | **FIXED (CI step added)**: job `secrets` في rust-ci.yml — gitleaks-action@v2، fetch-depth: 0 (تاريخ كامل)، GITLEAKS_CONFIG=.gitleaks.toml؛ سياسة PR #53 تبقي كل قواعد default نشطة وallowlist ضيّق فقط | rust-ci.yml — التحقق النهائي عند أول تشغيل CI لهذا PR |
 | G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
 | G13 | عرض Jito Status غير موجود في Dashboard (Executions.tsx لا يعرض bundle/status) | `web/src/components/Executions.tsx` |
 | G14 | عرض Rejection Reasons غير موجود في Dashboard (يظهر في Telegram فقط) | `web/src/components/*.tsx` |
 | G15 | **FIXED/TESTED (PR #55, commit 92e1612)** — **تم تشخيصه بدقة (تصحيح التشخيص الأول)**: سبب الرفض الحي ليس الـ wire encoder — الـ encoder مطابق بايت-بايت للتنفيذ الرسمي `solana-message::v1` (تمت مقارنة كل الحقول: header/mask/lifetime/addresses/config-values/instruction-headers/payloads/signature-at-tail). السبب المؤكد تجريبياً: قيمة `loaded_accounts_data_size_limit` القريحة في الـ config. القياس الحي على mainnet (Agave 4.4.1): عمود kamino flash يحمّل فعلياً **10,714,291 بايت (~10.2MiB)** لأن بيانات البرامج التنفيذية (klend + SPL Token + ATA) تُحتسب ضمن الحد؛ أي حد < ~10.72MiB يُرفض فوراً بـ `MaxLoadedAccountsDataSizeExceeded` عند units=0 قبل تنفيذ أي instruction. مغلف V1 بحد 64MiB (67,108,864) مرّ المحاكاة الحية err=None. مسارات الإنتاج الصحيحة (opportunity.rs:1050,1108 وselection.rs:481 وtemplate.rs:529) تستخدم 64MiB؛ المسارات المعطوبة: `dlmm_4leg_flash_arb.rs:621,704`=256,000 و`compiler.rs:1047`=262,144 و`dlmm_3leg_flash_arb.rs:531`=1,048,576 — كلها ستُرفض حياً — **أُصلحت كلها في PR #55** بثابت `V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT=67,108,864` + 5 اختبارات wire-decoding regression (`v1_loaded_data_limit_regression.rs`)؛ `meteora_atomic_builder.rs:53` (8MiB) أُصلحت أيضاً | دليل حي 2026-11-17 على Solami Agave 4.4.1: limit=64MiB → err=None loaded=10,714,291؛ limit=4MiB/1MiB/256KiB/32KiB → err=MaxLoadedAccountsDataSizeExceeded units=0 (مكرر 4 مرات)؛ v0 sig 5w9k6SeA…gX finalized |
-| G16 | تعارض قيم ثابتة بين الطبقات: `DEFAULT_HOP_SLIPPAGE_BPS=10` (arb-constants:462) مقابل default `hop_slippage_bps: 5` (dlmm_flash_arbitrage.rs:368)؛ و`cu_limit: 400_000` في full_path_rehearsal يتجاوز `APPLICATION_SAFETY_CU_LIMIT=350_000`؛ و`priority_fee_micro_lamports: 10_000` في الـ rehearsal مقابل `BASE_PRIORITY_FEE_MICRO_LAMPORTS=1_000` | grep constants vs engine defaults |
+| G16 | **FIXED/TESTED**: defaults المحرك موحّدة على ثوابت arb-constants — `hop_slippage_bps: DEFAULT_HOP_SLIPPAGE_BPS` و`cu_limit: APPLICATION_SAFETY_CU_LIMIT` في dlmm_flash_arbitrage.rs وmeteora_fresh_pipeline.rs والأمثلة؛ priority fee للـ flash path صار ثابتاً موثّقاً `FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS=10_000` (سلوك محفوظ، مصدر واحد)؛ اختبار `defaults_match_canonical_constants` يثبّت العقد | arb-constants + arb-engine + arb-sim |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
 
 ### أدلة حية من mainnet (2026-11-17 — جلسة التحقق الحية)
@@ -193,8 +193,8 @@
 
 - [ ] إصلاح ترتيب slotSubscribe وaccountSubscribe.
 - [x] إعطاء account subscriptions الأولوية. `(ترتيب الاشتراك حسب WSOL-linkage — helius_ws.rs:1706)`
-- [ ] عدم استهلاك الاشتراك الوحيد في slot subscription غير ضروري.
-- [ ] جعل slot subscription اختيارياً حسب provider capability.
+- [x] عدم استهلاك الاشتراك الوحيد في slot subscription غير ضروري. `(G8: WS_SLOT_SUBSCRIBE=0 يعطّل slotSubscribe؛ وعند provider بعدد اشتراكات = 1 يبقى الميزان كاملاً للحسابات)`
+- [x] جعل slot subscription اختيارياً حسب provider capability. `(G8: helius_ws.rs — slot_subscribe_enabled gate عند connect؛ رفض slotSubscribe (id=1) يعطّل slot sub فقط دون إسقاط endpoint، وslot freshness يعتمد accountNotification context.slot؛ اختباران: slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + slot_subscribe_env_gate_parses_strict_values)`
 - [x] إصلاح single-endpoint backoff. `(record_connect_backoff + اختيار endpoint الذي ينتهي cooldown أولاً — helius_ws.rs:229-239)`
 - [x] إصلاح resubscription بعد reconnect. `(إعادة الاشتراك من fresh state عند كل connect — helius_ws.rs:584-614)`
 - [x] استعادة جميع الحسابات المطلوبة بعد reconnect. `(pending_subs تُبنى من tracked_order عند كل اتصال)`
@@ -440,7 +440,7 @@
 - [ ] منع saturating arithmetic في الحسابات الاقتصادية الحساسة.
 - [x] استخدام SOL/USD price موثوق ومؤرخ. `(chronos max_age_ms — opportunity.rs:550-557)`
 - [x] رفض السعر القديم. `(No fresh SOL/USD reference; rejecting candidate economic conversion — fail-closed)`
-- [ ] منع استخدام سعر افتراضي مثل $200 كدليل اقتصادي.
+- [x] منع استخدام سعر افتراضي مثل $200 كدليل اقتصادي. `(G7: telegram.rs — sol_price_live provenance flag؛ التنبيهات تعرض وسم ديناميكي «سعر غير موثّق (افتراضي)» بدل ادّعاء «سعر حي من السوق» الثابت؛ العلم يُرفع فقط من Binance/Coinbase feed أو سعر pool حي أو SOL_USD_PRICE من المشغّل؛ اختبار unverified_sol_price_is_labeled_as_such)`
 - [ ] إصلاح اختلاف حدود min profit بين المسارات.
 - [x] مراجعة MIN_NET_PROFIT_USD. `(config.rs:385-399 — configurable، >=0 validation، f64 محصور عند config boundary فقط)`
 - [x] مراجعة SOL_USD_PRICE. `(مُراجع — الافتراضي $200 ما زال في مسار التنبيهات فقط: G7)`
@@ -593,7 +593,7 @@
 - [ ] مراجعة Dependency Vulnerabilities.
 - [ ] مراجعة Cargo Audit.
 - [x] مراجعة cargo-deny. `(cargo-deny في CI — rust-ci.yml:53-68 للـ workspace وwebhook-service)`
-- [ ] مراجعة Gitleaks.
+- [x] مراجعة Gitleaks. `(PR #53: سياسة .gitleaks.toml مُتحقَّق بغرس 5 أسرار حقيقية 5/5 و76→0 false positives؛ + هذا PR: خطوة gitleaks في rust-ci.yml job «secrets» بـ gitleaks-action@v2 مع fetch-depth: 0 وGITLEAKS_CONFIG=.gitleaks.toml — فحص تاريخ كامل)`
 - [ ] مراجعة Docker Security.
 - [x] مراجعة RPC Endpoint Validation. `(فرض http/https scheme على primary/failover/base URLs — arb-config/src/validation.rs:50-68,169)`
 - [ ] منع untrusted account data من تجاوز validation.

@@ -365,15 +365,15 @@ impl Default for DlmmFlashArbConfig {
             kamino_available_liquidity: 1_000_000_000,
             kamino_flash_fee_sf: 11_529_215_046_068,
             min_profit_raw: 0,
-            hop_slippage_bps: 5,
-            cu_limit: 400_000,
+            hop_slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_limit: arb_constants::APPLICATION_SAFETY_CU_LIMIT,
             max_bin_arrays_per_hop: 4,
             max_tx_bytes: arb_constants::SOLANA_PACKET_MTU_LIMIT,
             coarse_samples: 24,
             refine_steps: 10,
             network_cost_lamports: 9_000,
             priority_fee_lamports: 4_000,
-            priority_fee_micro_lamports: 10_000,
+            priority_fee_micro_lamports: arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS,
             payer: Pubkey::default(),
             kamino: KaminoFlashParams::default(),
         }
@@ -1117,6 +1117,24 @@ mod tests {
     }
     fn pool_y() -> MintId {
         MintId(Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap())
+    }
+
+    #[test]
+    fn defaults_match_canonical_constants() {
+        let cfg = DlmmFlashArbConfig::default();
+        assert_eq!(
+            cfg.hop_slippage_bps,
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+        );
+        assert_eq!(
+            cfg.cu_limit,
+            arb_constants::APPLICATION_SAFETY_CU_LIMIT,
+            "engine default must not exceed the encode-time safety clamp"
+        );
+        assert_eq!(
+            cfg.priority_fee_micro_lamports,
+            arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS
+        );
     }
 
     #[test]
