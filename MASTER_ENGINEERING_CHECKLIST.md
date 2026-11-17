@@ -82,7 +82,7 @@
 | G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
 | G13 | عرض Jito Status غير موجود في Dashboard (Executions.tsx لا يعرض bundle/status) | `web/src/components/Executions.tsx` |
 | G14 | عرض Rejection Reasons غير موجود في Dashboard (يظهر في Telegram فقط) | `web/src/components/*.tsx` |
-| G15 | **حرج**: مسار V1 المخصص (SIMD-0385, 0x81) مرفوض من runtime mainnet الحي — `MaxLoadedAccountsDataSizeExceeded` عند units=0، بينما نفس التعليمات بالضبط على v0 wire نجحت وlanded finalized. الإنتاج كله يفترض V1 → لا معاملة ستصل كما هو الآن | دليل حي 2026-11-17: V1 sim err=MaxLoadedAccountsDataSizeExceeded ثم v0 sig 5w9k6SeA…gX finalized |
+| G15 | **تم تشخيصه بدقة (تصحيح التشخيص الأول)**: سبب الرفض الحي ليس الـ wire encoder — الـ encoder مطابق بايت-بايت للتنفيذ الرسمي `solana-message::v1` (تمت مقارنة كل الحقول: header/mask/lifetime/addresses/config-values/instruction-headers/payloads/signature-at-tail). السبب المؤكد تجريبياً: قيمة `loaded_accounts_data_size_limit` القريحة في الـ config. القياس الحي على mainnet (Agave 4.4.1): عمود kamino flash يحمّل فعلياً **10,714,291 بايت (~10.2MiB)** لأن بيانات البرامج التنفيذية (klend + SPL Token + ATA) تُحتسب ضمن الحد؛ أي حد < ~10.72MiB يُرفض فوراً بـ `MaxLoadedAccountsDataSizeExceeded` عند units=0 قبل تنفيذ أي instruction. مغلف V1 بحد 64MiB (67,108,864) مرّ المحاكاة الحية err=None. مسارات الإنتاج الصحيحة (opportunity.rs:1050,1108 وselection.rs:481 وtemplate.rs:529) تستخدم 64MiB؛ المسارات المعطوبة: `dlmm_4leg_flash_arb.rs:621,704`=256,000 و`compiler.rs:1047`=262,144 و`dlmm_3leg_flash_arb.rs:531`=1,048,576 — كلها ستُرفض حياً | دليل حي 2026-11-17 على Solami Agave 4.4.1: limit=64MiB → err=None loaded=10,714,291؛ limit=4MiB/1MiB/256KiB/32KiB → err=MaxLoadedAccountsDataSizeExceeded units=0 (مكرر 4 مرات)؛ v0 sig 5w9k6SeA…gX finalized |
 | G16 | تعارض قيم ثابتة بين الطبقات: `DEFAULT_HOP_SLIPPAGE_BPS=10` (arb-constants:462) مقابل default `hop_slippage_bps: 5` (dlmm_flash_arbitrage.rs:368)؛ و`cu_limit: 400_000` في full_path_rehearsal يتجاوز `APPLICATION_SAFETY_CU_LIMIT=350_000`؛ و`priority_fee_micro_lamports: 10_000` في الـ rehearsal مقابل `BASE_PRIORITY_FEE_MICRO_LAMPORTS=1_000` | grep constants vs engine defaults |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
 
@@ -105,6 +105,9 @@
 | `priority_fee_micro_lamports: 10_000` (rehearsal) مقابل `BASE_PRIORITY_FEE_MICRO_LAMPORTS=1_000` | rehearsal مقابل `arb-constants:492` | 10× تكلفة priority في مسار القياس — أي استنتاج ربحية منه مضخّم التكلفة |
 | `sol_usd_price: Some(180)` (rehearsal) و`$200` (telegram.rs:63) | ملفات منفصلة | تسعير USD ثابت غير موثوق — G7 |
 | `CU_PER_BIN_ARRAY=15_000` تقدير CU ثابت | `dlmm_flash_arbitrage.rs:43` | القياس الحي: borrow+repay وحدهما = 65,461 CU — المُقدِّر يحتاج معايرة بقياس حي |
+| `loaded_accounts_data_size_limit=256_000` | `dlmm_4leg_flash_arb.rs:621,704` | **مرفوض حياً**: القياس الحي على mainnet = 10,714,291 بايت محمّلة لأصغر عمود flash (بيانات البرامج التنفيذية تُحتسب) — أي حد < ~10.72MiB يفشل بـ MaxLoadedAccountsDataSizeExceeded قبل أي instruction |
+| `loaded_accounts_data_size_limit=262_144` (256KiB) | `flash/compiler.rs:1047` | نفس الفشل الحي المؤكد — مرفوض من mainnet |
+| `loaded_accounts_data_size_limit=1_048_576` (1MiB) | `dlmm_3leg_flash_arb.rs:531` | نفس الفشل الحي المؤكد — مرفوض من mainnet (الصحيح: 67,108,864 كما في opportunity.rs:1050,1108) |
 | `refine_steps=10` ونمو السلّم 1.5 | `dlmm_flash_arbitrage.rs:342,373,941` | كثافة بحث الحجم — سلّم خشن يفوّت قمة الربح الأمثل |
 | `min_borrow=0.01 SOL / max_borrow=0.1 SOL` + `kamino_available_liquidity=5 SOL` سقف rehearsal | `full_path_rehearsal.rs` | يقيّد نطاق اكتشاف الربحية في القياس فقط (ليس إنتاجاً) |
 | `max_state_age_slots=2` و`max_allowed_slot_lag=2` وbackoff 30/150ms | `arb-config:452`, rehearsal | صرامة freshness — قيم معقولة لكنها تحكم قبول/رفض كل فرصة |
@@ -113,7 +116,7 @@
 | `METEORA_MAX_BINS_PER_SWAP=260` و`requested_bin_array_depth=1` | `arb-constants:261`, rehearsal | عمق bins المطلوب — depth=1 يحدّ من حجم التداول المحسوب عبر bins |
 | `HOP_SLIPPAGE_MAX_BPS=1_000` (10% سقف) | `arb-constants:468` | سقف انزلاق لكل hop — مرتفع كحد أقصى مطلق |
 
-**خلاصة هندسية**: أكبر ثلاث قيم تلاعب بالربحية فعلياً: (1) حصص Jito tip 70–85%، (2) تعارض hop slippage 5/10 bps، (3) أرضية الربح 50k lamports غير المتسقة مع $0.20 الموثّقة. مع G15 (V1 مرفوض حياً) هذه أولويات الإصلاح قبل أي تشغيل رابح.
+**خلاصة هندسية**: أكبر ثلاث قيم تلاعب بالربحية فعلياً: (1) حصص Jito tip 70–85%، (2) تعارض hop slippage 5/10 bps، (3) أرضية الربح 50k lamports غير المتسقة مع $0.20 الموثّقة. مع G15 (حدود loaded-data القريحة < 10.72MiB المقاسة حياً — وليس الـ wire encoder) هذه أولويات الإصلاح قبل أي تشغيل رابح.
 
 ### Acceptance Gates السابقة
 
