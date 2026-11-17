@@ -99,3 +99,19 @@ max_age_ms = 400
 min_ev_usd = 0.05
 failed_attempt_cost_lamports = 10000
 beta_risk_factor = 0.0005
+
+# --- DLMM strategy tuning (parsed by arb-bot config; see supervisor/strategy) ---
+[strategy.dlmm_cross_pool]
+min_spread_bps = 5                  # lower hurdle from 10 to 5 bps
+min_input = 20000000                # 0.02 SOL minimum borrow (tuned to match realistic DLMM pools)
+max_input = 500000000000            # 500.0 SOL maximum borrow (dynamic sizing up to 500 SOL)
+coarse_samples = 12
+refine_samples = 8
+min_liquidity_bin_raw = 500000
+
+[strategy.dlmm_three_leg]
+input_size = 50000000               # 0.05 SOL base input size tuned for Meteora DLMM meme liquidity
+max_input = 500000000000            # 500.0 SOL candidate input ceiling (dynamic sizing up to 500 SOL)
+slippage_bps = 15                   # 15 bps (0.15%) per leg instead of 100 bps default
+min_profit_lamports = 20000         # 20,000 lamports floor
+size_ladder = 6                     # evaluate 6 sizes across candidate ladder
