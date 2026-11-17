@@ -4,10 +4,10 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-6 commit (this push) — feat(operations): daily aggregated report + domain-16 hot-path review — 443/495
+* **Commit:** batch-7 commit (this push) — test(config): cross-file toml/env default-consistency sweep — 444/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1192 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
 
 ## In progress right now (not yet committed)
 
@@ -71,9 +71,17 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 6: 443 / 495 — 52 remaining.**
 
+### Batch 7 — checklist 647 + 637 landed previously (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 647 TOML/ENV defaults sweep | New integration test pinning the shared economic defaults across every shipped config layer: 6 critical `strategy` keys (`min_net_profit_abs=50_000`, `min_net_profit_bps=5`, `max_price_impact_bps=40`, `max_state_age_slots=2`, `contingency_buffer_lamports=10_000`, `hop_slippage_bps=10`) must never drift in any of base/example/development/production/staging (missing keys tolerated only in overlays); `graph_max_age_slots >= max_state_age_slots` coherence per file; and the in-code fallback is read from the real `AppConfig::default_safe().strategy` (not copied constants) and asserted equal to base.toml | `crates/arb-config/tests/toml_env_consistency_tests.rs` (new) |
+
+**Checklist after batch 7: 444 / 495 — 51 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647.
 
 ## Problems discovered (this session)
 

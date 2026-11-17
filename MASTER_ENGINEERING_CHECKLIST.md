@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **443 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **52** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **444 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **51** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -644,7 +644,7 @@
 - [x] إزالة الإعدادات غير المستخدمة. `(مفاتيح providers خارج مسار التنفيذ أُزيلت بعد consumption audit كامل — .env.example:6-8 + docs/quality/PHASE_12_REPOSITORY_AUDIT.md)`
 - [x] إزالة Environment Variables غير المستهلكة. `(نفس الـ consumption audit — كل مفتاح في .env.example مستهلك بbot/test بتاريخ 2026-11-13)`
 - [x] توحيد Configuration Source of Truth. `(arb-config: base.toml ← env TOML ← env vars ← CLI مع config.schema.json + validation)`
-- [ ] منع اختلاف defaults بين TOML وENV. `(PARTIAL — min_net_profit_abs متسق 50000 عبر base/example/development — base.toml:64؛ لم تُقارن كل الحقول شمولياً)`
+- [x] منع اختلاف defaults بين TOML وENV. `(TESTED — crates/arb-config/tests/toml_env_consistency_tests.rs: 3 اختبارات — (1) critical_strategy_defaults_match_across_all_toml_files: min_net_profit_abs=50000، min_net_profit_bps=5، max_price_impact_bps=40، max_state_age_slots=2، contingency_buffer_lamports=10000، hop_slippage_bps=10 عبر base/example/development/production/staging مع سماح بحذف المفتاح في overlays فقط؛ (2) graph_horizon_is_coherent_with_state_age_everywhere: graph_max_age_slots >= max_state_age_slots في كل ملف؛ (3) code_defaults_match_base_toml: يقرأ AppConfig::default_safe().strategy فعليًا ويطابقه مع base.toml)`
 - [x] توثيق كل Config Field. `(config/config.schema.json + doc comments على الحقول)`
 - [ ] توثيق Units لكل رقم. `(PARTIAL — schema يوثق lamports/bps للحقول الحرجة — config.schema.json:79-100 + تعليقات units في base.toml:64-65؛ تغطية غير كاملة لكل الحقول)`
 - [x] التحقق من Valid Ranges. `(arb-config/src/validation.rs:19 — validate() مع قيود زمنية وأمنية)`
