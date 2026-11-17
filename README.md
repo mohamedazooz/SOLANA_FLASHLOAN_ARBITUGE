@@ -54,6 +54,7 @@ simulations, or RPC acceptance as realized profit.
 | [`docs/economics/ECONOMICS_AND_SIZING.md`](docs/economics/ECONOMICS_AND_SIZING.md) | Cost model and borrow sizing |
 | [`docs/quality/TEST_EVIDENCE.md`](docs/quality/TEST_EVIDENCE.md) | Test campaign evidence |
 | [`docs/quality/SECURITY.md`](docs/quality/SECURITY.md) | Secret inventory and rotation |
+| [`docs/production/LIVE_READINESS_CHECKLIST.md`](docs/production/LIVE_READINESS_CHECKLIST.md) | LIVE transition gate checklist |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 | [`docs/archive/`](docs/archive/) | Historical phase/audit reports (provenance only) |
 
@@ -77,19 +78,30 @@ simulations, or RPC acceptance as realized profit.
 
 ## Build and validation
 
-Rust edition 2024, pinned to **1.99.1** via `rust-toolchain.toml`. **Linux is
-the reference build target** (a gRPC dependency is Unix-only; use Linux, WSL2,
-or Docker).
+The workspace uses Rust edition 2024 and is pinned to Rust **1.99.1** by
+`rust-toolchain.toml`; the workspace declares `rust-version = "1.99"`. Earlier
+declarations of 1.85 were incorrect (edition-2024 let-chains require newer
+compilers).
+
+**Linux is the reference build target.** The full workspace does not compile on
+Windows because `yellowstone-grpc-client 16.0.1` imports Tokio's Unix-only
+`UnixStream`. Use Linux, WSL2, or Docker.
 
 ```bash
-bash scripts/verify-linux.sh          # one-shot: fmt, check, clippy, tests
+# one-shot Linux verification (fmt, check, clippy, tests, optional deny)
+bash scripts/verify-linux.sh
+
+# or explicitly, on Linux/macOS
 cargo fmt --all -- --check
+cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --all-targets --locked
+cargo test --workspace --lib --bins --tests --no-fail-fast --locked
 ```
 
-Live-network tests read credentials from a git-ignored `.env` (see
-`.env.example`). Never commit `.env`.
+The Docker image builds the `arb-bot` and `alchemy-webhook` binaries. Actual
+command results for this snapshot are recorded in
+[`docs/quality/TEST_EVIDENCE.md`](docs/quality/TEST_EVIDENCE.md); a command is only "passing" for
+the environment in which its log was captured.
 
 ## Configuration and operation
 
@@ -106,3 +118,8 @@ Live-network tests read credentials from a git-ignored `.env` (see
 Shadow mode by default. No mainnet broadcasting, no live wallet signing, no
 bundle submission without explicit operator authorization. Never report RPC
 acceptance as landing, or simulation success as realized profit.
+
+Do not enable live execution or submit a transaction without separate explicit
+authorization after all required gates in
+[`docs/RELEASE_READINESS.md`](docs/RELEASE_READINESS.md) have been independently
+verified.

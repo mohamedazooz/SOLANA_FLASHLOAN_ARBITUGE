@@ -675,6 +675,70 @@ pub fn parse_tick_array_account(
     })
 }
 
+/// Parse an on-chain Raydium CLMM TickArrayState account (10,240 bytes, 60 ticks of 168 bytes).
+pub fn parse_raydium_clmm_tick_array_account(
+    data: &[u8],
+    tick_spacing: u16,
+) -> Result<TickArrayFacade, ClmmMathError> {
+    if data.len() < RAYDIUM_CLMM_TICK_ARRAY_ACCOUNT_SIZE {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+    let start_tick_bytes: [u8; 4] = data[40..44]
+        .try_into()
+        .map_err(|_| ClmmMathError::InvalidAccountData)?;
+    if tick_spacing == 0 {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+    let start_tick_index = i32::from_le_bytes(start_tick_bytes);
+
+    let mut ticks = Vec::with_capacity(RAYDIUM_CLMM_TICK_ARRAY_SIZE);
+    let spacing = i32::from(tick_spacing);
+    let ticks_per_array = (RAYDIUM_CLMM_TICK_ARRAY_SIZE as i32)
+        .checked_mul(spacing)
+        .ok_or(ClmmMathError::IntegerOverflow)?;
+    if start_tick_index.rem_euclid(ticks_per_array) != 0 {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+
+    for i in 0..RAYDIUM_CLMM_TICK_ARRAY_SIZE {
+        let offset = 44 + i * RAYDIUM_CLMM_TICK_STRUCT_SIZE;
+        let tick_bytes: [u8; 4] = data
+            .get(offset..offset + 4)
+            .ok_or(ClmmMathError::InvalidAccountData)?
+            .try_into()
+            .map_err(|_| ClmmMathError::InvalidAccountData)?;
+        let tick_index = i32::from_le_bytes(tick_bytes);
+
+        let net_bytes: [u8; 16] = data
+            .get(offset + 4..offset + 20)
+            .ok_or(ClmmMathError::InvalidAccountData)?
+            .try_into()
+            .map_err(|_| ClmmMathError::InvalidAccountData)?;
+        let liquidity_net = i128::from_le_bytes(net_bytes);
+
+        let gross_bytes: [u8; 16] = data
+            .get(offset + 20..offset + 36)
+            .ok_or(ClmmMathError::InvalidAccountData)?
+            .try_into()
+            .map_err(|_| ClmmMathError::InvalidAccountData)?;
+        let liquidity_gross = u128::from_le_bytes(gross_bytes);
+
+        let initialized = liquidity_gross > 0;
+
+        ticks.push(TickFacade {
+            tick_index,
+            initialized,
+            liquidity_net,
+            liquidity_gross,
+        });
+    }
+
+    Ok(TickArrayFacade {
+        start_tick_index,
+        ticks,
+    })
+}
+
 /// Find the next initialized tick within the covered array, or advance to its edge.
 /// Missing array coverage is an explicit error; no synthetic spacing-boundary fallback exists.
 pub fn find_next_tick_boundary(

@@ -22,6 +22,9 @@ rate_limit_requests_per_minute = 600
 max_event_age_secs = 0
 channel_buffer_size = 65536
 worker_threads = 4
+# Allowed CORS origins. Empty = deny all cross-origin (fail closed).
+# Example: cors_origins = ["https://dashboard.example.com", "http://localhost:3000"]
+cors_origins = []
 
 [dedup]
 local_cache_ttl_secs = 2

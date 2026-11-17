@@ -1,0 +1,55 @@
+# Generated files from Anchor
+*.so
+*.json
+target/
+
+# Documentation
+*.md
+
+# Scripts
+*.sh
+
+# IDE
+.vscode/
+.idea/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Log files
+*.log
+
+# Environment
+.env
+.env.local
+.env.development
+
+# Build artifacts
+dist/
+build/
+
+# Node modules (if any)
+node_modules/
+
+# Python (if any)
+__pycache__/
+*.pyc
+
+# Other language artifacts
+debug/
+release/
+
+# Archive files
+*.rar
+*.zip
+*.tar.gz
+
+# User-specific files
+*.swp
+*.swo
+*~

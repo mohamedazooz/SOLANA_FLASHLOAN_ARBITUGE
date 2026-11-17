@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "skills": {
+    "migrate-to-oxylabs": {
+      "source": "oxylabs/web-api-skills",
+      "sourceType": "github",
+      "skillPath": "skills/migrate-to-oxylabs/SKILL.md",
+      "computedHash": "058f74001b89bb85239c629dc36bfe39a98761a5f4ea0ab339947c4ba35788f5"
+    },
+    "oxylabs-web-api": {
+      "source": "oxylabs/web-api-skills",
+      "sourceType": "github",
+      "skillPath": "skills/oxylabs-web-api/SKILL.md",
+      "computedHash": "7410df25dd41e45a79d4475bd34c2b5e722f24ac3e2bd1ebc621116cf1c154f4"
+    },
+    "oxylabs-web-research": {
+      "source": "oxylabs/web-api-skills",
+      "sourceType": "github",
+      "skillPath": "skills/oxylabs-web-research/SKILL.md",
+      "computedHash": "cc46e80d6f0ac37f0a87ec48f25344c215d042cdf6d3d3bdd48bd496bef8f419"
+    }
+  }
+}

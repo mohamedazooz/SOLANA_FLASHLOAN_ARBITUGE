@@ -18,8 +18,12 @@ WORKDIR /app
 # source edits. `--locked` makes the build fail on an out-of-date lockfile.
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY programs ./programs
 COPY config ./config
 COPY dashboard ./dashboard
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only
 
 # --- Web application (React + Vite build output served by the Rust API) ----
 FROM node:22-slim AS web-builder
@@ -28,9 +32,6 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web ./
 RUN npm run build
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only
 
 # ============================================================
 # Stage 2: Runtime

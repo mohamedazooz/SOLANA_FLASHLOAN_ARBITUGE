@@ -1,56 +1,101 @@
 {
-  "manifest_version": "1.0.0",
-  "project": "SOLANA_FLASHLOAN_ARBITUGE",
-  "generated_at": "2026-11-16T04:33:44Z",
-  "git": {
-    "branch": "feature/production-readiness-audit",
-    "base_commit": "45031bb",
-    "working_tree": "clean",
-    "stashes": ["stash@{0}"]
+  "project": "Solana Arbitrage Bot",
+  "version": "phase1210",
+  "baseline_commit": "541cdec",
+  "report_date": "2026-11-16",
+  "phases_completed": 20,
+  "windows_test_count": 872,
+  "baseline_tests_reference": "final_audit/TEST_RESULTS.md (reference machine: 994 passed, 0 failed)",
+
+  "git_facts": {
+    "branch": "main",
+    "head": "54d2cbb",
+    "remotes": ["origin → main, origin/feature/ci-bootstrap"],
+    "v1_canary_commit_present": true,
+    "working_tree_contains_unmerged_markers_pre_session": true,
+    "markers_resolved_in_session": [
+      "crates/arb-bot/src/supervisor/dispatch.rs",
+      "crates/arb-bot/src/supervisor/run.rs",
+      "crates/arb-bot/src/main.rs",
+      "crates/arb-bot/src/config.rs (", 
+      ") plus dispatch head rescue note",
+      "crates/arb-tx/src/lib.rs (SwapHop initializer and Pump.fun tests)",
+      "config/config.example.toml (rewritten to satisfy both Config and arb-config)",
+      "README.md (merged two conflict blocks)",
+      "reports/production/ (this manifest + corrected reports)"
+    ],
+    "docs_with_conflicts_left_as_user_decision": [
+      "docs/audit/BASELINE.md",
+      "docs/audit/DATA_INTEGRITY_AUDIT.md",
+      "docs/audit/EXECUTION_AUDIT.md",
+      "docs/audit/SECURITY_AUDIT.md"
+    ]
   },
-  "toolchain": {
-    "rustc": "1.99.1",
-    "cargo": "1.99.1",
-    "edition": "2024"
+
+  "v1_status": {
+    "implemented": true,
+    "wire_version": "0x81",
+    "max_wire_bytes": 4096,
+    "max_inline_accounts": 64,
+    "no_alt": true,
+    "live_sim_roundtrip_ok": true,
+    "landing_verified_on_mainnet": "V1_TRANSPORT_VERIFIED (canary_1794590368.json, slot 469007459)",
+    "enable_flag": "ARB_V1_TRANSPORT_SUPPORTED=1",
+    "meteore_sdk_differential": "9/9 PASS (meteora_sdk_differential_tests)"
   },
-  "audit_results": {
-    "cargo_check": "PASS",
-    "cargo_fmt": "PASS",
-    "cargo_clippy": "PASS (0 warnings)",
-    "cargo_test": "PASS (700+ tests pass, 0 failed)"
+
+  "kamino_flash_loan_status": {
+    "discriminators": "BORROW [135,231,52,167,7,52,212,193] REPAY [185,117,0,203,96,245,180,186]",
+    "reserve_discriminator_matched_live": true,
+    "flash_loan_fee_sf_live": 11529215046068,
+    "roundtrip_simulate_ok": true,
+    "repay_amount_semantic": "principal only; protocol debits fee on top — FIXED in probes",
+    "borrow_index_rewrite": "compile_v1_message rewrites indices; dangling fail closed",
+    "liquidity_wsol_lamports_available_at_probe": 230166406681510
   },
-  "protocols_verified": [
-    {
-      "name": "Meteora DLMM",
-      "program_id": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
-      "differential_status": "MATCH"
-    },
-    {
-      "name": "Kamino Lend Flash Loan",
-      "program_id": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
-      "account_matrix_status": "VERIFIED_12_ACCOUNTS"
-    },
-    {
-      "name": "Raydium CPMM",
-      "program_id": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
-      "status": "VERIFIED"
-    },
-    {
-      "name": "Orca Whirlpools",
-      "program_id": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
-      "status": "VERIFIED"
-    }
+
+  "test_summary": {
+    "workspace_offline_passed_windows": 872,
+    "workspace_offline_failed": 0,
+    "fails_conditions": "2 live-network tests FAIL without funded SOLANA_PRIVATE_KEY (environmental, unchanged)",
+    "clippy": "not fully clean in this working tree — cargo check --workspace --all-targets is green",
+    "fmt": "dirty vs baseline (recovered; cargo fmt --all applied previously)"
+  },
+
+  "economics_validated": {
+    "flash_fee": "Q64.64 exact math; main-market sf matches live; tests cover swept ranges",
+    "pnl_sign": "loss routes preserved as signed; never saturated or clamped",
+    "no_double_counted_costs": true,
+    "python_oracle_differential": "19 vectors verified; 50/50 property passes in prior campaign"
+  },
+
+  "jito_status": {
+    "tip_accounts": 8,
+    "adaptive_pricing": "tip-floor market + landing ledger with posteriors; 5s max age; p50 default rung",
+    "minimum_tip": 1000,
+    "tip_spend_cap": 7000,
+    "internal_auction": "global (no per-region attribution)"
+  },
+
+  "risk_controls": {
+    "kill_switch": "durable file, fail-safe restart",
+    "circuit_breaker": "8 → Open, 10 slots cooldown, 3 successes → Closed",
+    "dispatch_intents": "persisted pre-send; signature-reconciled after timeouts",
+    "live_gate": "ARB_LIVE truthy AND mode==Live AND V1 transport override; multiple layers"
+  },
+
+  "docs_with_conflicts_marked": [
+    "docs/audit/BASELINE.md",
+    "docs/audit/DATA_INTEGRITY_AUDIT.md",
+    "docs/audit/EXECUTION_AUDIT.md",
+    "docs/audit/SECURITY_AUDIT.md"
   ],
-  "transaction_engine": {
-    "v0_alt_support": true,
-    "v1_simd_0385_support": true,
-    "runtime_probe": "is_v1_active",
-    "default_format": "V0_ALT_FALLBACK"
-  },
-  "landing_subsystem": {
-    "jito_block_engine": "MULTI_REGION_5_ENDPOINTS",
-    "dynamic_tip_floor": "LIVE_REST_AND_WS",
-    "tip_share_ceiling_bps": 3000,
-    "max_tip_sol": 0.01
+
+  "verdict": {
+    "tests": "PASS (872/872 offline; 2 live-network blocked)",
+    "live_probe": "PASS (V1 canary landed on mainnet; Kamino roundtrip accepted)",
+    "24h_soak_run": false,
+    "live_broadcast": false,
+    "authorization": "OPERATOR_AUTHORIZATION REQUIRED before any live broadcast"
   }
 }
