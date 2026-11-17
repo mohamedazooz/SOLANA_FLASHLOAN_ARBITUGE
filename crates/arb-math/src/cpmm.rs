@@ -51,14 +51,22 @@ pub fn cpmm_out_upfront_fee_ceil(
     let dx_u = U256::from(dx);
     let num_u = U256::from(fee_num);
     let den_u = U256::from(fee_den);
-    let fee = (dx_u * num_u + den_u - U256::from(1u64)) / den_u;
+    // Checked throughout: untrusted amounts must yield None, never overflow
+    // (a silent wrap would overstate the quote).
+    let fee = dx_u
+        .checked_mul(num_u)?
+        .checked_add(den_u)?
+        .checked_sub(U256::from(1u64))?
+        / den_u;
     if fee >= dx_u {
         return Some(0);
     }
     let net_dx = dx_u - fee;
     let x_u = U256::from(x);
     let y_u = U256::from(y);
-    let out = (net_dx * y_u) / (x_u + net_dx);
+    let out = net_dx
+        .checked_mul(y_u)?
+        .checked_div(x_u.checked_add(net_dx)?)?;
     u64::try_from(out).ok()
 }
 
@@ -86,8 +94,13 @@ pub fn cpmm_out_fee(
     let gamma_u = U256::from(gamma);
     let d_u = U256::from(fee_denominator);
 
-    let num = gamma_u * dx_u * y_u;
-    let denom = (d_u * x_u) + (gamma_u * dx_u);
+    // Checked throughout: gamma·dx·y spans up to 384 bits for wide u128
+    // inputs, so unchecked multiplication would panic (debug) or wrap
+    // silently (release) instead of failing closed.
+    let num = gamma_u.checked_mul(dx_u)?.checked_mul(y_u)?;
+    let denom = d_u
+        .checked_mul(x_u)?
+        .checked_add(gamma_u.checked_mul(dx_u)?)?;
     if denom.is_zero() {
         return None;
     }
@@ -820,5 +833,41 @@ mod tests {
             let _ = optimal_two_pool(&l1, &l2);
             let _ = round_trip_profit_2pool(dx, &l1, &l2);
         }
+    }
+
+    /// Regression (fuzz-found): unchecked U256 multiplication in cpmm_out_fee
+    /// panicked on wide u128 inputs instead of returning None. gamma·dx·y
+    /// spans up to 384 bits, so the function must fail closed.
+    #[test]
+    fn cpmm_out_fee_fails_closed_on_wide_inputs() {
+        let huge = u128::MAX;
+        let near_half = (1u128 << 96) + 1;
+        // 96-bit gamma * 96-bit dx * wide y overflows U256.
+        assert_eq!(cpmm_out_fee(near_half, huge, huge, near_half, 10_000), None);
+        // gamma*dx*y overflow: gamma=dx=huge -> gamma*dx ~ 2^256, times y
+        // overflows U256. (d*x = (2^128-1)^2 = 2^256-2^129+1 still fits.)
+        assert_eq!(cpmm_out_fee(huge, huge, 1_000, huge, huge), None);
+        // Realistic on-chain magnitudes still quote fine.
+        let out = cpmm_out_fee(1_000_000, 100_000_000_000, 100_000_000_000, 9_970, 10_000);
+        assert!(out.is_some());
+        assert!(out.unwrap() <= 100_000_000_000);
+    }
+
+    /// Regression (fuzz-found): the upfront-fee ceil variant must also fail
+    /// closed on wide inputs instead of overflowing U256.
+    #[test]
+    fn cpmm_out_upfront_fee_ceil_fails_closed_on_wide_inputs() {
+        let huge = u128::MAX;
+        assert_eq!(
+            cpmm_out_upfront_fee_ceil(huge, huge, huge, 30, 10_000),
+            None
+        );
+        // net_dx*y overflow: net_dx ~ dx=2^128-1, y=2^128-1 -> 2^256 overflow.
+        assert_eq!(cpmm_out_upfront_fee_ceil(huge, huge, huge, 30, huge), None);
+        // Fee >= input collapses to zero output: ceil(1000*9999/10000)=1000.
+        assert_eq!(
+            cpmm_out_upfront_fee_ceil(1_000, 1_000_000, 1_000_000, 9_999, 10_000),
+            Some(0)
+        );
     }
 }
