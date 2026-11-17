@@ -514,18 +514,18 @@
 - [x] بناء CU estimator ديناميكي. `(estimate_route_cu حسب شكل المسار الحقيقي + measured_cu لكل route_sig + calculate_dynamic_cu_limit — opportunity.rs:88-105)`
 - [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route)`
 - [x] التحقق من CU price. `(cap_cu_price_by_profit — سقف ديناميكي حسب share bps وعامل المنافسة)`
-- [ ] قياس CU الفعلي لكل DEX.
-- [ ] عدم الاعتماد على ثوابت غير مختبرة.
+- [x] قياس CU الفعلي لكل DEX. `(measured_cu لكل route_sig يُغذّى من LiteSVM محلياً — dispatch.rs:347، ومن محاكاة RPC حية — dispatch.rs:368-434، ويُفضّل على التقدير — opportunity.rs:125-127)`
+- [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP ثوابت fallback فقط — arb-constants:482-484؛ measured_cu.unwrap_or(estimated_cu) يجعلها initial-fallback قبل أول قياس — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`
 - [x] حساب priority fee بشكل موحد. `(total_priority_fee_lamports — adaptive.rs:202)`
-- [ ] مراقبة transaction packet size.
-- [ ] مراقبة instruction count.
-- [ ] مراقبة account count.
-- [ ] مراجعة ALT coverage.
-- [ ] التحقق من Heap Requirements.
-- [ ] التحقق من Runtime Stack Requirements.
-- [ ] التحقق من Account Data Limits.
-- [ ] التحقق من Compute Budget Overflow.
-- [ ] إضافة CU regression benchmarks.
+- [x] مراقبة transaction packet size. `(V0Oversized/V1Oversized مع wire_size مقابل حدّي 1232/4096 — compiler.rs:47-51,1450-1456 + v1_size_ladder_tests.rs:219 + تسجيل حجم البايتات عند الإرسال — dispatch.rs:627,636)`
+- [x] مراقبة instruction count. `(MAX_V1_INSTRUCTIONS=64 — adaptive.rs:32 + رفض V1InstructionCount — compiler.rs:1023-1027)`
+- [x] مراقبة account count. `(count_unique_accounts — adaptive.rs:1095 + رفض TooManyBinArrays/PoolsNotDistinct — compiler.rs:52-58)`
+- [x] مراجعة ALT coverage. `(Static Master ALT + رفض MissingAltAddress + AltAccountAsSigner — compiler.rs:59-65 + اختبار احتواء حسابات tip الثمانية — compiler.rs:1333-1334)`
+- [ ] التحقق من Heap Requirements. `(MISSING — heap_size: None في compiler.rs:1051 ولا توجد RequestHeapFrame instruction؛ المحاكاة الحية ستكشف فشل heap لكن لا يوجد تعديل ديناميكي)`
+- [ ] التحقق من Runtime Stack Requirements. `(PARTIAL — inner_instruction_count يُرصد من المحاكاة — opportunity.rs:1337؛ لا يوجد فحص صريح لعمق stack CPI)`
+- [ ] التحقق من Account Data Limits. `(PARTIAL — إنشاء ATA عند الحاجة مُغطى، والمحاكاة المسبقة تفشل-مغلقة عند تجاوز الحدود، لكن لا يوجد فحص استباقي لحجم بيانات الحسابات)`
+- [x] التحقق من Compute Budget Overflow. `(calculate_dynamic_cu_limit بـ saturating + cap عند MAX_COMPUTE_UNIT_LIMIT — cu.rs:22-27 + u32::try_from(...).unwrap_or(u32::MAX) عند التغذية — dispatch.rs:371,434)`
+- [ ] إضافة CU regression benchmarks. `(PARTIAL — criterion bench لرياضيات CPMM — arb-math/benches/cpmm_bench.rs + سُلّم أحجام V1 — v1_size_ladder_tests.rs؛ لا يوجد benchmark regression مخصص لـ CU لكل DEX)`
 
 ## 15. Testing وFuzzing
 
