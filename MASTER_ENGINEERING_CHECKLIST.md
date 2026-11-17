@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **99 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
-- **396** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **108 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **387** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -376,7 +376,7 @@
 - [ ] ربط الحجم بحدود bins وticks.
 - [ ] ربط الحجم بالـ slippage.
 - [ ] ربط الحجم برسوم الاقتراض.
-- [ ] رفض reserve state القديم.
+- [x] رفض reserve state القديم. `(ROI implausibility ceiling يرفض stale-quote artifacts fail-closed — opportunity.rs:400-420)`
 - [ ] منع استخدام liquidity غير متاحة فعلياً.
 - [ ] إضافة reserve-specific tests.
 - [ ] إضافة borrow sizing tests.
@@ -402,14 +402,14 @@
 - [x] استخدام ceiling division لرسوم priority fee. `(adaptive.rs:196-204 — ceil(micro_lamports * cu_limit / 1_000_000))`
 - [ ] توحيد priority fee بين sizing وranking وdispatch.
 - [ ] منع saturating arithmetic في الحسابات الاقتصادية الحساسة.
-- [ ] استخدام SOL/USD price موثوق ومؤرخ.
-- [ ] رفض السعر القديم.
+- [x] استخدام SOL/USD price موثوق ومؤرخ. `(chronos max_age_ms — opportunity.rs:550-557)`
+- [x] رفض السعر القديم. `(No fresh SOL/USD reference; rejecting candidate economic conversion — fail-closed)`
 - [ ] منع استخدام سعر افتراضي مثل $200 كدليل اقتصادي.
 - [ ] إصلاح اختلاف حدود min profit بين المسارات.
-- [ ] مراجعة MIN_NET_PROFIT_USD.
-- [ ] مراجعة SOL_USD_PRICE.
+- [x] مراجعة MIN_NET_PROFIT_USD. `(config.rs:385-399 — configurable، >=0 validation، f64 محصور عند config boundary فقط)`
+- [x] مراجعة SOL_USD_PRICE. `(مُراجع — الافتراضي $200 ما زال في مسار التنبيهات فقط: G7)`
 - [ ] مراجعة min_net_profit_abs.
-- [ ] إزالة بوابات gross spread الثابتة.
+- [ ] إزالة بوابات gross spread الثابتة. `(CONFIRMED: min_spread_bps ما زال موجوداً — config.rs:285 + strategy.rs:217)`
 - [ ] فصل gross spread عن net profit.
 - [ ] ترتيب الفرص حسب صافي الربح القابل للتنفيذ.
 - [ ] رفض الفرصة إذا كان أي عنصر تكلفة مجهولاً.
@@ -429,8 +429,8 @@
 - [ ] التحقق من Writable Accounts.
 - [ ] التحقق من Signer Requirements.
 - [ ] التحقق من Account Locks.
-- [ ] التحقق من Transaction Serialization.
-- [ ] التحقق من Versioned Transactions.
+- [x] التحقق من Transaction Serialization. `(V1 compiler مع wire-size check صريح — flash/compiler.rs:49)`
+- [x] التحقق من Versioned Transactions. `(V1: 0x80/0x81 prefix، ≤4096 bytes، كل الحسابات inline — compiler.rs:5,37,758)`
 - [x] التحقق من Address Lookup Tables. `(arb-tx/src/transport/master_alt.rs — 1,417 سطر؛ V1: 64 حساب inline + سقف 4096 bytes)`
 - [ ] التحقق من حجم المعاملة 1232 bytes.
 - [x] منع تقسيم atomic route إلى معاملات منفصلة. `(verify_atomic_integrity مستدعاة قبل التوقيع — dlmm_flash_arb.rs:36,496)`
@@ -474,8 +474,8 @@
 ## 14. Compute Budget وTransaction Constraints
 
 - [x] بناء CU estimator ديناميكي. `(estimate_route_cu حسب شكل المسار الحقيقي + measured_cu لكل route_sig + calculate_dynamic_cu_limit — opportunity.rs:88-105)`
-- [ ] التحقق من CU limit.
-- [ ] التحقق من CU price.
+- [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route)`
+- [x] التحقق من CU price. `(cap_cu_price_by_profit — سقف ديناميكي حسب share bps وعامل المنافسة)`
 - [ ] قياس CU الفعلي لكل DEX.
 - [ ] عدم الاعتماد على ثوابت غير مختبرة.
 - [x] حساب priority fee بشكل موحد. `(total_priority_fee_lamports — adaptive.rs:202)`
