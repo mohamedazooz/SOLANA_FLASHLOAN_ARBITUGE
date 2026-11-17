@@ -490,7 +490,7 @@
 - [x] التحقق من Bundle Serialization. `(base64 + params [{txs},{encoding,bundleOnly:true}] + حد 1..=5 txs — arb-land/src/lib.rs:264-283)`
 - [x] التحقق من Tip Accounts. `(JITO_TIP_ACCOUNTS في arb-constants + get_random_tip_account/get_tip_account_for_slot lib.rs:33-48 + اختبار كون حسابات tip الثمانية داخل master ALT — compiler.rs:1323-1334)`
 - [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
-- [x] التحقق من Priority Fee. `(adaptive_cu_price p75-escalation lib.rs:164-188 + cap_cu_price_by_profit + total_priority_fee_lamports موحّد — adaptive.rs:202)`
+- [x] التحقق من Priority Fee. `(adaptive_cu_price p75-escalation lib.rs:164-188 + cap_cu_price_by_profit + total_priority_fee_lamports موحّد — adaptive.rs:202. **إصلاح انفصال 2026-11-17 — batch 17**: مصدر p75 — حقل Supervisor.recent_landed_cu — كان يُترك فارغًا دائمًا (IMPLEMENTED_BUT_DISCONNECTED) فيسقط السعر كل دورة على الثابت 100,000. أُصلِح: الحقل Arc<Mutex<Vec>>، تعبئة من الهبوط المؤكَّد فقط (LandStatus::Landed) بسعر CU المُرمَّز فعليًا عبر arb-land::record_landed_cu_price بنافذة مُقيَّدة 64 (RECENT_LANDED_CU_WINDOW)، واستهلاكه بنسخة تحت القفل في opportunity.rs وrun.rs؛ السقف الحاكم يبقى cap_cu_price_by_profit. اختبار: landed_cu_price_window_is_bounded_and_order_sensitive — 1207/0)`
 - [x] التحقق من Bundle Submission. `(send_bundle + send_bundle_multi_region — arb-land/src/lib.rs:264,323)`
 - [x] حفظ Bundle ID. `(bundle_id: String — lib.rs:82 + استرجاعه من الرد lib.rs:395)`
 - [x] متابعة Bundle Status. `(get_bundle_status — lib.rs:366-395 + signature-status polling في dispatch.rs)`

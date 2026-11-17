@@ -749,6 +749,8 @@ impl Supervisor {
                         let rtt_ms = rtt.as_secs_f64() * 1000.0;
                         let land_start = std::time::Instant::now();
                         let recent_landed_task = self.recent_landed.clone();
+                        let recent_landed_cu_task = self.recent_landed_cu.clone();
+                        let encoded_cu_price_task = cu_price;
                         let recent_dropped_task = self.recent_dropped.clone();
                         let control_task = self.control().cloned();
                         let payer_pubkey_task = payer.to_string();
@@ -833,6 +835,14 @@ impl Supervisor {
                             let effective_slot = landed_slot.unwrap_or(slot_val);
                             match status {
                                 arb_land::LandStatus::Landed => {
+                                    // Feed the landed CU price (the number actually
+                                    // encoded on a confirmed bundle) into the bounded
+                                    // window behind `adaptive_cu_price` — the only
+                                    // confirmed-price source this ever consumes.
+                                    arb_land::record_landed_cu_price(
+                                        &mut recent_landed_cu_task.lock(),
+                                        encoded_cu_price_task,
+                                    );
                                     let mut onchain_cu: Option<u64> = None;
                                     if let Some(ref sig) = tx_signature {
                                         if let Ok(Some(meta)) =

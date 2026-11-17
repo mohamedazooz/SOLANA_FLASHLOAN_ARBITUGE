@@ -4,10 +4,10 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-16 commit (this push) — test(bench): per-DEX CU regression envelopes anchored to mainnet evidence — 531 — 454/495
+* **Commit:** batch-17 commit (this push) — fix(economics): wire recent_landed_cu to confirmed landings + live/hardcode pricing exhaustive audit — 454/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1206 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1207 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
 
 ## In progress right now (not yet committed)
 
@@ -154,11 +154,23 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 16: 454 / 495 — 41 remaining.**
 
+### Batch 17 — profit/capture/per-hop/ATA/hardcode pricing audit + recent_landed_cu repair (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| **VERIFIED_BUG (disconnected)**: `Supervisor.recent_landed_cu` | The field consumed by `adaptive_cu_price` (p75+25% dynamic CU price) was never populated anywhere — `recent_landed_cu: Vec::new()` fed every call ⇒ priority price always fell back to the 100,000 µlam/CU constant. Fixed: field is now `Arc<Mutex<Vec<u64>>>`; on `LandStatus::Landed` the encoded `cu_price` (what actually cleared the auction for a confirmed bundle) is pushed via `arb_land::record_landed_cu_price` into a bounded 64-sample window (`RECENT_LANDED_CU_WINDOW`, oldest dropped); consumers snapshot `lock().clone()` (`opportunity.rs`, `run.rs`). The governing ceiling remains `cap_cu_price_by_profit` (profit-share cap) so the escalation can never bid beyond the approved edge share. Test: `landed_cu_price_window_is_bounded_and_order_sensitive` | `arb-land/src/lib.rs`, `supervisor.rs`, `supervisor/dispatch.rs`, `supervisor/opportunity.rs`, `supervisor/run.rs` |
+| Exhaustive pricing/hardcode enumeration (user request) | `docs/audit/FINANCIAL_LOGIC_AUDIT.md` §7–9: §7.1 live-priced values table (flash fee from reserve, per-DEX fees from protocol accounts, Token-2022 transfer fees + tripwire, Jito tip via TipOracle 5s freshness fail-closed, competition factor, live SOL price fail-closed, flash liquidity); §7.2 justified chain/runtime constants (5,000 base fee, 1.4M CU limit, Agave depths, Jito tip accounts, ATA PDA); §7.3 ranking-model constants (regression-pinned by 531, superseded by measured_cu); §7.4 non-production hardcoded values (180/150 SOL price, 15k lamports — replay/optimizer/isolated pipelines only); §7.5 ATA accounting (idempotent create + in-tx close rent refund + preexisting-ATA fail-safe probe + sync_native); §8 full capture chain (11 stages from live update to dispatch with per-hop cost attribution); §9 open-source best-practice comparison (BoltTx, RPCFast, solbotrank, devrels, yavorovych: live-derived priority, edge-share cap, failure costs in EV, Jito only for atomicity, depth-based sizing) — all matched or exceeded | `docs/audit/FINANCIAL_LOGIC_AUDIT.md` |
+| Checklist item 493 evidence | Annotated with the disconnection finding + repair | `MASTER_ENGINEERING_CHECKLIST.md` |
+
+**Checklist after batch 17: 454 / 495 — 41 remaining (item 493 evidence updated; no new items).**
+Gates: fmt clean, clippy `-D warnings` clean, workspace **1207 passed / 0 failed**.
+
 ### Checklist ledger
 
 * Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653, 570, 571, 572, 654.
 * In progress: 651 (2/7 files split).
 * Marked `[x]` batch 16: 531.
+* Batch 17: repaired disconnection behind item 493 (recent_landed_cu); exhaustive pricing audit in FINANCIAL_LOGIC_AUDIT.md §7–9.
 
 ## Problems discovered (this session)
 

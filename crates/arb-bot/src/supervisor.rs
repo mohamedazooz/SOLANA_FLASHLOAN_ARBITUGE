@@ -71,8 +71,10 @@ pub struct Supervisor {
     /// dependency gate. Registered lazily per pool from the same manifest
     /// builder that drives subscriptions.
     dependency_manifests: parking_lot::Mutex<arb_ingest::DependencyManifestRegistry>,
-    /// Recent landed compute-unit prices for adaptive priority fee.
-    recent_landed_cu: Vec<u64>,
+    /// Recent landed compute-unit prices (µlamports/CU) for adaptive priority fee.
+    /// Bounded window fed ONLY by confirmed landings (dispatch.rs) — the p75+25%
+    /// escalation in `adaptive_cu_price` never sees unconfirmed prices.
+    recent_landed_cu: Arc<parking_lot::Mutex<Vec<u64>>>,
     simulator: Simulator,
     store: Arc<dyn Store>,
     telegram: TelegramNotifier,
@@ -237,7 +239,7 @@ impl Supervisor {
         );
 
         // No synthetic CU seed: adaptive CU pricing learns only from measured observations.
-        let recent_landed_cu = Vec::<u64>::new();
+        let recent_landed_cu = Arc::new(parking_lot::Mutex::new(Vec::<u64>::new()));
 
         let jito_lander = JitoLander::new(config.jito.regions.clone());
 

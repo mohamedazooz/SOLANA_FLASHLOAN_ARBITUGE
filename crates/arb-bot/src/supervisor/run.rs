@@ -230,9 +230,10 @@ impl Supervisor {
         let params = arb_engine::ThreeLegMemeContextParams {
             snapshot_slot: current_slot.0,
             cu_limit: arb_tx::COMPUTE_BUDGET_LIMIT_3HOP,
-            priority_fee_micro_lamports: self
-                .tip_strategy
-                .adaptive_cu_price(&self.recent_landed_cu),
+            priority_fee_micro_lamports: {
+                let recent = self.recent_landed_cu.lock().clone();
+                self.tip_strategy.adaptive_cu_price(&recent)
+            },
             jito_tip_account: self.jito_service.tip_account_for_slot(current_slot),
             jito_tip_lamports: dynamic_tip_lamports,
             recent_blockhash: [0u8; 32],

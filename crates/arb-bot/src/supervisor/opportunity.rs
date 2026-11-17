@@ -125,7 +125,10 @@ impl Supervisor {
             let measured_cu = self.measured_cu.lock().get(&route_sig).copied();
             let base_cu = measured_cu.unwrap_or(estimated_cu);
             let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
-            let desired_cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
+            let desired_cu_price = {
+                let recent = self.recent_landed_cu.lock().clone();
+                self.tip_strategy.adaptive_cu_price(&recent)
+            };
             // Dynamic priority fee ceiling: scales adaptively between base_share and max_share
             // according to real-time competition factor observed by TipOracle.
             let comp_factor = self.jito_service.competition_factor();

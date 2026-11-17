@@ -174,6 +174,22 @@ impl TipStrategy {
     }
 }
 
+/// Upper bound for the recent-landed-CU-price window fed to
+/// [`TipStrategy::adaptive_cu_price`]. The p75 over a bounded recent window
+/// is market-relevant; unbounded history is not.
+pub const RECENT_LANDED_CU_WINDOW: usize = 64;
+
+/// Record one landed bundle's encoded CU price (µlamports/CU) into the
+/// bounded recent window, dropping the oldest sample beyond the window.
+/// A cluster of high-price landings shifts the p75 bid up; post-competition
+/// cooling shifts it back down.
+pub fn record_landed_cu_price(window: &mut Vec<u64>, cu_price_micro_lamports: u64) {
+    window.push(cu_price_micro_lamports);
+    while window.len() > RECENT_LANDED_CU_WINDOW {
+        window.remove(0);
+    }
+}
+
 #[derive(Clone)]
 pub struct JitoLander {
     regions: Vec<String>,
@@ -685,6 +701,18 @@ mod tests {
         assert!(price >= 100_000);
         // empty default
         assert_eq!(ts.adaptive_cu_price(&[]), 100_000);
+    }
+
+    #[test]
+    fn landed_cu_price_window_is_bounded_and_order_sensitive() {
+        let mut window = Vec::new();
+        for p in 1..=(RECENT_LANDED_CU_WINDOW as u64 + 10) {
+            record_landed_cu_price(&mut window, p * 1_000);
+        }
+        assert_eq!(window.len(), RECENT_LANDED_CU_WINDOW);
+        // Oldest samples dropped: first entry is the 11th insert.
+        assert_eq!(window[0], 11_000);
+        assert_eq!(window[RECENT_LANDED_CU_WINDOW - 1], 74_000);
     }
 
     #[test]
