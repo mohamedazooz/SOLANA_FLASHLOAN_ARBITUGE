@@ -21,8 +21,10 @@ pub use dlmm_bin_discovery::*;
 pub use dlmm_flash_arb::*;
 pub use kamino::{
     KAMINO_FRACTION_FRAC_BITS, KAMINO_FRACTION_ONE_BITS, KaminoFeeError, KaminoFlashAccounts,
-    KaminoReadError, calculate_kamino_flash_fee, calculate_kamino_flash_fee_checked,
-    decode_reserve_flash_fee_sf, decode_supply_vault_liquidity, derive_lending_market_authority,
+    KaminoReadError, KaminoReserveCandidate, calculate_kamino_flash_fee,
+    calculate_kamino_flash_fee_checked, decode_reserve_candidate, decode_reserve_fee_vault,
+    decode_reserve_flash_fee_sf, decode_reserve_supply_vault, decode_supply_vault_liquidity,
+    derive_lending_market_authority, select_kamino_flash_reserve,
 };
 pub use kamino_flash::*;
 pub use meteora_atomic_builder::*;

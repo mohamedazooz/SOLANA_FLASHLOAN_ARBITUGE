@@ -75,3 +75,46 @@ dedicated rejection ring) already landed in PR #59.
 
 - `cargo test --workspace`: **1145 passed, 0 failed**.
 - `cargo fmt --all`: clean. `cargo clippy --workspace --all-targets`: clean.
+
+## F. G6 completion — automatic economic flash-reserve selection (same session, follow-up commit)
+
+Previous state: guard + env override only; the reserve/vaults/fee/liquidity
+block was constants. Now:
+
+- `arb_tx::kamino::KAMINO_RESERVE_SUPPLY_VAULT_OFFSET` (8+152) and
+  `KAMINO_RESERVE_FEE_VAULT_OFFSET` (8+184) — verified empirically against
+  live mainnet on 2026-11-17: the WSOL reserve's bytes at these offsets
+  reproduce the verified `KAMINO_WSOL_SUPPLY_VAULT` / `KAMINO_WSOL_FEE_VAULT`
+  constants; the USDC reserve yields
+  `Bgq7trRgVMeq33yt235zM2onQ4bRDBsY5EWiTetF4qw6` /
+  `BbDUrk1bVtSixgQsPLBJFZEF7mwGstnD5joA1WzYvYFX` (now constants too).
+- `decode_reserve_supply_vault` / `decode_reserve_fee_vault` /
+  `decode_reserve_candidate` — fail-closed pure decoders (discriminator,
+  length, vault-mint match).
+- `select_kamino_flash_reserve` — economic selection: mint match, active,
+  flash loans enabled (u64::MAX sentinel rejected), live supply-vault
+  liquidity ≥ min_borrow; lowest fee rate wins, ties break on deepest
+  liquidity; `NoEligibleReserve` error otherwise.
+- `KaminoFlashParams.liquidity_mint` generalized (was hardcoded WSOL in
+  `to_flash_accounts`); `from_candidate` builds params + per-mint ATA.
+- Wired into `full_path_rehearsal` (`select_flash_reserve_live`, env-gated
+  `FLASH_RESERVE_SELECT=0` escape hatch for offline dev).
+
+Live evidence (public RPC, 2026-11-17):
+
+```
+[2c] live Kamino reserve selection: reserve d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q
+     mint So11111111111111111111111111111111111111112 decimals 9
+     fee_sf 11529215046068 liquidity 257399608499088 raw (2 candidate(s) swept)
+```
+
+- WSOL supply vault live: 256,932 SOL (first probe) / 257,399 SOL (rehearsal).
+- USDC supply vault live: 34,431,493 USDC; USDC reserve active, fee_sf equal
+  to WSOL's (1e-5 U68F60) — the mint-match filter correctly reserves USDC
+  for USDC-entry routes.
+
+Tests: `reserve_vault_decoders_read_verified_offsets`,
+`reserve_candidate_decodes_all_fields_fail_closed`,
+`reserve_selection_is_economic_and_fail_closed` (includes the tie-break
+direction regression that caught the initial inverted comparator).
+`cargo test --workspace`: 1148 passed / 0 failed. fmt + clippy clean.

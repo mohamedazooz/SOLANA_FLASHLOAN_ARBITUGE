@@ -10,6 +10,10 @@ pub struct KaminoFlashParams {
     pub reserve_source_liquidity: Pubkey,
     pub user_destination_liquidity: Pubkey,
     pub reserve_liquidity_fee_receiver: Pubkey,
+    /// Mint the borrowed liquidity is denominated in. Defaults to WSOL; a
+    /// non-WSOL reserve selected via `from_candidate` must set it so account
+    /// assembly (ATA derivation, reserve mint meta) matches the borrow asset.
+    pub liquidity_mint: Pubkey,
 }
 
 impl Default for KaminoFlashParams {
@@ -20,6 +24,7 @@ impl Default for KaminoFlashParams {
             reserve_source_liquidity: Pubkey::from_str(KAMINO_WSOL_SUPPLY_VAULT).unwrap(),
             user_destination_liquidity: Pubkey::default(),
             reserve_liquidity_fee_receiver: Pubkey::from_str(KAMINO_WSOL_FEE_VAULT).unwrap(),
+            liquidity_mint: Pubkey::from_str(WSOL_MINT).unwrap(),
         }
     }
 }
@@ -41,6 +46,21 @@ impl KaminoFlashParams {
             reserve_source_liquidity: Pubkey::from_str(KAMINO_WSOL_SUPPLY_VAULT).unwrap(),
             user_destination_liquidity: user_wsol_ata,
             reserve_liquidity_fee_receiver: Pubkey::from_str(KAMINO_WSOL_FEE_VAULT).unwrap(),
+            liquidity_mint: wsol,
+        }
+    }
+
+    /// Parameters for a live-selected reserve candidate: the user's
+    /// destination is the ATA of the candidate's mint, and the mint itself is
+    /// carried into account assembly.
+    pub fn from_candidate(user: Pubkey, c: &KaminoReserveCandidate) -> Self {
+        Self {
+            lending_market: Pubkey::from_str(KAMINO_MAIN_MARKET).unwrap(),
+            reserve: c.reserve,
+            reserve_source_liquidity: c.supply_vault,
+            user_destination_liquidity: get_associated_token_address(&user, &c.mint),
+            reserve_liquidity_fee_receiver: c.fee_vault,
+            liquidity_mint: c.mint,
         }
     }
 
@@ -48,13 +68,13 @@ impl KaminoFlashParams {
     pub fn to_flash_accounts(&self, user_authority: Pubkey) -> KaminoFlashAccounts {
         let klend = Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap();
         let (lma, _) = derive_lending_market_authority(&self.lending_market, &klend);
-        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let liquidity_mint = self.liquidity_mint;
         let sysvar = Pubkey::from_str(SYSVAR_INSTRUCTIONS_ID).unwrap();
         let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
         let user_ata = if self.user_destination_liquidity == Pubkey::default()
             || self.user_destination_liquidity == user_authority
         {
-            get_associated_token_address(&user_authority, &wsol)
+            get_associated_token_address(&user_authority, &liquidity_mint)
         } else {
             self.user_destination_liquidity
         };
@@ -64,7 +84,7 @@ impl KaminoFlashParams {
             lending_market: self.lending_market,
             lending_market_authority: lma,
             reserve: self.reserve,
-            reserve_liquidity_mint: wsol,
+            reserve_liquidity_mint: liquidity_mint,
             reserve_supply_vault: self.reserve_source_liquidity,
             user_liquidity_ata: user_ata,
             reserve_fee_vault: self.reserve_liquidity_fee_receiver,

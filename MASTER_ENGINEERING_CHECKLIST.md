@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **158 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **338** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 وG9 صارتا PARTIAL/FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **319** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -74,7 +74,7 @@
 | G3 | **FIXED/TESTED (PR #56, commit 804d386)**: `QuoteReadinessContext`/`DependencyManifest` مربوطة — بوابة `validate_route_account_dependencies` في `process_opportunities` (opportunity.rs:75) تستدعي `quote_dependencies_for_route` مع manifests من `manifest_for_registered_pool` (مصدر وحيد)؛ + إصلاح provenance في `helius_ws.rs` (provider_id من yellowstone بدل ProviderId(2) الثابت) | `supervisor/opportunity.rs:75,1424`, `arb-ingest/src/lib.rs:766` |
 | G4 | **MITIGATED/VERIFIED (PR #53 + PR #56)**: reconcile sweep دوري بحد أدنى 30s بدل كل slot notification؛ والبوابات الجديدة (G2/G3) تمنع أي حالة قديمة من الوصول للتسعير/التنفيذ. الحد المتبقي: vault updates للـ DLMM/CLMM/Orca/PumpFun ما زالت عبر hydration وليست streams | `supervisor/run.rs` — min_gap reconciliation |
 | G5 | Solami Mirage parser لا يستخرج حقول protobuf حقيقية: يستخدم `latest_slot` محلي، `pubkey: None`, `write_version: None`، وغير موصّل بالبوت | `solami_mirage.rs:138-140` |
-| G6 | **PARTIAL/MITIGATED**: حارس fail-closed جديد `flash_mint_matches_kamino_reserve()` — أي config بـ flash mint ≠ WSOL مع WSOL reserve (والعكس) يُرفض بـ `FLASH_MINT_RESERVE_MISMATCH` قبل أي حساب؛ هذا أكّد أن rehearsal كان سيقيّم USDC flash loan بمخاطبة WSOL reserve. `FLASH_BORROW_MINT`/`FLASH_BORROW_MINT_DECIMALS` env يسمحان بأصل اقتراض غير WSOL في الـ rehearsal. المتبقي: اختيار أفضل reserve اقتصادياً تلقائياً من مسح Kamino reserves الحي | dlmm_flash_arbitrage.rs — 3 اختبارات جديدة |
+| G6 | **FIXED/TESTED**: (1) حارس fail-closed `flash_mint_matches_kamino_reserve()` يرفض أي config بـ flash mint ≠ WSOL مع WSOL reserve (والعكس) بـ `FLASH_MINT_RESERVE_MISMATCH`؛ (2) **اختيار حي اقتصادي تلقائي** — `select_kamino_flash_reserve` يمسح reserves السوق الرئيسية (WSOL+USDC) حياً عبر `decode_reserve_candidate` (mint/decimals/status/fee_sf/supply+fee vaults من البايتات الحية؛ offsets @152/@184 تحققت empirically ضد ثوابت WSOL 2026-11-17)، يفلتر (active + fee enabled + سيولة حية ≥ min_borrow) ويختار أقل fee ثم الأعمق سيولة، fail-closed عند لا مرشح؛ (3) `KaminoFlashParams.liquidity_mint` generalized + `from_candidate`؛ (4) مربوط بالـ rehearsal (`[2c]` دليل حي: fee_sf 11529215046068، سيولة 257,399 SOL، 2 candidates) | kamino.rs — 3 اختبارات جديدة + rehearsal حي |
 | G7 | **FIXED/TESTED**: علم provenance `sol_price_live` في TelegramNotifier — قيمة $200 الافتراضية لم تعد تُقدَّم كدليل سوق؛ التنبيهات تعرض وسم «سعر غير موثّق» حتى يأتي سعر حي (Binance/Coinbase أو pool SOL/USDC أو SOL_USD_PRICE) | telegram.rs — `unverified_sol_price_is_labeled_as_such` |
 | G8 | **FIXED/TESTED**: gating ثنائي لـ slotSubscribe — env `WS_SLOT_SUBSCRIBE` + رفض حي (id=1) يعطّل slot sub فقط دون `endpoint_unsupported`؛ slot freshness يعتمد context.slot من accountNotification | helius_ws.rs — اختباران جديدان |
 | G9 | **FIXED/TESTED**: cargo-fuzz harness كامل في `fuzz/` (مستبعد من workspace) — 4 targets: cpmm_quote / net_profit / transfer_fee / dlmm_traversal؛ 4 جلسات × 20s نظيفة (3.1M/10.2M/8.3M/2.9M runs). **الـ fuzz وجد عيباً حقيقياً**: ضرب U256 غير محمي في cpmm_out_fee/cpmm_out_upfront_fee_ceil (panic أو wrap صامت) — أُصلح بـ checked arithmetic + 2 regression tests | fuzz/ + cpmm.rs — `cpmm_out_fee_fails_closed_on_wide_inputs` |
@@ -135,35 +135,35 @@
 
 ## 1. Provider Infrastructure — مزودو البيانات
 
-- [ ] مراجعة جميع مزودي RPC المستخدمين.
-- [ ] التحقق من كل API endpoint.
-- [ ] تحديد نوع كل endpoint: HTTP أو WebSocket أو gRPC.
-- [ ] التحقق من دعم كل مزود لـ accountSubscribe.
-- [ ] التحقق من دعم programSubscribe.
-- [ ] التحقق من دعم logsSubscribe.
-- [ ] التحقق من دعم slotSubscribe.
-- [ ] التحقق من دعم blockSubscribe إن كان مطلوباً.
-- [ ] التحقق من دعم getMultipleAccounts.
-- [ ] التحقق من حدود الاشتراكات المتزامنة.
-- [ ] التحقق من عدد اتصالات WebSocket المسموح بها.
+- [x] مراجعة جميع مزودي RPC المستخدمين. `(حي 2026-11-17: probes لـ Public/Helius/Shyft/Solami — docs/audit/PROVIDER_CAPABILITY_MATRIX.md)`
+- [x] التحقق من كل API endpoint. `(حي: Public HTTP+WS OK؛ Shyft HTTP OK؛ Helius 429 مستمر؛ Solami 4002 no bandwidth)`
+- [x] تحديد نوع كل endpoint: HTTP أو WebSocket أو gRPC. `(capability.rs ProviderTransport {HttpJsonRpc, WebSocketJsonRpc, WebSocketMirageProtobuf, WebSocketBlurJson, YellowstoneGrpc})`
+- [x] التحقق من دعم كل مزود لـ accountSubscribe. `(حي: Public ack + accountNotification فعلي؛ Helius/Shyft WS مرفوض 429 حالياً — موثّق)`
+- [x] التحقق من دعم programSubscribe. `(حي: Public ack سليم 2026-11-17)`
+- [x] التحقق من دعم logsSubscribe. `(حي: Public ack — يتطلب صيغة config struct {"commitment":"confirmed"} وليس string)`
+- [x] التحقق من دعم slotSubscribe. `(حي: Public ack + slotNotification فعلي)`
+- [x] التحقق من دعم blockSubscribe إن كان مطلوباً. `(غير مطلوب في المسار الحالي؛ Public يرفضه -32602 — موثّق في المصفوفة)`
+- [x] التحقق من دعم getMultipleAccounts. `(حي: Shyft 200 + Public 200 بقيمتين؛ Helius 429)`
+- [ ] التحقق من حدود الاشتراكات المتزامنة. `(PARTIAL: معلنة في RateLimitPolicy + ملاحظة حية "Concurrent websocket subscription limit reached: 1" من Solami؛ ليست مُثبتة لكل خطة)`
+- [ ] التحقق من عدد اتصالات WebSocket المسموح بها. `(PARTIAL: WS_MAX_ACCOUNT_SUBS سقف داخلي + rotation؛ حد المزود الفعلي غير مُثبت لكل خطة)`
 - [x] التحقق من حدود RPS الرسمية. `(حي: Helius/Shyft/Solami ردّت HTTP 429 عند التجاوز — سلوك quota مؤكد فعلياً 2026-11-17; registry يضع cooldown 60s ويدوّر)`
-- [ ] التحقق من حدود burst.
-- [ ] التحقق من حدود CU/RU الشهرية.
-- [ ] التحقق من حدود كل RPC method بشكل منفصل.
-- [ ] منع افتراض أن جميع المزودين يدعمون نفس القدرات.
-- [ ] فصل Provider Identity عن Endpoint Identity.
-- [ ] منع تكرار استهلاك quota لنفس المفتاح عبر endpoints مختلفة.
+- [x] التحقق من حدود burst. `(حي: Helius 429 فوري على استدعاءين متوازيين؛ حدود burst المقاسة مُرمّزة في classify_provider: rpc_pool.rs:271-335)`
+- [ ] التحقق من حدود CU/RU الشهرية. `(PARTIAL: Helius 429 مستمر حتى بعد cooldown 65s — متسق مع استنزاف credits (cooldown 1800s في الكود) لكن لا يمكن التمييز عن burst دون لوحة المزود)`
+- [ ] التحقق من حدود كل RPC method بشكل منفصل. `(PARTIAL: method_metrics لكل endpoint موجود؛ حدود المزود لكل method غير مُتحقق منها حياً)`
+- [x] منع افتراض أن جميع المزودين يدعمون نفس القدرات. `(capability.rs: تعريفات لكل مزود + validate_subscription يرفض accountSubscribe على Blur — اختبار test_registry_validation)`
+- [x] فصل Provider Identity عن Endpoint Identity. `(rpc_pool.rs: classify_provider لكل URL + label مع key_suffix_hint آمن ..xxxx؛ كل endpoint له TokenBucket وtelemetry مستقلان)`
+- [ ] منع تكرار استهلاك quota لنفس المفتاح عبر endpoints مختلفة. `(PARTIAL: المحاسبة لكل endpoint وليست مجمّعة لكل مفتاح — قيد موثّق في PROVIDER_CAPABILITY_MATRIX.md)`
 - [x] إضافة quota accounting مركزي. `(rpc_pool.rs:128,761 — كشف 429/Retry-After/quota_exhausted لكل endpoint + telemetry)`
 - [x] إضافة Provider Health Score. `(rpc_pool.rs:91-104 — EndpointStatus حسب latency/429/أخطاء)`
 - [x] إضافة latency measurements لكل مزود. `(rpc_pool.rs:104,180 — total_latency_ms + p50/p95/p99)`
 - [x] إضافة Provider Circuit Breaker. `(rpc_pool endpoint rotation + ProviderSupervisor OpenCircuit — مربوطة الآن بحلقة التشغيل: record_success/record_failure + select() fail-closed، PR #56/G2)`
 - [x] إضافة exponential backoff. `(helius_ws.rs:490,771 + rpc_pool Retry-After)`
-- [ ] إضافة jitter للـ retries. `(معلنة في ReconnectPolicy لكن تطبيقها الفعلي في helius_ws غير مؤكد)`
+- [x] إضافة jitter للـ retries. `(FIXED 2026-11-17: helius_ws reconnect الآن ±25% jitter overlay فوق 2.5-3.0s؛ backoff_delay في lib.rs فيه exponential+jitter — FIXED→TESTED عبر 12 helius_ws tests)`
 - [x] منع reconnect loops. `(backoff + cooldown rotation قبل إعادة الاتصال)`
 - [x] منع retry غير المحدود. `(rpc_pool.rs:1042 — retry فقط عند وجود endpoint مرشح)`
 - [x] إضافة provider cooldown. `(helius_ws.rs:768 — cooldown 2.5-3.0s عند التدوير)`
 - [x] اختبار failover بين المزودين. `(provider_supervisor tests + rpc_telemetry_tests.rs; حي: الـ 3 endpoints دخلوا 429-cooldown ودار التدوير ثم نجح discovery — 253 pools بعد التعافي)`
-- [ ] اختبار فشل جميع المزودين.
+- [x] اختبار فشل جميع المزودين. `(TESTED: اختبار جديد all_endpoints_failing_fails_closed_without_storm — 429 من كل endpoints → خطأ واحد محدود + cooldown بدون retry storm؛ + دليل حي من الـ soak: 0/148 success → صفر فرص/بث)`
 - [x] إيقاف إصدار الفرص عند فقد جميع مصادر البيانات. `(validate_execution_readiness مع stream_connected fail-closed عند لحظة الإطلاق — dispatch.rs:535)`
 
 ## 2. Provider Capabilities وAdapters
@@ -403,10 +403,10 @@
 - [ ] التحقق من Minimum Borrow.
 - [ ] التحقق من Maximum Borrow.
 - [ ] التحقق من Token Decimals.
-- [ ] اكتشاف جميع أصول الاقتراض المتاحة.
-- [ ] عدم حصر الاختيار في WSOL دون مبرر.
-- [ ] تقييم كل reserve مؤهل.
-- [ ] اختيار أفضل أصل اقتراض اقتصادياً.
+- [x] اكتشاف جميع أصول الاقتراض المتاحة. `(G6: مسح حي لـ WSOL+USDC main-market reserves عبر decode_reserve_candidate — mint/decimals/status/fee_sf/supply+fee vaults كلها من البايتات الحية؛ offsets @152/@184 تحققت empirically ضد ثوابت WSOL المعروفة 2026-11-17)`
+- [x] عدم حصر الاختيار في WSOL دون مبرر. `(G6: KaminoFlashParams.liquidity_mint generalized — to_flash_accounts لم يعد WSOL hardcoded؛ from_candidate يبني params لأي candidate حي + ATA الخاص بمintه)`
+- [x] تقييم كل reserve مؤهل. `(G6: select_kamino_flash_reserve يفلتر حياً — active + fee enabled (sentinel u64::MAX مرفوض) + سيولة حية >= min_borrow — 3 اختبارات جديدة في kamino.rs)`
+- [x] اختيار أفضل أصل اقتراض اقتصادياً. `(G6: أقل fee أولاً ثم الأعمق سيولة عند التعادل؛ دليل حي [2c] في rehearsal 2026-11-17: مسح 2 candidates واختيار WSOL reserve d4A2prbA بـ fee_sf 11529215046068 وسيولة 257,399 SOL حية — fail-closed عند لا مرشح مؤهل)`
 - [ ] تحسين Borrow Amount.
 - [ ] ربط حجم الاقتراض بعمق المسار.
 - [ ] ربط الحجم بحدود bins وticks.

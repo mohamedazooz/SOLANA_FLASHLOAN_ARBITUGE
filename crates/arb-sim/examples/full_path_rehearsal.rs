@@ -75,6 +75,77 @@ fn to_flash_pool(s: &PoolState) -> Option<DlmmFlashArbPool> {
     }
 }
 
+/// G6: live economic selection of the Kamino flash-loan reserve. Sweeps the
+/// known main-market reserves, decodes each reserve plus its supply vault
+/// from live bytes, and picks the best eligible reserve for `borrow_mint`:
+/// active, flash loans enabled, live liquidity ≥ `min_borrow`, lowest fee
+/// rate (ties → deepest liquidity). Fail-closed: no eligible reserve is an
+/// error, never a silent fallback to constants.
+async fn select_flash_reserve_live(
+    rpc: &RpcPool,
+    borrow_mint: &Pubkey,
+    min_borrow: u64,
+) -> Result<(arb_tx::KaminoReserveCandidate, usize), Box<dyn std::error::Error>> {
+    use base64::Engine as _;
+    use std::str::FromStr;
+    let reserves = [
+        arb_constants::KAMINO_WSOL_RESERVE,
+        arb_constants::KAMINO_USDC_RESERVE,
+    ];
+    let accounts = rpc
+        .get_multiple_accounts(&reserves)
+        .await
+        .map_err(|e| format!("reserve sweep failed: {e}"))?;
+    let mut vault_addrs_owned: Vec<String> = Vec::new();
+    let mut decoded_reserves: Vec<(usize, Vec<u8>)> = Vec::new();
+    for (idx, acc) in accounts.iter().enumerate() {
+        let Some(acc) = acc else {
+            return Err(format!("reserve {} not found on-chain", reserves[idx]).into());
+        };
+        let b64 = acc
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|s| s.as_str())
+            .ok_or("reserve account payload missing base64 data")?;
+        let bytes = base64::prelude::BASE64_STANDARD
+            .decode(b64)
+            .map_err(|e| format!("reserve base64 decode failed: {e}"))?;
+        let vault = arb_tx::decode_reserve_supply_vault(&bytes)
+            .map_err(|e| format!("reserve {} decode failed: {e}", reserves[idx]))?;
+        vault_addrs_owned.push(vault.to_string());
+        decoded_reserves.push((idx, bytes));
+    }
+    let vault_addrs: Vec<&str> = vault_addrs_owned.iter().map(|s| s.as_str()).collect();
+    let vault_accounts = rpc
+        .get_multiple_accounts(&vault_addrs)
+        .await
+        .map_err(|e| format!("vault sweep failed: {e}"))?;
+    let mut candidates = Vec::with_capacity(decoded_reserves.len());
+    for (idx, bytes) in &decoded_reserves {
+        let Some(vault_acc) = &vault_accounts[*idx] else {
+            return Err(format!("supply vault for {} not found", reserves[*idx]).into());
+        };
+        let b64 = vault_acc
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|s| s.as_str())
+            .ok_or("vault account payload missing base64 data")?;
+        let vault_bytes = base64::prelude::BASE64_STANDARD
+            .decode(b64)
+            .map_err(|e| format!("vault base64 decode failed: {e}"))?;
+        let reserve = solana_pubkey::Pubkey::from_str(reserves[*idx])?;
+        candidates.push(arb_tx::decode_reserve_candidate(
+            reserve,
+            bytes,
+            &vault_bytes,
+        )?);
+    }
+    let swept = candidates.len();
+    arb_tx::select_kamino_flash_reserve(&candidates, borrow_mint, min_borrow)
+        .map(|best| (best, swept))
+        .map_err(|e| e.into())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
@@ -240,6 +311,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(None) => {}
         Err(e) => return Err(e.into()),
+    }
+    // G6: replace the constant reserve/vault/fee/liquidity block with a live
+    // economic selection across the known main-market reserves. Disable with
+    // FLASH_RESERVE_SELECT=0 (offline dev only).
+    if std::env::var("FLASH_RESERVE_SELECT")
+        .map(|v| !matches!(v.trim(), "0" | "false" | "no"))
+        .unwrap_or(true)
+    {
+        let (best, swept) =
+            select_flash_reserve_live(&rpc, &flash_cfg.flash_mint.0, flash_cfg.min_borrow).await?;
+        println!(
+            "[2c] live Kamino reserve selection: reserve {} mint {} decimals {} fee_sf {} liquidity {} raw ({} candidate(s) swept)",
+            best.reserve,
+            best.mint,
+            best.decimals,
+            best.flash_loan_fee_sf,
+            best.available_liquidity,
+            swept
+        );
+        flash_cfg.flash_mint_decimals = best.decimals;
+        flash_cfg.kamino_flash_fee_sf = best.flash_loan_fee_sf;
+        flash_cfg.kamino_available_liquidity = best.available_liquidity;
+        flash_cfg.kamino = KaminoFlashParams::from_candidate(signer.pubkey(), &best);
     }
 
     let loops: usize = std::env::var("REHEARSAL_LOOPS")
