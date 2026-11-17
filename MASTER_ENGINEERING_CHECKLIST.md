@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **328 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **345 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -455,31 +455,31 @@
 
 ## 12. Atomic Transaction Builder
 
-- [ ] التحقق من ترتيب التعليمات.
+- [x] التحقق من ترتيب التعليمات. `(VERIFIED OK — تسلسل موثق ومفروض: borrow@[4] → swaps → repay@[7] مع invariant أن repay يحمل index الحقيقي لـ borrow (dlmm_flash_arb.rs:3-34) + verify_atomic_integrity قبل التوقيع (:36,496,628))`
 - [x] التحقق من Compute Budget Instructions. `(budget في compiler — message_version_prefix + CU limit/price صريحون في الرسالة — compiler.rs:758)`
-- [ ] التحقق من Flash Borrow.
-- [ ] التحقق من Swap 1.
-- [ ] التحقق من Swap 2.
-- [ ] التحقق من Swap 3.
-- [ ] التحقق من Repay.
-- [ ] التحقق من Token Account Creation عند الحاجة.
-- [ ] التحقق من ATA dependencies.
-- [ ] التحقق من Writable Accounts.
-- [ ] التحقق من Signer Requirements.
-- [ ] التحقق من Account Locks.
+- [x] التحقق من Flash Borrow. `(VERIFIED OK — ixs.push(build_kamino_flash_borrow) (dlmm_flash_arb.rs:368) — 12 حسابات مطابقة لـ klend)`
+- [x] التحقق من Swap 1. `(VERIFIED OK — build_leg_swap_instructions per-leg مع ExactIn/ExactOut (compiler.rs:474-570))`
+- [x] التحقق من Swap 2. `(VERIFIED OK — نفس الآلية per-leg (compiler.rs:532-537))`
+- [x] التحقق من Swap 3. `(VERIFIED OK — نفس الآلية per-leg (compiler.rs:565-570))`
+- [x] التحقق من Repay. `(VERIFIED OK — build_kamino_flash_repay_with_index بالـ index الحقيقي (dlmm_flash_arb.rs:395) + flash_borrow_check_matching_repay يرفض أي قيمة أخرى (:392,617))`
+- [x] التحقق من Token Account Creation عند الحاجة. `(VERIFIED OK — build_create_ata_idempotent_for_program عند الحاجة (compiler.rs:383-401) + close intermediate ATA لتوفير الحجم (:591))`
+- [x] التحقق من ATA dependencies. `(VERIFIED OK — bot_wsol_ata (compiler.rs:338) + ATA per-mint مشتقة بـ get_associated_token_address_with_program_id (dlmm_flash_arb.rs:50))`
+- [x] التحقق من Writable Accounts. `(VERIFIED OK — partition_accounts تقسم writable/readonly بشكل صريح (compiler.rs:630))`
+- [x] التحقق من Signer Requirements. `(VERIFIED OK — signer_count في الـ budget + رفض ALT-as-signer وقت compile (compiler.rs:59,694,938-939))`
+- [x] التحقق من Account Locks. `(VERIFIED OK — validate() يفرض Pool1 != Pool2 != Pool3 (compiler.rs:213,278) فلا تعارض writable locks داخل نفس المعاملة)`
 - [x] التحقق من Transaction Serialization. `(V1 compiler مع wire-size check صريح — flash/compiler.rs:49)`
 - [x] التحقق من Versioned Transactions. `(V1: 0x80/0x81 prefix، ≤4096 bytes، كل الحسابات inline — compiler.rs:5,37,758)`
 - [x] التحقق من Address Lookup Tables. `(arb-tx/src/transport/master_alt.rs — 1,417 سطر؛ V1: 64 حساب inline + سقف 4096 bytes)`
-- [ ] التحقق من حجم المعاملة 1232 bytes.
+- [x] التحقق من حجم المعاملة 1232 bytes. `(VERIFIED OK — wire-size check صريح بحد 1232 (compiler.rs:37,354-356,1450-1456) + اختبارات rejected_v0_oversized/rejected_v1_oversized)`
 - [x] منع تقسيم atomic route إلى معاملات منفصلة. `(verify_atomic_integrity مستدعاة قبل التوقيع — dlmm_flash_arb.rs:36,496)`
-- [ ] التحقق من Kamino repayment semantics.
+- [x] التحقق من Kamino repayment semantics. `(VERIFIED OK — repay_amount() = borrow + flash fee (dlmm_flash_arb.rs:234) + Invariant coverage: repay >= borrow + fee وإلا InsufficientRepayment (:31,64))`
 - [x] التحقق من Min-Out. `(FinalOutputBelowRepayment guard: min_out < repay يرفض — dlmm_flash_arb.rs:70-71,325)`
-- [ ] التحقق من Min-Profit.
+- [ ] التحقق من Min-Profit. `(PARTIAL — min-profit مفروض upstream pre-dispatch عبر بوابة net-profit economics؛ داخل المعاملة نفسها الحارس on-chain هو min_out >= repay (FinalOutputBelowRepayment) — لا تعليمة on-chain منفصلة لـ min-profit)`
 - [x] التحقق من Repayment Guard. `(BorrowTooSmall guard على RAW bits قبل التقريب — موثق في AGENTS.md invariants)`
-- [ ] رفض المعاملة عند فشل أي شرط.
-- [ ] اختبار builder باستخدام real account fixtures.
-- [ ] اختبار instruction ordering.
-- [ ] اختبار transaction size boundaries.
+- [x] رفض المعاملة عند فشل أي شرط. `(VERIFIED OK — كل الـ guards ترجع Err قبل التوقيع (ZeroBorrow/InsufficientRepayment/FinalOutputBelowRepayment/BorrowTooSmall) + verify_atomic_integrity gate)`
+- [x] اختبار builder باستخدام real account fixtures. `(TESTED — fixture_reserve_with_vaults في kamino.rs + compiler tests على layouts حقيقية (1544B CLMM / 653B Orca) + live-verified offsets)`
+- [x] اختبار instruction ordering. `(TESTED — verify_atomic_integrity test (dlmm_flash_arb.rs:628) + repayment-coverage tests + matching-index invariant)`
+- [x] اختبار transaction size boundaries. `(TESTED — test_v1_fallback_when_v0_oversized (compiler.rs:1373) + rejected_v0_oversized (:1446) + rejected_v1_oversized (:1462))`
 
 ## 13. Jito وLanding
 
