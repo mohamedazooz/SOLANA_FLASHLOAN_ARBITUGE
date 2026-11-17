@@ -1,0 +1,101 @@
+{
+  "audit_version": "1.0.0",
+  "created_at": "2026-11-17T08:33:00+02:00",
+  "target_repo": {
+    "url": "https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE",
+    "base_branch": "newrepair",
+    "audit_branch": "audit/external-reference-audit",
+    "pinned_head_commit": "be0b3b95fc742783064dbe9b17270c6a90cf554d"
+  },
+  "upstream_references": [
+    {
+      "name": "Cetipoo on-chain arbitrage",
+      "repo": "https://github.com/Cetipoo/solana-onchain-arbitrage-bot",
+      "tracked_branch": "master",
+      "pinned_commit": "HEAD_2026-11-16",
+      "license": "MIT",
+      "status": "Reference/Demo - not production-ready; used for topology and CU benchmarking",
+      "key_files": [
+        "src/route.rs",
+        "src/v10.rs",
+        "src/transaction.rs",
+        "lib/executor-v10-abi/src/cost.rs"
+      ]
+    },
+    {
+      "name": "Lorenz Protocol",
+      "repo": "https://github.com/lorenz-protocol/lorenz",
+      "tracked_branch": "main",
+      "pinned_commit": "HEAD_2026-11-16",
+      "license": "MIT",
+      "status": "Experimental AMM/Graph math; geyser stream is NotImplemented",
+      "key_files": [
+        "crates/lorenz-amm/src/lib.rs",
+        "crates/lorenz-graph/src/lib.rs",
+        "crates/lorenz-dex/src/decoder.rs",
+        "crates/lorenz-stream/src/geyser.rs",
+        "crates/lorenz-agent/src/risk.rs",
+        "docs/INVARIANTS.md"
+      ]
+    },
+    {
+      "name": "FnZero sol-trade-sdk",
+      "repo": "https://github.com/0xfnzero/sol-trade-sdk",
+      "tracked_branch": "main",
+      "pinned_commit": "HEAD_2026-11-16",
+      "license": "MIT",
+      "status": "Low latency trading patterns & pool tools",
+      "key_files": [
+        "docs/ARCHITECTURE.md",
+        "docs/LOW_LATENCY_BOTS.md",
+        "docs/GAS_FEE_STRATEGY.md",
+        "examples/pool_quote_tools.rs"
+      ]
+    },
+    {
+      "name": "FnZero sol-parser-sdk",
+      "repo": "https://github.com/0xfnzero/sol-parser-sdk",
+      "tracked_branch": "main",
+      "pinned_commit": "HEAD_2026-11-16",
+      "license": "MIT",
+      "status": "Raw account cache & subscription models",
+      "key_files": [
+        "docs/ACCOUNT_SUBSCRIPTIONS.md",
+        "docs/grpc-vs-rpc.md",
+        "examples/grpc_raw_cache.rs",
+        "src/grpc/client.rs",
+        "src/grpc/config.rs"
+      ]
+    },
+    {
+      "name": "FnZero solana-streamer",
+      "repo": "https://github.com/0xfnzero/solana-streamer",
+      "tracked_branch": "main",
+      "pinned_commit": "HEAD_2026-11-16",
+      "license": "MIT",
+      "status": "Yellowstone gRPC streaming lifecycle & ordering",
+      "key_files": [
+        "src/streaming/yellowstone_grpc.rs",
+        "src/streaming/grpc/connection.rs",
+        "src/streaming/grpc/subscription.rs",
+        "src/streaming/common/order_buffer.rs"
+      ]
+    },
+    {
+      "name": "Meteora DLMM SDK",
+      "repo": "https://github.com/MeteoraAg/dlmm-sdk",
+      "tracked_branch": "main",
+      "pinned_commit": "HEAD_2026-11-16",
+      "license": "MIT / Apache-2.0 (official SDK)",
+      "status": "Authoritative DLMM math, swap2 instructions, and IDL source of truth",
+      "key_files": [
+        "commons/src/quote.rs",
+        "commons/src/math/price_math.rs",
+        "commons/src/pda.rs",
+        "commons/src/token_2022.rs",
+        "idls/dlmm.json",
+        "commons/tests/integration/test_swap.rs"
+      ]
+    }
+  ]
+}

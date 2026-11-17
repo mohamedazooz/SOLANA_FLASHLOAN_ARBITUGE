@@ -21,6 +21,7 @@ pub mod economic;
 pub mod economic_integration;
 pub mod latency;
 pub mod launchlab;
+pub mod pump_boost_arb;
 pub mod pump_fun_raydium;
 
 pub use chronos::{

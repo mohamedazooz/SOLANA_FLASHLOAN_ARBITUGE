@@ -1,0 +1,3 @@
+finding_id,severity,confidence,local_path,upstream_reference,issue_summary,status,proposed_fix
+SEC-001,Info,High,crates/arb-bot/src/supervisor/run.rs,FnZero sol-trade-sdk,Formatting divergence in supervisor run loop (cargo fmt check),Open,Apply cargo fmt clean patch
+SEC-002,Info,High,crates/arb-math/tests/pump_boost_arb_tests.rs,Lorenz AMM test suite,Formatting divergence in pump boost test suite (cargo fmt check),Open,Apply cargo fmt clean patch

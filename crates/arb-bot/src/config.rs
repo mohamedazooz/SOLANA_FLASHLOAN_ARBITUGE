@@ -369,10 +369,10 @@ fn three_leg_default_max_input() -> u64 {
     2_000_000_000
 }
 fn default_hop_slippage_bps() -> u64 {
-    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+    15
 }
 fn three_leg_default_slippage() -> u64 {
-    100
+    15
 }
 fn three_leg_default_min_profit() -> u64 {
     arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS

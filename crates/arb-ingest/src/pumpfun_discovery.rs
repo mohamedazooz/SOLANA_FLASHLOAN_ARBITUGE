@@ -226,6 +226,120 @@ impl PumpFunDiscoveryClient {
 
         top_n
     }
+
+    /// Identify Pump.fun bonding curves approaching graduation within the BOOST sweet spot.
+    ///
+    /// Evaluates both Flash Loan execution mode (immediate atomic dump against opening liquidity)
+    /// and Working Capital mode (TWAP absorption).
+    pub fn find_boost_migration_targets(
+        &self,
+        coins: &[PumpFunCoin],
+        flash_loan_fee_bps: u64,
+        execution_tip_lamports: u64,
+        min_net_profit_lamports: u64,
+    ) -> Vec<PumpBoostTarget> {
+        let mut targets = Vec::new();
+
+        for coin in coins {
+            // Must be active and not already migrated
+            if coin.complete {
+                continue;
+            }
+
+            let vsol = match coin.virtual_sol_reserves {
+                Some(v) if v > 0 => v,
+                _ => continue,
+            };
+            let vtok = match coin.virtual_token_reserves {
+                Some(v) if v > 0 => v,
+                _ => continue,
+            };
+
+            // Estimate real SOL reserves: standard curve launches with 30 SOL virtual reserve
+            let real_sol_reserves = vsol.saturating_sub(30_000_000_000);
+
+            // Sweet-spot filter: 40 SOL <= S <= 75 SOL (focusing around empirical peak ~66 SOL)
+            if !(40_000_000_000..=75_000_000_000).contains(&real_sol_reserves) {
+                continue;
+            }
+
+            let mint_pubkey = match Pubkey::from_str(&coin.mint) {
+                Ok(pk) => pk,
+                Err(_) => continue,
+            };
+
+            let bonding_curve = match coin.bonding_curve.as_ref() {
+                Some(bc_str) => Pubkey::from_str(bc_str).unwrap_or_else(|_| {
+                    let (pda, _) = Pubkey::find_program_address(
+                        &[PUMP_FUN_BONDING_CURVE_SEED, mint_pubkey.as_ref()],
+                        &self.pump_program,
+                    );
+                    pda
+                }),
+                None => {
+                    let (pda, _) = Pubkey::find_program_address(
+                        &[PUMP_FUN_BONDING_CURVE_SEED, mint_pubkey.as_ref()],
+                        &self.pump_program,
+                    );
+                    pda
+                }
+            };
+
+            // 1. Evaluate Flash Loan mode (conservative: 65% realized capture against immediate pool liquidity)
+            let flash_loan_eval = arb_math::pump_boost_arb::evaluate_pump_boost_arb(
+                real_sol_reserves,
+                vsol,
+                vtok,
+                flash_loan_fee_bps,
+                execution_tip_lamports,
+                6_500, // 65% immediate execution efficiency
+                min_net_profit_lamports,
+            );
+
+            // 2. Evaluate Working Capital mode (patient TWAP absorption: 90% capture efficiency)
+            let working_capital_eval = arb_math::pump_boost_arb::evaluate_pump_boost_arb(
+                real_sol_reserves,
+                vsol,
+                vtok,
+                0, // 0% flash loan fee since using wallet balance
+                execution_tip_lamports,
+                9_000, // 90% TWAP absorption efficiency
+                min_net_profit_lamports,
+            );
+
+            if let Some(wc_eval) = working_capital_eval {
+                targets.push(PumpBoostTarget {
+                    mint: MintId(mint_pubkey),
+                    bonding_curve,
+                    symbol: coin.symbol.clone().unwrap_or_else(|| "UNKNOWN".into()),
+                    real_sol_reserves,
+                    flash_loan_eval,
+                    working_capital_eval: wc_eval,
+                });
+            }
+        }
+
+        targets.sort_by(|a, b| {
+            b.working_capital_eval
+                .net_profit_lamports
+                .cmp(&a.working_capital_eval.net_profit_lamports)
+        });
+
+        targets
+    }
+}
+
+/// Discovered target for Pump.fun BOOST Migration Arbitrage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PumpBoostTarget {
+    pub mint: MintId,
+    pub bonding_curve: Pubkey,
+    pub symbol: String,
+    pub real_sol_reserves: u64,
+    /// Evaluation if executed atomically via Flash Loan (same-block dump)
+    pub flash_loan_eval: Option<arb_math::pump_boost_arb::BoostArbEvaluation>,
+    /// Evaluation if executed via Working Capital (TWAP buyback absorption)
+    pub working_capital_eval: arb_math::pump_boost_arb::BoostArbEvaluation,
 }
 
 #[cfg(test)]
@@ -265,5 +379,46 @@ mod tests {
         assert_eq!(pools[0].protocol, DexProtocol::PumpFun);
         assert_eq!(pools[0].decimals_a, 9);
         assert_eq!(pools[0].decimals_b, 6);
+    }
+
+    #[test]
+    fn test_find_boost_migration_targets() {
+        let client = PumpFunDiscoveryClient::new();
+        let dummy_mint = Pubkey::new_unique();
+
+        // Stalled curve in sweet spot (S = 66 SOL => vsol = 96 SOL)
+        let coin = PumpFunCoin {
+            mint: dummy_mint.to_string(),
+            name: Some("Boost Gem".into()),
+            symbol: Some("BOOST".into()),
+            description: None,
+            bonding_curve: None,
+            associated_bonding_curve: None,
+            virtual_sol_reserves: Some(96_000_000_000), // 30 + 66 SOL
+            virtual_token_reserves: Some(335_000_000_000_000),
+            total_supply: Some(1_000_000_000_000_000),
+            complete: false,
+            market_cap: Some(60.0),
+            usd_market_cap: Some(100_000.0),
+            reply_count: Some(100),
+            last_trade_timestamp: Some(1730870000),
+            raydium_pool: None,
+        };
+
+        let targets = client.find_boost_migration_targets(
+            &[coin],
+            30,          // 30 bps flash loan fee
+            100_000_000, // 0.10 SOL Jito tip
+            0,           // min profit 0 for testing
+        );
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].symbol, "BOOST");
+        assert_eq!(targets[0].real_sol_reserves, 66_000_000_000);
+        assert!(targets[0].working_capital_eval.acquired_tokens > 0);
+        assert_eq!(
+            targets[0].working_capital_eval.completion_cost_lamports,
+            19_000_000_000
+        );
     }
 }
