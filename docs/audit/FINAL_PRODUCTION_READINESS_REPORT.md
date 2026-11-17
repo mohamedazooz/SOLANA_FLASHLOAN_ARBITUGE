@@ -12,8 +12,34 @@ cycle, no live Jito landing, no V1 provider support, no 24h soak).
 
 # FAIL — for live production. CONDITIONAL PASS — for continued shadow/controlled testing.
 
-(No live transaction has ever been signed or landed by this system; per the acceptance
-rules that alone forbids any production-ready claim.)
+## 2.1 UPDATE 2026-11-17 — first live mainnet atomic flash-loan transaction landed
+
+The statement "no live transaction has ever been signed or landed" is now HISTORICAL.
+On 2026-11-17 a controlled live session (explicit operator authorization, funded keypair)
+produced the following retained evidence:
+
+- **Provider verification**: Helius / Shyft / Solami HTTP RPC confirmed same cluster
+  (slots within ±1). WSS confirmed BLOCKED on all free plans (429 / Solami 4002
+  no-bandwidth) — streaming remains the blocker for live operation.
+- **Live rehearsal**: 253 pools discovered over live RPC; all routes fail-closed
+  (no fabricated opportunity).
+- **Live flash-loan rehearsal**: Kamino reserve state read live
+  (fee_sf = 11529215046068, supply liquidity 257,399 SOL).
+- **Atomic transaction**: 8-instruction V1 transaction (650 bytes) built
+  (ComputeBudget → Kamino flash-borrow → swaps → repay → tip), simulated on live RPC
+  (65,461 CU), broadcast, **landed and finalized**
+  (signature `5w9k6SeA…gX`, slot 470365241).
+- **Post-landing accounting**: `parse_landed_balance_changes`
+  (arb-sim `fork_sim.rs`, wired into `dispatch.rs` landed path) now attributes
+  realized net from actual on-chain pre/post balance deltas — estimated profit is
+  never reported as realized.
+
+This upgrades the execution-infrastructure claims from NOT LIVE-PROVEN to
+LIVE-PROVEN for a single controlled transaction. It does NOT upgrade the verdict:
+a 24-hour shadow soak, live Jito bundle landing, and sustained multi-provider
+streaming remain unproven (BLOCKED on free-plan WSS / operator time), so the
+verdict stays **FAIL for live production — CONDITIONAL PASS for controlled testing**.
+Per the acceptance rules, BLOCKED is never converted into PASS.
 
 ## 3. Coverage table
 
