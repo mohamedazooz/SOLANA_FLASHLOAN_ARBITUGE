@@ -928,6 +928,10 @@ impl Supervisor {
         };
 
         let mut last_snapshot_digest = Instant::now();
+        // Daily report (checklist 637): emitted at the first loop visit after
+        // the UTC date flips; the date check itself runs at most every 10 min.
+        let mut last_report_utc_date = crate::daily_report::current_utc_date();
+        let mut last_daily_check = Instant::now();
         let mut adaptive_delay_ms: u64 = 50;
 
         // Provider health/failover supervisor (G2): deterministic circuit
@@ -980,6 +984,16 @@ impl Supervisor {
                 self.emit_five_minute_digest(current_slot.0).await;
                 self.emit_market_snapshot(current_slot.0, false).await;
                 last_snapshot_digest = Instant::now();
+            }
+
+            // Daily aggregated report (checklist 637) on UTC date rollover.
+            if last_daily_check.elapsed() >= Duration::from_secs(600) {
+                last_daily_check = Instant::now();
+                let today = crate::daily_report::current_utc_date();
+                if today != last_report_utc_date {
+                    last_report_utc_date = today;
+                    self.emit_daily_report(current_slot.0).await;
+                }
             }
 
             // KillSwitch is checked on every loop, even while the stream is stalled.

@@ -728,6 +728,54 @@ impl Supervisor {
         guard.push(rejected);
     }
 
+    /// Daily aggregated operations report (checklist 637): durable today-PnL
+    /// from the store + rejection-ring breakdown + stream-integrity counters.
+    /// Written to `data/daily_report_<date>.json` and pushed to Telegram when
+    /// configured (send_message no-ops without credentials).
+    pub async fn emit_daily_report(&self, current_slot: u64) {
+        let date = crate::daily_report::current_utc_date();
+        let pnl = self.store.pnl_daily("today").unwrap_or_else(|e| {
+            warn!("daily report: pnl_daily failed: {}", e);
+            arb_store::PnlDaily {
+                realized_net: arb_types::Lamports(0),
+                attempts: 0,
+                successful: 0,
+            }
+        });
+        let dropped_recent = self.recent_dropped.lock().len() as u64;
+        let rejections: Vec<crate::daily_report::RejectionReasoning> = {
+            let guard = self.recent_rejected.lock();
+            guard
+                .iter()
+                .map(|r| crate::daily_report::RejectionReasoning {
+                    stage: r.stage.clone(),
+                    reason: r.reason.clone(),
+                })
+                .collect()
+        };
+        let rejected_recent = rejections.len() as u64;
+        let report = crate::daily_report::build_daily_report(
+            date.clone(),
+            current_slot,
+            pnl,
+            dropped_recent,
+            rejected_recent,
+            &rejections,
+            arb_metrics::get_opportunities_total(),
+            arb_metrics::get_stream_slot_gaps_total(),
+        );
+        let _ = std::fs::create_dir_all("data");
+        let path = format!("data/daily_report_{date}.json");
+        match std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&report).unwrap_or_default(),
+        ) {
+            Ok(_) => info!("daily report written to {}", path),
+            Err(e) => warn!("daily report write failed ({}): {}", path, e),
+        }
+        self.telegram.send_message(&report.render_text()).await;
+    }
+
     /// Periodic 5-minute digest with detailed lists of successful, dropped, and rejected trades,
     /// along with infrastructure and RPC rate-limit status.
     pub async fn emit_five_minute_digest(&self, current_slot: u64) {

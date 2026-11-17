@@ -4,10 +4,10 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-5 commit (this push) — test(concurrency): provider recovery cycle + concurrency hardening + re-dispatch policy — 439/495
-* **Previous commits:** `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2), `337a458` (batch 1)
+* **Commit:** batch-6 commit (this push) — feat(operations): daily aggregated report + domain-16 hot-path review — 443/495
+* **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1189 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1192 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
 
 ## In progress right now (not yet committed)
 
@@ -62,9 +62,18 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 | 542 Concurrency/lock contention | New test suite with observable invariants (not just no-panic): 8 threads hammer `SlotIntegrity` (bounded wall clock, finalized ≤ highest, gap accounting still counts after contention); concurrent `rotate_endpoint`/`track_account` on `HeliusWsClient` (valid indices, no stall); 12 concurrent calls against 3 mock 429 endpoints → all fail closed, and after cooldown a further 3 calls issue **zero** new HTTP requests (counted at the mock origins) | `crates/arb-ingest/tests/concurrency_tests.rs` (new) |
 | 504 Re-dispatch decision | Design decision documented as D-18 in DECISIONS_AND_CONFLICTS.md: no automatic same-slot re-dispatch of a dropped Jito bundle (edge decay, duplicate-landing risk, tip ladder covers escalation, reconciliation gate requires on-chain evidence); current dispatch behaviour already matches the contract | `docs/audit/DECISIONS_AND_CONFLICTS.md` |
 
+### Batch 6 — checklist 637 + Domain 16 reviews 578/580/581/586 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 637 Daily aggregated report | New pure module `daily_report.rs`: UTC-date civil-from-days (no dependency), aggregation of durable today-PnL (`Store::pnl_daily("today")`), rejection-ring top-5 reason ranking, stream-gap/opportunity counters, landing-rate bps with clamp; rendered text + JSON file `data/daily_report_<date>.json`. Runtime: emitted at the first strategy-loop visit after the UTC date flips (date check every 10 min) in run.rs; Telegram via `send_message` (no-ops unconfigured). 3 unit tests incl. leap-year/rollover boundaries and an off-by-one the leap assertion caught against an independent Python check | `crates/arb-bot/src/daily_report.rs` (new), `lib.rs`, `supervisor.rs` (`emit_daily_report`), `supervisor/run.rs` |
+| Domain 16 review | New `docs/audit/PERFORMANCE_HOT_PATH_REVIEW.md` — line-level review of the hot path: 578 clones (26 census: ~20 rejection-path-only, 1 per-candidate, 1 cached → no per-pool-tick clone on the success path), 580 lock contention (parking_lot, no await inside, fixed slot_clock→rtt order — corrects the earlier std-Mutex evidence), 581 landing-tracker bounded lifetime (20×400 ms), 586 no unbounded_channel anywhere + Telegram bounded-1000 drop policy. 579/582/583 sharpened to PARTIAL pending measurement runs (no fake optimization) | `MASTER_ENGINEERING_CHECKLIST.md`, `docs/audit/PERFORMANCE_HOT_PATH_REVIEW.md` (new) |
+
+**Checklist after batch 6: 443 / 495 — 52 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 563, 542, 222, 504.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586.
 
 ## Problems discovered (this session)
 
@@ -78,20 +87,20 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 * **P1:** None open.
 * **P2:** None open. — all three P2 items (542, 222, 504) completed in batch 5.
-* **P3:** Daily aggregated report (637); Domain 16 NOT-AUDITED performance reviews (10 items); Domain 19 TOML/ENV defaults sweep, files >1000 lines, dead code, magic constants.
+* **P3:** Domain 16 remainder now PARTIAL-measurement-only (579, 582, 583); Domain 11/19: 570–572 latency split, 521 periodic CU comparison, 528/529/531, TOML/ENV defaults sweep, files >1000 lines, dead code, magic constants; 321 layout version, 375 stream discovery, 609 upgradeability record.
 * **P4:** Docs consolidation.
 * **BLOCKED (external):** 30-min data-plane session, dual-provider WSS, quota compliance proof, live Jito bundle submission, 24-hour shadow soak (run-shadow.sh ready), Solami Mirage protobuf parser (G5, provider quota).
 
 ## Acceptance gate
 
-* **Passed:** unit/integration suites (1189), clippy -D warnings, fmt, web build, checklist evidence updates.
+* **Passed:** unit/integration suites (1192), clippy -D warnings, fmt, web build, checklist evidence updates.
 * **Failed:** none.
 * **Not tested:** differential quote parity for CLMM tick-crossing/multi-bin (no oracle coverage — documented PARTIAL).
 * **Blocked:** 24h shadow soak, dual-provider WSS proof, live Jito bundle, quota-compliance proof, Solami Mirage parser (free-plan limits).
 
 ## Next single priority
 
-Batch 6 (P3, last mostly-actionable tier): (637) daily aggregated report (digest pipeline already exists — aggregate into a daily rolling report); then Domain 16 NOT-AUDITED performance reviews (578–583, 586) starting with lock-contention now that the concurrency harness exists. After that, only Domain 19 sweeps and externally BLOCKED evidence remain.
+Batch 7 (Domain 19/11 remaining actionable P3s): file-splitting review for the 7 files >1000 lines (651) starting with the biggest (registry.rs 2861), TOML/ENV default-consistency sweep (647), magic-constants extraction (656). All offline-actionable; after them only externally BLOCKED evidence and measurement-gated items remain.
 
 ## Capital safety
 

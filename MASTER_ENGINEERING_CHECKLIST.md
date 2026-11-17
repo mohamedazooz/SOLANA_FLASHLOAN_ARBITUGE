@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **439 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **56** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **443 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **52** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -575,15 +575,15 @@
 - [x] قياس Simulation Latency. `(FIXED/TESTED — Histogram simulation_latency_us في arb-metrics (buckets 1k–5M µs) + observe_simulation_latency_us؛ مُقاس فعلياً حول simulate_async و RpcPool::simulate_transaction fallback في dispatch.rs مع debug log؛ مُصدَّر في /metrics)`
 - [x] قياس Submission Latency. `(rtt_ms = sent_at.elapsed + observe_bundle_rtt — dispatch.rs:626,641-644)`
 - [x] قياس Landing Latency. `(land_start → landing_ms + total_e2e_ms شامل — dispatch.rs:756,830-846)`
-- [ ] مراجعة unnecessary cloning. `(NOT AUDITED — التصميم Arc-heavy؛ 26 clone في opportunity.rs لم تُراجع سطراً سطراً)`
-- [ ] مراجعة heap allocations. `(NOT AUDITED — لا يوجد تتبع allocation في hot path)`
-- [ ] مراجعة lock contention. `(NOT AUDITED — measured_cu/previous_tips تستخدم std Mutex؛ لا قياس contention)`
-- [ ] مراجعة async task scheduling. `(NOT AUDITED — tokio::spawn لكل landing tracker؛ لا قياس task pileup)`
-- [ ] مراجعة serialization overhead. `(NOT AUDITED — bincode/JSON paths لم تُقاس)`
-- [ ] مراجعة duplicate calculations. `(NOT AUDITED — توجد إزالة مكرر في quote paths لكن لم تُراجع شمولياً)`
+- [x] مراجعة unnecessary cloning. `(REVIEWED — 26 استدعاء: ~20 على مسارات الرفض فقط، استنساخ واحد لكل candidate (تشكيل الإعدادات — opportunity.rs:87)، وpool.clone فقط أول مرة لكل pool في manifest cache (1436-1442) — لا استنساخ لكل pool-tick على مسار النجاح — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [ ] مراجعة heap allocations. `(PARTIAL — لا تحديق allocation في المسار الحار حتى الآن (التحديق الموجود بروسير RSS/CPU فقط) — التحسين بلا قياس مّلغى وقفه على جلسة قياس shadow — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [x] مراجعة lock contention. `(REVIEWED — كل الأقافل parking_lot مع أقسام حرجية صغيرة بلا await داخلها: measured_cu — opportunity.rs:125؛ previous_tips — 218؛ ترتيب الأقافل slot_clock→rtt ثابت بلا عكس ترتيب — dispatch.rs:517-519) + اختبارات التزامن الجديدة (concurrency_tests.rs) — تصحيح إدلة سابقة: الموجود parking_lot ليس std Mutex — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [x] مراجعة async task scheduling. `(REVIEWED — landing tracker لكل معاملة مع عمر محدود 20×400ms (~8s) — dispatch.rs:761؛ عدد المهام محدود بـ dispatches-in-flight، لهذا لا pileup غير محدود)`
+- [ ] مراجعة serialization overhead. `(PARTIAL — bincode في مسارات باردة فقط (محاكاة/ALT/compiler)؛ JSON المنشور كل تكرار للحلقة (publish_control_state) كلفته غير مقاسة حتى الآن — PERFORMANCE_HOT_PATH_REVIEW.md)`
+- [ ] مراجعة duplicate calculations. `(PARTIAL — مراجعة أولية: route_sig مفرد المصدر (مقاس + RAM templates)؛ إزالة التكرار الموجودة موثقة؛ إعادة حساب estimate_route_cu الباقية رخيصة ومّوثقة كـ fallback — PERFORMANCE_HOT_PATH_REVIEW.md)`
 - [x] مراجعة CPU consumption. `(FIXED/TESTED — Gauge process_cpu_percent في arb-metrics؛ sampler كل 30s في run.rs يقرأ /proc/self/stat utime+stime (Linux-only cfg) ويحسب % عبر الفارق ticks؛ معروض في Overview كـ "CPU %")`
 - [x] مراجعة Memory Consumption. `(FIXED/TESTED — Gauge process_rss_bytes في arb-metrics؛ sampler يقرأ VmRSS من /proc/self/status كل 30s؛ معروض في Overview كـ "RSS (MB)" + ObservabilitySnapshot)`
-- [ ] مراجعة queue saturation. `(PARTIAL — MAX_WS_ACCOUNT_SUBS يحد الاشتراكات — helius_ws.rs:648؛ لا bounded channel مقيسة للرسائل الواردة)`
+- [x] مراجعة queue saturation. `(REVIEWED — لا يوجد unbounded_channel في الـ workspace إلطاًاً؛ Telegram bounded 1000 + try_send مع سياسة drop مُسجّلة — telegram.rs:99,296-306؛ رسائل WS معالجة inline بلا طابور وسيط — PERFORMANCE_HOT_PATH_REVIEW.md)`
 - [x] بناء reproducible benchmarks. `(arb-ingest/benches/dual_ingest_bench.rs + arb-bot/src/bin/latency_bench.rs)`
 
 ## 17. Security
