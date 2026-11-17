@@ -113,6 +113,8 @@ pub struct Supervisor {
     /// Dedicated fallback snapshot store for RPC-refreshed Kamino reserve & WSOL mint
     /// accounts so live WS provider invariants in `AccountSnapshotStore` remain intact.
     kamino_fallback_store: arb_ingest::AccountSnapshotStore,
+    /// Provider capability registry verifying transport methods and prerequisites (G1, G2).
+    capability_registry: Arc<arb_ingest::ProviderCapabilityRegistry>,
     pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
     pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
     pub recent_rejected: Arc<parking_lot::Mutex<Vec<crate::telegram::RejectedTradeSummary>>>,
@@ -432,6 +434,15 @@ impl Supervisor {
             measured_cu: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
             ram_templates: parking_lot::Mutex::new(std::collections::HashMap::new()),
             kamino_fallback_store: arb_ingest::AccountSnapshotStore::default(),
+            capability_registry: Arc::new({
+                let mut reg = arb_ingest::ProviderCapabilityRegistry::new();
+                reg.register(arb_ingest::ProviderCapabilities::standard_json_rpc_ws(
+                    "Helius",
+                ));
+                reg.register(arb_ingest::ProviderCapabilities::solami_blur());
+                reg.register(arb_ingest::ProviderCapabilities::solami_mirage());
+                reg
+            }),
             recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_rejected: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -446,6 +457,11 @@ impl Supervisor {
 
     pub fn ingest(&self) -> Arc<IngestClient> {
         Arc::clone(&self.ingest)
+    }
+
+    /// Access the provider capability registry to validate prerequisites (G1, G2).
+    pub fn capability_registry(&self) -> Arc<arb_ingest::ProviderCapabilityRegistry> {
+        Arc::clone(&self.capability_registry)
     }
 
     /// Shared heartbeat writer, so the main loop can record liveness and gates
@@ -616,10 +632,22 @@ impl Supervisor {
             guard.remove(0);
         }
         let route = trade.route.clone();
+        let signature = trade.signature.clone();
+        let slot = trade.slot;
+        let profit_sol = trade.profit_sol;
         guard.push(trade);
         drop(guard);
         if let Some(control) = control {
-            control.record_execution("landed", &route, "trade confirmed landed");
+            control.record_execution_with(
+                "landed",
+                &route,
+                "trade confirmed landed",
+                crate::control_service::ExecutionExtras {
+                    signature: Some(signature),
+                    slot: Some(slot),
+                    net_profit_sol: Some(profit_sol),
+                },
+            );
             control.record_execution_result(true);
         }
     }
@@ -639,10 +667,21 @@ impl Supervisor {
         }
         let route = dropped.route.clone();
         let status = dropped.reason.clone();
+        let bundle_id = dropped.bundle_id.clone();
+        let slot = dropped.slot;
         guard.push(dropped);
         drop(guard);
         if let Some(control) = control {
-            control.record_execution("dropped", &route, &status);
+            control.record_execution_with(
+                "dropped",
+                &route,
+                &status,
+                crate::control_service::ExecutionExtras {
+                    signature: (!bundle_id.is_empty()).then_some(bundle_id),
+                    slot: (slot > 0).then_some(slot),
+                    net_profit_sol: None,
+                },
+            );
             control.record_execution_result(false);
         }
     }
@@ -656,6 +695,7 @@ impl Supervisor {
                 &rejected.stage,
                 format!("{}: {}", rejected.route, rejected.reason),
             );
+            control.record_rejection(&rejected);
         }
         let mut guard = self.recent_rejected.lock();
         if guard.len() >= 100 {

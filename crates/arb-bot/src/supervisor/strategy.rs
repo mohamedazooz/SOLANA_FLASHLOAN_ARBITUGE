@@ -391,6 +391,72 @@ impl Supervisor {
             seen_pool_sets.insert(ids)
         });
         merged.extend(three_leg_opps);
+
+        // ── Pump.fun BOOST Migration surveillance pass ──
+        // Scan active Pump.fun curves nearing completion in the sweet-spot band [40..75 SOL].
+        // Log detected targets and record them in the ControlService dashboard.
+        let boost_targets = {
+            let pump_discovery = arb_ingest::PumpFunDiscoveryClient::default();
+            // Convert known pools into PumpFunCoins for sweet-spot evaluation
+            let mut pump_coins = Vec::new();
+            for p in &fresh_pools {
+                if p.protocol == DexProtocol::PumpFun {
+                    if let Some(curve) = &p.pump_fun {
+                        pump_coins.push(arb_ingest::PumpFunCoin {
+                            mint: p.quote_mint.0.to_string(),
+                            name: None,
+                            symbol: None,
+                            description: None,
+                            bonding_curve: Some(p.pool_id.0.to_string()),
+                            associated_bonding_curve: None,
+                            virtual_sol_reserves: Some(curve.virtual_sol_reserves),
+                            virtual_token_reserves: Some(curve.virtual_token_reserves),
+                            total_supply: Some(curve.token_total_supply),
+                            complete: curve.complete,
+                            market_cap: None,
+                            usd_market_cap: None,
+                            reply_count: None,
+                            last_trade_timestamp: None,
+                            raydium_pool: None,
+                        });
+                    }
+                }
+            }
+
+            pump_discovery.find_boost_migration_targets(
+                &pump_coins,
+                verified.flash_loan_fee_sf.value >> 32, // Bps approximation
+                verified.tip_lamports.value.0,
+                self.config.strategy.min_net_profit_abs,
+            )
+        };
+
+        if !boost_targets.is_empty() {
+            info!(
+                "🔥 Pump.fun BOOST surveillance detected {} target curve(s) in migration sweet spot",
+                boost_targets.len()
+            );
+            if let Some(control) = self.control() {
+                for t in boost_targets.iter().take(5) {
+                    control.record_opportunity(crate::control_service::OpportunityRecord {
+                        captured_at_unix: 0,
+                        slot: current_slot.0,
+                        route: format!("PumpFunCurve({}) \u{2192} BOOST PumpSwap", t.symbol),
+                        protocol: "pumpfun-boost-migration".to_string(),
+                        borrow_lamports: t.working_capital_eval.completion_cost_lamports,
+                        expected_output_lamports: t.working_capital_eval.gross_sol_out_lamports,
+                        net_profit_lamports: t.working_capital_eval.net_profit_lamports,
+                        eligible: t.working_capital_eval.is_executable,
+                        reject_reason: if t.working_capital_eval.is_executable {
+                            None
+                        } else {
+                            Some("BELOW_MIN_PROFIT_HURDLE".to_string())
+                        },
+                    });
+                }
+            }
+        }
+
         merged.sort_by_key(|o| std::cmp::Reverse(o.net_profit.0));
         let opportunities = merged;
 

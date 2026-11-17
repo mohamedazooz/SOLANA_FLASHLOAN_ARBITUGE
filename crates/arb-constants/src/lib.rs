@@ -490,6 +490,13 @@ pub const SOLANA_PACKET_MTU_LIMIT: usize = 1232;
 pub const SOLANA_BASE_FEE_LAMPORTS: u64 = 5_000;
 /// Base priority fee in micro-lamports.
 pub const BASE_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 1_000;
+/// Flash-arbitrage fast-path priority fee in micro-lamports.
+///
+/// Deliberately higher than [`BASE_PRIORITY_FEE_MICRO_LAMPORTS`]: flash routes
+/// compete for the same slot as the pools they arbitrage. This is the single
+/// source of truth for every flash-pipeline default; encode paths still clamp
+/// the resulting price against the profit share via `cap_cu_price_by_profit`.
+pub const FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 10_000;
 /// Default baseline priority fee maximum share of gross profit (1,000 bps = 10%).
 pub const DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS: u64 = 1_000;
 /// Default maximum priority fee share cap under peak competition (2,000 bps = 20%).

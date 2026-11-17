@@ -75,6 +75,21 @@ export interface ExecutionRecord {
   outcome: string;
   route: string;
   detail: string;
+  signature?: string | null;
+  slot?: number | null;
+  net_profit_sol?: number | null;
+}
+
+export interface RejectionRecord {
+  at_unix: number;
+  slot: number;
+  stage: string;
+  route: string;
+  reason: string;
+  gross_sol: number;
+  net_sol: number | null;
+  loan_size_sol: number;
+  pools_count: number;
 }
 
 export interface LogRecord {
@@ -100,6 +115,7 @@ export const api = {
   status: () => request<StatusSnapshot>("/api/status"),
   opportunities: () => request<OpportunityRecord[]>("/api/opportunities"),
   executions: () => request<ExecutionRecord[]>("/api/executions"),
+  rejections: () => request<RejectionRecord[]>("/api/rejections"),
   logs: () => request<LogRecord[]>("/api/logs"),
   pnl: () => request<Record<string, unknown>>("/api/pnl"),
   providers: () => request<Record<string, unknown>>("/api/providers"),

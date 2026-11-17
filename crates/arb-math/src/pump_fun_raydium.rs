@@ -213,3 +213,163 @@ pub fn calculate_optimal_trade(
         flash_loan_fee_bps: flash_fee_bps,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Profitable geometry: Pump.fun marginal price 1 lamport/token vs
+    /// Raydium 2 lamports/token — a 100% gross spread far above both fees.
+    fn profitable_pair() -> (PumpFunParams, RaydiumParams) {
+        (
+            PumpFunParams {
+                reserve: 1_000_000_000,
+                supply: 1_000_000_000,
+            },
+            RaydiumParams {
+                token_reserve: 1_000_000_000,
+                sol_reserve: 2_000_000_000,
+                fee_bps: DEFAULT_RAYDIUM_FEE_BPS,
+            },
+        )
+    }
+
+    #[test]
+    fn min_net_profit_constant_matches_arb_constants() {
+        assert_eq!(
+            MIN_NET_PROFIT_LAMPORTS,
+            arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS
+        );
+    }
+
+    #[test]
+    fn marginal_price_rejects_zero_reserves() {
+        assert_eq!(pump_fun_marginal_price(0, 1_000), None);
+        assert_eq!(pump_fun_marginal_price(1_000, 0), None);
+        assert_eq!(pump_fun_marginal_price(1_000, 500), Some(2));
+    }
+
+    #[test]
+    fn buy_cost_rounds_up_and_rejects_unfunded_sizes() {
+        assert_eq!(pump_fun_buy_cost(0, 0, 0), Some(0));
+        assert_eq!(pump_fun_buy_cost(1, 3, 1), Some(1)); // ceil(1/2) = 1
+        assert_eq!(pump_fun_buy_cost(3, 10, 5), Some(3)); // ceil(15/5) = 3 exact
+        assert_eq!(pump_fun_buy_cost(1_000, 1_000, 1_000), None); // delta >= supply
+        assert_eq!(pump_fun_buy_cost(0, 1_000, 1), None);
+        assert_eq!(pump_fun_buy_cost(1_000, 0, 1), None);
+    }
+
+    #[test]
+    fn raydium_sell_output_applies_fee_and_floor_rounding() {
+        assert_eq!(raydium_sell_output(1_000, 1_000, 0, 0), Some(0));
+        // No fee: 1000 * 100 * 10000 / (1100 * 10000) = 90.909 -> 90 (floor).
+        assert_eq!(raydium_sell_output(1_000, 1_000, 100, 0), Some(90));
+        // 25 bps fee: 1000 * 100 * 9975 / (1100 * 10000) = 90.68 -> 90 (floor,
+        // conservative). Larger reserves make the fee visible: 90_909 vs 90_681.
+        assert_eq!(
+            raydium_sell_output(1_000_000, 1_000_000, 100_000, 0),
+            Some(90_909)
+        );
+        assert_eq!(
+            raydium_sell_output(1_000_000, 1_000_000, 100_000, 25),
+            Some(90_681)
+        );
+        // Fee >= 100% clamps to zero output factor, never panics.
+        assert_eq!(raydium_sell_output(1_000, 1_000, 100, 10_000), Some(0));
+    }
+
+    #[test]
+    fn optimal_trade_rejects_degenerate_reserves() {
+        let (pump, ray) = profitable_pair();
+        assert!(calculate_optimal_trade(PumpFunParams::default(), ray, 30, 1_000).is_err());
+        assert!(
+            calculate_optimal_trade(
+                pump,
+                RaydiumParams {
+                    sol_reserve: 0,
+                    ..ray
+                },
+                30,
+                1_000
+            )
+            .is_err()
+        );
+        assert!(calculate_optimal_trade(pump, ray, 30, 0).is_err());
+    }
+
+    #[test]
+    fn optimal_trade_finds_no_optimum_when_prices_are_aligned() {
+        // Identical marginal prices: 25 bps Raydium fee + 30 bps flash fee
+        // make every size unprofitable -> closed form must error, not fake.
+        let pump = PumpFunParams {
+            reserve: 1_000_000_000,
+            supply: 1_000_000_000,
+        };
+        let ray = RaydiumParams {
+            token_reserve: 1_000_000_000,
+            sol_reserve: 1_000_000_000,
+            fee_bps: DEFAULT_RAYDIUM_FEE_BPS,
+        };
+        let err = calculate_optimal_trade(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000)
+            .expect_err("aligned prices must not produce a trade");
+        assert_eq!(err, "No positive optimum under the current curve geometry");
+        assert!(
+            calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn optimal_trade_is_profitable_and_internally_consistent() {
+        let (pump, ray) = profitable_pair();
+        let trade =
+            calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, u128::MAX)
+                .expect("profitable geometry must yield a trade");
+        assert!(trade.is_profitable());
+        assert!(trade.delta_t > 0);
+        // Recomputed leg economics must match the reported trade.
+        let buy = pump_fun_buy_cost(pump.reserve, pump.supply, trade.delta_t).unwrap();
+        let sell = raydium_sell_output(
+            ray.sol_reserve,
+            ray.token_reserve,
+            trade.delta_t,
+            ray.fee_bps,
+        )
+        .unwrap();
+        assert_eq!(trade.buy_cost, buy);
+        assert_eq!(trade.sell_output, sell);
+        // Sell proceeds must cover the borrow + flash fee + min-profit floor.
+        assert!(trade.sell_output > trade.buy_cost);
+        // Optimal size stays inside protocol physics.
+        assert!(trade.delta_t < pump.supply);
+        assert!(trade.delta_t <= ray.token_reserve);
+    }
+
+    #[test]
+    fn verify_marginal_decreasing_brackets_the_optimum() {
+        // At the optimum, marginal revenue == marginal cost (condition holds);
+        // well below it, marginal revenue still exceeds marginal cost (false).
+        let (pump, ray) = profitable_pair();
+        let trade = calculate_optimal_trade(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, u128::MAX)
+            .expect("optimum exists");
+        assert!(verify_marginal_decreasing(
+            pump,
+            ray,
+            DEFAULT_FLASH_LOAN_FEE_BPS,
+            trade.delta_t
+        ));
+        assert!(!verify_marginal_decreasing(
+            pump,
+            ray,
+            DEFAULT_FLASH_LOAN_FEE_BPS,
+            (trade.delta_t / 10).max(1)
+        ));
+        // Degenerate size beyond supply short-circuits to true (fail-safe).
+        assert!(verify_marginal_decreasing(
+            pump,
+            ray,
+            DEFAULT_FLASH_LOAN_FEE_BPS,
+            pump.supply + 1
+        ));
+    }
+}

@@ -18,6 +18,7 @@ const OPPORTUNITY_RING_CAP: usize = 256;
 const LOG_RING_CAP: usize = 1_000;
 /// Hard cap on retained execution records (bounded memory).
 const EXECUTION_RING_CAP: usize = 256;
+const REJECTION_RING_CAP: usize = 256;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OpportunityRecord {
@@ -46,6 +47,34 @@ pub struct ExecutionRecord {
     pub outcome: String,
     pub route: String,
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_profit_sol: Option<f64>,
+}
+
+/// Optional provenance fields attached to an execution record. Absent fields
+/// are omitted from the serialized API response so old clients stay compatible.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionExtras {
+    pub signature: Option<String>,
+    pub slot: Option<u64>,
+    pub net_profit_sol: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RejectionRecord {
+    pub at_unix: u64,
+    pub slot: u64,
+    pub stage: String,
+    pub route: String,
+    pub reason: String,
+    pub gross_sol: f64,
+    pub net_sol: Option<f64>,
+    pub loan_size_sol: f64,
+    pub pools_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +121,7 @@ struct ControlInner {
     events: tokio::sync::broadcast::Sender<ControlEvent>,
     opportunities: Mutex<VecDeque<OpportunityRecord>>,
     executions: Mutex<VecDeque<ExecutionRecord>>,
+    rejections: Mutex<VecDeque<RejectionRecord>>,
     logs: Mutex<VecDeque<LogRecord>>,
     profitable_total: AtomicU64,
     executed_total: AtomicU64,
@@ -226,6 +256,7 @@ impl ControlService {
                 events,
                 opportunities: Mutex::new(VecDeque::with_capacity(OPPORTUNITY_RING_CAP)),
                 executions: Mutex::new(VecDeque::with_capacity(EXECUTION_RING_CAP)),
+                rejections: Mutex::new(VecDeque::with_capacity(REJECTION_RING_CAP)),
                 logs: Mutex::new(VecDeque::with_capacity(LOG_RING_CAP)),
                 profitable_total: AtomicU64::new(0),
                 executed_total: AtomicU64::new(0),
@@ -441,11 +472,24 @@ impl ControlService {
     }
 
     pub fn record_execution(&self, outcome: &str, route: &str, detail: &str) {
+        self.record_execution_with(outcome, route, detail, ExecutionExtras::default());
+    }
+
+    pub fn record_execution_with(
+        &self,
+        outcome: &str,
+        route: &str,
+        detail: &str,
+        extras: ExecutionExtras,
+    ) {
         let record = ExecutionRecord {
             at_unix: now_unix(),
             outcome: outcome.to_string(),
             route: route.to_string(),
             detail: detail.to_string(),
+            signature: extras.signature,
+            slot: extras.slot,
+            net_profit_sol: extras.net_profit_sol,
         };
         let mut ring = self.inner.executions.lock();
         if ring.len() == EXECUTION_RING_CAP {
@@ -457,6 +501,41 @@ impl ControlService {
             "execution",
             serde_json::to_value(&record).unwrap_or_default(),
         );
+    }
+
+    /// Records a rejected opportunity in a dedicated ring so high-frequency
+    /// rejections can never evict landed/dropped execution records.
+    pub fn record_rejection(&self, rejected: &crate::telegram::RejectedTradeSummary) {
+        let record = RejectionRecord {
+            at_unix: now_unix(),
+            slot: rejected.slot,
+            stage: rejected.stage.clone(),
+            route: rejected.route.clone(),
+            reason: rejected.reason.clone(),
+            gross_sol: rejected.gross_sol,
+            net_sol: rejected.net_sol,
+            loan_size_sol: rejected.loan_size_sol,
+            pools_count: rejected.pools_count,
+        };
+        let mut ring = self.inner.rejections.lock();
+        if ring.len() == REJECTION_RING_CAP {
+            ring.pop_front();
+        }
+        ring.push_back(record.clone());
+        drop(ring);
+        self.emit(
+            "rejection",
+            serde_json::to_value(&record).unwrap_or_default(),
+        );
+    }
+
+    pub fn rejections(&self, limit: usize) -> Vec<RejectionRecord> {
+        let ring = self.inner.rejections.lock();
+        ring.iter()
+            .rev()
+            .take(limit.clamp(1, REJECTION_RING_CAP))
+            .cloned()
+            .collect()
     }
 
     pub fn executions(&self, limit: usize) -> Vec<ExecutionRecord> {
@@ -771,6 +850,62 @@ mod tests {
         let contents = std::fs::read_to_string(&path).expect("audit file written");
         assert!(contents.contains("\"action\":\"stop\""));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn execution_extras_serialize_only_when_present() {
+        let svc = service();
+        svc.record_execution("dropped", "A>B", "no reason");
+        let bare = serde_json::to_value(&svc.executions(1)[0]).unwrap();
+        assert!(bare.get("signature").is_none());
+        assert!(bare.get("slot").is_none());
+        assert!(bare.get("net_profit_sol").is_none());
+
+        svc.record_execution_with(
+            "landed",
+            "A>B>C",
+            "trade confirmed landed",
+            ExecutionExtras {
+                signature: Some("sig123".into()),
+                slot: Some(42),
+                net_profit_sol: Some(0.001),
+            },
+        );
+        let rich = serde_json::to_value(&svc.executions(1)[0]).unwrap();
+        assert_eq!(rich["signature"], "sig123");
+        assert_eq!(rich["slot"], 42);
+        assert_eq!(rich["net_profit_sol"], 0.001);
+    }
+
+    #[test]
+    fn rejection_ring_is_dedicated_and_ordered() {
+        let svc = service();
+        let rejected = crate::telegram::RejectedTradeSummary {
+            route: "WSOL>USDC>WSOL".into(),
+            gross_sol: 0.01,
+            stage: "EconomicGate".into(),
+            reason: "net below minimum".into(),
+            slot: 77,
+            pools_count: 2,
+            loan_size_sol: 5.0,
+            net_sol: Some(-0.002),
+        };
+        svc.record_rejection(&rejected);
+        svc.record_rejection(&rejected);
+        let rows = svc.rejections(10);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].stage, "EconomicGate");
+        assert_eq!(rows[0].slot, 77);
+        assert_eq!(rows[0].net_sol, Some(-0.002));
+        assert_eq!(rows[0].pools_count, 2);
+        assert_eq!(rows[0].loan_size_sol, 5.0);
+        assert_eq!(rows[0].gross_sol, 0.01);
+        assert_eq!(rows[0].reason, "net below minimum");
+        assert_eq!(rows[0].route, "WSOL>USDC>WSOL");
+        assert!(
+            svc.executions(10).is_empty(),
+            "rejections must not interleave with the executions ring"
+        );
     }
 }
 
