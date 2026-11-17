@@ -36,6 +36,9 @@ pub use rpc_reconcile::{RpcSnapshotClient, RpcSnapshotConfig, RpcSnapshotReport}
 pub use slot_integrity::{ReconcileError, SlotIntegrity, SlotUpdateOutcome, SnapshotReconciler};
 pub mod rpc_pool;
 pub use rpc_pool::{ProviderHealthReport, RpcPool, RpcPoolHealth, SignatureStatus};
+pub mod decoders;
+pub mod fetcher;
+pub mod hydration;
 pub mod registry;
 pub use registry::{
     DecodedPoolInfo, MultiDexRegistry, RegisteredPool, clmm_onchain_mints,
