@@ -128,11 +128,11 @@ impl Supervisor {
                 desired_cu_price,
                 dynamic_max_share_bps,
             );
-            // cu_price is micro-lamports per CU; convert to a lamport estimate.
-            // Ceil: priority fee is a non-refundable cost, so underestimating
-            // it (floor) would overstate net profit. Fail-closed on overflow.
-            let priority_fee_product = cu_price.saturating_mul(cu_limit as u64);
-            let priority_fee_lamports = priority_fee_product.div_ceil(1_000_000);
+            // cu_price is micro-lamports per CU; convert to a lamport estimate
+            // with the SAME function the builder's ceiling is derived from, so
+            // the gate's cost and the encoded instruction cannot drift. Ceiling
+            // rounding keeps this non-refundable cost from being understated.
+            let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
             let gross = opp.gross_profit.as_u64();
             let gross_sol = gross as f64 / 1e9;
             let loan_size_sol =
@@ -1035,17 +1035,17 @@ impl Supervisor {
                         // Tier-3: V1-only full transaction compilation.
                         // No Legacy/V0/ALT fallback is permitted in this release.
                         let build_result = if v1_transport_enabled {
-                            let priority_fee_lamports = ((cu_price as u128)
-                                .saturating_mul(cu_limit as u128)
-                                .saturating_add(999_999))
-                                / 1_000_000;
-                            if priority_fee_lamports > u64::MAX as u128 {
+                            // Same authoritative ceiling conversion used by the
+                            // gate; saturates instead of overflowing.
+                            let priority_fee_lamports =
+                                arb_tx::priority_fee_lamports(cu_price, cu_limit);
+                            if priority_fee_lamports == u64::MAX {
                                 Err(arb_tx::TxError::Serialization(
                                     "V1 priority fee exceeds u64 lamports".into(),
                                 ))
                             } else {
                                 let v1_config = arb_tx::V1ConfigParams {
-                                    priority_fee_lamports: Some(priority_fee_lamports as u64),
+                                    priority_fee_lamports: Some(priority_fee_lamports),
                                     compute_unit_limit: Some(cu_limit),
                                     loaded_accounts_data_size_limit: Some(67_108_864),
                                     heap_size: None,
@@ -1094,16 +1094,14 @@ impl Supervisor {
                     );
                     continue;
                 };
-                let priority_fee_lamports = ((cu_price as u128)
-                    .saturating_mul(cu_limit as u128)
-                    .saturating_add(999_999))
-                    / 1_000_000;
-                if priority_fee_lamports > u64::MAX as u128 {
+                // Same authoritative ceiling conversion used by the gate.
+                let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+                if priority_fee_lamports == u64::MAX {
                     warn!("Simulate V1 simulation rejected: priority fee overflow");
                     continue;
                 }
                 let v1_config = arb_tx::V1ConfigParams {
-                    priority_fee_lamports: Some(priority_fee_lamports as u64),
+                    priority_fee_lamports: Some(priority_fee_lamports),
                     compute_unit_limit: Some(cu_limit),
                     loaded_accounts_data_size_limit: Some(67_108_864),
                     heap_size: None,

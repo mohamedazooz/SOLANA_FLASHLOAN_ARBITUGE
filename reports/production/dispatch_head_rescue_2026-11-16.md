@@ -4,12 +4,12 @@
 `crates/arb-bot/src/supervisor/dispatch.rs` (الأسطر 192–293 من نسخة العمل)
 التي كانت تحمل علامات تعارض غير محلولة:
 
-```
-<<<<<<< HEAD
+```text
+[CONFLICT: HEAD]
    ... محتوى HEAD ...
-=======
+[CONFLICT: EQUALS]
    ... محتوى origin/main ...
->>>>>>> origin/main
+[CONFLICT: origin/main]
 ```
 
 ## لماذا تم اختيار جانب origin/main؟

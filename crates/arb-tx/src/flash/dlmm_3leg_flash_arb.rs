@@ -524,11 +524,12 @@ pub fn build_flash_funded_three_pool_transaction(
         let config = crate::adaptive::V1ConfigParams {
             priority_fee_lamports: Some(priority_fee_lamports as u64),
             compute_unit_limit: Some(params.cu_limit),
-            // 1 MiB: DLMM bin arrays are ~15-25 KB each; a 3-leg route with
-            // 2-4 arrays per leg can load ~200-400 KB of account data.
-            // Re-measure against loaded-accounts-data-size in the mainnet
-            // simulation before enabling live.
-            loaded_accounts_data_size_limit: Some(1_048_576),
+            // Executable program data counts toward the limit (live-measured
+            // minimum ~10.2 MiB for a flash spine), so request the runtime
+            // maximum — the cap has no fee impact.
+            loaded_accounts_data_size_limit: Some(
+                crate::adaptive::V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
+            ),
             heap_size: Some(256 * 1024),
         };
         let accounts_count = crate::adaptive::count_unique_accounts(signer.pubkey(), &ixs);

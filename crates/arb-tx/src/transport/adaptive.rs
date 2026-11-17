@@ -52,6 +52,15 @@ pub const CONFIG_MASK_LOADED_DATA_LIMIT: u32 = 0x08;
 /// Configuration mask bit 4: Requested heap size (4 bytes, little-endian u32).
 pub const CONFIG_MASK_HEAP_SIZE: u32 = 0x10;
 
+/// Runtime maximum for the V1 loaded-accounts data size limit (64 MiB).
+///
+/// Live mainnet measurement (Agave 4.4.1, 2026-11-17): a minimal Kamino flash
+/// borrow/repay spine loads 10,714,291 bytes because executable program data
+/// counts toward the limit; any smaller limit is rejected pre-execution with
+/// `MaxLoadedAccountsDataSizeExceeded` at units=0. The limit is a cap only —
+/// it does not affect fees — so flash routes must always request the maximum.
+pub const V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT: u32 = 67_108_864;
+
 /// Solana transaction format versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TransactionVersion {
@@ -668,7 +677,7 @@ impl AdaptiveTxCompiler {
         }
         if config
             .loaded_accounts_data_size_limit
-            .is_none_or(|v| v == 0 || v > 67_108_864)
+            .is_none_or(|v| v == 0 || v > V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT)
         {
             return Err(TxError::SanitizationError(
                 "V1 simulation requires loaded-account data limit in 1..=64 MiB".into(),
@@ -730,7 +739,7 @@ impl AdaptiveTxCompiler {
         }
         if config
             .loaded_accounts_data_size_limit
-            .is_none_or(|v| v == 0 || v > 67_108_864)
+            .is_none_or(|v| v == 0 || v > V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT)
         {
             return Err(TxError::SanitizationError(
                 "V1 requires an explicit loaded-accounts data limit in 1..=64 MiB".into(),

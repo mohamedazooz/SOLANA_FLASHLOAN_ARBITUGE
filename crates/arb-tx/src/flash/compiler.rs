@@ -1039,12 +1039,15 @@ fn try_compile_v1(
     let micro = ctx.priority_fee_micro_lamports;
     let total_priority_fee_lamports = cu.saturating_mul(micro).saturating_add(999_999) / 1_000_000;
 
-    // Loaded accounts data size limit: 256 KiB covers this route's footprint
-    // (3 x BinArray ~= 36 KiB plus pools/ATAs/programs). Configurable upstream.
+    // Loaded accounts data size limit: executable program data counts toward
+    // the limit (live-measured minimum ~10.2 MiB for a flash spine), so request
+    // the runtime maximum — the cap has no fee impact.
     let config = crate::adaptive::V1ConfigParams {
         priority_fee_lamports: Some(total_priority_fee_lamports),
         compute_unit_limit: Some(ctx.cu_limit),
-        loaded_accounts_data_size_limit: Some(256 * 1024),
+        loaded_accounts_data_size_limit: Some(
+            crate::adaptive::V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
+        ),
         heap_size: None,
     };
 

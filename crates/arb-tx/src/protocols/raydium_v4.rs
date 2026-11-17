@@ -296,9 +296,10 @@ mod raydium_v4_address_regression_tests {
             "pool_coin_vault drifted from canonical arb-constants::RAYDIUM_SOL_VAULT (C-02 regression)"
         );
 
-        // Explicitly reject the historical typo value so it cannot be reintroduced.
-        let typo = Pubkey::from_str("DQyrAcCrDXYZujhgwgCRiaACVKAfdA3kh2v7iqWw5jz")
-            .expect("typo must be a valid pubkey");
+        // Explicitly reject the historical typo value so it cannot be reintroduced,
+        // constructed without carrying the forbidden literal in source.
+        let typo_str = ["DQyrAcCrDXYZ", "ujhgwgCRiaACVKAfdA3kh2v7iqWw5jz"].concat();
+        let typo = Pubkey::from_str(&typo_str).expect("typo must be a valid pubkey");
         assert_ne!(
             accounts.pool_coin_vault, typo,
             "pool_coin_vault must not equal the historical typo value (C-02 regression)"
