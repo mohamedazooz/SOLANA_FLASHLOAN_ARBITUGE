@@ -665,30 +665,30 @@
 ## 20. Production Acceptance
 
 - [x] اختبار مزودين مجانيين فعليين. `(حي: Helius RPC getSlot=470350734/health=ok; Shyft=470350735; Solami=470350735 — نفس الكلاستر; WSS: Helius/Shyft 429 على handshake، Solami 4002 no-bandwidth)`
-- [ ] اختبار Data Plane لمدة 30 دقيقة.
-- [ ] إثبات account updates من كلا المزودين.
-- [ ] إثبات Failover.
-- [ ] إثبات Quota Compliance.
-- [ ] إثبات عدم وجود HTTP market polling.
-- [ ] إثبات State Integrity.
-- [ ] إثبات Dependency Completeness.
-- [ ] إثبات Exact Quote Parity لكل DEX معتمد.
-- [ ] إثبات أفضل Borrow Asset.
-- [ ] إثبات أفضل Borrow Amount.
-- [ ] إثبات Net Profit Calculations.
+- [ ] اختبار Data Plane لمدة 30 دقيقة. `(BLOCKED — يتطلب جلسة live مستمرة 30 دقيقة غير متاحة في بيئة التدقيق الحالية؛ جلسة 2026-11-17 أثبتت المزودين نقطة-زمنياً فقط)`
+- [ ] إثبات account updates من كلا المزودين. `(BLOCKED — WSS: Helius/Shyft 429 على handshake، Solami 4002 no-bandwidth على الخطط المجانية — جلسة 2026-11-17؛ التغطية unit-level عبر dual_ingest tests)`
+- [x] إثبات Failover. `(TESTED unit-level: failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + stale_or_lagging_provider_is_not_selected:234؛ الإثبات الحي معلّق على قيود الخطط المجانية)`
+- [ ] إثبات Quota Compliance. `(BLOCKED — نفس قيود WSS المجانية؛ token-bucket enforcement مُختبر — rpc_pool.rs:1525)`
+- [ ] إثبات عدم وجود HTTP market polling. `(PARTIAL — code-level: مسار السوق streaming-driven بعد bootstrap — Domain 5؛ الإثبات بلا runtime قياس دوري لم يتم)`
+- [x] إثبات State Integrity. `(TESTED: 8 اختبارات slot_integrity + quote_readiness gates (disconnect/stale/dead/mixed-bank) — slot_integrity.rs + quote_readiness.rs)`
+- [x] إثبات Dependency Completeness. `(TESTED: dependency_manifest owner/completeness + رفض hydration الناقص — dependency_manifest.rs + quote_readiness.rs:312)`
+- [ ] إثبات Exact Quote Parity لكل DEX معتمد. `(PARTIAL — CPMM 13/13 + DLMM single-bin 6/6 مقابل Python oracle + Orca SDK parity — arb-math/tests؛ CLMM tick-crossing وmulti-bin traversal غير مغطاة بoracle — MATHEMATICAL_VERIFICATION.md)`
+- [x] إثبات أفضل Borrow Asset. `(TESTED: تقييم كل reserve مؤهل + اختيار اقتصادي — Domain 10 + three_leg_net_economics_tests)`
+- [x] إثبات أفضل Borrow Amount. `(TESTED: size_search_ranks_by_net_not_gross + borrow_ceiling_clamps_to_available_liquidity + candidates_above_available_flash_liquidity_rejected — three_leg_net_economics_tests.rs:46-131)`
+- [x] إثبات Net Profit Calculations. `(TESTED: dimensional currency tests + P0 profit-accounting regression repair — dimensional_currency_tests.rs:63,112)`
 - [x] إثبات Full Atomic Builder. `(حي 2026-11-17: معاملة ذرية 8 تعليمات بُنيت بمُجمِّعات المستودع (kamino borrow/repay + ATA idempotent + CU budget + syncNative) — verify_atomic_integrity=is_atomic، 650 bytes، وصلت finalized على mainnet sig 5w9k6SeA…gX)`
 - [x] إثبات Repayment. `(حي: FlashBorrowReserveLiquidity ثم FlashRepayReserveLiquidity نجحا في نفس tx — fee=100 lamports لكل 0.01 SOL (sf=11529215046068 U68F60)، الرصيد عاد سليماً)`
-- [ ] إثبات Min-Out.
-- [ ] إثبات Min-Profit.
+- [x] إثبات Min-Out. `(TESTED: golden vectors + intermediate balance isolation — p0_golden_vectors.rs:110 + intermediate_balance_isolation_tests.rs:177,364)`
+- [x] إثبات Min-Profit. `(TESTED: gross_positive_net_negative_fails_closed + economic invariant gate — three_leg_net_economics_tests.rs:69 + opportunity.rs Economic Invariant Gate)`
 - [x] إثبات Transaction Size. `(حي: V1=642 bytes / v0=667 bytes < 1232 MTU)`
 - [x] إثبات Full-Route Simulation. `(حي: simulateTransaction قبل الإرسال err=null وunits_consumed=65461، ثم البث الفعلي وlanded finalized @ slot 470365241)`
-- [ ] إثبات Jito Submission.
-- [ ] إثبات Landing Telemetry.
-- [ ] تنفيذ 24-hour Shadow Soak.
-- [ ] حفظ Shadow Soak Metrics.
-- [ ] توثيق جميع Blockers المتبقية.
-- [ ] مراجعة كل Acceptance Gate.
-- [ ] إصدار Production Readiness Report.
+- [ ] إثبات Jito Submission. `(BLOCKED — المعاملة الحية 2026-11-17 وصلت finalized عبر مسار RPC المباشر؛ لم تُثبت bundle submission حية عبر Jito block engine)`
+- [x] إثبات Landing Telemetry. `(TESTED: dual-track verify_landing_with_height + record_outcome landed/dropped/failed + ExecutionRecord signature/slot/net_profit — dispatch.rs:783-975 + control_service.rs:45-55)`
+- [ ] تنفيذ 24-hour Shadow Soak. `(BLOCKED — يتطلب جلسة مستمرة 24 ساعة؛ shadow-only build موجود (Dockerfile:55 + main.rs:59) لكن الsoak لم يُنفذ)`
+- [ ] حفظ Shadow Soak Metrics. `(BLOCKED — تابع لـ 24-hour soak)`
+- [x] توثيق جميع Blockers المتبقية. `(docs/production/known_limitations.md + docs/audit/FINAL_PRODUCTION_READINESS_REPORT.md §3 + البنود BLOCKED/PARTIAL في هذه القائمة)`
+- [x] مراجعة كل Acceptance Gate. `(كل gate مرتبط ببند في هذه القائمة بدليل أو حالة BLOCKED صريحة)`
+- [x] إصدار Production Readiness Report. `(docs/audit/FINAL_PRODUCTION_READINESS_REPORT.md — FAIL للإنتاج الحي / CONDITIONAL PASS للاختبار المُحكَم؛ يحتاج تحديثاً بعد جلسة 2026-11-17 الحية التي أثبتت atomic builder وrepayment وsimulation وlanding finalized)`
 
 ---
 
