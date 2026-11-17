@@ -282,12 +282,17 @@ impl TxBuilder {
     /// Derive `(amount_in, min_amount_out)` per hop.
     ///
     /// B1/B2 fixes:
-    /// - `amount_in` for hop `i` is `hop_inputs[i]` — the previous hop's *expected*
-    ///   output, never the discounted `min_out` and never the input amount.
+    /// - `amount_in` for hop `i` is `min(hop_inputs[i], prev.min_amount_out)` —
+    ///   the nominal input (the previous hop's expected output) clamped to what
+    ///   the previous hop guarantees, never the raw input amount.
     /// - `min_amount_out` discounts `expected_out` by slippage tolerance only,
     ///   applied once per hop (never deducted twice).
     /// - The final hop's `min_out` is raised to the profit floor
-    ///   (`borrow + flash_fee + min_profit`).
+    ///   (`borrow + flash_fee + tip + min_profit`).
+    ///
+    /// Routes whose nominal next input exceeds the previous min-out are
+    /// rejected upstream by the supervisor's dispatch guard; this clamp is the
+    /// builder's last line of defence.
     ///
     /// `hop_inputs` must be `[borrow, out_1, ..., out_n]` with length
     /// `hops.len() + 1`. There is no legacy fallback: intermediate inputs must

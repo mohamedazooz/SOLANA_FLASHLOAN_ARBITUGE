@@ -8,13 +8,17 @@
 //! slippage on every intermediate leg and made the final leg's floor derive
 //! from the optimistic quote.
 //!
-//! These tests pin the corrected contract:
+//! These tests pin the current contract:
 //!
 //! 1. Slippage is applied exactly once across a multi-hop chain.
-//! 2. `previous.min_amount_out >= next.amount_in` holds for every adjacent pair.
-//! 3. Min-out exactly equal to the next input is accepted (boundary).
-//! 4. Min-out below the next input is rejected.
-//! 5. Rounding, zero-output and overflow boundaries fail closed.
+//! 2. Each hop's `amount_in` is clamped to the previous hop's `min_amount_out`
+//!    (`min(hop_inputs[i], prev.min_amount_out)`), so the chain can never spend
+//!    more than the previous hop guarantees.
+//! 3. `previous.min_amount_out >= next.amount_in` holds for every adjacent pair.
+//! 4. Min-out exactly equal to the next input is accepted (boundary).
+//! 5. An oversized caller-supplied next input is clamped to the previous
+//!    min-out; the supervisor's dispatch guard rejects such routes upstream.
+//! 6. Rounding, zero-output and overflow boundaries fail closed.
 
 mod common;
 
@@ -92,9 +96,10 @@ fn three_leg_opportunity(
 
 /// §5.2 (1) — slippage applied EXACTLY ONCE at every hop boundary.
 ///
-/// With the corrected `[borrow, out_1, out_2, out_3]` contract, leg i's
-/// `amount_in` is the previous hop's *expected* output, and its `min_amount_out`
-/// is that output discounted once. If slippage were applied twice, the ratio
+/// With the `[borrow, out_1, out_2, out_3]` contract, leg i's nominal input is
+/// the previous hop's *expected* output, clamped to that hop's `min_amount_out`
+/// (the guaranteed delivery). Its `min_amount_out` is the expected output
+/// discounted once. If slippage were applied twice, the ratio
 /// `amount_out / amount_in` would be `(1-s)^2` instead of `(1-s)`.
 #[test]
 fn slippage_is_applied_exactly_once_per_boundary() {
@@ -108,10 +113,11 @@ fn slippage_is_applied_exactly_once_per_boundary() {
         let expected_out = leg_result.amount_out;
 
         if i > 0 {
+            let prev_min_out = legs[i - 1].1;
             assert_eq!(
                 amount_in,
-                result.legs[i - 1].amount_out,
-                "leg {i} input must be the previous hop's EXPECTED output (contract [borrow, out_1..])"
+                result.legs[i - 1].amount_out.min(prev_min_out),
+                "leg {i} input must be clamped to the previous hop's guaranteed min-out"
             );
         }
 
@@ -138,8 +144,10 @@ fn slippage_is_applied_exactly_once_per_boundary() {
 }
 
 /// §5.2 (2) — the mandatory adjacency invariant:
-/// At zero slippage: `previous.min_amount_out >= next.amount_in` for every adjacent pair.
-/// At non-zero slippage: min_out < next_in (since min_out = expected_out * (1 - s) < expected_out = next_in).
+/// `previous.min_amount_out >= next.amount_in` for every adjacent pair: the
+/// builder clamps each hop's input to the previous hop's guaranteed min-out, so
+/// at zero slippage the two coincide and at non-zero slippage the next input is
+/// exactly the previous min-out (the nominal expected output is haircuts away).
 ///
 /// This test verifies the invariant holds at zero slippage, and that the final leg
 /// covers the repayment floor.
@@ -159,11 +167,12 @@ fn previous_min_out_covers_next_input_for_every_pair() {
                     i + 1
                 );
             } else {
-                // At non-zero slippage, min_out < next_in by design
-                // (min_out = expected_out * (1 - s) < expected_out = next_in)
-                assert!(
-                    min_out < next_in,
-                    "slippage {slippage} bps: leg {i} min_out {min_out} must be < leg {} input {next_in}",
+                // At non-zero slippage the next input is clamped exactly to the
+                // previous min-out (nominal expected output > guaranteed floor).
+                assert_eq!(
+                    next_in,
+                    min_out,
+                    "slippage {slippage} bps: leg {} input {next_in} must be clamped to leg {i} min_out {min_out}",
                     i + 1
                 );
             }
@@ -176,7 +185,11 @@ fn previous_min_out_covers_next_input_for_every_pair() {
             "final min_out {final_min_out} below pipeline floor {}",
             result.expected_min_final_output
         );
-        assert_eq!(legs[2].0, result.legs[1].amount_out);
+        assert_eq!(
+            legs[2].0,
+            result.legs[1].amount_out.min(legs[1].1),
+            "final leg input must be clamped to the previous min-out"
+        );
     }
 }
 
@@ -221,15 +234,16 @@ fn min_out_exactly_equal_to_next_input_is_accepted() {
     assert_eq!(legs[1].0, 1_100);
 }
 
-/// §5.2 (4) — min-out BELOW the next input must be rejected.
+/// §5.2 (4) — an oversized caller-supplied next input is clamped to the
+/// previous hop's guaranteed min-out, never dispatched as-is.
 ///
-/// This is the defect the old capture path risked: feeding already-discounted
-/// values in as `hop_inputs` made the next hop's input inconsistent with the
-/// previous hop's guaranteed floor. A well-formed opportunity can never have
-/// `hop_inputs[i+1] > out_i` by construction, but a caller-supplied one must be
-/// caught rather than silently under-collateralised.
+/// A well-formed opportunity can never have `hop_inputs[i+1] > out_i` by
+/// construction, and the supervisor's dispatch guard rejects any route whose
+/// nominal next input exceeds the previous min-out before a builder ever sees
+/// it. The builder's own last line of defence is to clamp the input to the
+/// guaranteed delivery rather than silently under-collateralise the chain.
 #[test]
-fn next_input_above_previous_output_is_rejected() {
+fn next_input_above_previous_min_out_is_clamped() {
     let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
     let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
     let hop = |mint_in, mint_out| SwapHop {
@@ -262,11 +276,13 @@ fn next_input_above_previous_output_is_rejected() {
         expected_min_final_output: 0,
     };
     let legs = legs_for(&opp);
-    assert!(
-        legs[0].1 < legs[1].0,
-        "fixture must actually violate the invariant (min_out {} < next_in {})",
-        legs[0].1,
-        legs[1].0
+    assert_eq!(
+        legs[0].1, 999,
+        "fixture: leg0 min-out must be 1000 discounted once by the default 10 bps"
+    );
+    assert_eq!(
+        legs[1].0, legs[0].1,
+        "oversized nominal input (1_500 > min_out 999) must be clamped to the previous min-out"
     );
 }
 
