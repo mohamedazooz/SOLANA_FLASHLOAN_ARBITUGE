@@ -1,6 +1,7 @@
 //! //! Flash-loan-funded strategy assemblers: Kamino funding, DLMM bin-array
 //! planning and multi-leg atomic arbitrage compilation.
 
+pub mod arb_executor;
 pub mod compiler;
 pub mod cross_dex_flash_arb;
 pub mod dlmm_3leg_flash_arb;
@@ -11,6 +12,7 @@ pub mod kamino;
 pub mod kamino_flash;
 pub mod meteora_atomic_builder;
 
+pub use arb_executor::*;
 pub use compiler::*;
 pub use cross_dex_flash_arb::*;
 pub use dlmm_3leg_flash_arb::*;

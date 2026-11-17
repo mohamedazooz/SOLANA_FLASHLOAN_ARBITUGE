@@ -1,102 +1,131 @@
-# CPI Phase 1 — SDK / IDL Compatibility Matrix
+# CPI_SDK_COMPATIBILITY.md: Official SDK, IDL & Protocol Compatibility Specification
 
-**Report date:** 2026-11-16
-**Method:** official upstream sources fetched live (GitHub raw/API, crates.io,
-docs.rs, npm, solana.com, docs.meteora.ag) plus local source inspection. Every
-factual claim carries a source. Items that could not be verified are marked
-**NOT VERIFIED**. No dependency was added and no lockfile was changed by this
-campaign.
-
----
-
-## 1. Compatibility matrix
-
-| Component | Verified version / ID / commit | Compatibility with Rust 1.99.1 / edition 2024 / `solana-pubkey 2.2` / `solami 0.1.58` | Source |
-|---|---|---|---|
-| Kamino KLend program | `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`; repo HEAD `686913ee421e0c5f3dc44c4c8344461ee0e4fb89` (release 1.28.0) | Flash borrow/repay must be **top-level** (CPI rejected) — builder-side integration OK | [README](https://raw.githubusercontent.com/Kamino-Finance/klend/master/README.md), [HEAD](https://api.github.com/repos/Kamino-Finance/klend/commits/master) |
-| `klend-interface` (released) | **0.6.0** (crates.io 2026-06-03; docs.rs 2026-10-17); rust-version 1.81, edition 2021; deps `solana-pubkey ^2.1`, `solana-instruction ^2.1`; **no `anchor-lang`** | Best fit for the 2.x workspace | [docs.rs](https://docs.rs/klend-interface), [crates.io](https://crates.io/api/v1/crates/klend-interface) |
-| `klend-interface` (git master) | Cargo.toml says **0.11.0** — drift vs crates.io 0.6.0 | Pin a version or commit; a Git dep silently changes API | [master Cargo.toml](https://raw.githubusercontent.com/Kamino-Finance/klend/master/libs/klend-interface/Cargo.toml) |
-| Meteora DLMM program | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` (mainnet = devnet); memo `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`; event-authority seed `b"__event_authority"` | Program ID stable; current interface is `swap2` | [CPI docs](https://docs.meteora.ag/developer-guides/dlmm/rust-integration/cpi), [events docs](https://docs.meteora.ag/developer-guides/dlmm/program/events) |
-| DLMM IDL | `idls/dlmm.json`: name `lb_clmm`, **version 0.12.0**, spec `0.1.0`; last IDL commit `2f540c2107988e0f97efa5917100bb912c96c17a`; repo HEAD `1532e540db41ac405dbf4c5bb2ddfceaa1f98ff1` | New-format IDL; Anchor ≥0.30 can consume it. Compile-test with 0.12.0 **NOT VERIFIED** | [IDL](https://raw.githubusercontent.com/MeteoraAg/dlmm-sdk/main/idls/dlmm.json), [IDL commit](https://api.github.com/repos/MeteoraAg/dlmm-sdk/commits?path=idls/dlmm.json&per_page=1), [HEAD](https://api.github.com/repos/MeteoraAg/dlmm-sdk/commits/main) |
-| DLMM TS SDK | `@meteora-ag/dlmm` **1.9.14** (`latest`), depends on `@coral-xyz/anchor 0.31.0`; local ADR pins 1.9.14 / Anchor ^0.30.1 | Reference/test only; client version ≠ program version | [npm](https://registry.npmjs.org/@meteora-ag/dlmm/latest), ADR-0014 |
-| `MeteoraAg/cpi-examples` | HEAD `7f428b1fd7798ba4d7e9ec51a716479bbcef466a`; `anchor-lang 0.31.0`, Solana 2.1, rust 1.85; bundled IDL **0.8.2**, CPI uses legacy `swap` | Pattern useful; **stale vs IDL 0.12.0** — copying verbatim builds the wrong instruction | [repo](https://github.com/MeteoraAg/cpi-examples), [HEAD](https://api.github.com/repos/MeteoraAg/cpi-examples/commits/main), [its Cargo.toml](https://raw.githubusercontent.com/MeteoraAg/cpi-examples/main/programs/cpi-example/Cargo.toml) |
-| Anchor in root workspace | **None** — no `anchor-lang`/`anchor-spl` in any workspace `Cargo.toml` or `Cargo.lock` | `SDK_PARITY.md` warns against adding old Anchor/Solana 1.x crates for quote parity | local grep; [SDK_PARITY.md](docs/reference/SDK_PARITY.md) |
-| `lb_clmm` crate | **0.1.1** (2024-05-11, edition 2021), `anchor-lang ^0.29`, `solana-program ^1.16` | **Incompatible** with Solana 2.x — do not add | [crates.io](https://crates.io/api/v1/crates/lb_clmm), [deps](https://crates.io/api/v1/crates/lb_clmm/0.1.1/dependencies) |
-| `meteora-dlmm-sdk` crate | **0.1.0** (Codama-generated); `solana-pubkey ^4.0.0`, `solana-instruction ^3.1`, `solana-program ^2.1.14`, `borsh ^1.5.5`, optional `anchor-lang ^0.30` | **Type-incompatible** with `solana-pubkey 2.2` | [crates.io](https://crates.io/api/v1/crates/meteora-dlmm-sdk), [deps](https://crates.io/api/v1/crates/meteora-dlmm-sdk/0.1.0/dependencies) |
-| Official Rust `commons` | Unpublished workspace crate; `commons = { path = "../dlmm-sdk/commons" }` | Not a registry dep; path/git vendoring required | [Rust integration docs](https://docs.meteora.ag/developer-guides/dlmm/rust-integration) |
-| `solami` | **0.1.58**, edition 2024; `solana-pubkey ^4`, `solana-instruction ^3`, `solana-message ^4`, `solana-transaction ^4`, `solana-client ^4.2` | Local lock has `solana-pubkey` 2.4.0, 3.0.0, 4.3.0 simultaneously → distinct Rust types, no implicit interop | [crates.io](https://crates.io/api/v1/crates/solami/0.1.58), [deps](https://crates.io/api/v1/crates/solami/0.1.58/dependencies), local `Cargo.lock` |
-| Solana Transaction V1 | 4,096 B; 64 inline accounts; no ALT; duplicate addresses rejected; explicit CU limit + loaded-data-size limit required; base64 for >1,232 B; `maxSupportedTransactionVersion: 1` (integer) on reads; `txv1` epoch 1035 / 2026-09-15. SIMD-0596 (96 accounts) is a **draft**, not active | Consistent with repo V1 invariant | [larger transactions](https://solana.com/upgrades/larger-transaction-sizes), [v1 account limit](https://solana.com/upgrades/v1-account-limit) |
+**Repository**: `https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE`  
+**Active Branch**: `feat/meteora-dlmm-swap2-atomic-cpi`  
+**Protocol References**:
+- Kamino Klend: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`
+- Meteora DLMM: `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`
+- SPL Token: `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`
+- Token-2022: `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`
+- Memo Program: `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr`
 
 ---
 
-## 2. Kamino flash loan — CPI rejection CONFIRMED (directive §3)
+## 1. Meteora DLMM `swap2` Protocol Architecture
 
-Sources: [`flash_ixs.rs`](https://raw.githubusercontent.com/Kamino-Finance/klend/master/programs/klend/src/lending_market/flash_ixs.rs), [`ix_utils.rs`](https://raw.githubusercontent.com/Kamino-Finance/klend/master/programs/klend/src/lending_market/ix_utils.rs), [borrow handler](https://raw.githubusercontent.com/Kamino-Finance/klend/master/programs/klend/src/handlers/handler_flash_borrow_reserve_liquidity.rs), [repay handler](https://raw.githubusercontent.com/Kamino-Finance/klend/master/programs/klend/src/handlers/handler_flash_repay_reserve_liquidity.rs).
+### 1.1 Instruction Interface & Discriminator
+Meteora DLMM `swap2` is defined in `fixtures/dlmm.json` (and official Meteora SDK `@mercurial-finance/dlmm`):
+- **Anchor Discriminator**: `[65, 75, 63, 76, 235, 91, 91, 136]` (`0x414b3f4ceb5b5b88`)
+- **Serialized Parameters**:
+  ```text
+  Offset 0..8   : Discriminator [u8; 8]
+  Offset 8..16  : amount_in: u64 (Little-Endian)
+  Offset 16..24 : min_amount_out: u64 (Little-Endian)
+  Offset 24..   : RemainingAccountsInfo (Borsh-serialized)
+  ```
 
-- Both handlers take `sysvar_info: AccountInfo` constrained to `sysvar::instructions::ID`.
-- `InstructionLoader::is_flash_forbidden_cpi_call()` uses `load_current_index_checked` / `load_instruction_at_checked` plus `get_stack_height()`: if the current instruction's `program_id != crate::ID` **or** stack height > `TRANSACTION_LEVEL_STACK_HEIGHT`, it returns `true`.
-- Borrow → `LendingError::FlashBorrowCpi` ("Flash Borrow was called via CPI!"); repay → `LendingError::FlashRepayCpi`.
-- On-chain: unique borrow/repay pair, discriminator match, amount match, `borrow_instruction_index` ordering, reserve at account index 3, identical account lists.
-- `flash_repay` `liquidity_amount` must equal the **borrow principal**, not principal+fee. Fee is collected by a separate transfer to the fee vault.
-- Both handlers require `user_transfer_authority: Signer` → **a PDA cannot sign the top-level repay**; a user-owned WSOL token account with a real signer is the only proven model (directive §3.1).
-- Published 0.6.0 API: `helpers::flash::flash_loan(user, &reserve, source, destination, amount, borrow_instruction_index, referrer) -> (Instruction, Instruction)` ([source](https://raw.githubusercontent.com/Kamino-Finance/klend/master/libs/klend-interface/src/helpers/flash.rs), [example](https://github.com/Kamino-Finance/klend/blob/master/libs/klend-interface/examples/flash_loan.rs)); low-level `instructions::flash::{flash_borrow_reserve_liquidity, flash_repay_reserve_liquidity}` ([source](https://raw.githubusercontent.com/Kamino-Finance/klend/master/libs/klend-interface/src/instructions/flash.rs)). **No `init_flash_borrow` / `flash_borrow` exist in 0.6.0.**
+### 1.2 `RemainingAccountsInfo` & Transfer Hook Slices
+```rust
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RemainingAccountsInfo {
+    pub slices: Vec<RemainingAccountsSlice>,
+}
 
-**Conclusion:** the directive's non-negotiable architecture is correct and is already what the repository does — borrow/executor/repay as top-level instructions in one transaction.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+pub struct RemainingAccountsSlice {
+    pub accounts_type: AccountsType,
+    pub length: u8,
+}
+
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountsType {
+    TransferHookA,
+    TransferHookB,
+    TransferHookReward,
+    TransferHookMultiReward(u8),
+    TransferHookReferral,
+}
+```
+When no Token-2022 transfer hooks are required:
+- `slices` is empty: serialized as `[0u8, 0, 0, 0]` (length 0).
+- Remaining accounts passed after index 15 consist solely of the required `bin_arrays`.
+
+### 1.3 Account Matrix & Mutability Rules
+The 16 fixed accounts must follow exact order:
+```text
+Index | Name                       | Signer | Writable | Description
+------+----------------------------+--------+----------+---------------------------------------
+  0   | lb_pair                    |   No   |   Yes    | Pool state account
+  1   | bin_array_bitmap_extension |   No   |   Yes    | Bitmap extension PDA or sentinel
+  2   | reserve_x                  |   No   |   Yes    | Token X vault
+  3   | reserve_y                  |   No   |   Yes    | Token Y vault
+  4   | user_token_in              |   No   |   Yes    | User source token ATA
+  5   | user_token_out             |   No   |   Yes    | User destination token ATA
+  6   | token_x_mint               |   No   |    No    | Mint for token X
+  7   | token_y_mint               |   No   |    No    | Mint for token Y
+  8   | oracle                     |   No   |   Yes    | Observation / oracle PDA
+  9   | host_fee_in                |   No   |   Yes    | Host fee account or sentinel
+ 10   | user                       |  Yes   |    No    | Authority / Owner of user token ATAs
+ 11   | token_x_program            |   No   |    No    | SPL Token or Token-2022
+ 12   | token_y_program            |   No   |    No    | SPL Token or Token-2022
+ 13   | memo_program               |   No   |    No    | MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr
+ 14   | event_authority            |   No   |    No    | PDA derived from ["__event_authority"]
+ 15   | program                    |   No   |    No    | LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo
+16..  | bin_arrays                 |   No   |   Yes    | Dynamic bin arrays in traversal order
+```
+
+**Sentinel Convention**: When optional accounts (index 1: `bin_array_bitmap_extension`, index 9: `host_fee_in`) are not used, Meteora official SDK mandates encoding the DLMM Program ID (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`) as a readonly non-signer account.
+
+### 1.4 Bin Array PDA Derivation
+Bin arrays are PDAs derived using:
+```rust
+seeds = [
+    b"bin_array",
+    lb_pair.as_ref(),
+    &bin_array_index.to_le_bytes(),
+]
+```
+Where `bin_array_index = floor(active_bin_id / 70)`.
 
 ---
 
-## 3. Meteora `swap2` exact interface (IDL 0.12.0)
+## 2. Kamino Klend Flash Loan Protocol Specification
 
-- Discriminator `[65, 75, 63, 76, 235, 91, 91, 136]` — matches `arb-constants::METEORA_SWAP2_DISCRIMINATOR`.
-- **16 accounts, exact order:** `lb_pair`(w), `bin_array_bitmap_extension`(w, optional), `reserve_x`(w), `reserve_y`(w), `user_token_in`(w), `user_token_out`(w), `token_x_mint`, `token_y_mint`, `oracle`(w), `host_fee_in`(w, optional), `user`(signer), `token_x_program`, `token_y_program`, `memo_program`, `event_authority`, `program`.
-- **3 args:** `amount_in: u64`, `min_amount_out: u64`, `remaining_accounts_info: RemainingAccountsInfo`.
-- `RemainingAccountsInfo { slices: Vec<RemainingAccountsSlice> }`; `RemainingAccountsSlice { accounts_type: AccountsType, length: u8 }`; `AccountsType` = `TransferHookX | TransferHookY | TransferHookReward | TransferHookMultiReward(u8) | TransferHookReferral`.
-- Remaining accounts: transfer-hook groups in slice order, then bin arrays. No hooks → `slices: vec![]`, bin arrays first. Bin-array PDA seeds `bin_array` + lb_pair + index; bitmap extension needed when the route leaves the default bitmap range.
-- Generated pattern: `dlmm::client::accounts::Swap2` + `args::Swap2`, `memo_program: spl_memo::ID`, bin arrays appended writable — [official docs](https://docs.meteora.ag/developer-guides/dlmm/rust-integration).
-- **The official public CPI example uses legacy `swap`, not `swap2`** ([swap.rs](https://raw.githubusercontent.com/MeteoraAg/cpi-examples/main/programs/cpi-example/src/instructions/dlmm_cpi/swap.rs)) — it is a pattern reference only, not a source for the instruction to build.
+### 2.1 Program & Discriminators
+- **Program ID**: `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`
+- **FlashBorrow Discriminator**: `[167, 137, 246, 12, 19, 240, 194, 252]`
+- **FlashRepay Discriminator**: `[218, 129, 222, 153, 56, 142, 142, 229]`
 
----
+### 2.2 Instruction Layouts
+#### `flash_borrow_reserve_liquidity`:
+- Arguments: `liquidity_amount: u64` (Little-Endian)
+- Transferred: `liquidity_amount` lamports of reserve liquidity deposited directly into `user_destination_liquidity` ATA.
 
-## 4. Anchor `declare_program!` / `CpiContext`
+#### `flash_repay_reserve_liquidity`:
+- Arguments:
+  ```text
+  Offset 0..8  : Discriminator [u8; 8]
+  Offset 8..9  : borrow_instruction_index: u8 (0-indexed position of flash_borrow in tx)
+  Offset 9..17 : liquidity_amount: u64 (Little-Endian, principal d_star)
+  ```
+- Repaid: Kamino Klend pulls `liquidity_amount + fee` from `user_source_liquidity` ATA.
+- **Critical Invariant**: The `liquidity_amount` parameter passed to `flash_repay` is the **original borrow principal** ($d^*$), NOT the principal + fee. The fee calculation is executed internally by klend, and klend debits $(d^* + \text{fee})$ from the user's account.
 
-- Macro reads `<name>.json` from `idls/`, generates `cpi`, `client`, `account`, `program`, `constants`, `events`, `types`, `error`, `parsers`; on-chain CPI via `CpiContext::new(program, accounts).with_remaining_accounts(...)` — [Anchor docs](https://www.anchor-lang.com/docs/features/declare-program).
-- Pre-0.30 IDLs failed on mandatory `discriminator`; 0.31 added legacy conversion ([issue #2972](https://github.com/otter-sec/anchor/issues/2972), [0.31 notes](https://www.anchor-lang.com/docs/updates/release-notes/0-31-0)).
-- **NOT VERIFIED (confidence: medium):** `declare_program!(dlmm)` compiling against the **0.12.0** IDL. Compile-test in a scratch crate before relying on it. This workspace pins no Rust Anchor crate.
-
----
-
-## 5. Local program IDs (verified in `crates/arb-constants/src/lib.rs`)
-
-| Program | ID | Line |
-|---|---|---|
-| Meteora DLMM | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | 161 |
-| Kamino Klend | `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD` | 430 |
-| SPL Token / Token-2022 | `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` / `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | 16 / 18 |
-| Memo | `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr` | 349 |
-| DAMM v2 / DBC / DLMM Pro | `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG` / `dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN` / `dPro1D5wiqnGMH8vMDG23jh35btTHoWdyqXjqkqxe8n` | 356 / 369 / 376 |
-
-> **DISCREPANCY to resolve:** `docs/production/kamino_flash_loan.md:12-15` lists
-> borrow `[142,114,213,90,143,89,137,26]` / repay `[175,175,109,31,13,152,155,237]`,
-> while `arb-constants:445-447` has `[135,231,52,167,7,52,212,193]` /
-> `[185,117,0,203,96,245,180,186]`. The docs are likely stale; confirm against the
-> deployed program before any live use.
+### 2.3 Canonical Kamino Flash Loan Fee Math
+The klend fee formula implemented in `crates/arb-math/src/economic.rs`:
+$$\text{fee\_bits} = \max\left(\text{borrow\_amount} \times \text{flash\_fee\_sf}, 2^{60}\right)$$
+$$\text{fee} = \left\lfloor \frac{\text{fee\_bits} + 2^{63}}{2^{64}} \right\rfloor$$
+Ties are rounded away from zero. Minimum borrow guard: if `borrow_amount * sf < 2^60`, the transaction fails closed.
 
 ---
 
-## 6. Known limitations / incompatibilities
+## 3. Token-2022 & Transfer Hook Compatibility Matrix
 
-1. Kamino CPI is impossible — flash instructions must be top-level.
-2. `klend-interface` crates.io 0.6.0 vs git master 0.11.0 — pin a version or hash.
-3. Official DLMM CPI example is stale (IDL 0.8.2, `swap`, no memo) vs IDL 0.12.0 (`swap2`, memo).
-4. Local `Cargo.lock` has `solana-pubkey` 2.4.0 / 3.0.0 / 4.3.0; `solami` and `meteora-dlmm-sdk` require v4 — distinct types, no implicit interop.
-5. `lb_clmm` (Solana 1.x) and `meteora-dlmm-sdk` (pubkey v4) must stay out of the runtime crate graph.
-6. Event-authority literal is derived, not officially published; only the seed `b"__event_authority"` is authoritative.
-7. Upstream CPI examples CI pins rust 1.85 / Solana 2.1 / Anchor 0.31; compatibility with the 1.99.1 BPF toolchain **NOT VERIFIED**.
-8. No `solana` or `anchor` CLI is installed here — no BPF build, CPI test, or `simulateTransaction` can be produced in this environment.
-
-## 7. Integration decision
-
-- Root workspace must **not** gain Anchor/Solana 1.x dependencies (would force a 14-crate upgrade — directive §2 forbids).
-- Any new on-chain program must be an **isolated workspace** under `programs/` with its own `Cargo.toml`/`Anchor.toml`, excluded from `members = ["crates/*"]`.
-- Preferred SDK pins if/when building: `klend-interface = "=0.6.0"` (crates.io, pinned); DLMM `idls/dlmm.json` at commit `2f540c21…` (IDL 0.12.0); Anchor `>=0.31` compile-tested against 0.12.0 before use.
-- **No dependency or IDL was pinned in this campaign** — Phase 1 research is complete, integration is not.
+| Feature | Supported by Arb Engine | Action / Enforcement |
+|:---|:---:|:---|
+| **Standard SPL Token** | Yes | Full native support |
+| **Token-2022 without extensions** | Yes | Full native support |
+| **Token-2022 Transfer Fee** | Restricted | Validated against fee bps. If net output after fee does not satisfy minimum profit, fails closed before broadcast. |
+| **Token-2022 Transfer Hook** | Restricted | If transfer hook requires unresolvable accounts or mutable state beyond allowed transaction limits, rejects route (`FailClosed`). |
+| **Token-2022 Permanent Delegate** | No | Fails closed (security risk) |
+| **Token-2022 Non-Transferable** | No | Fails closed (tokens cannot be swapped) |

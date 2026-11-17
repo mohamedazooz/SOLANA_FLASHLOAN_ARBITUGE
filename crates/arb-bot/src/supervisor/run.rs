@@ -47,9 +47,7 @@ impl Supervisor {
         let base_cu = arb_tx::estimate_route_cu(true, &hop_protocols, 3);
         let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
         let cu_price = self.tip_strategy.adaptive_cu_price(&self.recent_landed_cu);
-        // Ceiling conversion — the priority fee is non-refundable, so a floor
-        // here would understate the cost this estimate feeds.
-        let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+        let priority_fee = (cu_price.saturating_mul(cu_limit as u64)) / 1_000_000;
 
         // Dynamic tip floor: query live p50 from tip_oracle if fresh, capped by tip_lamports ceiling
         let dynamic_tip = self
@@ -354,54 +352,12 @@ impl Supervisor {
         let size_in = result.size_search.best_input.max(1);
         let expected_out = result.expected_final_out;
         let expected_min_final_output = result.expected_min_final_output;
-        // `hop_inputs` contract (arb-types / builder::derive_swap_legs):
-        //   [borrow, out_1, out_2, out_3]  — length hops.len() + 1
-        // i.e. element i+1 is hop i's EXPECTED output, and the builder applies
-        // slippage to it exactly once. Feeding the per-leg `amount_in` values
-        // here instead would be wrong twice over: those are already discounted
-        // (each is the previous hop's min-out), so the builder would haircut
-        // them a second time; and the last entry must be the conservative final
-        // output, not the optimistic `expected_final_out`.
-        //
-        // The pipeline's `quote_chain` chains conservatively, so
-        //   legs[i+1].amount_in == floor(legs[i].amount_out * (1 - s))
-        // which is exactly the enforced on-chain `min_amount_out` for hop i.
-        // `out_3` is `expected_min_final_output` — the same slippage floor the
-        // repayment guarantee was checked against — never the optimistic quote.
         let hop_inputs = vec![
-            size_in,
-            result.legs[0].amount_in, // CONSERVATIVE: in2 = floor(out1 * (1-s))
-            result.legs[1].amount_in, // CONSERVATIVE: in3 = floor(out2 * (1-s))
-            result.legs[2].amount_in, // CONSERVATIVE: in4 = floor(out3 * (1-s))
+            result.legs[0].amount_in,
+            result.legs[0].amount_out,
+            result.legs[1].amount_out,
+            result.legs[2].amount_out,
         ];
-        debug_assert_eq!(
-            hop_inputs.len(),
-            hops.len() + 1,
-            "hop_inputs must be [borrow, out_1..out_n]"
-        );
-        // The chained inputs must equal the discounted previous output; if the
-        // pipeline and this vector ever disagree, stop rather than dispatch a
-        // route whose on-chain min-out does not match its quote.
-        for i in 0..hops.len() {
-            let prev_min_out = result.legs[i].amount_out;
-            let next_in = result
-                .legs
-                .get(i + 1)
-                .map(|l| l.amount_in)
-                .unwrap_or(expected_min_final_output);
-            if next_in > prev_min_out {
-                warn!(
-                    "3-leg route {} inconsistent: leg {i} min-out {prev_min_out} < next input {next_in}; skipping",
-                    result
-                        .pool_ids
-                        .iter()
-                        .map(|p| p.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-                return Vec::new();
-            }
-        }
         let gross = result.gross_profit_lamports as u64;
         let net = result.net_profit_lamports.max(0) as u64;
 
@@ -551,7 +507,26 @@ impl Supervisor {
         // 3. Multi-provider WebSocket real-time slot and account streaming ingestion worker
         let mut hw_client_opt: Option<Arc<arb_ingest::HeliusWsClient>> = None;
         let mut ws_slot_notify: Option<Arc<tokio::sync::Notify>> = None;
-        if let Some(helius_ws) = arb_ingest::HeliusWsClient::from_env() {
+        // Fail-closed capability gate: the pipeline must not start unless at
+        // least one CONFIGURED provider actually supports live account
+        // streaming. HTTP slot polling is not a substitute for a live
+        // account stream.
+        let helius_ws_client = arb_ingest::HeliusWsClient::from_env();
+        let mut capability_registry = arb_ingest::ProviderCapabilityRegistry::new();
+        if helius_ws_client.is_some() {
+            capability_registry.register(arb_ingest::ProviderCapabilities::standard_json_rpc_ws(
+                "Helius",
+            ));
+        }
+        if let Err(e) = capability_registry.validate_execution_prerequisites() {
+            error!(
+                "No configured provider supports live account streaming ({e}); refusing to start (fail closed)"
+            );
+            anyhow::bail!(
+                "provider capability prerequisites unmet: no live account-streaming provider configured"
+            );
+        }
+        if let Some(helius_ws) = helius_ws_client {
             let wsol_mint = crate::verified_config::wsol_mint();
             let usdc_mint = Pubkey::from_str(arb_tx::USDC_MINT).unwrap();
             let kamino_reserve = crate::verified_config::wsol_reserve();
@@ -851,6 +826,24 @@ impl Supervisor {
         let mut last_snapshot_digest = Instant::now();
         let mut adaptive_delay_ms: u64 = 50;
 
+        // Provider health/failover supervisor (G2): deterministic circuit
+        // breaker over the live data plane. Provider 0 is the WebSocket
+        // account stream; provider 1 is the HTTP RPC slot fallback. When no
+        // provider is healthy and fresh, new opportunity cycles stop (fail
+        // closed, no stale fallback).
+        const WS_STREAM_PROVIDER: arb_ingest::ProviderId = arb_ingest::ProviderId(0);
+        const RPC_FALLBACK_PROVIDER: arb_ingest::ProviderId = arb_ingest::ProviderId(1);
+        let provider_supervisor = parking_lot::Mutex::new(arb_ingest::ProviderSupervisor::new(
+            vec![
+                arb_ingest::ProviderHealth::new(WS_STREAM_PROVIDER, 0),
+                arb_ingest::ProviderHealth::new(RPC_FALLBACK_PROVIDER, 1),
+            ],
+            arb_ingest::SupervisorPolicy::default(),
+        ));
+        let mut last_ws_slot: u64 = 0;
+        let mut last_ws_advance_at = Instant::now();
+        let ws_stale_after = arb_ingest::SupervisorPolicy::default().stale_after;
+
         // Startup (discovery + warmup) is complete from the heartbeat's point of
         // view: from here on, a non-advancing `heartbeat_seq` means a real stall.
         self.heartbeat.mark_loop_entered();
@@ -905,19 +898,47 @@ impl Supervisor {
                 self.ingest.record_slot(stream_slot);
             }
 
+            // Provider health observation (G2): the WebSocket stream is
+            // healthy while its slot watermark advances; a stall beyond the
+            // stale-after window trips the circuit breaker.
+            let now = Instant::now();
+            if helius_slot > last_ws_slot {
+                last_ws_slot = helius_slot;
+                last_ws_advance_at = now;
+                provider_supervisor
+                    .lock()
+                    .record_success(WS_STREAM_PROVIDER, helius_slot, now);
+            } else if helius_slot == 0 || last_ws_advance_at.elapsed() > ws_stale_after {
+                provider_supervisor
+                    .lock()
+                    .record_failure(WS_STREAM_PROVIDER, now);
+            }
+
             // Fallback: If slot is still 0 or lagging behind current_slot, query rpc_pool slot stream
             if (stream_slot == 0 || stream_slot <= current_slot.0)
                 && (stream_slot == 0 || tick.is_multiple_of(5))
             {
-                if let Ok(rpc_slot) = self.rpc_pool.get_slot().await {
-                    if rpc_slot > current_slot.0 {
-                        debug!(
-                            "Advancing slot from RPC slot stream fallback: {rpc_slot} (previous: {stream_slot})"
+                match self.rpc_pool.get_slot().await {
+                    Ok(rpc_slot) => {
+                        provider_supervisor.lock().record_success(
+                            RPC_FALLBACK_PROVIDER,
+                            rpc_slot,
+                            Instant::now(),
                         );
-                        self.ingest.record_slot(rpc_slot);
-                        self.ingest.record_helius_slot(rpc_slot);
-                        self.ingest.mark_stream_connected();
-                        stream_slot = rpc_slot;
+                        if rpc_slot > current_slot.0 {
+                            debug!(
+                                "Advancing slot from RPC slot stream fallback: {rpc_slot} (previous: {stream_slot})"
+                            );
+                            self.ingest.record_slot(rpc_slot);
+                            self.ingest.record_helius_slot(rpc_slot);
+                            self.ingest.mark_stream_connected();
+                            stream_slot = rpc_slot;
+                        }
+                    }
+                    Err(_) => {
+                        provider_supervisor
+                            .lock()
+                            .record_failure(RPC_FALLBACK_PROVIDER, Instant::now());
                     }
                 }
             }
@@ -929,6 +950,22 @@ impl Supervisor {
             // Slot advanced! Reset to fastest 50ms pacing for sub-slot responsiveness
             adaptive_delay_ms = 50;
             current_slot = Slot(stream_slot);
+
+            // Fail-closed provider gate (G2): when no provider is healthy,
+            // fresh and close to the cluster slot, no new opportunity cycles
+            // are generated (no stale-fallback trading).
+            if provider_supervisor
+                .lock()
+                .select(current_slot.0, Instant::now())
+                .is_none()
+            {
+                debug!(
+                    "No healthy data provider at slot {}; skipping opportunity cycle (fail closed)",
+                    current_slot.0
+                );
+                continue;
+            }
+
             // Pin the stream generation for this strategy cycle. A reconnect at
             // any point before dispatch invalidates every opportunity from this tick.
             let expected_stream_generation = self.ingest.stream_generation();

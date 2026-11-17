@@ -52,10 +52,14 @@ fn parse_args() -> Result<Args> {
     }
 
     // Mode is environment-controlled only. Precedence:
-    // 1. `ARB_MODE` (explicit simulate|live|canary)
-    // 2. Legacy arming flags: ARB_CANARY, ARB_LIVE/LIVE/EXECUTE_LIVE
-    // 3. Safe fallback: "simulate" (non-broadcast)
-    let mode_str = if let Ok(m) = std::env::var("ARB_MODE") {
+    // 1. `shadow-only` cargo feature (Docker shadow image): simulate, always.
+    // 2. `ARB_MODE` (explicit simulate|live|canary)
+    // 3. Legacy arming flags: ARB_CANARY, ARB_LIVE/LIVE/EXECUTE_LIVE
+    // 4. Safe fallback: "simulate" (non-broadcast)
+    let mode_str = if cfg!(feature = "shadow-only") {
+        eprintln!("shadow-only build: live/canary arming is compiled out; forcing simulate");
+        "simulate".to_string()
+    } else if let Ok(m) = std::env::var("ARB_MODE") {
         if !m.trim().is_empty() {
             m
         } else {

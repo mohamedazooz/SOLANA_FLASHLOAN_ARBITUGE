@@ -405,6 +405,10 @@ pub struct IngestClient {
     helius_connected: std::sync::atomic::AtomicBool,
     helius_slot: Arc<AtomicU64>,
     provider_id: ProviderId,
+    /// Capability-declared bank-identity support. Standard JSON-RPC WebSocket
+    /// transports cannot supply upstream bank ids; only transports that
+    /// actually provide them may demand bank identity during quote readiness.
+    provider_supplies_bank_ids: std::sync::atomic::AtomicBool,
     /// Optional streaming-only pool cache for dual-ingestion shadow mode.
     /// When set, account updates are decoded into PoolState and written here
     /// instead of (or in addition to) the shared MarketStateCache, enabling
@@ -436,6 +440,7 @@ impl IngestClient {
             helius_connected: std::sync::atomic::AtomicBool::new(false),
             helius_slot: Arc::new(AtomicU64::new(0)),
             provider_id: ProviderId(1),
+            provider_supplies_bank_ids: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "extra-ingest")]
             streaming_cache: parking_lot::Mutex::new(None),
         }
@@ -447,6 +452,14 @@ impl IngestClient {
 
     pub fn provider_id(&self) -> ProviderId {
         self.provider_id
+    }
+
+    /// Declare whether the connected transport supplies upstream bank ids
+    /// (Yellowstone gRPC) or not (standard JSON-RPC WebSocket). Drives the
+    /// capability-aware bank-identity requirement in quote readiness.
+    pub fn set_provider_supplies_bank_ids(&self, supplies: bool) {
+        self.provider_supplies_bank_ids
+            .store(supplies, Ordering::Release);
     }
     pub fn stream_generation(&self) -> u64 {
         self.stream_generation.load(Ordering::Acquire)
@@ -726,6 +739,7 @@ impl IngestClient {
                 target_slot: observed_slot,
                 max_age_slots,
                 max_slot_skew,
+                require_bank_identity: self.provider_supplies_bank_ids.load(Ordering::Acquire),
             },
         )?;
         // Close the race where disconnect/reconnect occurs while snapshots are copied.
