@@ -56,8 +56,10 @@
 
 ### التقدم الحالي
 
-- **345 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **413 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **82** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
+- أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، Actual Balance Changes عند landing (dispatch يستخرج computeUnitsConsumed فقط)، Heap Requirements (لا RequestHeapFrame)، Account Lock Conflicts test، Bundle Rejection unit test، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات).
 
 ### نتائج التشغيل
 
