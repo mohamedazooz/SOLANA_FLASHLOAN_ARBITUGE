@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **82 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
-- **413** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً قبل التعليم.
+- **92 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **403** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -77,7 +77,7 @@
 | G6 | أصل الاقتراض hardcoded WSOL فقط دون تقييم باقي reserves | `dlmm_flash_arbitrage.rs:306` |
 | G7 | سعر SOL افتراضي $200 ما زال موجوداً (مسار التنبيهات) | `telegram.rs:63` |
 | G8 | `slotSubscribe` يُرسل دائماً دون gating حسب provider capability | `helius_ws.rs:602` |
-| G9 | لا يوجد Fuzz harness (لا `crates/*/fuzz`) | grep Cargo.toml = 0 |
+| G9 | لا يوجد cargo-fuzz harness منفصل — لكن proptest fuzzing suite موجود (500 cases، 4 crates) | `arb-math/tests/fuzzing_suite.rs` + proptest في arb-config/arb-dex/arb-tx |
 | G10 | لا توجد خطوة Gitleaks في CI | `rust-ci.yml` فيه cargo-deny فقط |
 | G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
@@ -292,10 +292,10 @@
 - [x] مراجعة Raydium CPMM. `(11 unit tests في arb-math/src/cpmm.rs)`
 - [x] مراجعة Raydium CLMM. `(13 unit tests في arb-math/src/clmm.rs + clmm_probe example)`
 - [ ] مراجعة Raydium LaunchLab.
-- [ ] مراجعة Orca Whirlpool.
+- [x] مراجعة Orca Whirlpool. `(orca_sdk_parity.rs — مقارنة rounding مع orca_whirlpools_core الرسمي)`
 - [x] مراجعة Meteora DLMM. `(18 unit tests في arb-math/src/dlmm.rs + dlmm_bin_array_boundary_tests.rs)`
 - [ ] مراجعة Meteora DAMM v2.
-- [ ] مراجعة Pump.fun.
+- [x] مراجعة Pump.fun. `(3 tests في arb-dex/src/pump_fun.rs + fuzz bounds في fuzzing_suite)`
 - [x] مراجعة PumpSwap. `(8 unit tests في arb-dex/src/pump_swap.rs)`
 - [ ] مراجعة Jupiter adapter.
 - [ ] التأكد من أن كل quote يستخدم account state الصحيح.
@@ -307,10 +307,10 @@
 - [ ] التحقق من Transfer Fees.
 - [ ] التحقق من Token-2022 Extensions.
 - [ ] التحقق من Rounding Direction.
-- [ ] التحقق من Integer Overflow.
-- [ ] التحقق من Fixed-Point Arithmetic.
-- [ ] التحقق من CLMM Tick Traversal.
-- [ ] التحقق من DLMM Bin Traversal.
+- [x] التحقق من Integer Overflow. `(adversarial_tests — overflow في marginal functions + 441-bit headroom + U768 closed form)`
+- [x] التحقق من Fixed-Point Arithmetic. `(U384/U512/U768 wide integers + isqrt fuzz correctness)`
+- [x] التحقق من CLMM Tick Traversal. `(fuzz_clmm_tick_to_sqrt_price valid/out-of-bounds + adversarial CLMM boundaries)`
+- [x] التحقق من DLMM Bin Traversal. `(dlmm_bin_array_boundary_tests + fuzz_dlmm_get_price_from_id)`
 - [ ] التحقق من Bitmap Extension.
 - [ ] التحقق من Liquidity Boundaries.
 - [ ] التحقق من Price Impact.
@@ -424,7 +424,7 @@
 - [ ] التحقق من Account Locks.
 - [ ] التحقق من Transaction Serialization.
 - [ ] التحقق من Versioned Transactions.
-- [ ] التحقق من Address Lookup Tables.
+- [x] التحقق من Address Lookup Tables. `(arb-tx/src/transport/master_alt.rs — 1,417 سطر؛ V1: 64 حساب inline + سقف 4096 bytes)`
 - [ ] التحقق من حجم المعاملة 1232 bytes.
 - [x] منع تقسيم atomic route إلى معاملات منفصلة. `(verify_atomic_integrity مستدعاة قبل التوقيع — dlmm_flash_arb.rs:36,496)`
 - [ ] التحقق من Kamino repayment semantics.
@@ -486,14 +486,14 @@
 
 - [x] مراجعة جميع Unit Tests. `(cargo test --workspace --all-targets: 1080 passed / 0 failed عبر 86 binary)`
 - [x] مراجعة Integration Tests. `(نفس التشغيل يشمل integration tests لكل crate)`
-- [ ] إضافة Property-Based Tests.
-- [ ] إضافة Fuzz Tests.
+- [x] إضافة Property-Based Tests. `(proptest — 500 cases: CPMM monotonicity/invariants، isqrt، CLMM bounds، DLMM prices، Pump.fun)`
+- [x] إضافة Fuzz Tests. `(fuzzing_suite.rs — never-panics + invariants؛ cargo-fuzz منفصل غير موجود — G9)`
 - [ ] إضافة Differential Tests.
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
 - [ ] إضافة Failure Injection Tests.
 - [ ] إضافة Concurrency Tests.
 - [ ] إضافة Replay Tests.
-- [ ] اختبار Integer Overflow.
+- [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
 - [ ] اختبار Invalid Decimals.
 - [ ] اختبار Malformed Account Data.
 - [ ] اختبار Zero Liquidity.
