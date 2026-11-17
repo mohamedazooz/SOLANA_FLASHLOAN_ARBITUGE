@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **120 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
-- **375** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **129 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **366** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -499,15 +499,15 @@
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
 - [ ] إضافة Failure Injection Tests.
 - [ ] إضافة Concurrency Tests.
-- [ ] إضافة Replay Tests.
+- [x] إضافة Replay Tests. `(shadow_replay_tests.rs + arb-bot/src/bin/replay.rs)`
 - [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
 - [ ] اختبار Invalid Decimals.
 - [ ] اختبار Malformed Account Data.
-- [ ] اختبار Zero Liquidity.
-- [ ] اختبار Missing Bins.
-- [ ] اختبار Missing Ticks.
+- [x] اختبار Zero Liquidity. `(test_cpmm_zero_reserves_fails + test_cpmm_zero_input_fails + test_quote_dlmm_zero_input_fails — differential.rs:185,346,353)`
+- [x] اختبار Missing Bins. `(test_bin_id_bounds + test_bin_array_index_euclidean_division + dlmm_bin_array_boundary_tests)`
+- [x] اختبار Missing Ticks. `(test_adv_clmm_boundaries_and_ordering + tick bounds fuzz)`
 - [x] اختبار Negative Profit. `(test_negative_invalid_cross_currency_addition_rejected + loss-path في economic.rs:349-356)`
-- [ ] اختبار Fee Rounding.
+- [x] اختبار Fee Rounding. `(fuzz_cpmm_out_fee_arbitrary_denominators + test_sqrt_price_round_trip_stability)`
 - [ ] اختبار Duplicate Updates.
 - [ ] اختبار Out-of-Order Updates.
 - [ ] اختبار Fork Invalidation.
@@ -579,17 +579,17 @@
 - [ ] عرض Stream Gaps.
 - [ ] عرض Stale Accounts.
 - [ ] عرض Fork Invalidations.
-- [ ] عرض Candidate Routes.
+- [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
 - [ ] عرض Exact Quotes.
-- [ ] عرض Rejection Reasons.
+- [ ] عرض Rejection Reasons. `(CONFIRMED MISSING: لا rejection/reason في مكونات الويب — يظهر في Telegram logs فقط)`
 - [ ] عرض Gross Profit.
-- [ ] عرض Net Profit.
-- [ ] عرض Borrow Asset.
-- [ ] عرض Borrow Amount.
+- [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`
+- [x] عرض Borrow Asset. `(Opportunities.tsx — borrow معروض)`
+- [x] عرض Borrow Amount. `(نفس المكوّن)`
 - [ ] عرض Simulation Results.
 - [ ] عرض Transaction Size.
 - [ ] عرض CU Consumption.
-- [ ] عرض Jito Status.
+- [ ] عرض Jito Status. `(CONFIRMED MISSING: لا jito/bundle/status في Executions.tsx)`
 - [ ] إضافة Structured Logs.
 - [ ] إضافة Correlation IDs.
 - [ ] إضافة Error Categories.
