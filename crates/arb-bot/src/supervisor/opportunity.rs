@@ -69,6 +69,18 @@ impl Supervisor {
                 }
             }
 
+            // Fail-closed account-dependency gate (G3): every hop's required
+            // accounts must be live, correctly owned and slot-coherent in the
+            // snapshot store before the candidate spends any further compute.
+            if let Err(reason) = self.validate_route_account_dependencies(opp, current_slot) {
+                debug!(
+                    first_pool = ?opp.hops.first().map(|h| h.pool_id),
+                    hops = opp.hops.len(),
+                    "Opportunity rejected: incomplete/incoherent account dependencies: {reason}"
+                );
+                continue;
+            }
+
             // Config is the single source of truth for the per-hop min-out
             // floor: stamp it onto every candidate before any builder reads
             // it. Builders further clamp to HOP_SLIPPAGE_MAX_BPS.
@@ -1402,5 +1414,49 @@ impl Supervisor {
             })
             .await;
         }
+    }
+
+    /// Fail-closed account-dependency gate (G3): every hop's required accounts
+    /// (pool state, plus vaults where the protocol's live reserves are the
+    /// vault balances) must exist in the snapshot store with the expected
+    /// owner, a non-startup provenance from the current stream generation,
+    /// and slot-coherent, non-dead state before the candidate may proceed.
+    fn validate_route_account_dependencies(
+        &self,
+        opp: &ExecutionOpportunity,
+        current_slot: Slot,
+    ) -> Result<(), String> {
+        let pool_ids: Vec<arb_types::PoolId> = opp.hops.iter().map(|h| h.pool_id).collect();
+        {
+            let registry = self.registry.read();
+            let mut manifests = self.dependency_manifests.lock();
+            for pool_id in &pool_ids {
+                if manifests.get(pool_id).is_some() {
+                    continue;
+                }
+                let pool = registry
+                    .pools()
+                    .iter()
+                    .find(|p| &p.pool_id == pool_id)
+                    .ok_or_else(|| format!("pool {pool_id:?} not in registry"))?
+                    .clone();
+                let manifest =
+                    arb_ingest::PoolDependencyManifest::manifest_for_registered_pool(&pool)
+                        .map_err(|e| format!("dependency manifest for {pool_id:?}: {e:?}"))?;
+                manifests
+                    .register(manifest)
+                    .map_err(|e| format!("register dependency manifest for {pool_id:?}: {e:?}"))?;
+            }
+        }
+        self.ingest
+            .quote_dependencies_for_route(
+                &self.dependency_manifests.lock(),
+                &pool_ids,
+                current_slot.0,
+                self.config.strategy.max_state_age_slots,
+                0,
+            )
+            .map(|_| ())
+            .map_err(|e| format!("quote dependency readiness: {e:?}"))
     }
 }

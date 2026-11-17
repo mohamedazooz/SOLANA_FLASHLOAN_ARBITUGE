@@ -3,8 +3,24 @@
 use arb_types::{DexProtocol, PoolId};
 use solana_pubkey::Pubkey;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 pub const MAX_RPC_SNAPSHOT_ACCOUNTS: usize = 100;
+
+/// On-chain owner program of a protocol's pool state account.
+pub fn protocol_owner_program(protocol: DexProtocol) -> Result<Pubkey, DependencyManifestError> {
+    let id = match protocol {
+        DexProtocol::RaydiumV4 => arb_constants::RAYDIUM_V4_PROGRAM_ID,
+        DexProtocol::RaydiumCpmm => arb_constants::RAYDIUM_CPMM_PROGRAM_ID,
+        DexProtocol::RaydiumClmm => arb_constants::RAYDIUM_CLMM_PROGRAM_ID,
+        DexProtocol::OrcaWhirlpool => arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID,
+        DexProtocol::MeteoraDlmm => arb_constants::METEORA_DLMM_PROGRAM_ID,
+        DexProtocol::PumpFun => arb_constants::PUMP_FUN_PROGRAM_ID,
+        DexProtocol::PumpSwap => arb_constants::PUMP_SWAP_PROGRAM_ID,
+        _ => return Err(DependencyManifestError::MissingPool),
+    };
+    Pubkey::from_str(id).map_err(|_| DependencyManifestError::DefaultPubkey)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AccountRole {
@@ -86,6 +102,49 @@ impl PoolDependencyManifest {
                 pubkey,
                 expected_owner,
                 role,
+                required_for_quote: true,
+            })?;
+        }
+        Ok(manifest)
+    }
+
+    /// Build the protocol-aware dependency manifest for a registered pool.
+    /// Single source of truth for which accounts are required for a quote:
+    /// the pool state account is always required; vaults are required only
+    /// for protocols whose live reserve state is the vault balance itself
+    /// (Raydium AMM V4 / CPMM). CLMM/DLMM reserves are derived from tick/bin
+    /// data inside the pool state, so their vaults are not quote-blocking.
+    pub fn manifest_for_registered_pool(
+        pool: &crate::RegisteredPool,
+    ) -> Result<Self, DependencyManifestError> {
+        let mut manifest = Self::new(pool.pool_id, pool.protocol);
+        let pool_role = if pool.protocol == DexProtocol::PumpFun {
+            AccountRole::BondingCurve
+        } else {
+            AccountRole::PoolState
+        };
+        manifest.add(AccountDependency {
+            pubkey: pool.pool_id.0,
+            expected_owner: protocol_owner_program(pool.protocol)?,
+            role: pool_role,
+            required_for_quote: true,
+        })?;
+        if matches!(
+            pool.protocol,
+            DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm
+        ) {
+            let token_prog = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)
+                .map_err(|_| DependencyManifestError::DefaultPubkey)?;
+            manifest.add(AccountDependency {
+                pubkey: pool.base_vault,
+                expected_owner: token_prog,
+                role: AccountRole::VaultA,
+                required_for_quote: true,
+            })?;
+            manifest.add(AccountDependency {
+                pubkey: pool.quote_vault,
+                expected_owner: token_prog,
+                role: AccountRole::VaultB,
                 required_for_quote: true,
             })?;
         }

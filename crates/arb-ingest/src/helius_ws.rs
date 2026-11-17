@@ -4,7 +4,7 @@
 //! live `MarketStateCache` updates, and instant slot notifications.
 
 use crate::{
-    AccountSnapshot, IngestClient, ProviderId, RegisteredPool, clmm_tick_array_covers_tick,
+    AccountSnapshot, IngestClient, RegisteredPool, clmm_tick_array_covers_tick,
     compute_clmm_virtual_reserves, compute_dlmm_reserves, decode_clmm_state, decode_dlmm_fee_bps,
     decode_dlmm_state, decode_orca_fee_bps, decode_raydium_clmm_state,
     decode_spl_token_amount_bytes, next_pool_write_version, slot_integrity,
@@ -460,7 +460,7 @@ impl HeliusWsClient {
                     slot,
                     write_version: 1,
                     is_startup: true,
-                    provider_id: ProviderId(2),
+                    provider_id: yellowstone.provider_id(),
                     bank_id: None,
                     generation: yellowstone.stream_generation(),
                     data: Arc::new(bytes),
@@ -1355,7 +1355,7 @@ impl HeliusWsClient {
                                     slot,
                                     write_version: next_pool_write_version(),
                                     is_startup: false,
-                                    provider_id: ProviderId(2),
+                                    provider_id: yellowstone.provider_id(),
                                     bank_id: None,
                                     generation: yellowstone.stream_generation(),
                                     data: Arc::new(bytes),
