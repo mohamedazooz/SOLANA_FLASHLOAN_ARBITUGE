@@ -37,8 +37,10 @@ solami = { workspace = true, optional = true }
 arb-metrics = { path = "../arb-metrics" }
 
 # Yellowstone gRPC dependencies (feature-gated)
-tonic = { version = "0.12", optional = true, features = ["tls", "tls-roots"] }
-prost = { version = "0.12", optional = true, features = ["std"] }
+# Versions aligned with yellowstone-grpc-proto (tonic 0.14 / prost 0.14).
+# tonic 0.14 TLS features are split per root store; client TLS uses tls-native-roots.
+tonic = { version = "0.14", optional = true, features = ["tls-native-roots"] }
+prost = { version = "0.14", optional = true, features = ["std"] }
 yellowstone-grpc-proto = { version = "14.0", optional = true }
 
 [[test]]

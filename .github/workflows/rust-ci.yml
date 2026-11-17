@@ -40,14 +40,17 @@ jobs:
       - name: Verify formatting
         run: cargo fmt --all --check
 
-      - name: Check workspace
+      - name: Check workspace (default features)
         run: cargo check --workspace --all-targets
+
+      - name: Check workspace (all features, incl. yellowstone-grpc)
+        run: cargo check --workspace --all-targets --all-features
 
       - name: Run tests
         run: cargo test --workspace --all-targets
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   security:
     name: Security advisories (cargo-deny)
