@@ -55,6 +55,12 @@ pub struct ExecutionRecord {
     pub slot: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_profit_sol: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sim_ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cu_consumed: Option<u64>,
 }
 
 /// Optional provenance fields attached to an execution record. Absent fields
@@ -64,6 +70,12 @@ pub struct ExecutionExtras {
     pub signature: Option<String>,
     pub slot: Option<u64>,
     pub net_profit_sol: Option<f64>,
+    /// Pre-flight simulation outcome captured at dispatch time.
+    pub sim_ok: Option<bool>,
+    /// Serialized transaction wire size in bytes.
+    pub tx_size_bytes: Option<u64>,
+    /// Compute units consumed — on-chain meta when landed, pre-flight estimate otherwise.
+    pub cu_consumed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +168,7 @@ pub struct ObservabilitySnapshot {
     pub stale_rejections_total: u64,
     pub fork_invalidations_total: u64,
     pub resyncs_total: u64,
+    pub stream_gaps_total: u64,
     pub decode_errors_total: u64,
 }
 
@@ -519,6 +532,9 @@ impl ControlService {
             signature: extras.signature,
             slot: extras.slot,
             net_profit_sol: extras.net_profit_sol,
+            sim_ok: extras.sim_ok,
+            tx_size_bytes: extras.tx_size_bytes,
+            cu_consumed: extras.cu_consumed,
         };
         let mut ring = self.inner.executions.lock();
         if ring.len() == EXECUTION_RING_CAP {
@@ -890,6 +906,9 @@ mod tests {
         assert!(bare.get("signature").is_none());
         assert!(bare.get("slot").is_none());
         assert!(bare.get("net_profit_sol").is_none());
+        assert!(bare.get("sim_ok").is_none());
+        assert!(bare.get("tx_size_bytes").is_none());
+        assert!(bare.get("cu_consumed").is_none());
 
         svc.record_execution_with(
             "landed",
@@ -899,12 +918,18 @@ mod tests {
                 signature: Some("sig123".into()),
                 slot: Some(42),
                 net_profit_sol: Some(0.001),
+                sim_ok: Some(true),
+                tx_size_bytes: Some(650),
+                cu_consumed: Some(65_461),
             },
         );
         let rich = serde_json::to_value(&svc.executions(1)[0]).unwrap();
         assert_eq!(rich["signature"], "sig123");
         assert_eq!(rich["slot"], 42);
         assert_eq!(rich["net_profit_sol"], 0.001);
+        assert_eq!(rich["sim_ok"], true);
+        assert_eq!(rich["tx_size_bytes"], 650);
+        assert_eq!(rich["cu_consumed"], 65_461);
     }
 
     #[test]

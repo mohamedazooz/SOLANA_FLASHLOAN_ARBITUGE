@@ -56,6 +56,11 @@ export default function Overview({ status }: { status: StatusSnapshot | null }) 
             />
             <Stat label="Resyncs" value={String(status.observability.resyncs_total)} />
             <Stat
+              label="Stream slot gaps"
+              value={String(status.observability.stream_gaps_total)}
+              tone={status.observability.stream_gaps_total > 0 ? "tone-red" : ""}
+            />
+            <Stat
               label="Decode errors"
               value={String(status.observability.decode_errors_total)}
               tone={status.observability.decode_errors_total > 0 ? "tone-red" : ""}

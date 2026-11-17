@@ -26,6 +26,13 @@ pub struct SlotIntegrity {
     highest_seen: u64,
     invalidated_banks: HashSet<(u64, u64)>,
     banks_by_slot: BTreeMap<u64, BTreeSet<u64>>,
+    /// Cumulative count of slots never observed between consecutive slot
+    /// notifications. Only forward jumps past the high-water mark count;
+    /// late/reordered notifications never inflate it.
+    gaps_detected: u64,
+    /// End slots whose preceding gap was already counted — dedupes repeated
+    /// status notifications (processed/confirmed/finalized) for one slot.
+    counted_gap_ends: BTreeSet<u64>,
 }
 
 impl SlotIntegrity {
@@ -42,7 +49,20 @@ impl SlotIntegrity {
         status: i32,
         bank_id: Option<u64>,
     ) -> SlotUpdateOutcome {
+        let prev_highest = self.highest_seen;
         self.highest_seen = self.highest_seen.max(slot);
+        if slot > prev_highest && prev_highest > 0 && self.counted_gap_ends.insert(slot) {
+            let mut lowest = parent.filter(|p| *p > prev_highest).unwrap_or(slot);
+            while let Some(ancestor) = self.parents.get(&lowest).copied() {
+                if ancestor <= prev_highest {
+                    break;
+                }
+                lowest = ancestor;
+            }
+            if lowest > prev_highest + 1 {
+                self.gaps_detected = self.gaps_detected.saturating_add(lowest - prev_highest - 1);
+            }
+        }
         if let Some(parent) = parent {
             self.parents.insert(slot, parent);
         }
@@ -112,6 +132,9 @@ impl SlotIntegrity {
     pub fn highest_seen(&self) -> u64 {
         self.highest_seen
     }
+    pub fn gaps_detected(&self) -> u64 {
+        self.gaps_detected
+    }
 
     /// EntryUpdateParent invalidates the cleared candidate bank. Yellowstone's
     /// protocol guarantee is about entries; we conservatively invalidate account
@@ -153,6 +176,7 @@ impl SlotIntegrity {
         self.dead.retain(|slot| *slot >= floor);
         self.invalidated_banks.retain(|(slot, _)| *slot >= floor);
         self.banks_by_slot.retain(|slot, _| *slot >= floor);
+        self.counted_gap_ends.retain(|slot| *slot >= floor);
     }
 }
 
@@ -343,5 +367,53 @@ mod tests {
             r.record_batch(2, 99, [[1; 32]]),
             Err(ReconcileError::ContextSlotTooOld)
         );
+    }
+
+    #[test]
+    fn consecutive_slot_notifications_produce_zero_gaps() {
+        let mut si = SlotIntegrity::default();
+        for slot in 1..=50u64 {
+            si.observe(slot, Some(slot - 1), SLOT_PROCESSED);
+        }
+        assert_eq!(si.gaps_detected(), 0);
+    }
+
+    #[test]
+    fn parent_chain_jump_counts_missing_slots_once() {
+        let mut si = SlotIntegrity::default();
+        si.observe(100, Some(99), SLOT_PROCESSED);
+        assert_eq!(si.gaps_detected(), 0);
+        si.observe(200, Some(100), SLOT_PROCESSED);
+        assert_eq!(si.gaps_detected(), 99);
+        for status in [SLOT_CONFIRMED, SLOT_FINALIZED] {
+            si.observe(200, Some(100), status);
+        }
+        assert_eq!(si.gaps_detected(), 99);
+    }
+
+    #[test]
+    fn forward_jump_without_parent_uses_high_water_mark() {
+        let mut si = SlotIntegrity::default();
+        si.observe(50, Some(49), SLOT_PROCESSED);
+        si.observe(60, None, SLOT_PROCESSED);
+        assert_eq!(si.gaps_detected(), 9);
+    }
+
+    #[test]
+    fn late_and_reordered_notifications_never_inflate_gaps() {
+        let mut si = SlotIntegrity::default();
+        si.observe(10, Some(9), SLOT_PROCESSED);
+        si.observe(50, Some(49), SLOT_PROCESSED);
+        assert_eq!(si.gaps_detected(), 38);
+        si.observe(20, Some(19), SLOT_PROCESSED);
+        si.observe(30, Some(29), SLOT_CONFIRMED);
+        assert_eq!(si.gaps_detected(), 38);
+    }
+
+    #[test]
+    fn first_observed_slot_never_counts_as_gap() {
+        let mut si = SlotIntegrity::default();
+        si.observe(900_000, None, SLOT_PROCESSED);
+        assert_eq!(si.gaps_detected(), 0);
     }
 }

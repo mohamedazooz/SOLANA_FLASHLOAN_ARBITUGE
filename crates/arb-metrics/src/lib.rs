@@ -28,6 +28,7 @@ pub mod metric_names {
     pub const GRADUATION_EVENTS_TOTAL: &str = "graduation_events_total";
     pub const WS_RECONNECTS_TOTAL: &str = "ws_reconnects_total";
     pub const FORK_INVALIDATIONS_TOTAL: &str = "fork_invalidations_total";
+    pub const STREAM_SLOT_GAPS_TOTAL: &str = "stream_slot_gaps_total";
     pub const WS_SUBSCRIPTIONS_ACTIVE: &str = "ws_subscriptions_active";
 }
 
@@ -210,6 +211,18 @@ static FORK_INVALIDATIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     counter
 });
 
+static STREAM_SLOT_GAPS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        metric_names::STREAM_SLOT_GAPS_TOTAL,
+        "Slots never observed between consecutive stream slot notifications",
+    )
+    .unwrap_or_else(|_| {
+        IntCounter::new(metric_names::STREAM_SLOT_GAPS_TOTAL, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(counter.clone()));
+    counter
+});
+
 #[derive(Debug)]
 pub struct MetricsHandle {
     handle: JoinHandle<()>,
@@ -336,6 +349,10 @@ pub fn inc_fork_invalidations(n: u64) {
     FORK_INVALIDATIONS_TOTAL.inc_by(n);
 }
 
+pub fn inc_stream_slot_gaps(n: u64) {
+    STREAM_SLOT_GAPS_TOTAL.inc_by(n);
+}
+
 pub fn get_stale_rejections_total() -> u64 {
     STALE_REJECTIONS_TOTAL.get()
 }
@@ -358,6 +375,10 @@ pub fn get_decode_errors_total() -> u64 {
 
 pub fn get_fork_invalidations_total() -> u64 {
     FORK_INVALIDATIONS_TOTAL.get()
+}
+
+pub fn get_stream_slot_gaps_total() -> u64 {
+    STREAM_SLOT_GAPS_TOTAL.get()
 }
 
 #[cfg(test)]

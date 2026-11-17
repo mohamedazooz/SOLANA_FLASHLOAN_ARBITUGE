@@ -65,6 +65,7 @@ export interface ObservabilitySnapshot {
   stale_rejections_total: number;
   fork_invalidations_total: number;
   resyncs_total: number;
+  stream_gaps_total: number;
   decode_errors_total: number;
 }
 
@@ -89,6 +90,9 @@ export interface ExecutionRecord {
   signature?: string | null;
   slot?: number | null;
   net_profit_sol?: number | null;
+  sim_ok?: boolean | null;
+  tx_size_bytes?: number | null;
+  cu_consumed?: number | null;
 }
 
 export interface RejectionRecord {
