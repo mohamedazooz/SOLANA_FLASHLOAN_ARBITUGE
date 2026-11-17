@@ -79,3 +79,36 @@ pub fn quote_launchlab_sell_exact_in(
     }
     Some(out_u64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_launchlab_buy_zero_returns_zero() {
+        let out = quote_launchlab_buy_exact_in(0, 1_000_000, 1_000_000, 500_000, 500_000, 25);
+        assert_eq!(out, Some(0));
+    }
+
+    #[test]
+    fn test_launchlab_buy_fee_deduction() {
+        let out =
+            quote_launchlab_buy_exact_in(10_000, 10_000_000, 10_000_000, 5_000_000, 5_000_000, 100);
+        assert!(out.is_some());
+        assert!(out.unwrap() > 0);
+    }
+
+    #[test]
+    fn test_launchlab_sell_zero_returns_zero() {
+        let out = quote_launchlab_sell_exact_in(0, 1_000_000, 1_000_000, 500_000, 500_000, 25);
+        assert_eq!(out, Some(0));
+    }
+
+    #[test]
+    fn test_launchlab_sell_exceeding_reserves_returns_none() {
+        // Massive swap that exhausts real reserves
+        let out =
+            quote_launchlab_sell_exact_in(1_000_000_000, 1_000_000, 1_000_000, 500_000, 100, 25);
+        assert_eq!(out, None);
+    }
+}

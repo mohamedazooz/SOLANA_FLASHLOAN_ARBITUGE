@@ -199,3 +199,53 @@ pub fn damm_v2_virtual_reserves(sqrt_price_x64: u128, liquidity: u128) -> (u128,
         u128::try_from(r_b).unwrap_or(u128::MAX),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_damm_v2_zero_input_returns_zero() {
+        let res = quote_damm_v2_exact_in(0, true, 1u128 << 64, 1_000_000, 0, 0, 250_000);
+        assert_eq!(res, Some(0));
+    }
+
+    #[test]
+    fn test_damm_v2_zero_liquidity_returns_zero() {
+        let res = quote_damm_v2_exact_in(1_000, true, 1u128 << 64, 0, 0, 0, 250_000);
+        assert_eq!(res, Some(0));
+    }
+
+    #[test]
+    fn test_damm_v2_fee_over_100_percent_returns_none() {
+        let res = quote_damm_v2_exact_in(
+            1_000,
+            true,
+            1u128 << 64,
+            1_000_000,
+            0,
+            0,
+            DAMM_V2_FEE_DENOMINATOR,
+        );
+        assert_eq!(res, None);
+    }
+
+    #[test]
+    fn test_damm_v2_fee_on_output_calculation() {
+        let fee_params = DammV2FeeParams {
+            cliff_fee_numerator: 250_000, // 0.025%
+            ..Default::default()
+        };
+        let eff_fee = fee_params.effective_fee_numerator(100, 100);
+        assert_eq!(eff_fee, 250_000);
+    }
+
+    #[test]
+    fn test_damm_v2_virtual_reserves_roundtrip() {
+        let sp_x64 = 1u128 << 64; // price = 1.0
+        let liq = 10_000_000_000u128;
+        let (ra, rb) = damm_v2_virtual_reserves(sp_x64, liq);
+        assert_eq!(ra, liq);
+        assert_eq!(rb, liq);
+    }
+}
