@@ -71,6 +71,13 @@ export interface ObservabilitySnapshot {
   decode_errors_total: number;
 }
 
+export interface HopQuoteRecord {
+  protocol: string;
+  pool: string;
+  amount_in: number;
+  amount_out: number;
+}
+
 export interface OpportunityRecord {
   captured_at_unix: number;
   slot: number;
@@ -82,6 +89,7 @@ export interface OpportunityRecord {
   net_profit_lamports: number;
   eligible: boolean;
   reject_reason: string | null;
+  hop_quotes?: HopQuoteRecord[];
 }
 
 export interface ExecutionRecord {

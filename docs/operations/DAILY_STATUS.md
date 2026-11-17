@@ -4,12 +4,14 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** `924bdaa` — feat(observability): execution sim/size/CU provenance + explicit stream slot-gap counter — 428/495
-* **Previous commit:** `337a458` — feat(dashboard): quota utilization, subscription counts, stale/fork counters, gross profit + /assets static route + start_dashboard.bat — 424/495
+* **Commit:** batch-4 commit (this push) — feat(dashboard): per-hop exact-quote chain display + jito-rejection/failure-injection evidence — 436/495
+* **Previous commits:** `e5a56c8` (batch 3), `924bdaa` (batch 2), `337a458` (batch 1), `7144709` (live mainnet evidence)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
-* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1183 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
-* **Last verified test run:** `cargo test --workspace --all-targets` → **passed=1184 failed=0** (EXIT=0); `cargo clippy --workspace --all-targets` → 0 warnings; `cargo fmt --all` clean; `npm run build` (web/) → 170.54 kB JS bundle OK.
-* **Checklist:** 433 / 495 verified — 62 remaining (all classified PARTIAL / MISSING / BLOCKED / NOT AUDITED).
+* **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1184 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
+
+## In progress right now (not yet committed)
+
+Nothing in flight — batches 1–4 complete, committed and pushed.
 
 ## What changed (this session, in order)
 
@@ -33,10 +35,28 @@
 | Stream slot-gap counter (checklist 620) | `SlotIntegrity` gained `gaps_detected` + bounded `counted_gap_ends` dedup. Gap = slots never observed between consecutive slot notifications, walking the known parent chain to narrow the window; only forward jumps past the high-water mark count; late/reordered notifications never inflate. Exported via `stream_slot_gaps_total` (+delta watermark `reported_slot_gaps` in IngestClient). Displayed in Overview as "Stream slot gaps" + `ObservabilitySnapshot.stream_gaps_total` | `slot_integrity.rs`, `arb-ingest/src/lib.rs`, `arb-metrics/src/lib.rs`, `control_service.rs`, `supervisor.rs`, `api.ts`, `Overview.tsx` |
 | Gap tests (5 new) | consecutive→0; parent-chain jump counts missing once (dedup across processed/confirmed/finalized); forward jump without parent uses high-water mark; late/reordered notifications never inflate; first observed slot never counts | `slot_integrity.rs` tests |
 
+### Batch 3 — commit `e5a56c8` (observability + retention)
+
+| Item | What changed | Files |
+|---|---|---|
+| 575 Simulation Latency | `SIMULATION_LATENCY_US` Prometheus Histogram (buckets 1k–5M µs) + `observe_simulation_latency_us`; measured around `simulate_async` (primary) and `RpcPool::simulate_transaction` (fallback) in dispatch; debug log with measured µs; exported via /metrics | `arb-metrics/src/lib.rs`, `supervisor/dispatch.rs` |
+| 634 Structured JSON logs | `LOG_FORMAT=json` gate in `init_event_logger()`: both stdout and file layers switch to `.json().flatten_event(true)`; default text format unchanged; Err-fallback branch covered | `main.rs` |
+| 638 30-day retention | `Store::prune_older_than_days(u32)` (default no-op) + SqliteStore impl deleting fills→outcomes→dispatch_intents→attempts by `created_at < datetime('now', ?1)` (bound param, no string concat); periodic caller every 6h in run.rs via `DATA_RETENTION_DAYS` (default 30); test `retention_prune_deletes_old_rows_and_keeps_recent` (40-day-old backdated rows deleted, recent kept, second call = 0) | `arb-store/src/lib.rs`, `supervisor/run.rs` |
+| 584/585 CPU/RSS metrics | `process_cpu_percent` Gauge + `process_rss_bytes` IntGauge; sampler task every 30s reads `/proc/self/stat` utime+stime (cpu % over interval via tick delta, CLK_TCK=100) and `/proc/self/status` VmRSS (Linux `cfg`-gated; no-ops elsewhere); surfaced through `ObservabilitySnapshot` → Overview cards "RSS (MB)" and "CPU %" | `arb-metrics/src/lib.rs`, `supervisor/run.rs`, `control_service.rs`, `supervisor.rs`, `api.ts`, `Overview.tsx` |
+
+### Batch 4 — checklist 563, 541, 624 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 563 Jito Rejection test | Evidence updated: the block-engine rejection branch is already covered by 6 mock-engine contract tests (HTTP 400 carries status+reason as Err; 200-without-result is not landing evidence; acceptance returns bundle id; empty/oversized local rejection; unreachable = network error) | `crates/arb-land/tests/bundle_rejection_tests.rs` (existing, evidence corrected) |
+| 541 Failure Injection | Evidence updated: network/provider failure injection exists via mock servers — quota exhaustion (429/Retry-After/cooldown), mock block engine rejection, failover circuit breaker | existing tests, evidence corrected |
+| 624 Per-hop exact quotes | `OpportunityRecord.hop_quotes: Vec<HopQuoteRecord>` (protocol/pool/amount_in/amount_out) derived from `hop_inputs`+`hops` at the meteora-dlmm-3leg record site; omitted from JSON when the pipeline doesn't supply per-hop amounts; "Per-hop quotes" column in Opportunities.tsx with full-pool tooltip | `control_service.rs`, `supervisor/strategy.rs`, `api.ts`, `Opportunities.tsx` |
+
+**Checklist after batch 4: 436 / 495 — 59 remaining.**
+
 ### Checklist ledger
 
-* **428 / 495** verified with evidence — 67 remaining, all explicitly classified (PARTIAL / MISSING / BLOCKED / NOT AUDITED).
-* Marked `[x]` this session: 618 Quota Utilization, 619 Subscription Counts, 621 Stale Accounts, 622 Fork Invalidations, 626 Gross Profit, 620 Stream Gaps, 630 Simulation Results, 631 Transaction Size, 632 CU Consumption.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624.
 
 ## Problems discovered (this session)
 
@@ -49,36 +69,21 @@
 ## Remaining work
 
 * **P1:** None open.
-* **P2:** Per-hop exact-quote detail display (item 624 — needs quote plumbing into OpportunityRecord); Jito block-engine rejection unit test (563); failure-injection harness (541); concurrency/lock-contention test (542).
-* **P3:** Simulation latency measurement (575 — IN PROGRESS, see below); structured JSON logs (634); daily aggregated report (637); 30-day store retention (638); CPU/RSS process metrics (584/585); Domain 16 NOT-AUDITED performance reviews (10 items); Domain 19 TOML/ENV defaults sweep, files >1000 lines, dead code, magic constants.
+* **P2:** Concurrency/lock-contention test (542); provider-recovery cycle test (222); Domain 13 re-dispatch design decision (504).
+* **P3:** Daily aggregated report (637); Domain 16 NOT-AUDITED performance reviews (10 items); Domain 19 TOML/ENV defaults sweep, files >1000 lines, dead code, magic constants.
 * **P4:** Docs consolidation.
 * **BLOCKED (external):** 30-min data-plane session, dual-provider WSS, quota compliance proof, live Jito bundle submission, 24-hour shadow soak (run-shadow.sh ready), Solami Mirage protobuf parser (G5, provider quota).
 
-### Batch 3 — checklist 575, 634, 638, 584/585 (same session)
-
-| Item | What changed | Files |
-|---|---|---|
-| 575 Simulation Latency | `SIMULATION_LATENCY_US` Prometheus Histogram (buckets 1k–5M µs) + `observe_simulation_latency_us`; measured around `simulate_async` (primary) and `RpcPool::simulate_transaction` (fallback) in dispatch; debug log with measured µs; exported via /metrics | `arb-metrics/src/lib.rs`, `supervisor/dispatch.rs` |
-| 634 Structured JSON logs | `LOG_FORMAT=json` gate in `init_event_logger()`: both stdout and file layers switch to `.json().flatten_event(true)`; default text format unchanged; Err-fallback branch covered | `main.rs` |
-| 638 30-day retention | `Store::prune_older_than_days(u32)` (default no-op) + SqliteStore impl deleting fills→outcomes→dispatch_intents→attempts by `created_at < datetime('now', ?1)` (bound param, no string concat); periodic caller every 6h in run.rs via `DATA_RETENTION_DAYS` (default 30); test `retention_prune_deletes_old_rows_and_keeps_recent` (40-day-old backdated rows deleted, recent kept, second call = 0) | `arb-store/src/lib.rs`, `supervisor/run.rs` |
-| 584/585 CPU/RSS metrics | `process_cpu_percent` Gauge + `process_rss_bytes` IntGauge; sampler task every 30s reads `/proc/self/stat` utime+stime (cpu % over interval via tick delta, CLK_TCK=100) and `/proc/self/status` VmRSS (Linux `cfg`-gated; no-ops elsewhere); surfaced through `ObservabilitySnapshot` → Overview cards "RSS (MB)" and "CPU %" | `arb-metrics/src/lib.rs`, `supervisor/run.rs`, `control_service.rs`, `supervisor.rs`, `api.ts`, `Overview.tsx` |
-
-**Checklist after batch 3: 433 / 495 — 62 remaining.**
-
-## In progress right now (not yet committed)
-
-Nothing in flight — batch 3 complete, committed and pushed.
-
 ## Acceptance gate
 
-* **Passed:** unit/integration suites (1183), clippy -D warnings, fmt, web build, checklist evidence updates.
+* **Passed:** unit/integration suites (1184), clippy -D warnings, fmt, web build, checklist evidence updates.
 * **Failed:** none.
 * **Not tested:** differential quote parity for CLMM tick-crossing/multi-bin (no oracle coverage — documented PARTIAL).
 * **Blocked:** 24h shadow soak, dual-provider WSS proof, live Jito bundle, quota-compliance proof, Solami Mirage parser (free-plan limits).
 
 ## Next single priority
 
-Finish Batch 3 (items 575, 634, 638, 584/585) as designed above — all four are self-contained, runtime-wired, and testable offline; together they close the last MISSING observability items before the only remaining work is NOT-AUDITED reviews, PARTIAL deepening, and externally BLOCKED evidence.
+Batch 5: (542) dedicated concurrency/lock-contention test on the bounded ingest/hot-path channels, then (222) provider-recovery cycle test in `rpc_pool` (cooldown expiry → endpoint re-election with a mock server), then (504) Domain-13 re-dispatch design decision doc. All three are offline-testable and close the remaining actionable P2 items; everything after them is NOT-AUDITED reviews (Domain 16/19) or externally BLOCKED evidence.
 
 ## Capital safety
 

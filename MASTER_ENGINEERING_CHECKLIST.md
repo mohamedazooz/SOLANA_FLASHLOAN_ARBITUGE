@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **433 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **62** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **436 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **59** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -538,7 +538,7 @@
 - [x] إضافة Fuzz Tests. `(fuzzing_suite.rs — never-panics + invariants؛ cargo-fuzz منفصل غير موجود — G9)`
 - [x] إضافة Differential Tests. `(arb-math/tests/differential.rs + orca_sdk_parity.rs + meteora_mainnet_sdk_differential.rs + python_oracle_differential.rs + v1_header_differential.rs)`
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
-- [ ] إضافة Failure Injection Tests. `(PARTIAL — adversarial/fuzz suites تحقن مدخلات مشوهة — arb-math/adversarial_tests.rs + fuzzing_suite.rs؛ لا يوجد harness حقن أخطاء شبكة/provider)`
+- [x] إضافة Failure Injection Tests. `(FIXED/TESTED — حقن أخطاء شبكة/provider فعلي عبر mock servers: quota_exhaustion_tests.rs (429 quota-exhausted→cooldown 1800s+QuotaExhausted؛ 429+Retry-After failover؛ in-body -32005) + bundle_rejection_tests.rs (mock block engine) + failover circuit-breaker provider_supervisor.rs:207)`
 - [ ] إضافة Concurrency Tests. `(PARTIAL — failover circuit-breaker tests — provider_supervisor.rs:207؛ لا يوجد اختبار مخصص لـ lock contention أو races)`
 - [x] إضافة Replay Tests. `(shadow_replay_tests.rs + arb-bot/src/bin/replay.rs)`
 - [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
@@ -560,7 +560,7 @@
 - [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
 - [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
 - [x] اختبار Failed Min-Profit. `(gross_positive_net_negative_fails_closed + flash_fee_exceeding_gross_profit_fails_closed — three_leg_net_economics_tests.rs:69,83 + refuses_edge_below_hurdle — bidder.rs:481)`
-- [ ] اختبار Jito Rejection. `(PARTIAL — مسار الرفض مُعالج dispatch.rs:1013-1022؛ لا يوجد اختبار unit لفرع رفض block engine)`
+- [x] اختبار Jito Rejection. `(FIXED/TESTED — 6 اختبارات contract ضد mock block engine محلي — crates/arb-land/tests/bundle_rejection_tests.rs: HTTP 400 يحمل status+سبب الرفض وErr وليس success؛ HTTP 200 بدون result ليس دليل هبوط؛ القبول يرجع bundle id؛ empty/6-tx مرفوضان محلياً 1..=5؛ unreachable = network error)`
 - [x] اختبار Full Route. `(cross_dex_three_pool_live_loop.rs + three_pool_flash_arb_tests.rs + meteora_cross_pool_vertical_slice.rs + pipeline.rs — arb-engine/tests)`
 
 ## 16. Performance وHFT
@@ -621,7 +621,7 @@
 - [x] عرض Stale Accounts. `(FIXED/TESTED — stale_rejections_total من arb-metrics في StatusSnapshot.observability + بطاقة Overview بلون تحذيري — dual_ingest.rs:135 يغذّي العداد)`
 - [x] عرض Fork Invalidations. `(FIXED/TESTED — عداد جديد fork_invalidations_total في arb-metrics يُغذَّى من مساري الإبطال الفعليين (SLOT_DEAD invalidate_slots+banks — lib.rs:641، entry-update parent clear — lib.rs:677)؛ معروض في Overview)`
 - [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
-- [ ] عرض Exact Quotes. `(PARTIAL — /api/opportunities + opportunities_digest — control_service.rs:645؛ لا يوجد عرض تفصيلي لكل hop quote)`
+- [x] عرض Exact Quotes. `(FIXED — عرض تفصيلي لكل hop: OpportunityRecord.hop_quotes (Vec<HopQuoteRecord>: protocol/pool/amount_in/amount_out) مشتقة من hop_inputs+hops في record_opportunity call site meteora-dlmm-3leg (strategy.rs)؛ عمود "Per-hop quotes" في Opportunities.tsx مع tooltip pool كامل؛ يُحذف من JSON عندما لا يوفره الـ pipeline)`
 - [x] عرض Rejection Reasons. `(FIXED/TESTED: ring مخصص RejectionRecord في control_service + /api/rejections + مكوّن Rejections.tsx جديد في Dashboard يعرض stage/reason/gross/net/loan/pools؛ record_rejected_opportunity يسجّل الآن في control؛ اختبار rejection_ring_is_dedicated_and_ordered)`
 - [x] عرض Gross Profit. `(FIXED/TESTED — OpportunityRecord.gross_profit_lamports = expected_output − borrow يُحسب في record_opportunity، عمود Gross profit جديد في Opportunities.tsx)`
 - [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`

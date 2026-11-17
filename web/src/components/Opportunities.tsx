@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { api, lamportsToSol } from "../api";
 import type { OpportunityRecord } from "../api";
 
+function shortPool(p: string) {
+  return p.length > 8 ? `${p.slice(0, 4)}…${p.slice(-4)}` : p;
+}
+
 export default function Opportunities() {
   const [rows, setRows] = useState<OpportunityRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +57,7 @@ export default function Opportunities() {
             <th>Expected out</th>
             <th>Gross profit</th>
             <th>Net profit (SOL)</th>
+            <th>Per-hop quotes</th>
             <th>Status</th>
           </tr>
         </thead>
@@ -74,6 +79,23 @@ export default function Opportunities() {
                 {lamportsToSol(r.net_profit_lamports)}
               </td>
               <td>
+                {r.hop_quotes && r.hop_quotes.length > 0 ? (
+                  <div>
+                    {r.hop_quotes.map((h, j) => (
+                      <div
+                        key={j}
+                        className="mono"
+                        title={`${h.protocol} pool ${h.pool}`}
+                      >
+                        {shortPool(h.pool)}: {lamportsToSol(h.amount_in)}→{lamportsToSol(h.amount_out)}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  "—"
+                )}
+              </td>
+              <td>
                 {r.eligible ? (
                   <span className="badge badge-green">eligible</span>
                 ) : (
@@ -84,7 +106,7 @@ export default function Opportunities() {
           ))}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={8} className="muted">
+              <td colSpan={10} className="muted">
                 No opportunities recorded yet.
               </td>
             </tr>

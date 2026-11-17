@@ -378,6 +378,21 @@ impl Supervisor {
                     gross_profit_lamports: 0,
                     net_profit_lamports: o.net_profit.0 as i64,
                     eligible: true,
+                    hop_quotes: o
+                        .hops
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, h)| {
+                            let amount_in = *o.hop_inputs.get(i)?;
+                            let amount_out = *o.hop_inputs.get(i + 1)?;
+                            Some(crate::control_service::HopQuoteRecord {
+                                protocol: format!("{:?}", h.protocol),
+                                pool: h.pool_id.0.to_string(),
+                                amount_in,
+                                amount_out,
+                            })
+                        })
+                        .collect(),
                     reject_reason: None,
                 });
             }
@@ -449,6 +464,7 @@ impl Supervisor {
                         gross_profit_lamports: 0,
                         net_profit_lamports: t.working_capital_eval.net_profit_lamports,
                         eligible: t.working_capital_eval.is_executable,
+                        hop_quotes: Vec::new(),
                         reject_reason: if t.working_capital_eval.is_executable {
                             None
                         } else {
