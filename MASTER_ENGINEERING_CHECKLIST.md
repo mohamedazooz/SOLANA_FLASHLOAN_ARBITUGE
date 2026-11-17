@@ -515,7 +515,7 @@
 ## 14. Compute Budget وTransaction Constraints
 
 - [x] بناء CU estimator ديناميكي. `(estimate_route_cu حسب شكل المسار الحقيقي + measured_cu لكل route_sig + calculate_dynamic_cu_limit — opportunity.rs:88-105)`
-- [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route)`
+- [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route — السقف التطبيقي APPLICATION_SAFETY_CU_LIMIT = 1,400,000 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS بقرار صريح لرفع headroom للمسارات المركّبة، وحماية الرسوم تبقى عبر cap_cu_price_by_profit — arb-constants:489-495، اختبار compute_budget_instructions محدَّث)`
 - [x] التحقق من CU price. `(cap_cu_price_by_profit — سقف ديناميكي حسب share bps وعامل المنافسة)`
 - [x] قياس CU الفعلي لكل DEX. `(measured_cu لكل route_sig يُغذّى من LiteSVM محلياً — dispatch.rs:347، ومن محاكاة RPC حية — dispatch.rs:368-434، ويُفضّل على التقدير — opportunity.rs:125-127)`
 - [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP ثوابت fallback فقط — arb-constants:482-484؛ measured_cu.unwrap_or(estimated_cu) يجعلها initial-fallback قبل أول قياس — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`

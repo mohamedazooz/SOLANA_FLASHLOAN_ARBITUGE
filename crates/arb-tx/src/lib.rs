@@ -270,8 +270,11 @@ mod tests {
         let dynamic_cu = calculate_dynamic_cu_limit(100_000);
         assert_eq!(dynamic_cu, 115_000); // 100k + 15%
 
-        let capped_cu = calculate_dynamic_cu_limit(400_000);
-        assert_eq!(capped_cu, MAX_COMPUTE_UNIT_LIMIT); // Capped at MAX_COMPUTE_UNIT_LIMIT (350k)
+        let uncapped_cu = calculate_dynamic_cu_limit(400_000);
+        assert_eq!(uncapped_cu, 460_000); // 400k + 15% — below the 1.4M ceiling, not clamped
+
+        let capped_cu = calculate_dynamic_cu_limit(1_300_000);
+        assert_eq!(capped_cu, MAX_COMPUTE_UNIT_LIMIT); // 1.3M + 15% clamped at 1.4M runtime max
 
         // Verify 260k and 320k constants and helpers
         assert_eq!(COMPUTE_BUDGET_LIMIT_2HOP, 260_000);
