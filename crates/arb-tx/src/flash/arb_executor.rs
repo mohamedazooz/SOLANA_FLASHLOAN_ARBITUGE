@@ -347,7 +347,9 @@ pub fn assemble_flash_funded_three_pool_cpi(
         let config = crate::adaptive::V1ConfigParams {
             priority_fee_lamports: Some(priority_fee_lamports as u64),
             compute_unit_limit: Some(params.cu_limit),
-            loaded_accounts_data_size_limit: Some(1_048_576),
+            loaded_accounts_data_size_limit: Some(
+                crate::adaptive::V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
+            ),
             heap_size: Some(256 * 1024),
         };
         let accounts_count = crate::adaptive::count_unique_accounts(signer.pubkey(), &ixs);
