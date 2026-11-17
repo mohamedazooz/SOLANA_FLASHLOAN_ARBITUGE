@@ -98,12 +98,12 @@ if crate::live_execution_enabled() {
                     let b64 = base64::engine::general_purpose::STANDARD
                         .encode(&signed_tx);
                     match self.rpc_pool.send_raw_transaction(&b64).await {
+                    (الجزء الكامل أقصر من نسخة العمل — انظر git HEAD `54d2cbb` للنسخة الكاملة.)
 ```
 
-(الجزء الكامل أقصر من نسخة العمل — انظر git HEAD `54d2cbb` للنسخة الكاملة.)
-
 ---
+
 **التاريخ**: 2026-11-16
 **القرار**: دمج = جانب origin/main + توثيق كامل لما أُهمل من HEAD.
-**الحالة**: إذا أراد المُشغل الاحتفاظ بـ Cold-Wallet Auto-Sweep، يجب أن يُنفَّذ كـ أمر يدوي من المُشغل
-(مثل سكربت `solana transfer <amount> <cold>`) وليس كـ مسار تلقائي داخل dispatch.
+**الحالة**: إذا أراد المُشغل الاحتفاظ بـ Cold-Wallet Auto-Sweep، يجب أن يُنفَّذ كأمر يدوي من المُشغل
+(مثل سكربت `solana transfer <amount> <cold>`) وليس كمسار تلقائي داخل dispatch.

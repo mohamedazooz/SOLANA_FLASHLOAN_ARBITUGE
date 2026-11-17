@@ -33,6 +33,49 @@ pub struct FlashLoanSizingConfig {
     /// Reserve fraction to keep in pool (don't drain completely), in basis
     /// points. 1000 = keep 10% of pool liquidity untouched.
     pub reserve_fraction_bps: u64,
+    /// Sizing methodology to use
+    pub sizing_method: SizingMethod,
+    /// Kelly Criterion parameters (used when sizing_method == Kelly)
+    pub kelly_params: KellyParams,
+}
+
+/// Sizing methodology for flash loan amount optimization
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizingMethod {
+    /// Safety-factor based sizing (current default): capacity * safety_factor_bps / 10000
+    SafetyFactor,
+    /// Kelly Criterion optimal bet sizing: f* = p - (1-p)/R
+    /// where p = win probability, R = reward/risk ratio
+    /// Uses half-Kelly (fractional_kelly = 0.5) by default for volatility reduction
+    Kelly,
+}
+
+/// Kelly Criterion parameters for position sizing
+#[derive(Debug, Clone)]
+pub struct KellyParams {
+    /// Estimated win probability (0.0 - 1.0). Derived from historical landing rate.
+    pub win_probability: f64,
+    /// Reward-to-risk ratio (R = avg_win / avg_loss). Derived from historical PnL.
+    pub reward_risk_ratio: f64,
+    /// Fractional Kelly multiplier (0.0 - 1.0). 0.5 = half-Kelly, 0.25 = quarter-Kelly.
+    /// Reduces volatility and drawdowns while preserving ~75% of peak compounding speed.
+    pub fractional_kelly: f64,
+    /// Minimum position size floor (lamports) - Kelly can suggest very small sizes
+    pub min_position_lamports: u64,
+    /// Maximum position size cap (lamports) - hard limit regardless of Kelly
+    pub max_position_lamports: u64,
+}
+
+impl Default for KellyParams {
+    fn default() -> Self {
+        Self {
+            win_probability: 0.65,                // Conservative estimate from landing rate
+            reward_risk_ratio: 2.0,               // Conservative R:R
+            fractional_kelly: 0.5,                // Half-Kelly (recommended by practitioners)
+            min_position_lamports: 100_000,       // 0.0001 WSOL
+            max_position_lamports: 5_000_000_000, // 5 WSOL
+        }
+    }
 }
 
 impl Default for FlashLoanSizingConfig {
@@ -46,6 +89,8 @@ impl Default for FlashLoanSizingConfig {
             optimize_for_profit: true,
             max_bins_crossed: 3,
             reserve_fraction_bps: 1_000, // Keep 10% in pool
+            sizing_method: SizingMethod::SafetyFactor,
+            kelly_params: KellyParams::default(),
         }
     }
 }
@@ -83,6 +128,41 @@ pub struct FlashLoanSizingResult {
     pub confidence_bps: u64,
 }
 
+/// Calculate Kelly Criterion optimal position size
+///
+/// Kelly formula: f* = p - (1-p)/R
+/// where p = win probability, R = reward/risk ratio
+///
+/// Fractional Kelly: f = fractional_kelly * f*
+///
+/// Returns position size in lamports, clamped to [min_position, max_position]
+fn calculate_kelly_optimal_size(
+    capacity_based_size: u64,
+    kelly: &KellyParams,
+    min_position: u64,
+    max_position: u64,
+) -> u64 {
+    // Kelly fraction: f* = p - (1-p)/R
+    let kelly_fraction =
+        kelly.win_probability - (1.0 - kelly.win_probability) / kelly.reward_risk_ratio;
+
+    // Apply fractional Kelly (half-Kelly = 0.5, quarter-Kelly = 0.25)
+    let fractional_kelly = kelly.fractional_kelly.clamp(0.0, 1.0);
+    let adjusted_fraction = (kelly_fraction * fractional_kelly).max(0.0);
+
+    // If Kelly suggests negative or zero, use minimum
+    if adjusted_fraction <= 0.0 {
+        return min_position;
+    }
+
+    // Position size = fraction * capacity (or max_position, whichever is smaller)
+    let capacity = capacity_based_size.min(max_position);
+    let kelly_size = (capacity as f64 * adjusted_fraction) as u64;
+
+    // Clamp to [min_position, max_position]
+    kelly_size.clamp(min_position, max_position)
+}
+
 /// Calculate optimal flash loan size for a 3-pool arbitrage
 pub fn calculate_optimal_flash_loan(
     pool1: &PoolState, // WSOL -> A
@@ -114,10 +194,24 @@ pub fn calculate_optimal_flash_loan(
         .saturating_mul(10_000u64.saturating_sub(config.reserve_fraction_bps.min(10_000)))
         / 10_000;
 
-    // 5. Clamp to configured bounds
-    let borrow_amount = reserve_adjusted
-        .max(config.min_flash_amount)
-        .min(config.max_flash_amount);
+    // 5. Determine borrow amount based on sizing method
+    let borrow_amount = match config.sizing_method {
+        SizingMethod::SafetyFactor => {
+            // Original safety-factor based sizing
+            reserve_adjusted
+                .max(config.min_flash_amount)
+                .min(config.max_flash_amount)
+        }
+        SizingMethod::Kelly => {
+            // Kelly Criterion optimal sizing
+            calculate_kelly_optimal_size(
+                reserve_adjusted,
+                &config.kelly_params,
+                config.min_flash_amount,
+                config.max_flash_amount,
+            )
+        }
+    };
 
     let capped_at_max = borrow_amount == config.max_flash_amount;
     let capped_by_capacity =

@@ -17,7 +17,20 @@ pub enum PumpSwapTradeMode {
     SellV1Legacy,
 }
 
-/// Build PumpSwap V2 trade instruction with the exact 17-account matrix matching `pump_amm.json`.
+impl std::fmt::Display for PumpSwapTradeMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PumpSwapTradeMode::BuyExactQuoteInV2 => write!(f, "BuyExactQuoteInV2"),
+            PumpSwapTradeMode::BuyExactBaseOutV2 => write!(f, "BuyExactBaseOutV2"),
+            PumpSwapTradeMode::SellExactBaseInV2 => write!(f, "SellExactBaseInV2"),
+            PumpSwapTradeMode::BuyV1Legacy => write!(f, "BuyV1Legacy"),
+            PumpSwapTradeMode::SellV1Legacy => write!(f, "SellV1Legacy"),
+        }
+    }
+}
+
+/// Build PumpSwap V2 trade instruction with the exact 17-account matrix matching `pump_amm.json`
+/// plus optional remaining accounts (observed +3 for buy, +2 for sell on mainnet).
 #[allow(clippy::too_many_arguments)]
 pub fn build_pump_swap_instruction_v2(
     pool: Pubkey,
@@ -37,6 +50,7 @@ pub fn build_pump_swap_instruction_v2(
     amount_in: u64,
     min_amount_out: u64,
     trade_mode: PumpSwapTradeMode,
+    remaining_accounts: Option<Vec<AccountMeta>>, // Per live observation: +3 buy, +2 sell
 ) -> Result<CompiledInstruction, TxError> {
     let program_id = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID)
         .map_err(|e| TxError::InstructionError(e.to_string()))?;
@@ -90,7 +104,7 @@ pub fn build_pump_swap_instruction_v2(
     data.extend_from_slice(&amount_in.to_le_bytes());
     data.extend_from_slice(&min_amount_out.to_le_bytes());
 
-    let accounts_meta = vec![
+    let mut accounts_meta = vec![
         AccountMeta::new(pool, false),
         AccountMeta::new(user_authority, true),
         AccountMeta::new_readonly(global_config, false),
@@ -110,6 +124,26 @@ pub fn build_pump_swap_instruction_v2(
         AccountMeta::new(creator_vault_ata, false),
     ];
 
+    // Append remaining accounts observed on mainnet (PumpSwap V2)
+    // Buy: +3 remaining accounts, Sell: +2 remaining accounts
+    if let Some(remaining) = remaining_accounts {
+        // Validate remaining account count per trade mode
+        let expected_remaining = match trade_mode {
+            PumpSwapTradeMode::BuyExactQuoteInV2 | PumpSwapTradeMode::BuyExactBaseOutV2 => 3,
+            PumpSwapTradeMode::SellExactBaseInV2 => 2,
+            _ => 0, // V1 legacy modes don't have remaining accounts
+        };
+        if remaining.len() != expected_remaining {
+            return Err(TxError::SanitizationError(format!(
+                "PumpSwap V2 {} expects {} remaining accounts, got {}",
+                trade_mode,
+                expected_remaining,
+                remaining.len()
+            )));
+        }
+        accounts_meta.extend(remaining);
+    }
+
     Ok(CompiledInstruction {
         program_id,
         accounts: accounts_meta,
@@ -118,6 +152,7 @@ pub fn build_pump_swap_instruction_v2(
 }
 
 /// Build genuine PumpSwap AMM swap instruction (Buy or Sell) with real on-chain account matrix (V1 compatibility).
+/// V1 legacy pools do not have remaining accounts per IDL; V2 pools use `build_pump_swap_instruction_v2`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_pump_swap_instruction(
     pool: Pubkey,

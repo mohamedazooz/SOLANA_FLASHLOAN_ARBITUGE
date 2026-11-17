@@ -228,6 +228,7 @@ fn test_pump_swap_v2_exact_17_accounts_and_discriminators() {
         amount_in,
         min_amount_out,
         PumpSwapTradeMode::BuyExactQuoteInV2,
+        None, // remaining_accounts (observed +3 on mainnet, not in IDL)
     )
     .expect("build pump swap buy v2");
 
@@ -287,6 +288,7 @@ fn test_pump_swap_v2_exact_17_accounts_and_discriminators() {
         amount_in,
         min_amount_out,
         PumpSwapTradeMode::SellExactBaseInV2,
+        None, // remaining_accounts (observed +2 on mainnet, not in IDL)
     )
     .expect("build pump swap sell v2");
 
@@ -316,6 +318,7 @@ fn test_pump_swap_v2_exact_17_accounts_and_discriminators() {
         amount_in,
         min_amount_out,
         PumpSwapTradeMode::BuyExactBaseOutV2,
+        None, // remaining_accounts
     )
     .expect("build pump swap buy exact base out v2");
 
