@@ -68,6 +68,10 @@ pub struct Supervisor {
     jito_lander: JitoLander,
     tip_strategy: TipStrategy,
     registry: Arc<parking_lot::RwLock<arb_ingest::MultiDexRegistry>>,
+    /// Per-pool account dependency manifests backing the fail-closed quote
+    /// dependency gate. Registered lazily per pool from the same manifest
+    /// builder that drives subscriptions.
+    dependency_manifests: parking_lot::Mutex<arb_ingest::DependencyManifestRegistry>,
     /// Recent landed compute-unit prices for adaptive priority fee.
     recent_landed_cu: Vec<u64>,
     #[allow(dead_code)]
@@ -406,6 +410,9 @@ impl Supervisor {
             jito_lander,
             tip_strategy,
             registry,
+            dependency_manifests: parking_lot::Mutex::new(
+                arb_ingest::DependencyManifestRegistry::default(),
+            ),
             recent_landed_cu,
             simulator,
             store,

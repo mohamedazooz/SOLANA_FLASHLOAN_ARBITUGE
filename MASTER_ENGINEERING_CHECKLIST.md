@@ -1,4 +1,4 @@
-﻿# MASTER_ENGINEERING_CHECKLIST.md — Master Engineering Checklist
+# MASTER_ENGINEERING_CHECKLIST.md — Master Engineering Checklist
 
 > **المرجع الإلزامي لكل Agent يعمل على هذا الريبو.**
 > هذه القائمة تجميع لكل الملاحظات التي ظهرت في المراجعات السابقة، وليست ادعاءً
