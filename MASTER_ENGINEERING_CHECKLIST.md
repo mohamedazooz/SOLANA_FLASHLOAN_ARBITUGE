@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **92 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
-- **403** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **99 / 495** بند متحقق بدليل ومُعلَّم `[x]`.
+- **396** بند متبقي: منها 12 فجوة مؤكدة (G1–G12 أعلاه) والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -81,6 +81,13 @@
 | G10 | لا توجد خطوة Gitleaks في CI | `rust-ci.yml` فيه cargo-deny فقط |
 | G11 | `damm_v2` / `launchlab` / `pump_fun_raydium` في `arb-math` بدون unit tests | grep `#[test]` = 0 لكل منها |
 | G12 | لا يوجد دليل على 24-hour Shadow Soak (الأدوات موجودة: `run-shadow.sh`, `docker-compose.shadow.yml`؛ `reports/production/` فيه baseline + acceptance matrix فقط) | `reports/production/` |
+
+### Acceptance Gates السابقة
+
+- `reports/production/acceptance_matrix.json` يوثق Gates A–D بحالة PASS
+  (repository integrity / protocol correctness / economic correctness /
+  safety controls) — لكن على base_commit `45031bb` وليس أحدث main؛
+  يحتاج إعادة تشغيل قبل الاعتماد النهائي (يرتبط بـ G12).
 
 ### ملاحظة منهجية
 
@@ -443,12 +450,12 @@
 - [ ] التحقق من Tip Accounts.
 - [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
 - [ ] التحقق من Priority Fee.
-- [ ] التحقق من Bundle Submission.
-- [ ] حفظ Bundle ID.
-- [ ] متابعة Bundle Status.
+- [x] التحقق من Bundle Submission. `(send_bundle + send_bundle_multi_region — arb-land/src/lib.rs:264,323)`
+- [x] حفظ Bundle ID. `(bundle_id: String — lib.rs:82 + استرجاعه من الرد lib.rs:395)`
+- [x] متابعة Bundle Status. `(get_bundle_status — lib.rs:366-395 + signature-status polling في dispatch.rs)`
 - [ ] التحقق من Landing.
 - [ ] التحقق من Slot.
-- [ ] التحقق من Signature Status.
+- [x] التحقق من Signature Status. `(SignatureStatus::Pending/Processed/Confirmed/Finalized/Failed polling في dispatch.rs:751-768)`
 - [x] الفصل بين Submitted وAccepted. `(lifecycle.rs:25-31 — حالات منفصلة مع انتقالات مقيدة)`
 - [x] الفصل بين Processed وConfirmed. `(نفس الدليل — lifecycle.rs:60-65)`
 - [x] الفصل بين Confirmed وFinalized. `(نفس الدليل — lifecycle.rs:65-70)`
@@ -456,9 +463,9 @@
 - [ ] إضافة Retry Policy.
 - [ ] إضافة Bundle Expiration Handling.
 - [ ] إضافة Rejection Handling.
-- [ ] تسجيل Actual Execution Result.
+- [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
 - [ ] تسجيل Actual Balance Changes.
-- [ ] تسجيل Realized Profit.
+- [x] تسجيل Realized Profit. `(realized_net: Lamports مسجل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325)`
 - [ ] اختبار Jito Failure.
 - [ ] اختبار Jito Timeout.
 - [ ] اختبار Bundle Rejection.
@@ -466,7 +473,7 @@
 
 ## 14. Compute Budget وTransaction Constraints
 
-- [ ] بناء CU estimator ديناميكي.
+- [x] بناء CU estimator ديناميكي. `(estimate_route_cu حسب شكل المسار الحقيقي + measured_cu لكل route_sig + calculate_dynamic_cu_limit — opportunity.rs:88-105)`
 - [ ] التحقق من CU limit.
 - [ ] التحقق من CU price.
 - [ ] قياس CU الفعلي لكل DEX.
