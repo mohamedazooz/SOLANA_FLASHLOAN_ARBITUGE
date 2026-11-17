@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **157 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **158 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **338** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 وG9 صارتا PARTIAL/FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -437,7 +437,7 @@
 - [x] استخدام checked arithmetic. `(نفس الدليل — لا arithmetic غير checked في المسار الاقتصادي)`
 - [x] استخدام ceiling division لرسوم priority fee. `(adaptive.rs:196-204 — ceil(micro_lamports * cu_limit / 1_000_000))`
 - [ ] توحيد priority fee بين sizing وranking وdispatch.
-- [ ] منع saturating arithmetic في الحسابات الاقتصادية الحساسة.
+- [x] منع saturating arithmetic في الحسابات الاقتصادية الحساسة. `(Phase12 Agent1 triage: 415 استخدام مصنّفة — 3 مواضع UNSAFE أُصلحت fail-closed: adapters.rs quote_hop reserve advance (checked + رفض amount_out >= reserve قبل أي mutation)، dlmm_flash_arbitrage.rs evaluate() economics (i128 + signed clamp)، flash_loan_sizing.rs net_profit_lamports/best_bps (i128 + signed clamp). الباقي BENIGN/CONSERVATIVE موثّق في docs/audit/PHASE12_AGENT1_FINANCIAL_ARITHMETIC_AUDIT.md — 1145 test/0 fail)`
 - [x] استخدام SOL/USD price موثوق ومؤرخ. `(chronos max_age_ms — opportunity.rs:550-557)`
 - [x] رفض السعر القديم. `(No fresh SOL/USD reference; rejecting candidate economic conversion — fail-closed)`
 - [x] منع استخدام سعر افتراضي مثل $200 كدليل اقتصادي. `(G7: telegram.rs — sol_price_live provenance flag؛ التنبيهات تعرض وسم ديناميكي «سعر غير موثّق (افتراضي)» بدل ادّعاء «سعر حي من السوق» الثابت؛ العلم يُرفع فقط من Binance/Coinbase feed أو سعر pool حي أو SOL_USD_PRICE من المشغّل؛ اختبار unverified_sol_price_is_labeled_as_such)`

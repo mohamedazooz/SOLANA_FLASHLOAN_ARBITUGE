@@ -804,12 +804,23 @@ impl DlmmFlashArbEvaluator<'_> {
         }
 
         // ── Economics ──
+        // i128 intermediates: no overflow, no silent saturation; narrowing
+        // back to i64 clamps in the true sign direction (never flips a loss
+        // into a profit). The exact u64 repayment guard below remains the
+        // hard fail-closed gate.
         let repay = borrow.saturating_add(flash_fee);
         let total_cost = flash_fee.saturating_add(cfg.execution_cost());
-        let gross_profit = (quote_b.amount_out as i64) - (borrow as i64);
-        let net_profit = gross_profit - (total_cost as i64);
+        let clamp_i64 = |v: i128| -> i64 {
+            if v > i128::from(i64::MAX) {
+                i64::MAX
+            } else {
+                i64::try_from(v).unwrap_or(i64::MIN)
+            }
+        };
+        let gross_profit = clamp_i64(i128::from(quote_b.amount_out) - i128::from(borrow));
+        let net_profit = clamp_i64(i128::from(gross_profit) - i128::from(total_cost));
         let net_profit_bps = if borrow > 0 {
-            (net_profit * 10_000) / (borrow as i64)
+            clamp_i64(i128::from(net_profit) * 10_000 / i128::from(borrow))
         } else {
             0
         };

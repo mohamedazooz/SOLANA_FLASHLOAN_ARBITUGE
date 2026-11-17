@@ -464,15 +464,16 @@ pub fn net_profit_lamports(
     flash_fee_sf: u64,
     network_cost_lamports: u64,
 ) -> i64 {
-    let gross = i64::try_from(final_output)
-        .unwrap_or(i64::MAX)
-        .saturating_sub(i64::try_from(borrow).unwrap_or(i64::MAX));
     let flash_fee = calculate_kamino_flash_fee(borrow, flash_fee_sf);
-    let flash_fee_i64 = i64::try_from(flash_fee).unwrap_or(i64::MAX);
-    let network_cost_i64 = i64::try_from(network_cost_lamports).unwrap_or(i64::MAX);
-    gross
-        .saturating_sub(flash_fee_i64)
-        .saturating_sub(network_cost_i64)
+    let net_i128 = i128::from(final_output)
+        - i128::from(borrow)
+        - i128::from(flash_fee)
+        - i128::from(network_cost_lamports);
+    if net_i128 > i128::from(i64::MAX) {
+        i64::MAX
+    } else {
+        i64::try_from(net_i128).unwrap_or(i64::MIN)
+    }
 }
 
 /// Apply slippage to get conservative minimum output
@@ -554,7 +555,12 @@ fn optimize_size(
             best_profit = net;
             best_borrow = test_amount;
             best_bps = if test_amount > 0 {
-                (net * 10_000) / test_amount as i64
+                let bps = i128::from(net) * 10_000 / i128::from(test_amount);
+                if bps > i128::from(i64::MAX) {
+                    i64::MAX
+                } else {
+                    i64::try_from(bps).unwrap_or(i64::MIN)
+                }
             } else {
                 0
             };
@@ -593,7 +599,12 @@ fn optimize_size(
             best_profit = net;
             best_borrow = test_amount;
             best_bps = if test_amount > 0 {
-                (net * 10_000) / test_amount as i64
+                let bps = i128::from(net) * 10_000 / i128::from(test_amount);
+                if bps > i128::from(i64::MAX) {
+                    i64::MAX
+                } else {
+                    i64::try_from(bps).unwrap_or(i64::MIN)
+                }
             } else {
                 0
             };
@@ -626,6 +637,29 @@ mod tests {
         assert_eq!(apply_slippage(1_000_000, 100), 990_000); // 1% slippage
         assert_eq!(apply_slippage(1_000_000, 50), 995_000); // 0.5%
         assert_eq!(apply_slippage(1_000_000, 10_000), 0); // 100%
+    }
+
+    #[test]
+    fn net_profit_clamp_never_flips_loss_into_profit() {
+        let fee_sf = 11_529_215_046_068u64;
+        // Ordinary profitable case stays exact (30_000 gross − 10_000 fee − 10_000 network).
+        assert_eq!(
+            net_profit_lamports(1_000_030_000, 1_000_000_000, fee_sf, 10_000),
+            10_000
+        );
+        // Ordinary loss stays exact and negative (flash fee 10_000 + network 10_000).
+        assert_eq!(
+            net_profit_lamports(1_000_000_000, 1_000_000_000, fee_sf, 10_000),
+            -20_000
+        );
+        // Extreme output saturates at i64::MAX, never wraps negative.
+        assert_eq!(net_profit_lamports(u64::MAX, 0, 0, 0), i64::MAX);
+        // Extreme loss saturates at i64::MIN, never wraps positive. A disabled
+        // reserve (fee_sf == u64::MAX) yields the u64::MAX fee sentinel.
+        let net = net_profit_lamports(0, u64::MAX, u64::MAX, u64::MAX);
+        assert_eq!(net, i64::MIN);
+        // Zero-liquidity output with a real borrow is a strict loss.
+        assert!(net_profit_lamports(0, 1_000_000_000, fee_sf, 9_000) < 0);
     }
 
     #[test]
