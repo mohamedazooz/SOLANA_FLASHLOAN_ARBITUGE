@@ -206,6 +206,53 @@ mod tests {
     }
 
     #[test]
+    fn wrong_owner_on_tracked_account_rejects_the_route() {
+        let (store, slots, key, _, owners) = setup(false);
+        let impostor = Pubkey::new_from_array([9; 32]);
+        let forged = AccountSnapshot {
+            pubkey: key,
+            owner: impostor,
+            slot: 100,
+            write_version: 8,
+            is_startup: false,
+            provider_id: ProviderId(1),
+            bank_id: Some(55),
+            generation: 4,
+            data: Arc::new(vec![9, 9, 9]),
+        };
+        assert!(store.apply(forged));
+        assert!(matches!(
+            build_quote_dependency_set(&store, &slots, &[key], &owners, context()),
+            Err(QuoteReadinessError::OwnerMismatch)
+        ));
+    }
+
+    #[test]
+    fn incomplete_hydration_missing_account_rejects_the_route() {
+        let (store, slots, key, owner, _) = setup(false);
+        let missing = Pubkey::new_from_array([7; 32]);
+        let owners = HashMap::from([(key, owner), (missing, owner)]);
+        assert!(matches!(
+            build_quote_dependency_set(&store, &slots, &[key, missing], &owners, context()),
+            Err(QuoteReadinessError::MissingAccount)
+        ));
+    }
+
+    #[test]
+    fn empty_or_unowned_dependency_set_fails_closed() {
+        let (store, slots, _key, _, owners) = setup(false);
+        assert!(matches!(
+            build_quote_dependency_set(&store, &slots, &[], &owners, context()),
+            Err(QuoteReadinessError::EmptyDependencies)
+        ));
+        let unowned = Pubkey::new_from_array([8; 32]);
+        assert!(matches!(
+            build_quote_dependency_set(&store, &slots, &[unowned], &owners, context()),
+            Err(QuoteReadinessError::MissingExpectedOwner)
+        ));
+    }
+
+    #[test]
     fn rejects_startup_disconnected_stale_and_dead_data() {
         let (store, mut slots, key, _, owners) = setup(true);
         assert!(matches!(

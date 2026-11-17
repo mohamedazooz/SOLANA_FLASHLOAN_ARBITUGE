@@ -40,9 +40,12 @@ impl Default for SolamiMirageConfig {
 }
 
 /// Parsed Mirage update metadata extracted from binary frames.
+/// `slot` and `write_version` are `None` until a real Yellowstone
+/// `SubscribeUpdate` protobuf decode supplies them; the transport layer
+/// must never fabricate provenance from a local slot counter.
 #[derive(Debug, Clone)]
 pub struct MirageUpdate {
-    pub slot: u64,
+    pub slot: Option<u64>,
     pub write_version: Option<u64>,
     pub pubkey: Option<[u8; 32]>,
     pub raw_data: Vec<u8>,
@@ -135,7 +138,7 @@ impl SolamiMirageClient {
                                 if bytes.len() >= 8 {
                                     // Bounded inspection of frame
                                     let update = MirageUpdate {
-                                        slot: self.latest_slot.load(Ordering::Acquire),
+                                        slot: None,
                                         write_version: None,
                                         pubkey: None,
                                         raw_data: bytes,

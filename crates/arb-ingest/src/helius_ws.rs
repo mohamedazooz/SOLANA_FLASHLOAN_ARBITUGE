@@ -671,11 +671,14 @@ impl HeliusWsClient {
                         raw.into_iter().take(max_ws_account_subs()).collect()
                     };
                     let mut next_req_id = 100u64;
-                    if let Some(first_acc) = pending_subs.pop_front() {
+                    let probe_sent_at = if let Some(first_acc) = pending_subs.pop_front() {
                         let frame = self.build_account_sub_frame(next_req_id, first_acc);
                         next_req_id += 1;
                         let _ = ws_stream.send(frame).await;
-                    }
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
 
                     // 3. Ingestion Loop with 15s Heartbeat Ping and Resilient Streaming
                     let mut received_account_update = false;
@@ -693,6 +696,23 @@ impl HeliusWsClient {
                                 next_req_id += 1;
                                 let _ = ws_stream.send(frame).await;
                             }
+                            arb_metrics::set_ws_subscriptions_active(
+                                self.sub_to_account.read().len() as u64,
+                            );
+                        }
+
+                        // Subscription-ack timeout: if the probe subscription was
+                        // never acknowledged while the transport itself is alive
+                        // (pings/pongs still flowing), this connection is blind —
+                        // fail over instead of sitting on it forever.
+                        if let Some(sent_at) = probe_sent_at
+                            && !self.probe_confirmed.load(Ordering::Acquire)
+                            && sent_at.elapsed() > Duration::from_secs(15)
+                        {
+                            warn!(
+                                "WebSocket [{endpoint_num}/{total_endpoints}] {safe_url} probe subscription unacknowledged for 15s (transport alive); failing over"
+                            );
+                            break;
                         }
 
                         tokio::select! {
@@ -771,6 +791,7 @@ impl HeliusWsClient {
                     }
 
                     let next_idx = self.rotate_endpoint();
+                    arb_metrics::inc_ws_reconnects();
                     if !received_account_update {
                         consecutive_failures += 1;
                     } else {
@@ -786,6 +807,7 @@ impl HeliusWsClient {
                     self.is_connected.store(false, Ordering::Release);
                     self.record_connect_backoff(idx, &e.to_string());
                     let next_idx = self.rotate_endpoint();
+                    arb_metrics::inc_ws_reconnects();
                     consecutive_failures += 1;
                     warn!(
                         "WebSocket [{endpoint_num}/{total_endpoints}] connect failed on {safe_url} ({e}); rotating to [{}/{}] (attempt={attempt})",
@@ -1558,6 +1580,74 @@ mod tests {
             Ok(false)
         );
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
+    }
+
+    /// Malformed / hostile frames must be skipped without panicking, without
+    /// poisoning slot state, and without tearing down the endpoint.
+    #[test]
+    fn malformed_frames_are_skipped_without_poisoning_state() {
+        let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        let yellowstone = IngestClient::new();
+        let slot_before = client.latest_slot.load(Ordering::Acquire);
+
+        // Structurally valid JSON but semantically empty.
+        assert_eq!(client.handle_message(&json!({}), &yellowstone), Ok(false));
+        assert_eq!(
+            client.handle_message(&json!({"jsonrpc": "2.0"}), &yellowstone),
+            Ok(false)
+        );
+        // Wrong types for known fields.
+        assert_eq!(
+            client.handle_message(&json!({"method": 12345}), &yellowstone),
+            Ok(false)
+        );
+        assert_eq!(
+            client.handle_message(&json!({"id": "not-a-number", "result": {}}), &yellowstone),
+            Ok(false)
+        );
+        // Notifications with missing / malformed payloads.
+        assert_eq!(
+            client.handle_message(&json!({"method": "slotNotification"}), &yellowstone),
+            Ok(false)
+        );
+        assert_eq!(
+            client.handle_message(
+                &json!({"method": "slotNotification", "params": {"result": {"slot": "NaN"}}}),
+                &yellowstone
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            client.handle_message(
+                &json!({"method": "accountNotification", "params": {"subscription": null}}),
+                &yellowstone
+            ),
+            Ok(false)
+        );
+        // No valid slot metadata so far: slot state must be untouched.
+        assert_eq!(client.latest_slot.load(Ordering::Acquire), slot_before);
+
+        // accountNotification with an unknown subscription id and corrupt
+        // base64 payload: no panic, no endpoint teardown. The provider-supplied
+        // context slot is legitimate metadata and is recorded, but no snapshot
+        // can be applied because the subscription id is unknown.
+        assert_eq!(
+            client.handle_message(
+                &json!({
+                    "method": "accountNotification",
+                    "params": {
+                        "subscription": 999_999,
+                        "result": {"context": {"slot": 123}, "value": {"owner": "not-a-pubkey", "data": ["!!!not-base64!!!", "base64"]}}
+                    }
+                }),
+                &yellowstone
+            ),
+            Ok(false)
+        );
+        assert_eq!(client.latest_slot.load(Ordering::Acquire), 123);
+
+        assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
+        assert!(!client.account_sub_limited.load(Ordering::Acquire));
     }
 
     /// G8: a provider that rejects `slotSubscribe` (request id 1) may still

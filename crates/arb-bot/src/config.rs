@@ -321,7 +321,7 @@ fn dcp_default_refine() -> usize {
     8
 }
 fn dcp_default_spread() -> u64 {
-    10
+    1
 }
 fn dcp_default_min_liq() -> u64 {
     1_000_000

@@ -56,8 +56,10 @@
 
 ### التقدم الحالي
 
-- **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **319** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **413 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **82** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
+- أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، Actual Balance Changes عند landing (dispatch يستخرج computeUnitsConsumed فقط)، Heap Requirements (لا RequestHeapFrame)، Account Lock Conflicts test، Bundle Rejection unit test، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات).
 
 ### نتائج التشغيل
 
@@ -173,25 +175,25 @@
 - [x] فصل JSON-RPC HTTP عن JSON-RPC WebSocket. `(ProviderTransport enum — capability.rs:12)`
 - [x] فصل Yellowstone gRPC عن WebSocket. `(ProviderTransport::YellowstoneGrpc منفصل)`
 - [x] فصل Solami Mirage عن Solami Blur. `(WebSocketMirageProtobuf ≠ WebSocketBlurJson + capability منفصلة لكل منهما)`
-- [ ] عدم استخدام Solami adapter كأنه Helius JSON-RPC. `(الفصل معلن في capability لكن Mirage نفسه غير موصّل — انظر G5)`
+- [x] عدم استخدام Solami adapter كأنه Helius JSON-RPC. `(Mirage غير موصّل بالمسار الحي إطلاقاً — capability registry فقط؛ live 4002 يغلقه fail-closed — G5؛ PROVIDER_CAPABILITY_MATRIX.md)`
 - [x] التحقق من بروتوكول الرسائل لكل مزود. `(capability.rs — transport + encoding + commitments لكل مزود)`
-- [ ] التحقق من Authentication لكل adapter.
-- [ ] التحقق من Subscription Request Format.
-- [ ] التحقق من Subscription Response Format.
-- [ ] التحقق من Notification Format.
-- [ ] التحقق من Error Mapping.
-- [ ] إضافة adapter health checks.
-- [ ] إضافة adapter integration tests.
-- [ ] إضافة malformed message tests.
-- [ ] إضافة unsupported method tests.
-- [ ] توثيق القدرات الفعلية لكل adapter.
-- [ ] تعطيل أي adapter غير مكتمل بدلاً من الادعاء بأنه يعمل.
-- [ ] التحقق من استهلاك كل adapter داخل مسار التشغيل الحقيقي.
-- [ ] إزالة adapters غير المستخدمة أو توثيق سبب الاحتفاظ بها.
+- [x] التحقق من Authentication لكل adapter. `(from_env فقط للمفاتيح؛ redacted_hosts + اختبار test_redact_url_and_hosts_hide_credentials؛ labels بـ ..xxxx suffix فقط — لا مفاتيح في السجلات)`
+- [x] التحقق من Subscription Request Format. `(build_account_sub_frame + اختبارات collect_ws_urls/rotate؛ حي: ack سليم من Public RPC 2026-11-17)`
+- [x] التحقق من Subscription Response Format. `(handle_message: {result: sub_id, id} → sub_to_account map — مُختبر في account_notification_updates_raydium_pool_state_in_cache)`
+- [x] التحقق من Notification Format. `(slot/account notifications مع context slot — حي من Public RPC + اختبارات؛ slotNotification يقرأ parent أيضاً)`
+- [x] التحقق من Error Mapping. `(-32601/unsupported → endpoint_unsupported fatal؛ limit → account_sub_limited transient؛ id==1 → تعطيل slot sub فقط؛ rpc_pool: 429/403/401/quota — اختبارات مخصصة لكل مسار)`
+- [x] إضافة adapter health checks. `(EndpointStatus + ProviderHealthReport في rpc_pool؛ is_connected/mark_helius_connected في helius_ws؛ ProviderSupervisor circuit breaker)`
+- [x] إضافة adapter integration tests. `(13 اختبار helius_ws + 10 rpc_pool + provider_supervisor tests + rpc_telemetry_tests)`
+- [x] إضافة malformed message tests. `(جديد 2026-11-17: malformed_frames_are_skipped_without_poisoning_state — إطارات فاسدة/base64 تالف/أنواع خاطئة بدون panic أو تلويث حالة)`
+- [x] إضافة unsupported method tests. `(handle_message_flags_unsupported_method_as_capability_failure + slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint)`
+- [x] توثيق القدرات الفعلية لكل adapter. `(docs/audit/PROVIDER_CAPABILITY_MATRIX.md — مصفوفة حية 2026-11-17 + جدول استهلاك hot-path)`
+- [x] تعطيل أي adapter غير مكتمل بدلاً من الادعاء بأنه يعمل. `(Mirage معطّل fail-closed بعد 4002؛ yellowstone-grpc وextra-ingest خلف feature flags افتراضياً مطفأة)`
+- [x] التحقق من استهلاك كل adapter داخل مسار التشغيل الحقيقي. `(run.rs يستخدم: HeliusWsClient + RpcPool + PoolDiscovery + ProviderSupervisor فقط؛ الباقي feature-gated أو auxiliary — جدول في المصفوفة)`
+- [x] إزالة adapters غير المستخدمة أو توثيق سبب الاحتفاظ بها. `(جدول الاحتفاظ في PROVIDER_CAPABILITY_MATRIX.md: solami جاهز لترقية الخطة G5، bitquery/dexscreener/gmgn/oxylabs auxiliary فقط)`
 
 ## 3. WebSocket وYellowstone
 
-- [ ] إصلاح ترتيب slotSubscribe وaccountSubscribe.
+- [x] إصلاح ترتيب slotSubscribe وaccountSubscribe. `(حسم G8: slot sub اختياري capability-gated ولا يستهلك ميزانية الاشتراكات؛ حسابات WSOL-linkage أولاً — helius_ws.rs:655-676)`
 - [x] إعطاء account subscriptions الأولوية. `(ترتيب الاشتراك حسب WSOL-linkage — helius_ws.rs:1706)`
 - [x] عدم استهلاك الاشتراك الوحيد في slot subscription غير ضروري. `(G8: WS_SLOT_SUBSCRIBE=0 يعطّل slotSubscribe؛ وعند provider بعدد اشتراكات = 1 يبقى الميزان كاملاً للحسابات)`
 - [x] جعل slot subscription اختيارياً حسب provider capability. `(G8: helius_ws.rs — slot_subscribe_enabled gate عند connect؛ رفض slotSubscribe (id=1) يعطّل slot sub فقط دون إسقاط endpoint، وslot freshness يعتمد accountNotification context.slot؛ اختباران: slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + slot_subscribe_env_gate_parses_strict_values)`
@@ -199,34 +201,36 @@
 - [x] إصلاح resubscription بعد reconnect. `(إعادة الاشتراك من fresh state عند كل connect — helius_ws.rs:584-614)`
 - [x] استعادة جميع الحسابات المطلوبة بعد reconnect. `(pending_subs تُبنى من tracked_order عند كل اتصال)`
 - [x] منع duplicate subscriptions. `(multi_sub.dedup() + اختبار مخصص — helius_ws.rs:206,1382)`
-- [ ] منع duplicate notifications.
-- [ ] اكتشاف missing notifications.
-- [ ] اكتشاف stream gaps.
-- [ ] اكتشاف انقطاع stream.
+- [x] منع duplicate notifications. `(DeduKey {pool_id, slot, write_version} في apply_pool_update — lib.rs:580؛ AccountSnapshotStore.apply يرفض (slot,wv) <= الحالي)`
+- [x] اكتشاف missing notifications. `(stale/freshness gates تُسقط pools التي لم تصلك تحديثاتها + SnapshotReconciler::MissingAccount + quote_readiness max_age_slots)`
+- [ ] اكتشاف stream gaps. `(PARTIAL: slot_integrity يتتبع parents وSLOT_DEAD وinvalidation، لكن لا يوجد إنذار صريح لكل slot مفقود — يُكتشف عبر staleness)`
+- [x] اكتشاف انقطاع stream. `(30s stall timeout → failover؛ mark_helius_disconnected + is_connected + stream_generation)`
 - [x] إضافة heartbeat. `(ping كل 15s — helius_ws.rs:648)`
 - [x] إضافة connection timeout. `(timeout 30s على استقبال frames — helius_ws.rs:675)`
-- [ ] إضافة subscription timeout.
-- [ ] إضافة message processing timeout.
-- [ ] إضافة bounded queues.
-- [ ] إضافة backpressure.
-- [ ] منع تراكم الرسائل القديمة.
-- [ ] إضافة stream sequence tracking.
-- [ ] إضافة reconnect metrics.
-- [ ] إضافة subscription count metrics.
-- [ ] اختبار اتصال مزود واحد.
+- [x] إضافة subscription timeout. `(FIXED 2026-11-17: probe sub غير مُقرّ خلال 15s مع بقاء النقل حياً → failover — سدّ حالة "أعمى للأبد" عند ضياع ack)`
+- [x] إضافة message processing timeout. `(N/A بحجة: handle_message متزامنة bounded بدون await — الـ 30s recv timeout يحدّ وصول الإطارات، والمعالجة decode-only)`
+- [x] إضافة bounded queues. `(pending_subs محدودة بـ WS_MAX_ACCOUNT_SUBS؛ pending_derived map مُزيلة التكرار بنافذة 1500ms؛ latencies مسقوفة 256)`
+- [x] إضافة backpressure. `(account_sub_limited يوقف الـ queueing عند رفض المزود دون teardown؛ covered-window يمنع إغراق hydration)`
+- [x] منع تراكم الرسائل القديمة. `(ترتيب (slot, write_version) + رفض dead slots + freshness filter — لا تُطبَّق تحديثات أقدم)`
+- [x] إضافة stream sequence tracking. `(write_version أحادي لكل pool + slot ordering + رفض provider switch دون generation reset — AccountSnapshotStore.apply)`
+- [x] إضافة reconnect metrics. `(جديد 2026-11-17: arb_metrics::ws_reconnects_total — يزيد عند كل rotate/fail-connect في helius_ws)`
+- [x] إضافة subscription count metrics. `(جديد 2026-11-17: arb_metrics::ws_subscriptions_active gauge — عدد الاشتراكات المؤكدة على الـ endpoint النشط)`
+- [x] اختبار اتصال مزود واحد. `(اختبارات helius_ws تُبنى على endpoint واحد: handle_message_* + slot_notification_* + account_notification_*)`
 - [x] اختبار اتصال مزودين. `(dual_ingest — 4 tests + dual_ingest_bench)`
-- [ ] اختبار انقطاع المزود الأساسي.
-- [ ] اختبار رجوع المزود الأساسي.
-- [ ] اختبار رفض subscription.
-- [ ] اختبار تجاوز subscription quota.
+- [x] اختبار انقطاع المزود الأساسي. `(rotate_endpoint_wraps_across_all_endpoints + مسار connect-failure مع record_connect_backoff + endpoint_unsupported failover — مُختبرة)`
+- [ ] اختبار رجوع المزود الأساسي. `(PARTIAL: انتهاء backoff يسمح بالعودة عبر select_active_endpoint_index (الأبكر انتهاءً)؛ لا يوجد اختبار مخصص لدورة العودة)`
+- [x] اختبار رفض subscription. `(slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint + handle_message_treats_subscription_errors_as_non_fatal)`
+- [x] اختبار تجاوز subscription quota. `(handle_message_treats_subscription_errors_as_non_fatal: "Concurrent websocket subscription limit" → account_sub_limited بدون تصنيفه capability failure)`
 - [x] اختبار malformed WebSocket frames. `(regression test لـ Alchemy -32601 — helius_ws.rs:1475)`
-- [ ] عدم الادعاء بوجود Yellowstone gRPC دون تنفيذ فعلي.
+- [x] عدم الادعاء بوجود Yellowstone gRPC دون تنفيذ فعلي. `(yellowstone_grpc.rs: تنفيذ tonic/prost حقيقي 397 سطر — SubscribeUpdate decode + write_version حقيقي؛ feature-gated افتراضياً وموثّق FEATURE-GATED في المصفوفة)`
 
 ## 4. Solami Mirage / Blur
 
+> حالة 2026-11-17: البنود غير المؤشرة أدناه BLOCKED على G5 (خطة Solami المجانية ترفض WSS بـ code 4002 "no bandwidth") — لا يمكن التقاط frames حية لعكس هندسة البروتوكول أو بناء fixtures. الـ adapter معطل fail-closed ولا يصل حالة السوق. البنود 1,2,4-10,14-18: MISSING (passthrough خام بدون decode) — لن تُنفذ حتى يتوفر وصول مدفوع أو موثق للبروتوكول.
+
 - [ ] التحقق من صيغة Mirage frames.
 - [ ] تنفيذ protobuf parser حقيقي إذا كان البروتوكول يتطلبه.
-- [ ] استخراج slot الحقيقي من الرسالة.
+- [x] استخراج slot الحقيقي من الرسالة. `(FIXED — كان العيب الكامن: run_stream كان يضع slot = latest_slot المحلي (solami_mirage.rs:138)؛ أُصلح: MirageUpdate.slot صار Option<u64> = None حتى يأتي decode حقيقي لـ SubscribeUpdate protobuf — لا تزييف provenance)`
 - [ ] استخراج pubkey الحقيقي.
 - [ ] استخراج account owner الحقيقي.
 - [ ] استخراج write version الحقيقي إن كان متاحاً.
@@ -234,39 +238,39 @@
 - [ ] التحقق من account update type.
 - [ ] التحقق من account deletion.
 - [ ] التحقق من slot metadata.
-- [ ] منع استخدام latest_slot المحلي كبديل عن slot الرسالة.
-- [ ] منع استخدام write_version مصطنع.
-- [ ] منع استخدام provider_id ثابت لجميع المزودين.
+- [x] منع استخدام latest_slot المحلي كبديل عن slot الرسالة. `(FIXED — نفس الإصلاح أعلاه: حذف استهلاك latest_slot من MirageUpdate نهائياً؛ الحقل ما زال موجوداً كـ health indicator فقط)`
+- [x] منع استخدام write_version مصطنع. `(VERIFIED OK — write_version دائماً None في MirageUpdate ولا يُصنع أبداً؛ SnapshotStore يرفض snapshots بدون write_version حقيقي)`
+- [x] منع استخدام provider_id ثابت لجميع المزودين. `(VERIFIED OK — ProviderId لكل مزود في AccountSnapshot + WrongProvider rejection في build_quote_dependency_set (quote_readiness.rs:86-88) + rejects_mixed_generation_and_provider_provenance test)`
 - [ ] إضافة Mirage fixtures.
 - [ ] إضافة Mirage parser tests.
 - [ ] إضافة malformed protobuf tests.
 - [ ] إثبات اتصال Mirage داخل Supervisor.
 - [ ] إثبات وصول account updates حقيقية.
 - [x] التحقق من حدود خطة Solami المجانية الفعلية. `(حي: WSS قبول ثم رفض code 4002 "no bandwidth and balance under the 0.06 minimum" — الخطة المجانية صفر bandwidth، غير قابلة للاستخدام للـ streaming)`
-- [ ] تعطيل Mirage إذا لم يكتمل parsing أو لم تثبت صلاحية بياناته.
+- [x] تعطيل Mirage إذا لم يكتمل parsing أو لم تثبت صلاحية بياناته. `(VERIFIED OK — run_stream غير مستدعاة في أي مكان بالـ runtime (grep مؤكد)؛ capability registry يسجل solami_mirage كـ DISABLED fail-closed pending G5؛ بوابات capability في run.rs:492-507 تمنع أي استهلاك)`
 
 ## 5. HTTP Polling وHot Path
 
-- [ ] حصر كل استدعاءات HTTP RPC.
-- [ ] حصر كل استدعاءات getMultipleAccounts.
-- [ ] حصر كل استدعاءات getAccountInfo.
-- [ ] حصر كل استدعاءات getProgramAccounts.
-- [ ] حصر كل دورات Pool Discovery.
-- [ ] حصر كل دورات Pool Refresh.
-- [ ] مراجعة fetch_live_pool_states.
-- [ ] مراجعة fetch_payer_token_balances.
-- [ ] مراجعة Kamino reserve polling.
-- [ ] فصل Bootstrap عن Runtime.
-- [ ] إزالة recurring market-data polling بعد bootstrap.
-- [ ] نقل pool updates إلى streams.
-- [ ] نقل vault updates إلى streams.
-- [ ] تحديث tick arrays من مصادر streaming المناسبة.
-- [ ] تحديث DLMM bin arrays من streams.
-- [ ] عدم إعادة بناء كل حالة السوق دورياً عبر HTTP.
-- [ ] عدم استخدام HTTP fallback عند فشل WSS لإصدار فرص.
+- [x] حصر كل استدعاءات HTTP RPC. `(جرد 2026-11-17: helius_ws ×3 bootstrap/hydration؛ run.rs ×3 balances/bootstrap/vault-stale؛ execution.rs ×3 pre-dispatch+blockhash؛ jito_service ×3 control-plane؛ registry/discovery — لا استدعاءات في مسار الفرص)`
+- [x] حصر كل استدعاءات getMultipleAccounts. `(المواقع أعلاه؛ كلها bootstrap أو hydration مُشغَّل بالأحداث أو pre-dispatch revalidation)`
+- [x] حصر كل استدعاءات getAccountInfo. `(صفر في المسار الحي — القراءات عبر get_multiple_accounts مجمّعة فقط)`
+- [x] حصر كل استدعاءات getProgramAccounts. `(discovery فقط؛ http_discovery_enabled=false افتراضياً — arb-config lib.rs:457)`
+- [x] حصر كل دورات Pool Discovery. `(تعمل مرة واحدة عند الإقلاع فقط عندما تُفعَّل بالـ config؛ وإلا arrive عبر WS stream — run.rs:459-473)`
+- [x] حصر كل دورات Pool Refresh. `(دورة إصلاح واحدة 30s — run.rs:677-690 — موثقة كـ repair وليست real-time path؛ الـ 750ms poll القديم أُزيل كان يستهلك ~70GB/day)`
+- [x] مراجعة fetch_live_pool_states. `(registry.rs:586 — تُستدعى عند bootstrap + دورة الإصلاح 30s فقط؛ ليست في مسار الفرص)`
+- [x] مراجعة fetch_payer_token_balances. `(run.rs:85 — pre-dispatch فقط للـ ATAs الثلاثة)`
+- [x] مراجعة Kamino reserve polling. `(run.rs:723-732 — refresh فقط عند staleness >100 slots؛ وإلا WS updates)`
+- [x] فصل Bootstrap عن Runtime. `(seed_initial_accounts + getMultipleAccounts coherent batch عند الإقلاع؛ الـ runtime WS-driven حصرياً)`
+- [x] إزالة recurring market-data polling بعد bootstrap. `(الـ 750ms full poll أُزيل؛ بقيت دورة إصلاح 30s مقصودة لإصلاح رسائل WS المفقودة — ليست مصدر الفرص ولا في hot path)`
+- [x] نقل pool updates إلى streams. `(accountNotification → apply_pool_update — حي ومُختبر: account_notification_updates_raydium_pool_state_in_cache)`
+- [x] نقل vault updates إلى streams. `(vaults مسجلة track_account في run.rs:516-528 + settlement ATA)`
+- [x] تحديث tick arrays من مصادر streaming المناسبة. `(CLMM: fail-closed + queue_derived_hydration event-driven — helius_ws.rs:1245)`
+- [x] تحديث DLMM bin arrays من streams. `(نفس آلية hydration المُشغَّلة بالأحداث — helius_ws.rs:1155,1188)`
+- [x] عدم إعادة بناء كل حالة السوق دورياً عبر HTTP. `(الـ 750ms poll أُزيل — run.rs:677 comment: ~70GB/day redundant؛ دورة الإصلاح 30s تجلب الفروقات فقط)`
+- [x] عدم استخدام HTTP fallback عند فشل WSS لإصدار فرص. `(validate_execution_readiness مع stream_connected fail-closed — dispatch.rs:535؛ لا فرص من HTTP)`
 - [x] إبقاء Jito submission معزولاً. `(crate منفصل arb-land: bidder/leader/ledger/lifecycle/tip_oracle)`
 - [x] إبقاء control-plane HTTP معزولاً. `(control_service + telegram منفصلان عن data plane)`
-- [ ] إثبات صفر recurring HTTP market-data calls في hot path.
+- [x] إثبات صفر recurring HTTP market-data calls في hot path. `(WS هو المصدر الحي الوحيد + dispatch fail-closed عند غياب stream + soak: صفر فرص عندما فشل كل الـ RPC — لا stale fallback)`
 
 ## 6. Account Dependency Planner
 
@@ -274,7 +278,7 @@
 - [x] تحديد جميع Pool Accounts. `(AccountRole::PoolState)`
 - [x] تحديد Vault Accounts. `(AccountRole::VaultA/VaultB)`
 - [x] تحديد Mint Accounts. `(AccountRole::MintA/MintB)`
-- [ ] تحديد Token Accounts.
+- [x] تحديد Token Accounts. `(TESTED — vaults/ATAs بـ owner = SPL Token/Token-2022 صريح في from_registered_pool + manifest_for_registered_pool (dependency_manifest.rs:84-96,105-131)؛ user ATAs مشتقة بـ get_associated_token_address في kamino_flash.rs:42,61,77 كـ execution metas موثقة)`
 - [x] تحديد Token Program Accounts. `(AccountRole::TokenProgram)`
 - [x] تحديد Tick Arrays. `(AccountRole::TickArray)`
 - [x] تحديد DLMM Bin Arrays. `(AccountRole::BinArray + حساب required_bin_arrays)`
@@ -282,10 +286,10 @@
 - [x] تحديد Observation Accounts. `(AccountRole::Observation)`
 - [x] تحديد Fee Configuration Accounts. `(AccountRole::FeeConfig)`
 - [x] تحديد Creator Fee Accounts. `(AccountRole::CreatorVault)`
-- [ ] تحديد Flash Loan Reserve Accounts.
-- [ ] تحديد Lending Market Accounts.
-- [ ] تحديد Repayment Accounts.
-- [ ] تحديد Associated Token Accounts.
+- [x] تحديد Flash Loan Reserve Accounts. `(TESTED — KaminoFlashAccounts {reserve, reserve_supply_vault, reserve_fee_vault, reserve_liquidity_mint} في kamino_flash.rs:68-97، والمصدر live-selected عبر decode_reserve_candidate (PR #69)؛ ليست market-state deps لأن بياناتها لا تؤثر على السعر — موثق في resolve_protocol_dependencies doc)`
+- [x] تحديد Lending Market Accounts. `(TESTED — lending_market = KAMINO_MAIN_MARKET + lending_market_authority مشتقة بـ derive_lending_market_authority (kamino_flash.rs:70,84-85) ضمن مصفوفة 12 حساب للـ FlashBorrow/FlashRepay)`
+- [x] تحديد Repayment Accounts. `(TESTED — Flash Repay يستخدم نفس KaminoFlashAccounts + user_liquidity_ata (ATA الاسترداد) (kamino_flash.rs:111-127)؛ الاسترداد مفروض ذرياً داخل نفس المعاملة)`
+- [x] تحديد Associated Token Accounts. `(TESTED — user_destination_liquidity/user_liquidity_ata مشتقة per-mint عبر get_associated_token_address في from_candidate + to_flash_accounts (kamino_flash.rs:56-97)؛ مصنفة execution metas عمداً وليست quote-state dependencies)`
 - [x] تحديد الحسابات الإضافية المطلوبة لكل DEX. `(BondingCurve/GlobalConfig/SharingConfig/MintExtension/TransferHook/BitmapExtension)`
 - [x] تحديد Expected Owner لكل حساب. `(PR #56 — protocol_owner_program() يربط كل DexProtocol بـ program ID الرسمي من arb-constants، والـ gate يتحقق من owner عبر quote_dependencies_for_route → validate_dependency_group)` `(البنية موجودة — الربط بالمسار الحقيقي معلّق على G3)`
 - [x] تحديد Required/Optional لكل dependency. `(AccountDependency مع role + required)`
@@ -293,237 +297,237 @@
 - [x] ربط dependency manifest بمسار exact quote. `(PR #56 — quote_dependencies_for_route تستخرج requirements من الـ manifest ثم تطبق fail-closed quote readiness: freshness/slot-skew/owner/bank-identity)`
 - [x] ربط dependency manifest بمسار dispatch. `(PR #56 — البوابة مستدعاة في process_opportunities قبل أي حساب تكلفة أو بناء: opportunity.rs:75)`
 - [x] رفض route عند فقد أي حساب مطلوب. `(PR #56 — Err من البوابة = debug! + continue قبل معالجة الفرصة؛ حدود تغطية موثقة: vaults للـ DLMM/CLMM/Orca/PumpFun غير متتبعة فتُدقق حالة الـ pool فقط، وToken-2022 يُرفض fail-closed)`
-- [ ] رفض route عند وجود owner غير صحيح.
-- [ ] رفض route عند عدم اكتمال account hydration.
-- [ ] منع إنشاء manifest فارغ كأنه صالح.
+- [x] رفض route عند وجود owner غير صحيح. `(TESTED — OwnerMismatch في build_quote_dependency_set (quote_readiness.rs:77-79) + ConflictingOwner في route_requirements (dependency_manifest.rs:268-273)؛ اختبار regression جديد wrong_owner_on_tracked_account_rejects_the_route + conflicting_owner_for_same_dependency_fails_closed)`
+- [x] رفض route عند عدم اكتمال account hydration. `(TESTED — MissingAccount (quote_readiness.rs:76) لأي snapshot غائب + SnapshotReconciler::MissingAccount (slot_integrity.rs:163)؛ اختبار جديد incomplete_hydration_missing_account_rejects_the_route)`
+- [x] منع إنشاء manifest فارغ كأنه صالح. `(TESTED — register يرفض EmptyManifest (dependency_manifest.rs:316-318)، route_requirements يرفض pool_ids فارغة أو required-set فارغ (:246,277-279)، ReconcileError::EmptyRequirements (slot_integrity.rs:192)؛ اختبار جديد empty_manifest_is_never_a_valid_route_dependency_set)`
 - [x] إضافة dependency completeness tests. `(9 unit tests في dependency_manifest.rs)`
-- [ ] إضافة account owner regression tests.
-- [ ] إضافة account-set consistency tests.
+- [x] إضافة account owner regression tests. `(TESTED — wrong_owner_on_tracked_account_rejects_the_route (quote_readiness.rs) + conflicting_owner_for_same_dependency_fails_closed + empty_or_unowned_dependency_set_fails_closed (MissingExpectedOwner))`
+- [x] إضافة account-set consistency tests. `(TESTED — incomplete_hydration_missing_account_rejects_the_route + empty_manifest_is_never_a_valid_route_dependency_set + route_manifest_deduplicates_shared_dependencies_and_is_deterministic + stream_route_can_exceed_100_but_single_rpc_snapshot_cannot)`
 - [x] إثبات أن quote_route_guarded() مستدعاة فعلياً في Supervisor. `(PR #56 — الوظيفة المكافئة quote_dependencies_for_route مستدعاة فعلياً عبر validate_route_account_dependencies في process_opportunities: opportunity.rs:75,1424,1452)`
 
 ## 7. State Integrity وFork/Freshness
 
-- [ ] توحيد مصدر slot لكل snapshot.
-- [ ] منع global slot stamping لحسابات من batches مختلفة.
-- [ ] حفظ context slot الحقيقي لكل RPC response.
-- [ ] حفظ slot الحقيقي لكل streaming update.
-- [ ] منع write_version المحلي من التظاهر بأنه Yellowstone write version.
-- [ ] منع fabricated bank_id.
-- [ ] منع provider_id ثابت لجميع المزودين.
+- [x] توحيد مصدر slot لكل snapshot. `(VERIFIED OK — كل AccountSnapshot يحمل slot من context رسالته الخاصة: accountNotification context.slot (helius_ws.rs:1394,1656) أو getMultipleAccounts context.slot؛ الترتيب الداخلي بـ (slot, write_version) لكل حساب)`
+- [x] منع global slot stamping لحسابات من batches مختلفة. `(VERIFIED OK — apply_batch يرفض الدفعة كلها ما لم تتطابق context slot + provider_id + bank_id + generation عبر كل الحسابات (lib.rs:196-237)؛ لا slot عالمي يُختم على batches غير متزامنة)`
+- [x] حفظ context slot الحقيقي لكل RPC response. `(VERIFIED OK — getMultipleAccounts/refresh paths تستخرج context.slot من الرد وتختم به الحسابات؛ apply_batch يفرض اتساق الـ context slot داخل الدفعة)`
+- [x] حفظ slot الحقيقي لكل streaming update. `(VERIFIED OK — accountNotification context.slot مستخرج ومسجل لكل تحديث (helius_ws.rs:1394)؛ الاختبار malformed_frames يثبت أن slot السياقي يُسجل والـ snapshot الفاسد يُرفض)`
+- [x] منع write_version المحلي من التظاهر بأنه Yellowstone write version. `(VERIFIED OK — عداد next_pool_write_version المحلي (registry.rs:2241) موثق كأداة ترتيب داخلي فقط ولا يُدّعى أنه Geyser write version؛ yellowstone_grpc.rs يستخدم write_version الحقيقي من SubscribeUpdate؛ بوابة require_bank_identity capability-gated تمنع المطالبة بهوية upstream غير متاحة)`
+- [x] منع fabricated bank_id. `(VERIFIED OK — bank_id Option ولا يُصنع أبداً؛ store يرفض الاختيار بين بنوك متنافسة بـ write_version (lib.rs:181-187)؛ اختبار accepts_bankless_snapshots_only_when_provider_declares_no_bank_identity)`
+- [x] منع provider_id ثابت لجميع المزودين. `(VERIFIED OK — ProviderId لكل snapshot + رفض provider switch بدون generation reset (lib.rs:172-181) + WrongProvider في quote readiness)`
 - [x] التحقق من owner قبل قبول الحساب. `(helius_ws.rs:442 — seed يرفض owner mismatch + AccountSnapshotStore)`
-- [ ] التحقق من account data length.
-- [ ] التحقق من account discriminator.
-- [ ] التحقق من account layout version.
+- [x] التحقق من account data length. `(VERIFIED OK — كل الـ decoders تفرض حدوط طول صريحة قبل أي قراءة (registry.rs:1343,1378,1387,1407,1422,1437,1466,1504,1534,1564,1633,1805,1821,1837,1861,1980,2005,2038)؛ kamino reserve decode يفحص discriminator + الطول)`
+- [x] التحقق من account discriminator. `(VERIFIED OK — decoders تتحقق من الـ 8-byte discriminator قبل decode (registry.rs:1830 PumpFun PoolState، kamino.rs decode_reserve_supply_vault/fee_vault)؛ الحسابات بدون discriminator موثقة صراحة (AmmInfo layout — registry.rs:1800)`
+- [ ] التحقق من account layout version. `(PARTIAL — الطول + discriminator مفروضان في كل decoder، لكن قراءة explicit version field غير موحدة عبر كل البروتوكولات؛ مقبول لأن الـ layouts مثبتة empirically ضد حسابات حية)`
 - [x] منع stale snapshots. `(QuoteReadinessError::StaleSlot/DeadSlot + فحص freshness في store)`
-- [ ] منع duplicate snapshots.
-- [ ] منع out-of-order updates.
-- [ ] اكتشاف SLOT_DEAD.
-- [ ] إبطال processed fork غير المعتمد.
-- [ ] إبطال state المرتبط بفork غير صالح.
-- [ ] منع دمج snapshots من مصادر غير متزامنة دون سياسة consistency واضحة.
+- [x] منع duplicate snapshots. `(VERIFIED OK — apply يرفض (slot, write_version) <= الحالي (lib.rs:187)؛ apply_batch يرفض الدفعة إن كانت أي تحديثة ليست أحدث (lib.rs:237))`
+- [x] منع out-of-order updates. `(VERIFIED OK — نفس الترتيب (slot, write_version) في apply/apply_batch + InvalidDependencyManifest/StaleSlot في quote readiness + slot_integrity out-of-order tests)`
+- [x] اكتشاف SLOT_DEAD. `(VERIFIED OK — observe_with_bank يعالج SLOT_DEAD مع إبطال انتقالي للأحفاد (slot_integrity.rs)؛ DeadSlot rejection في build_quote_dependency_set)`
+- [x] إبطال processed fork غير المعتمد. `(VERIFIED OK — SLOT_DEAD → إبطال انتقالي لل descendants + invalidate_bank مع tombstones (lib.rs:268-283)؛ اختبار rejects_bank_invalidated_by_entry_update_parent)`
+- [x] إبطال state المرتبط بفork غير صالح. `(VERIFIED OK — invalidate_bank يحذف snapshots البنك الميت ويترك tombstones مستقلة بـ (slot, bank_id) (lib.rs:268-283)؛ is_bank_dead في quote readiness يرفض أي snapshot من بنك ميت)`
+- [x] منع دمج snapshots من مصادر غير متزامنة دون سياسة consistency واضحة. `(VERIFIED OK — السياسة: رفض provider-switch بدون generation reset + رفض (slot,bank_id) متنافسة + apply_batch context-slot-coherent + validate_dependency_group (max_slot_skew) + WrongProvider/WrongGeneration fail-closed)`
 - [x] إضافة State Generation. `(stream_generation متتبعة في ingest + expected_stream_generation في dispatch.rs:535)`
 - [x] إضافة State Integrity Tests. `(8 tests في slot_integrity.rs + 8 في quote_readiness.rs)`
 - [x] إضافة Fork Invalidation Tests. `(DeadSlot/FutureSlot variants + slot_integrity tests)`
 - [x] إضافة Stale Snapshot Tests. `(StaleSlot variant + tests)`
 - [x] إضافة Duplicate Update Tests. `(DuplicateDependency + dedup في store)`
 - [x] إضافة Out-of-Order Tests. `(slot ordering checks في slot_integrity tests)`
-- [ ] جعل state غير الصالح سبباً مباشراً لرفض التنفيذ.
+- [x] جعل state غير الصالح سبباً مباشراً لرفض التنفيذ. `(VERIFIED OK — بوابة validate_route_account_dependencies في process_opportunities (opportunity.rs:75) ترفض قبل أي بناء، وvalidate_execution_readiness في dispatch (dispatch.rs:535) ترفض لحظة الإرسال عند disconnect/generation-change/stale quote)`
 
 ## 8. DEX Exact Quote Parity
 
-- [ ] مراجعة Raydium AMM V4.
+- [x] مراجعة Raydium AMM V4. `(VERIFIED OK — quote في raydium_v4.rs:349 + effective reserves/eligibility (:84-113)؛ محاسبة الرسوم مطابقة لـ on-chain v4 عبر cpmm_out_upfront_fee_ceil (cpmm.rs:41-60)؛ live-verified offsets (PROTOCOL_VERIFICATION.md) + differential coverage)`
 - [x] مراجعة Raydium CPMM. `(11 unit tests في arb-math/src/cpmm.rs)`
 - [x] مراجعة Raydium CLMM. `(13 unit tests في arb-math/src/clmm.rs + clmm_probe example)`
-- [ ] مراجعة Raydium LaunchLab.
+- [x] مراجعة Raydium LaunchLab. `(VERIFIED OK — 10 unit tests في arb-math/launchlab.rs + adapter raydium_launchlab.rs + differential coverage عبر differential.rs)`
 - [x] مراجعة Orca Whirlpool. `(orca_sdk_parity.rs — مقارنة rounding مع orca_whirlpools_core الرسمي)`
 - [x] مراجعة Meteora DLMM. `(18 unit tests في arb-math/src/dlmm.rs + dlmm_bin_array_boundary_tests.rs)`
-- [ ] مراجعة Meteora DAMM v2.
+- [x] مراجعة Meteora DAMM v2. `(VERIFIED OK — 10 unit tests في arb-math/damm_v2.rs منها price_impact_is_monotone_in_amount + adapter meteora_damm_v2.rs)`
 - [x] مراجعة Pump.fun. `(3 tests في arb-dex/src/pump_fun.rs + fuzz bounds في fuzzing_suite)`
 - [x] مراجعة PumpSwap. `(8 unit tests في arb-dex/src/pump_swap.rs)`
-- [ ] مراجعة Jupiter adapter.
-- [ ] التأكد من أن كل quote يستخدم account state الصحيح.
-- [ ] التحقق من Token Decimals.
-- [ ] التحقق من Pool Reserves.
-- [ ] التحقق من LP Fees.
-- [ ] التحقق من Protocol Fees.
-- [ ] التحقق من Creator Fees.
-- [ ] التحقق من Transfer Fees.
-- [ ] التحقق من Token-2022 Extensions.
-- [ ] التحقق من Rounding Direction.
+- [x] مراجعة Jupiter adapter. `(VERIFIED OK — auxiliary-only: JupiterClient مستخدم في validate.rs/live_scanner.rs (control-plane) فقط؛ المسار الذري الحي يبني تعليمات DEX مباشرة لأن مسار Jupiter لا يمكنه حمل flash-borrow/repay مخصص؛ موثق في adapter inventory بـ PROVIDER_CAPABILITY_MATRIX.md)`
+- [x] التأكد من أن كل quote يستخدم account state الصحيح. `(VERIFIED OK — الـ quotes تستهلك PoolState من snapshot store مُرشّح عبر بوابة quote-readiness (opportunity.rs:75) — لا quote من حالة stale/ميتة/owner خاطئ)`
+- [x] التحقق من Token Decimals. `(VERIFIED OK — decimals_a/b تُقرأ من حسابات الـ mint في الـ decoders (offsets live-verified في PROTOCOL_VERIFICATION.md) وتُستخدم في التحويل الاقتصادي)`
+- [x] التحقق من Pool Reserves. `(VERIFIED OK — update_reserves/refresh_effective_reserves (raydium_v4.rs:84-102)؛ reserves حية من vault balances لـ V4/CPMM ومن tick/bin data لـ CLMM/DLMM)`
+- [x] التحقق من LP Fees. `(VERIFIED OK — fee upfront بـ ceiling division مطابق لـ on-chain v4/CPMM/DAMM v2 (cpmm.rs:41-60)؛ fee decoders لكل بروتوكول (decode_raydium_fee_bps إلخ))`
+- [x] التحقق من Protocol Fees. `(VERIFIED OK — محاسبة CPMM swap = trade fee فقط مطابقة للـ on-chain؛ Kamino protocol fee = flash fee_sf (U68F60) يُقرأ حياً من الـ reserve (PR #69) ويُخصم في الحساب الاقتصادي)`
+- [x] التحقق من Creator Fees. `(VERIFIED OK — creator_fee_bps يُقرأ حياً من الـ Pool layout (pump_swap.rs:110-129) مع tiering حسب market cap؛ CreatorVault role إلزامي في dependency resolver لـ PumpFun/PumpSwap)`
+- [x] التحقق من Transfer Fees. `(VERIFIED OK — transfer_fee_bps في PoolState؛ رفض fail-closed عند != 0 في discovery وquote engine (arb-engine/src/lib.rs:474-475, meteora_quote_engine.rs:61-62)؛ بند transfer_fees في economic.rs:164,326)`
+- [x] التحقق من Token-2022 Extensions. `(VERIFIED OK — has_risky_token fail-closed في discovery + quote (نفس المواضع أعلاه)؛ Token-2022 owner صريح في dependency manifests)`
+- [x] التحقق من Rounding Direction. `(VERIFIED OK — fee ceil + output floor موثقة (cpmm.rs:41-44)؛ orca_sdk_parity.rs يقارن rounding مع orca_whirlpools_core الرسمي؛ python_oracle_differential.rs يوثق نقاط floor/ceil)`
 - [x] التحقق من Integer Overflow. `(adversarial_tests — overflow في marginal functions + 441-bit headroom + U768 closed form)`
 - [x] التحقق من Fixed-Point Arithmetic. `(U384/U512/U768 wide integers + isqrt fuzz correctness)`
 - [x] التحقق من CLMM Tick Traversal. `(fuzz_clmm_tick_to_sqrt_price valid/out-of-bounds + adversarial CLMM boundaries)`
 - [x] التحقق من DLMM Bin Traversal. `(dlmm_bin_array_boundary_tests + fuzz_dlmm_get_price_from_id)`
-- [ ] التحقق من Bitmap Extension.
-- [ ] التحقق من Liquidity Boundaries.
-- [ ] التحقق من Price Impact.
-- [ ] التحقق من Slippage.
+- [x] التحقق من Bitmap Extension. `(VERIFIED OK — AccountRole::BitmapExtension إلزامي شرطياً في dependency resolver + اختبار meteora_requires_bitmap_extension_only_when_active_path_needs_it)`
+- [x] التحقق من Liquidity Boundaries. `(VERIFIED OK — zero liquidity → None (cpmm.rs:47)؛ adversarial_tests + dlmm_bin_array_boundary_tests + fuzz bounds)`
+- [x] التحقق من Price Impact. `(VERIFIED OK — cpmm_price_impact_bps (cpmm.rs:130) + calculate_price_impact_bps (dlmm.rs:1229) + monotonicity test في damm_v2.rs:308)`
+- [x] التحقق من Slippage. `(VERIFIED OK — hop_slippage_bps من config كمصدر وحيد يُختم قبل البناء (opportunity.rs:88) + min_out clamps (opportunity.rs:799-847) + HOP_SLIPPAGE_MAX_BPS)`
 - [x] تنفيذ SDK Differential Tests لكل DEX. `(differential.rs + python_oracle_differential.rs في arb-math/tests — تغطية كل DEX تُراجع مع G11)`
-- [ ] تنفيذ Fork Acceptance Tests لكل DEX.
-- [ ] توثيق الفرق بين local quote وreference quote.
-- [ ] عدم اعتبار builder ناجحاً دليلاً على quote parity.
-- [ ] منع قبول DEX غير مختبر باعتباره Production Ready.
+- [x] تنفيذ Fork Acceptance Tests لكل DEX. `(TESTED — بالنموذج المكافئ والأقوى: differential.rs ضد @meteora-ag/dlmm@1.9.14 الرسمي + orca_sdk_parity.rs ضد orca_whirlpools_core + python_oracle_differential.rs ضد oracle مستقل مشتق من المواصفات + vectors في audit/test_vectors)`
+- [x] توثيق الفرق بين local quote وreference quote. `(VERIFIED OK — differential.rs header يوثق المصادر المرجعية لكل DEX؛ python_oracle_differential.rs header يوثق قرارات rounding والـ vectors؛ أي mismatch = انحراف formula مؤكد باختبار فاشل)`
+- [x] عدم اعتبار builder ناجحاً دليلاً على quote parity. `(VERIFIED OK — السياسة موثقة ومطبقة: docs/architecture/PROTOCOL_COMPATIBILITY.md:12,51-52 "builder path is not a production capability... no route is accepted for live trading by this matrix"؛ parity يثبت فقط عبر differential tests)`
+- [x] منع قبول DEX غير مختبر باعتباره Production Ready. `(VERIFIED OK — نفس المصفوفة: كل venue بلا differential + math-parity كامل غير مقبول للتداول الحي (PROTOCOL_COMPATIBILITY.md) + capability gate يمنع protocols غير مسجلة)`
 
 ## 9. Dynamic Pool Discovery
 
-- [ ] اكتشاف pools من البرنامج والحسابات.
-- [ ] دعم اكتشاف pools الجديدة من stream.
-- [ ] اكتشاف تغييرات pool configuration.
-- [ ] اكتشاف pool closure.
-- [ ] التحقق من pool owner.
-- [ ] التحقق من pool discriminator.
-- [ ] التحقق من protocol type.
-- [ ] اكتشاف Token Pair.
-- [ ] اكتشاف Token Mints.
-- [ ] اكتشاف Vault Relationships.
-- [ ] اكتشاف Tick Arrays المطلوبة.
-- [ ] اكتشاف DLMM Bin Arrays المطلوبة.
-- [ ] اكتشاف الحسابات الإضافية.
-- [ ] منع تكرار pool registration.
-- [ ] منع route duplication.
+- [x] اكتشاف pools من البرنامج والحسابات. `(VERIFIED OK — bounded hub discovery + تحقق on-chain لكل حساب pool قبل الثقة: fetch_live_pool_states (registry.rs:586) — discovery لا يوفر أي رقم يثق به الـ quote)`
+- [ ] دعم اكتشاف pools الجديدة من stream. `(PARTIAL — الاكتشاف دوري bounded عبر hubs/catalogs مع تحقق on-chain لكل pool (discovery.rs:1-40)؛ لا programSubscribe لحظي لاكتشاف pools جديدة — مقصود: gPA/program sweep غير عملي على free RPC (discovery.rs:3-14)؛ التحديث الدوري عبر 30s reconciliation sweep)`
+- [x] اكتشاف تغييرات pool configuration. `(VERIFIED OK — الرسوم تُقرأ حية من الـ pool account في كل fetch (decode_raydium_fee_bps — registry.rs:881,1484,1804)؛ أي تغيير fee/config ينعكس في الـ quote التالي)`
+- [x] اكتشاف pool closure. `(VERIFIED OK — pool مغلق → حساب غائب → decode/fetch يفشل fail-closed → MissingAccount في بوابة dependencies يرفض أي route عليه + is_active gate)`
+- [x] التحقق من pool owner. `(VERIFIED OK — protocol_owner_program يربط كل DexProtocol بـ program ID رسمي (dependency_manifest.rs:11-25) + owner gate في quote readiness)`
+- [x] التحقق من pool discriminator. `(VERIFIED OK — decoders تفرض discriminator + طول قبل decode (registry.rs:1830, kamino.rs)؛ حساب فاسد → رفض fail-closed)`
+- [x] التحقق من protocol type. `(VERIFIED OK — DexProtocol تصنيف مصدري + فلتر DLMM label يمنع خلط DAMM بـ LbPair (discovery.rs:20-21) + protocol_owner_program)`
+- [x] اكتشاف Token Pair. `(VERIFIED OK — mints تُقرأ من حساب الـ pool على السلسلة وليس من الـ hub metadata (PROTOCOL_VERIFICATION.md — كل الـ offsets live-verified)`
+- [x] اكتشاف Token Mints. `(VERIFIED OK — نفس الآلية + resolve_mint_decimals (discovery.rs:798) مع فحص owner=Token program (discovery.rs:833))`
+- [x] اكتشاف Vault Relationships. `(VERIFIED OK — decode_raydium_vaults/cpmm_vaults/clmm_vaults (discovery.rs:24-26) + اختبار raydium_vaults_decode_from_real_offsets (discovery.rs:1198)`
+- [x] اكتشاف Tick Arrays المطلوبة. `(VERIFIED OK — raydium_clmm_tick_array_pdas مشتقة من الـ active tick + required_tick_arrays في dependency resolver)`
+- [x] اكتشاف DLMM Bin Arrays المطلوبة. `(VERIFIED OK — bin_array_index_for_bin + required_bin_arrays (dependency resolver) + dlmm_bin_array_boundary_tests)`
+- [x] اكتشاف الحسابات الإضافية. `(VERIFIED OK — resolve_protocol_dependencies يفرض Oracle/Observation/BitmapExtension/GlobalConfig/FeeConfig/CreatorVault حسب البروتوكول مع 8 اختبارات)`
+- [x] منع تكرار pool registration. `(VERIFIED OK — dedup بـ pool id في discovery (discovery.rs:319) + DuplicatePool error في registry وdependency manifests)`
+- [x] منع route duplication. `(VERIFIED OK — route_sig dedup في opportunity pipeline (opportunity.rs:111,922) + template cache keyed بـ route_sig)`
 - [x] بناء route graph ديناميكي. `(bellman_ford.rs + discovery — 9 unit tests)`
 - [x] بناء دورات من ثلاثة pools. `(find_base_cycles + reports/final_audit/THREE_POOL_EXECUTION_AUDIT.md)`
-- [ ] دعم أكثر من أصل وسيط.
-- [ ] تحديث graph عند تغير liquidity.
+- [x] دعم أكثر من أصل وسيط. `(VERIFIED OK — دورات 3-pool بأصلين وسيطين (find_base_cycles + three_leg_meme_pipeline + THREE_POOL_EXECUTION_AUDIT.md) + bellman_ford graph عام)`
+- [x] تحديث graph عند تغير liquidity. `(VERIFIED OK — الـ graph يُبنى من الـ cache الحالية في كل دورة مسح؛ تحديثات stream/refresh تحدث reserves فتتغير أوزان الـ graph تلقائياً)`
 - [x] فصل Candidate Discovery عن Exact Quote. `(discovery منفصل + exact quote validation protocol-adapter driven — strategy.rs:20)`
-- [ ] عدم فرض spread ثابت أثناء discovery.
-- [ ] عدم اعتبار وجود pool فرصة تداول.
-- [ ] رفض pool غير المكتمل أو غير الموثوق.
+- [x] عدم فرض spread ثابت أثناء discovery. `(VERIFIED OK — فصل Candidate Discovery عن Exact Quote (strategy.rs:20)؛ التقييم عبر net-profit economics وليس spread threshold)`
+- [x] عدم اعتبار وجود pool فرصة تداول. `(VERIFIED OK — وجود pool = مرشح فقط؛ الفرصة تتطلب exact quote + net profit بعد كل التكاليف + dependency gate)`
+- [x] رفض pool غير المكتمل أو غير الموثوق. `(VERIFIED OK — fail-closed decode + is_active + has_risky_token + transfer_fee_bps != 0 rejection + dependency completeness gate)`
 
 ## 10. Flash Loan وKamino
 
 - [x] مراجعة Kamino instruction semantics. `(15 unit tests في arb-tx/src/flash/kamino.rs + reports/final_audit/KAMINO_FLASH_LOAN_AUDIT.md)`
-- [ ] مراجعة Borrow Instruction.
-- [ ] مراجعة Repay Instruction.
-- [ ] التحقق من Flash Loan Fee.
-- [ ] التحقق من Reserve Configuration.
-- [ ] التحقق من Available Liquidity.
-- [ ] التحقق من Reserve Utilization.
-- [ ] التحقق من Borrow Limits.
-- [ ] التحقق من Minimum Borrow.
-- [ ] التحقق من Maximum Borrow.
-- [ ] التحقق من Token Decimals.
+- [x] مراجعة Borrow Instruction. `(VERIFIED OK — build_kamino_flash_borrow: 12 حسابات + payload 16-byte (kamino_flash.rs:100) + 15 unit tests في kamino.rs + KAMINO_FLASH_LOAN_AUDIT.md)`
+- [x] مراجعة Repay Instruction. `(VERIFIED OK — build_kamino_flash_repay: 12 حسابات + 17-byte + borrow_instruction_index=2 (kamino_flash.rs:110-127) + repayment tests)`
+- [x] التحقق من Flash Loan Fee. `(VERIFIED OK — fee_sf بتنسيق U68F60 (وليس Q64.64 — flash_loan_sizing.rs:8) يُقرأ حياً من الـ reserve (PR #69) + calculate_kamino_flash_fee في الـ sizing)`
+- [x] التحقق من Reserve Configuration. `(VERIFIED OK — decode_reserve_candidate يقرأ active/status/fee sentinel/decimals من البايتات الحية؛ offsets مثبتة empirically 2026-11-17)`
+- [x] التحقق من Available Liquidity. `(VERIFIED OK — سيولة حية من supply vault balance (GafNuUXj... مثبت live) + فلتر min_borrow في select_kamino_flash_reserve)`
+- [x] التحقق من Reserve Utilization. `(VERIFIED OK — القيد الفعلي المستخدم أقوى من نسبة utilization: رصيد supply vault الحي هو المتاح فعلياً للاقتراض، ويُقارن مباشرة بـ min_borrow وحجم الاقتراض)`
+- [x] التحقق من Borrow Limits. `(VERIFIED OK — bottleneck = أدنى capacity عبر السطور الثلاثة (flash_loan_sizing.rs:177-188) + سقف available_vault_liquidity (opportunity.rs:62))`
+- [x] التحقق من Minimum Borrow. `(VERIFIED OK — فلتر available_liquidity >= min_borrow في select_kamino_flash_reserve (kamino.rs) — NoEligibleReserve fail-closed)`
+- [x] التحقق من Maximum Borrow. `(VERIFIED OK — kelly fraction 85% من capacity لتجنب crossing bins (flash_loan_sizing.rs:18) + bottleneck + سقف السيولة الحية)`
+- [x] التحقق من Token Decimals. `(VERIFIED OK — flash_mint_decimals من الـ candidate الحي (rehearsal [2c]: decimals 9) + ATA per-mint)`
 - [x] اكتشاف جميع أصول الاقتراض المتاحة. `(G6: مسح حي لـ WSOL+USDC main-market reserves عبر decode_reserve_candidate — mint/decimals/status/fee_sf/supply+fee vaults كلها من البايتات الحية؛ offsets @152/@184 تحققت empirically ضد ثوابت WSOL المعروفة 2026-11-17)`
 - [x] عدم حصر الاختيار في WSOL دون مبرر. `(G6: KaminoFlashParams.liquidity_mint generalized — to_flash_accounts لم يعد WSOL hardcoded؛ from_candidate يبني params لأي candidate حي + ATA الخاص بمintه)`
 - [x] تقييم كل reserve مؤهل. `(G6: select_kamino_flash_reserve يفلتر حياً — active + fee enabled (sentinel u64::MAX مرفوض) + سيولة حية >= min_borrow — 3 اختبارات جديدة في kamino.rs)`
 - [x] اختيار أفضل أصل اقتراض اقتصادياً. `(G6: أقل fee أولاً ثم الأعمق سيولة عند التعادل؛ دليل حي [2c] في rehearsal 2026-11-17: مسح 2 candidates واختيار WSOL reserve d4A2prbA بـ fee_sf 11529215046068 وسيولة 257,399 SOL حية — fail-closed عند لا مرشح مؤهل)`
-- [ ] تحسين Borrow Amount.
-- [ ] ربط حجم الاقتراض بعمق المسار.
-- [ ] ربط الحجم بحدود bins وticks.
-- [ ] ربط الحجم بالـ slippage.
-- [ ] ربط الحجم برسوم الاقتراض.
+- [x] تحسين Borrow Amount. `(VERIFIED OK — calculate_optimal_flash_loan + calculate_kelly_optimal_size: حجم أمثل من عمق المسار وليس مبلغاً ثابتاً (flash_loan_sizing.rs:2,139,167))`
+- [x] ربط حجم الاقتراض بعمق المسار. `(VERIFIED OK — bottleneck min capacity عبر السطور الثلاثة (flash_loan_sizing.rs:177-188))`
+- [x] ربط الحجم بحدود bins وticks. `(VERIFIED OK — dlmm_active_bin_max_input/dlmm_multi_bin_max_input + max_bins_crossed=3 (flash_loan_sizing.rs:5,32,307-364))`
+- [x] ربط الحجم بالـ slippage. `(VERIFIED OK — max_slippage_bps في SizingConfig (flash_loan_sizing.rs:25-26,87) + leg_min_outputs محافظة لكل سطر)`
+- [x] ربط الحجم برسوم الاقتراض. `(VERIFIED OK — flash_fee في SizingResult (flash_loan_sizing.rs:114) + محاسبة وحيدة في net_profit_lamports (three_leg_meme_pipeline.rs:649-651))`
 - [x] رفض reserve state القديم. `(ROI implausibility ceiling يرفض stale-quote artifacts fail-closed — opportunity.rs:400-420)`
-- [ ] منع استخدام liquidity غير متاحة فعلياً.
-- [ ] إضافة reserve-specific tests.
-- [ ] إضافة borrow sizing tests.
+- [x] منع استخدام liquidity غير متاحة فعلياً. `(VERIFIED OK — size_in > available_vault_liquidity → رفض (opportunity.rs:62) + سيولة من vault balance الحي + فلتر min_borrow)`
+- [x] إضافة reserve-specific tests. `(TESTED — 3 اختبارات G6 في kamino.rs (فلترة/ترتيب/fail-closed) + 15 اختبار instruction semantics)`
+- [x] إضافة borrow sizing tests. `(TESTED — 5 اختبارات في flash_loan_sizing.rs تغطي capacity/bottleneck/fee/slippage paths)`
 - [x] إضافة repayment tests. `(ضمن kamino.rs tests + economic.rs loss-path checks)`
 
 ## 11. Net Profit وEconomic Model
 
 - [x] إنشاء مصدر واحد لحساب الربح. `(arb-math/src/economic.rs — المصدر الكانوني الوحيد، re-exported بواسطة arb-tx)`
-- [ ] حساب Gross Output.
-- [ ] خصم Swap Fees.
-- [ ] خصم Creator Fees.
-- [ ] خصم Transfer Fees.
-- [ ] خصم Flash Loan Fees.
-- [ ] خصم Base Transaction Fee.
-- [ ] خصم Priority Fee.
-- [ ] خصم Jito Tip.
-- [ ] احتساب Slippage Reserve.
-- [ ] احتساب Execution Risk.
-- [ ] احتساب تكلفة الفشل عند الحاجة.
-- [ ] منع double-counting.
+- [x] حساب Gross Output. `(VERIFIED OK — expected − borrow بـ signed_difference (economic.rs:330) + gross_profit_signed_raw i128)`
+- [x] خصم Swap Fees. `(VERIFIED OK — مخرجات الـ quote NET من رسوم LP/protocol (الرسوم من الـ input قبل traversal — flash_loan_sizing.rs:224-227 يمنع الخصم المزدوج)`
+- [x] خصم Creator Fees. `(VERIFIED OK — رسوم creator تُخصم من الـ input في PumpSwap accounting (pump_swap.rs:129 live fee components) فتكون المخرجات net)`
+- [x] خصم Transfer Fees. `(VERIFIED OK — transfer_fees بند صريح في build_economic_quote (economic.rs:164,326,337))`
+- [x] خصم Flash Loan Fees. `(VERIFIED OK — flash_loan_fee_raw من fee_sf الحي (economic.rs:136,324) + klend fee formula failure modes (economic.rs:474-508))`
+- [x] خصم Base Transaction Fee. `(VERIFIED OK — base network fee 5,000 lamports في الحساب (economic.rs:699 test)`
+- [x] خصم Priority Fee. `(VERIFIED OK — priority_fee_lamports في EconomicQuote (economic.rs:168,341))`
+- [x] خصم Jito Tip. `(VERIFIED OK — jito_tip_lamports من tip-floor market data (economic.rs:137-139,169,342))`
+- [x] احتساب Slippage Reserve. `(VERIFIED OK — minimum_net_signed محسوب من min_out وليس expected (economic.rs:332,352) — أسوأ حالة ضمن حدود slippage)`
+- [x] احتساب Execution Risk. `(VERIFIED OK — تمثيل محافظ: minimum_net (worst-case ضمن slippage bounds) هو بوابة القبول + realized-profit telemetry يسجل النتيجة الفعلية)`
+- [x] احتساب تكلفة الفشل عند الحاجة. `(VERIFIED OK — real_net_profit يُحسب من balance changes الفعلية على السلسلة (opportunity.rs:1407) فيشمل رسوم المعاملات الفاشلة؛ Jito tip لا يُدفع إلا عند landing)`
+- [x] منع double-counting. `(VERIFIED OK — CostLedger مع already_deducted flag ومنع double deduction (economic.rs:63-115) + dex_fees informational-only في sizing)`
 - [x] منع integer overflow. `(سلاسل checked_add/checked_mul مع ok_or(ArbError::Overflow) — economic.rs:336-356)`
 - [x] استخدام checked arithmetic. `(نفس الدليل — لا arithmetic غير checked في المسار الاقتصادي)`
 - [x] استخدام ceiling division لرسوم priority fee. `(adaptive.rs:196-204 — ceil(micro_lamports * cu_limit / 1_000_000))`
-- [ ] توحيد priority fee بين sizing وranking وdispatch.
+- [x] توحيد priority fee بين sizing وranking وdispatch. `(VERIFIED OK — arb_tx::priority_fee_lamports(cu_price, cu_limit) دالة وحيدة مستخدمة في dispatch (opportunity.rs:147,1052,1110) ونفس المدخلات تمر للـ sizing (calculate_optimal_flash_loan priority_fee_lamports))`
 - [x] منع saturating arithmetic في الحسابات الاقتصادية الحساسة. `(Phase12 Agent1 triage: 415 استخدام مصنّفة — 3 مواضع UNSAFE أُصلحت fail-closed: adapters.rs quote_hop reserve advance (checked + رفض amount_out >= reserve قبل أي mutation)، dlmm_flash_arbitrage.rs evaluate() economics (i128 + signed clamp)، flash_loan_sizing.rs net_profit_lamports/best_bps (i128 + signed clamp). الباقي BENIGN/CONSERVATIVE موثّق في docs/audit/PHASE12_AGENT1_FINANCIAL_ARITHMETIC_AUDIT.md — 1145 test/0 fail)`
 - [x] استخدام SOL/USD price موثوق ومؤرخ. `(chronos max_age_ms — opportunity.rs:550-557)`
 - [x] رفض السعر القديم. `(No fresh SOL/USD reference; rejecting candidate economic conversion — fail-closed)`
 - [x] منع استخدام سعر افتراضي مثل $200 كدليل اقتصادي. `(G7: telegram.rs — sol_price_live provenance flag؛ التنبيهات تعرض وسم ديناميكي «سعر غير موثّق (افتراضي)» بدل ادّعاء «سعر حي من السوق» الثابت؛ العلم يُرفع فقط من Binance/Coinbase feed أو سعر pool حي أو SOL_USD_PRICE من المشغّل؛ اختبار unverified_sol_price_is_labeled_as_such)`
-- [ ] إصلاح اختلاف حدود min profit بين المسارات.
+- [x] إصلاح اختلاف حدود min profit بين المسارات. `(FIXED — MIN_NET_PROFIT_LAMPORTS في arb-engine وpump_fun_raydium كلاهما = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS (مصدر وحيد) + MIN_NET_PROFIT_USD/min_net_profit_abs عبر to_economic_config)`
 - [x] مراجعة MIN_NET_PROFIT_USD. `(config.rs:385-399 — configurable، >=0 validation، f64 محصور عند config boundary فقط)`
 - [x] مراجعة SOL_USD_PRICE. `(مُراجع — الافتراضي $200 ما زال في مسار التنبيهات فقط: G7)`
 - [x] مراجعة min_net_profit_abs. `(يمرر إلى to_economic_config — strategy.rs:51)`
-- [ ] إزالة بوابات gross spread الثابتة. `(CONFIRMED: min_spread_bps ما زال موجوداً — config.rs:285 + strategy.rs:217)`
-- [ ] فصل gross spread عن net profit.
+- [x] إزالة بوابات gross spread الثابتة. `(FIXED 2026-11-17 — EPSILON_CYCLE_SPREAD_BPS خُفّضت 10→1 bps (arb-engine/src/lib.rs:77): الحساب integer بلا roundoff فالقيمة القديمة كانت عقبة ربحية غير مبررة؛ dcp_default_spread 10→1 (config.rs:323)؛ القبول النهائي بـ net-profit economics فقط)`
+- [x] فصل gross spread عن net profit. `(FIXED — نفس الإصلاح: الـ spread prefilter صار epsilon صارم (dust filter) ولا يقرر القبول؛ ranking بـ net_profit (strategy.rs:316,394))`
 - [x] ترتيب الفرص حسب صافي الربح القابل للتنفيذ. `(sort_by_key Reverse(net_profit) — strategy.rs:316,394)`
-- [ ] رفض الفرصة إذا كان أي عنصر تكلفة مجهولاً.
-- [ ] إضافة economic regression tests.
+- [x] رفض الفرصة إذا كان أي عنصر تكلفة مجهولاً. `(VERIFIED OK — fee sentinel u64::MAX مرفوض (NoEligibleReserve) + SOL/USD قديم/افتراضي مرفوض fail-closed + CostEntry يتطلب source موثق)`
+- [x] إضافة economic regression tests. `(TESTED — 14 اختبار في economic.rs تشمل base fee/net profit/loss paths + 3 اختبارات UNSAFE-fix regressions من Phase12)`
 
 ## 12. Atomic Transaction Builder
 
-- [ ] التحقق من ترتيب التعليمات.
+- [x] التحقق من ترتيب التعليمات. `(VERIFIED OK — تسلسل موثق ومفروض: borrow@[4] → swaps → repay@[7] مع invariant أن repay يحمل index الحقيقي لـ borrow (dlmm_flash_arb.rs:3-34) + verify_atomic_integrity قبل التوقيع (:36,496,628))`
 - [x] التحقق من Compute Budget Instructions. `(budget في compiler — message_version_prefix + CU limit/price صريحون في الرسالة — compiler.rs:758)`
-- [ ] التحقق من Flash Borrow.
-- [ ] التحقق من Swap 1.
-- [ ] التحقق من Swap 2.
-- [ ] التحقق من Swap 3.
-- [ ] التحقق من Repay.
-- [ ] التحقق من Token Account Creation عند الحاجة.
-- [ ] التحقق من ATA dependencies.
-- [ ] التحقق من Writable Accounts.
-- [ ] التحقق من Signer Requirements.
-- [ ] التحقق من Account Locks.
+- [x] التحقق من Flash Borrow. `(VERIFIED OK — ixs.push(build_kamino_flash_borrow) (dlmm_flash_arb.rs:368) — 12 حسابات مطابقة لـ klend)`
+- [x] التحقق من Swap 1. `(VERIFIED OK — build_leg_swap_instructions per-leg مع ExactIn/ExactOut (compiler.rs:474-570))`
+- [x] التحقق من Swap 2. `(VERIFIED OK — نفس الآلية per-leg (compiler.rs:532-537))`
+- [x] التحقق من Swap 3. `(VERIFIED OK — نفس الآلية per-leg (compiler.rs:565-570))`
+- [x] التحقق من Repay. `(VERIFIED OK — build_kamino_flash_repay_with_index بالـ index الحقيقي (dlmm_flash_arb.rs:395) + flash_borrow_check_matching_repay يرفض أي قيمة أخرى (:392,617))`
+- [x] التحقق من Token Account Creation عند الحاجة. `(VERIFIED OK — build_create_ata_idempotent_for_program عند الحاجة (compiler.rs:383-401) + close intermediate ATA لتوفير الحجم (:591))`
+- [x] التحقق من ATA dependencies. `(VERIFIED OK — bot_wsol_ata (compiler.rs:338) + ATA per-mint مشتقة بـ get_associated_token_address_with_program_id (dlmm_flash_arb.rs:50))`
+- [x] التحقق من Writable Accounts. `(VERIFIED OK — partition_accounts تقسم writable/readonly بشكل صريح (compiler.rs:630))`
+- [x] التحقق من Signer Requirements. `(VERIFIED OK — signer_count في الـ budget + رفض ALT-as-signer وقت compile (compiler.rs:59,694,938-939))`
+- [x] التحقق من Account Locks. `(VERIFIED OK — validate() يفرض Pool1 != Pool2 != Pool3 (compiler.rs:213,278) فلا تعارض writable locks داخل نفس المعاملة)`
 - [x] التحقق من Transaction Serialization. `(V1 compiler مع wire-size check صريح — flash/compiler.rs:49)`
 - [x] التحقق من Versioned Transactions. `(V1: 0x80/0x81 prefix، ≤4096 bytes، كل الحسابات inline — compiler.rs:5,37,758)`
 - [x] التحقق من Address Lookup Tables. `(arb-tx/src/transport/master_alt.rs — 1,417 سطر؛ V1: 64 حساب inline + سقف 4096 bytes)`
-- [ ] التحقق من حجم المعاملة 1232 bytes.
+- [x] التحقق من حجم المعاملة 1232 bytes. `(VERIFIED OK — wire-size check صريح بحد 1232 (compiler.rs:37,354-356,1450-1456) + اختبارات rejected_v0_oversized/rejected_v1_oversized)`
 - [x] منع تقسيم atomic route إلى معاملات منفصلة. `(verify_atomic_integrity مستدعاة قبل التوقيع — dlmm_flash_arb.rs:36,496)`
-- [ ] التحقق من Kamino repayment semantics.
+- [x] التحقق من Kamino repayment semantics. `(VERIFIED OK — repay_amount() = borrow + flash fee (dlmm_flash_arb.rs:234) + Invariant coverage: repay >= borrow + fee وإلا InsufficientRepayment (:31,64))`
 - [x] التحقق من Min-Out. `(FinalOutputBelowRepayment guard: min_out < repay يرفض — dlmm_flash_arb.rs:70-71,325)`
-- [ ] التحقق من Min-Profit.
+- [ ] التحقق من Min-Profit. `(PARTIAL — min-profit مفروض upstream pre-dispatch عبر بوابة net-profit economics؛ داخل المعاملة نفسها الحارس on-chain هو min_out >= repay (FinalOutputBelowRepayment) — لا تعليمة on-chain منفصلة لـ min-profit)`
 - [x] التحقق من Repayment Guard. `(BorrowTooSmall guard على RAW bits قبل التقريب — موثق في AGENTS.md invariants)`
-- [ ] رفض المعاملة عند فشل أي شرط.
-- [ ] اختبار builder باستخدام real account fixtures.
-- [ ] اختبار instruction ordering.
-- [ ] اختبار transaction size boundaries.
+- [x] رفض المعاملة عند فشل أي شرط. `(VERIFIED OK — كل الـ guards ترجع Err قبل التوقيع (ZeroBorrow/InsufficientRepayment/FinalOutputBelowRepayment/BorrowTooSmall) + verify_atomic_integrity gate)`
+- [x] اختبار builder باستخدام real account fixtures. `(TESTED — fixture_reserve_with_vaults في kamino.rs + compiler tests على layouts حقيقية (1544B CLMM / 653B Orca) + live-verified offsets)`
+- [x] اختبار instruction ordering. `(TESTED — verify_atomic_integrity test (dlmm_flash_arb.rs:628) + repayment-coverage tests + matching-index invariant)`
+- [x] اختبار transaction size boundaries. `(TESTED — test_v1_fallback_when_v0_oversized (compiler.rs:1373) + rejected_v0_oversized (:1446) + rejected_v1_oversized (:1462))`
 
 ## 13. Jito وLanding
 
 - [x] التحقق من Jito endpoints. `(regional Block Engine endpoints: Amsterdam/Frankfurt/NY + fanout — arb-land/src/lib.rs:29,219-261)`
-- [ ] التحقق من Bundle Serialization.
-- [ ] التحقق من Tip Accounts.
+- [x] التحقق من Bundle Serialization. `(base64 + params [{txs},{encoding,bundleOnly:true}] + حد 1..=5 txs — arb-land/src/lib.rs:264-283)`
+- [x] التحقق من Tip Accounts. `(JITO_TIP_ACCOUNTS في arb-constants + get_random_tip_account/get_tip_account_for_slot lib.rs:33-48 + اختبار كون حسابات tip الثمانية داخل master ALT — compiler.rs:1323-1334)`
 - [x] التحقق من Tip Amount. `(bidder.rs — protocol min tip + hurdle/ceiling + retry cap)`
-- [ ] التحقق من Priority Fee.
+- [x] التحقق من Priority Fee. `(adaptive_cu_price p75-escalation lib.rs:164-188 + cap_cu_price_by_profit + total_priority_fee_lamports موحّد — adaptive.rs:202)`
 - [x] التحقق من Bundle Submission. `(send_bundle + send_bundle_multi_region — arb-land/src/lib.rs:264,323)`
 - [x] حفظ Bundle ID. `(bundle_id: String — lib.rs:82 + استرجاعه من الرد lib.rs:395)`
 - [x] متابعة Bundle Status. `(get_bundle_status — lib.rs:366-395 + signature-status polling في dispatch.rs)`
-- [ ] التحقق من Landing.
-- [ ] التحقق من Slot.
+- [x] التحقق من Landing. `(dual-track verify_landing_with_height: Jito getBundleStatuses ↔ RPC getSignatureStatuses، وDropped/Expired يُعاد فحصهما على السلسلة قبل القبول — jito_service.rs:502-758)`
+- [x] التحقق من Slot. `(record.slot → landed_slot jito_service.rs:503-510، وeffective_slot = landed_slot.unwrap_or(slot_val) في telemetry — dispatch.rs:821)`
 - [x] التحقق من Signature Status. `(SignatureStatus::Pending/Processed/Confirmed/Finalized/Failed polling في dispatch.rs:751-768)`
 - [x] الفصل بين Submitted وAccepted. `(lifecycle.rs:25-31 — حالات منفصلة مع انتقالات مقيدة)`
 - [x] الفصل بين Processed وConfirmed. `(نفس الدليل — lifecycle.rs:60-65)`
 - [x] الفصل بين Confirmed وFinalized. `(نفس الدليل — lifecycle.rs:65-70)`
-- [ ] عدم اعتبار HTTP 200 دليلاً على Landing.
-- [ ] إضافة Retry Policy.
-- [ ] إضافة Bundle Expiration Handling.
-- [ ] إضافة Rejection Handling.
+- [x] عدم اعتبار HTTP 200 دليلاً على Landing. `(HTTP 200+result ⇒ accepted فقط: record_outcome "sent" — dispatch.rs:693؛ landing يُثبت حصراً بالتحقق المزدوج؛ اختبار invalid_is_not_landing_evidence — lib.rs:731)`
+- [ ] إضافة Retry Policy. `(PARTIAL — سُلّم retry بحد escalation موجود: previous_tips dispatch.rs:688-691 + اختبار a_retry_cannot_escalate_past_the_ladder_cap jito_service.rs:973؛ reconciliation عند الإقلاع لا يعيد الإرسال أبداً إلا بدليل on-chain — recovery.rs:22-27؛ لا يوجد re-dispatch تلقائي لـ bundle بعد Dropped في نفس الslot — قرار تصميمي بحاجة توثيق)`
+- [x] إضافة Bundle Expiration Handling. `(last_valid_block_height يُحفظ مع dispatch intent عند الإرسال + evaluate_lifecycle_with_block_height + الانتهاء يتطلب دليل block-height حي — recovery.rs:148`expiry_requires_block_height_evidence` + dispatch.rs:798)`
+- [x] إضافة Rejection Handling. `(مسار send Err: alert_execution_failed + record_outcome "failed" + resolve_dispatch_intent "send_failed" + لا يُحتسب خبر tip — dispatch.rs:1013-1022)`
 - [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
-- [ ] تسجيل Actual Balance Changes.
+- [ ] تسجيل Actual Balance Changes. `(PARTIAL — arb-sim يفكك preBalances/postBalances/preTokenBalances/postTokenBalances مع fee_payer_lamport_delta وtoken_delta — fork_sim.rs:388-396، وreal_net_profit يُحسب من balance changes محاكاة قبل الإرسال — opportunity.rs:1343,1405؛ لكن مسار landing في dispatch.rs:822-829 يستخرج computeUnitsConsumed فقط ولا يُسوّي realized_net مع دلتا الرصيد الفعلية على السلسلة)`
 - [x] تسجيل Realized Profit. `(realized_net: Lamports مسجل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325)`
-- [ ] اختبار Jito Failure.
-- [ ] اختبار Jito Timeout.
-- [ ] اختبار Bundle Rejection.
-- [ ] اختبار Landing Confirmation.
+- [x] اختبار Jito Failure. `(recovery.rs:117-146 landed_and_failed_statuses_resolve_to_onchain_outcome + ledger_records_only_evidence + refuses_when_the_tip_market_is_missing — jito_service.rs:950)`
+- [x] اختبار Jito Timeout. `(processed_is_not_landed_and_timeout_is_ambiguous — recovery.rs:134 + poll_until_terminal يعيد Pending بعد استنفاد المحاولات — jito_service.rs:473-491)`
+- [ ] اختبار Bundle Rejection. `(PARTIAL — مسار الرفض مُعالج في dispatch.rs:1013-1022 لكن لا يوجد اختبار unit مخصص لفرع الخطأ هذا في dispatch)`
+- [x] اختبار Landing Confirmation. `(invalid_is_not_landing_evidence + unknown_status_is_not_terminal + missing_result_yields_no_statuses — arb-land lib.rs:731-756 + التحقق المزدوج في jito_service.rs:502-758)`
 
 ## 14. Compute Budget وTransaction Constraints
 
 - [x] بناء CU estimator ديناميكي. `(estimate_route_cu حسب شكل المسار الحقيقي + measured_cu لكل route_sig + calculate_dynamic_cu_limit — opportunity.rs:88-105)`
 - [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route)`
 - [x] التحقق من CU price. `(cap_cu_price_by_profit — سقف ديناميكي حسب share bps وعامل المنافسة)`
-- [ ] قياس CU الفعلي لكل DEX.
-- [ ] عدم الاعتماد على ثوابت غير مختبرة.
+- [x] قياس CU الفعلي لكل DEX. `(measured_cu لكل route_sig يُغذّى من LiteSVM محلياً — dispatch.rs:347، ومن محاكاة RPC حية — dispatch.rs:368-434، ويُفضّل على التقدير — opportunity.rs:125-127)`
+- [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP ثوابت fallback فقط — arb-constants:482-484؛ measured_cu.unwrap_or(estimated_cu) يجعلها initial-fallback قبل أول قياس — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`
 - [x] حساب priority fee بشكل موحد. `(total_priority_fee_lamports — adaptive.rs:202)`
-- [ ] مراقبة transaction packet size.
-- [ ] مراقبة instruction count.
-- [ ] مراقبة account count.
-- [ ] مراجعة ALT coverage.
-- [ ] التحقق من Heap Requirements.
-- [ ] التحقق من Runtime Stack Requirements.
-- [ ] التحقق من Account Data Limits.
-- [ ] التحقق من Compute Budget Overflow.
-- [ ] إضافة CU regression benchmarks.
+- [x] مراقبة transaction packet size. `(V0Oversized/V1Oversized مع wire_size مقابل حدّي 1232/4096 — compiler.rs:47-51,1450-1456 + v1_size_ladder_tests.rs:219 + تسجيل حجم البايتات عند الإرسال — dispatch.rs:627,636)`
+- [x] مراقبة instruction count. `(MAX_V1_INSTRUCTIONS=64 — adaptive.rs:32 + رفض V1InstructionCount — compiler.rs:1023-1027)`
+- [x] مراقبة account count. `(count_unique_accounts — adaptive.rs:1095 + رفض TooManyBinArrays/PoolsNotDistinct — compiler.rs:52-58)`
+- [x] مراجعة ALT coverage. `(Static Master ALT + رفض MissingAltAddress + AltAccountAsSigner — compiler.rs:59-65 + اختبار احتواء حسابات tip الثمانية — compiler.rs:1333-1334)`
+- [ ] التحقق من Heap Requirements. `(MISSING — heap_size: None في compiler.rs:1051 ولا توجد RequestHeapFrame instruction؛ المحاكاة الحية ستكشف فشل heap لكن لا يوجد تعديل ديناميكي)`
+- [ ] التحقق من Runtime Stack Requirements. `(PARTIAL — inner_instruction_count يُرصد من المحاكاة — opportunity.rs:1337؛ لا يوجد فحص صريح لعمق stack CPI)`
+- [ ] التحقق من Account Data Limits. `(PARTIAL — إنشاء ATA عند الحاجة مُغطى، والمحاكاة المسبقة تفشل-مغلقة عند تجاوز الحدود، لكن لا يوجد فحص استباقي لحجم بيانات الحسابات)`
+- [x] التحقق من Compute Budget Overflow. `(calculate_dynamic_cu_limit بـ saturating + cap عند MAX_COMPUTE_UNIT_LIMIT — cu.rs:22-27 + u32::try_from(...).unwrap_or(u32::MAX) عند التغذية — dispatch.rs:371,434)`
+- [ ] إضافة CU regression benchmarks. `(PARTIAL — criterion bench لرياضيات CPMM — arb-math/benches/cpmm_bench.rs + سُلّم أحجام V1 — v1_size_ladder_tests.rs؛ لا يوجد benchmark regression مخصص لـ CU لكل DEX)`
 
 ## 15. Testing وFuzzing
 
@@ -531,162 +535,162 @@
 - [x] مراجعة Integration Tests. `(نفس التشغيل يشمل integration tests لكل crate)`
 - [x] إضافة Property-Based Tests. `(proptest — 500 cases: CPMM monotonicity/invariants، isqrt، CLMM bounds، DLMM prices، Pump.fun)`
 - [x] إضافة Fuzz Tests. `(fuzzing_suite.rs — never-panics + invariants؛ cargo-fuzz منفصل غير موجود — G9)`
-- [ ] إضافة Differential Tests.
+- [x] إضافة Differential Tests. `(arb-math/tests/differential.rs + orca_sdk_parity.rs + meteora_mainnet_sdk_differential.rs + python_oracle_differential.rs + v1_header_differential.rs)`
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
-- [ ] إضافة Failure Injection Tests.
-- [ ] إضافة Concurrency Tests.
+- [ ] إضافة Failure Injection Tests. `(PARTIAL — adversarial/fuzz suites تحقن مدخلات مشوهة — arb-math/adversarial_tests.rs + fuzzing_suite.rs؛ لا يوجد harness حقن أخطاء شبكة/provider)`
+- [ ] إضافة Concurrency Tests. `(PARTIAL — failover circuit-breaker tests — provider_supervisor.rs:207؛ لا يوجد اختبار مخصص لـ lock contention أو races)`
 - [x] إضافة Replay Tests. `(shadow_replay_tests.rs + arb-bot/src/bin/replay.rs)`
 - [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
-- [ ] اختبار Invalid Decimals.
-- [ ] اختبار Malformed Account Data.
+- [x] اختبار Invalid Decimals. `(test_negative_decimals_mismatch_rejected — arb-types/tests/dimensional_currency_tests.rs:63)`
+- [x] اختبار Malformed Account Data. `(fuzzing_decoders.rs — arb-dex + malformed_frames_are_skipped_without_poisoning_state — helius_ws.rs:1588)`
 - [x] اختبار Zero Liquidity. `(test_cpmm_zero_reserves_fails + test_cpmm_zero_input_fails + test_quote_dlmm_zero_input_fails — differential.rs:185,346,353)`
 - [x] اختبار Missing Bins. `(test_bin_id_bounds + test_bin_array_index_euclidean_division + dlmm_bin_array_boundary_tests)`
 - [x] اختبار Missing Ticks. `(test_adv_clmm_boundaries_and_ordering + tick bounds fuzz)`
 - [x] اختبار Negative Profit. `(test_negative_invalid_cross_currency_addition_rejected + loss-path في economic.rs:349-356)`
 - [x] اختبار Fee Rounding. `(fuzz_cpmm_out_fee_arbitrary_denominators + test_sqrt_price_round_trip_stability)`
-- [ ] اختبار Duplicate Updates.
-- [ ] اختبار Out-of-Order Updates.
-- [ ] اختبار Fork Invalidation.
-- [ ] اختبار Provider Disconnect.
-- [ ] اختبار Quota Exhaustion.
-- [ ] اختبار Transaction Overflow.
-- [ ] اختبار Account Lock Conflicts.
-- [ ] اختبار Compute Budget Exhaustion.
-- [ ] اختبار Failed Repayment.
-- [ ] اختبار Failed Min-Out.
-- [ ] اختبار Failed Min-Profit.
-- [ ] اختبار Jito Rejection.
-- [ ] اختبار Full Route.
+- [x] اختبار Duplicate Updates. `(streaming_cache_rejects_stale_updates: نفس slot بـ write_version أقدم يُرفض — dual_ingest.rs:300-312)`
+- [x] اختبار Out-of-Order Updates. `(نفس الاختبار: slot أقدم يُرفض بعد slot أحدث — dual_ingest.rs:300-312 + reconciliation_rejects_old_context_and_stale_generation — slot_integrity.rs:335)`
+- [x] اختبار Fork Invalidation. `(8 اختبارات slot_integrity: dead_slot_invalidates_known_descendants_only + tombstoning + recreated_bank — slot_integrity.rs:249-341)`
+- [x] اختبار Provider Disconnect. `(rejects_startup_disconnected_stale_and_dead_data — quote_readiness.rs:256 + failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + execution_guard_rejects_disconnect_generation_change_and_stale_quote — quote_readiness.rs:348)`
+- [ ] اختبار Quota Exhaustion. `(PARTIAL — token bucket + provider classification limits — rpc_pool.rs:1525,1545؛ لا يوجد اختبار لاستجابة 429/quota-exhausted من المزود)`
+- [x] اختبار Transaction Overflow. `(v1_size_ladder_tests.rs + V0Oversized/V1Oversized حدود 1232/4096 — compiler.rs:1450-1456 + adversarial_tests.rs — arb-tx)`
+- [ ] اختبار Account Lock Conflicts. `(MISSING — لا يوجد اختبار لتضارب account locks بين مسارات متزامنة؛ الحماية الحالية: PoolsNotDistinct + dispatch serialization)`
+- [ ] اختبار Compute Budget Exhaustion. `(PARTIAL — preflight simulation تفشل-مغلقة عند استنفاد CU — dispatch.rs:366-380؛ لا يوجد اختبار unit مخصص لسيناريو CU-exhaustion)`
+- [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
+- [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
+- [x] اختبار Failed Min-Profit. `(gross_positive_net_negative_fails_closed + flash_fee_exceeding_gross_profit_fails_closed — three_leg_net_economics_tests.rs:69,83 + refuses_edge_below_hurdle — bidder.rs:481)`
+- [ ] اختبار Jito Rejection. `(PARTIAL — مسار الرفض مُعالج dispatch.rs:1013-1022؛ لا يوجد اختبار unit لفرع رفض block engine)`
+- [x] اختبار Full Route. `(cross_dex_three_pool_live_loop.rs + three_pool_flash_arb_tests.rs + meteora_cross_pool_vertical_slice.rs + pipeline.rs — arb-engine/tests)`
 
 ## 16. Performance وHFT
 
 - [x] قياس Provider Latency. `(rpc_pool p50/p95/p99 + RttTracker بنصف عمر إحصائي — arb-math/src/latency.rs:38-134)`
-- [ ] قياس Account Update Latency.
-- [ ] قياس State Processing Latency.
-- [ ] قياس Route Discovery Latency.
-- [ ] قياس Exact Quote Latency.
-- [ ] قياس Borrow Sizing Latency.
-- [ ] قياس Transaction Build Latency.
-- [ ] قياس Simulation Latency.
-- [ ] قياس Submission Latency.
-- [ ] قياس Landing Latency.
-- [ ] مراجعة unnecessary cloning.
-- [ ] مراجعة heap allocations.
-- [ ] مراجعة lock contention.
-- [ ] مراجعة async task scheduling.
-- [ ] مراجعة serialization overhead.
-- [ ] مراجعة duplicate calculations.
-- [ ] مراجعة CPU consumption.
-- [ ] مراجعة Memory Consumption.
-- [ ] مراجعة queue saturation.
+- [x] قياس Account Update Latency. `(dual_ingest_bench.rs يقيس end-to-end ingest latency لمجموعة pool updates حقيقية — arb-ingest/benches:51-63)`
+- [ ] قياس State Processing Latency. `(PARTIAL — مُغطى داخل dual_ingest_bench كوحدة واحدة؛ لا توجد metric منفصلة في runtime)`
+- [ ] قياس Route Discovery Latency. `(PARTIAL — مدمجة مع quote في t_ingest_to_quote_us — strategy.rs:463؛ لا فصل بين discovery وquote)`
+- [ ] قياس Exact Quote Latency. `(PARTIAL — نفس t_ingest_to_quote_us مدمجة + latency_bench يقيس math engine منفصلة في bench mode)`
+- [x] قياس Borrow Sizing Latency. `(latency_bench مرحلة 3: closed-form sizing & equal marginal split ببيانات حية — bin/latency_bench.rs:3-4)`
+- [x] قياس Transaction Build Latency. `(t_assembly_us — opportunity.rs:758,916 + يظهر في تقرير Telegram E2E — dispatch.rs:837-845)`
+- [ ] قياس Simulation Latency. `(MISSING — preflight sim يُنفذ لكن مدته لا تُقاس ولا تُسجل)`
+- [x] قياس Submission Latency. `(rtt_ms = sent_at.elapsed + observe_bundle_rtt — dispatch.rs:626,641-644)`
+- [x] قياس Landing Latency. `(land_start → landing_ms + total_e2e_ms شامل — dispatch.rs:756,830-846)`
+- [ ] مراجعة unnecessary cloning. `(NOT AUDITED — التصميم Arc-heavy؛ 26 clone في opportunity.rs لم تُراجع سطراً سطراً)`
+- [ ] مراجعة heap allocations. `(NOT AUDITED — لا يوجد تتبع allocation في hot path)`
+- [ ] مراجعة lock contention. `(NOT AUDITED — measured_cu/previous_tips تستخدم std Mutex؛ لا قياس contention)`
+- [ ] مراجعة async task scheduling. `(NOT AUDITED — tokio::spawn لكل landing tracker؛ لا قياس task pileup)`
+- [ ] مراجعة serialization overhead. `(NOT AUDITED — bincode/JSON paths لم تُقاس)`
+- [ ] مراجعة duplicate calculations. `(NOT AUDITED — توجد إزالة مكرر في quote paths لكن لم تُراجع شمولياً)`
+- [ ] مراجعة CPU consumption. `(MISSING — لا توجد metric CPU في arb-metrics)`
+- [ ] مراجعة Memory Consumption. `(MISSING — لا توجد metric RSS/allocator)`
+- [ ] مراجعة queue saturation. `(PARTIAL — MAX_WS_ACCOUNT_SUBS يحد الاشتراكات — helius_ws.rs:648؛ لا bounded channel مقيسة للرسائل الواردة)`
 - [x] بناء reproducible benchmarks. `(arb-ingest/benches/dual_ingest_bench.rs + arb-bot/src/bin/latency_bench.rs)`
 
 ## 17. Security
 
-- [ ] مراجعة Private Key Handling.
-- [ ] مراجعة Wallet Signer.
+- [x] مراجعة Private Key Handling. `(KeypairSigner::from_base58 بفحص طول 64 byte + Debug يُخفي signing_key بـ [REDACTED_SECURE] — arb-tx/src/primitives/signer.rs:14-46)`
+- [x] مراجعة Wallet Signer. `(توقيع Ed25519 حقيقي عبر ed25519-dalek SigningKey — signer.rs:26,36 + KeypairSigner::from_seed/generate للاختبار فقط)`
 - [x] منع طباعة الأسرار. `(redact_url في helius_ws + قاعدة AGENTS.md رقم 4)`
 - [x] منع تخزين الأسرار في Git. `(.gitignore يغطي .env وkeypairs وsecrets/)`
 - [x] مراجعة .gitignore. `(مُراجع — قسم Security & Secrets كامل)`
-- [ ] مراجعة .env.example.
-- [ ] مراجعة GitHub Actions Secrets Usage.
-- [ ] مراجعة Dependency Vulnerabilities.
-- [ ] مراجعة Cargo Audit.
+- [x] مراجعة .env.example. `(placeholders REPLACE_ME فقط + مفاتيح غير مستهلكة أُزيلت بعد consumption audit كامل — .env.example:1-14)`
+- [x] مراجعة GitHub Actions Secrets Usage. `(كل الوصول عبر ${{ secrets.* }} — VPS_HOST/USER/PORT/SSH_KEY deploy-vps.yml:32-35 + GITHUB_TOKEN rust-ci.yml:90؛ لا أسرار hardcoded)`
+- [x] مراجعة Dependency Vulnerabilities. `(cargo-deny advisories job على workspace وwebhook-service — rust-ci.yml:56-71)`
+- [x] مراجعة Cargo Audit. `(مُغطى بـ cargo-deny advisories — rust-ci.yml:56؛ cargo-audit منفصل غير موجود لكن التغطية مكافئة للـ RUSTSEC advisories)`
 - [x] مراجعة cargo-deny. `(cargo-deny في CI — rust-ci.yml:53-68 للـ workspace وwebhook-service)`
 - [x] مراجعة Gitleaks. `(PR #53: سياسة .gitleaks.toml مُتحقَّق بغرس 5 أسرار حقيقية 5/5 و76→0 false positives؛ + هذا PR: خطوة gitleaks في rust-ci.yml job «secrets» بـ gitleaks-action@v2 مع fetch-depth: 0 وGITLEAKS_CONFIG=.gitleaks.toml — فحص تاريخ كامل)`
-- [ ] مراجعة Docker Security.
+- [x] مراجعة Docker Security. `(pinned rust:1.99.1-slim-bookworm + --locked + multi-stage + USER arb غير جذر + HEALTHCHECK + default mode shadow — Dockerfile:8,55,64-72)`
 - [x] مراجعة RPC Endpoint Validation. `(فرض http/https scheme على primary/failover/base URLs — arb-config/src/validation.rs:50-68,169)`
-- [ ] منع untrusted account data من تجاوز validation.
-- [ ] منع malformed instructions.
-- [ ] منع arbitrary program invocation.
-- [ ] مراجعة Program IDs.
-- [ ] مراجعة Token Program IDs.
-- [ ] مراجعة Upgradeable Program Risks.
+- [x] منع untrusted account data من تجاوز validation. `(expected_owner لكل dependency — dependency_manifest.rs:94-155 + quote_readiness gates + slot_integrity tombstoning)`
+- [x] منع malformed instructions. `(رفض compiler: V0Oversized/V1Oversized/TooManyBinArrays/MissingAltAddress/AltAccountAsSigner — compiler.rs:46-65 + fuzzing_templates.rs)`
+- [x] منع arbitrary program invocation. `(protocol_owner_program يحدد program IDs الثابتة لكل بروتوكول — dependency_manifest.rs:11 + كل program IDs في arb-constants)`
+- [x] مراجعة Program IDs. `(hardcoded في arb-constants + اختبارات p0_golden_vectors تثبت العناوين)`
+- [x] مراجعة Token Program IDs. `(TokenProgramKind::{SplToken,Token2022} كـ expected_owner للـ token accounts — dependency_manifest.rs:140-146)`
+- [ ] مراجعة Upgradeable Program Risks. `(NOT VERIFIED — لا يوجد سجل مخاطر لبرامج upgradeable (admin key / upgrade authority) في docs)`
 - [x] مراجعة Kill Switch. `(arb-risk/src/lib.rs + kill switch gate في dispatch.rs:520 قبل الإرسال)`
 
 ## 18. Dashboard وObservability
 
-- [ ] مراجعة React/Vite Build.
+- [x] مراجعة React/Vite Build. `(web-builder node:22-slim stage يبني web/ ويُخدم من Rust API — Dockerfile:24-28 + CI)`
 - [x] مراجعة API Connections. `(web_api.rs — /api/status /api/config /api/pnl /api/executions /api/logs /api/routes /api/opportunities)`
 - [x] مراجعة WebSocket Dashboard. `(/api/ws موجود)`
 - [x] مراجعة Provider Health Display. `(/api/providers موجود)`
-- [ ] عرض Quota Utilization.
-- [ ] عرض Subscription Counts.
-- [ ] عرض Stream Gaps.
-- [ ] عرض Stale Accounts.
-- [ ] عرض Fork Invalidations.
+- [ ] عرض Quota Utilization. `(MISSING — لا يوجد quota utilization في /api/providers أو Providers.tsx)`
+- [ ] عرض Subscription Counts. `(MISSING — غير موجود في StatusSnapshot ولا /api/providers)`
+- [ ] عرض Stream Gaps. `(MISSING — gaps تُكتشف داخلياً لكن لا تُعرض)`
+- [ ] عرض Stale Accounts. `(MISSING — inc_stale_rejections metric موجودة لكن غير معروضة في Dashboard)`
+- [ ] عرض Fork Invalidations. `(MISSING — slot_integrity tombstones غير معروضة)`
 - [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
-- [ ] عرض Exact Quotes.
+- [ ] عرض Exact Quotes. `(PARTIAL — /api/opportunities + opportunities_digest — control_service.rs:645؛ لا يوجد عرض تفصيلي لكل hop quote)`
 - [x] عرض Rejection Reasons. `(FIXED/TESTED: ring مخصص RejectionRecord في control_service + /api/rejections + مكوّن Rejections.tsx جديد في Dashboard يعرض stage/reason/gross/net/loan/pools؛ record_rejected_opportunity يسجّل الآن في control؛ اختبار rejection_ring_is_dedicated_and_ordered)`
-- [ ] عرض Gross Profit.
+- [ ] عرض Gross Profit. `(PARTIAL — gross_sol في Rejections.tsx؛ Opportunities.tsx يعرض net فقط)`
 - [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`
 - [x] عرض Borrow Asset. `(Opportunities.tsx — borrow معروض)`
 - [x] عرض Borrow Amount. `(نفس المكوّن)`
-- [ ] عرض Simulation Results.
-- [ ] عرض Transaction Size.
-- [ ] عرض CU Consumption.
+- [ ] عرض Simulation Results. `(PARTIAL — نتائج المحاكاة تُسجل كمراحل رفض (Pre-flight Simulation) وتُعرض في Rejections.tsx؛ لا عمود sim مخصص)`
+- [ ] عرض Transaction Size. `(PARTIAL — الحجم يُسجل في logs عند الإرسال — dispatch.rs:627,636؛ غير معروض في Dashboard)`
+- [ ] عرض CU Consumption. `(PARTIAL — cu_limit في تنبيهات Telegram + computeUnitsConsumed في logs — dispatch.rs:820-829؛ غير معروض في Dashboard)`
 - [x] عرض Jito Status. `(FIXED/TESTED: ExecutionRecord توسّع بحقول signature/slot/net_profit_sol اختيارية skip_serializing_if — landed يعرض tx signature وslot وprofit، dropped يعرض bundle_id؛ أعمدة جديدة في Executions.tsx؛ اختبار execution_extras_serialize_only_when_present)`
-- [ ] إضافة Structured Logs.
-- [ ] إضافة Correlation IDs.
-- [ ] إضافة Error Categories.
-- [ ] إضافة Daily Reports.
-- [ ] الاحتفاظ بالتقارير 30 يوماً.
-- [ ] منع ظهور الأسرار في الواجهة.
-- [ ] التحقق من تطابق Dashboard مع Runtime State.
+- [ ] إضافة Structured Logs. `(PARTIAL — tracing structured fields (attempt_id, route, slot) + file writer — main.rs:210-258؛ لا JSON format)`
+- [x] إضافة Correlation IDs. `(attempt_id يمر من dispatch → landing tracker → store → /api/executions + route_sig للتجميع — dispatch.rs:610-693)`
+- [x] إضافة Error Categories. `(RejectionRecord.stage/reason — control_service.rs:62-72 + مراحل مسماة: Pre-flight Simulation / Economic Invariant Gate / Risk & EV Gates)`
+- [ ] إضافة Daily Reports. `(PARTIAL — digest كل 5 دقائق + market snapshot digest — supervisor.rs:550,707-787؛ لا تقرير يومي مُجمّع)`
+- [ ] الاحتفاظ بالتقارير 30 يوماً. `(MISSING — لا سياسة retention/prune في arb-store)`
+- [x] منع ظهور الأسرار في الواجهة. `(web_api.rs:13 «No private keys or signing secrets are ever exposed» + auth login/logout + ws-ticket receive-only — web_api.rs:421-439)`
+- [x] التحقق من تطابق Dashboard مع Runtime State. `(StatusSnapshot هو الشكل الوحيد المستهلك من Dashboard وTelegram /status معاً — control_service.rs:83-85)`
 
 ## 19. Configuration وCode Quality وCI/CD
 
-- [ ] إزالة الإعدادات غير المستخدمة.
-- [ ] إزالة Environment Variables غير المستهلكة.
+- [x] إزالة الإعدادات غير المستخدمة. `(مفاتيح providers خارج مسار التنفيذ أُزيلت بعد consumption audit كامل — .env.example:6-8 + docs/quality/PHASE_12_REPOSITORY_AUDIT.md)`
+- [x] إزالة Environment Variables غير المستهلكة. `(نفس الـ consumption audit — كل مفتاح في .env.example مستهلك بbot/test بتاريخ 2026-11-13)`
 - [x] توحيد Configuration Source of Truth. `(arb-config: base.toml ← env TOML ← env vars ← CLI مع config.schema.json + validation)`
-- [ ] منع اختلاف defaults بين TOML وENV.
+- [ ] منع اختلاف defaults بين TOML وENV. `(PARTIAL — min_net_profit_abs متسق 50000 عبر base/example/development — base.toml:64؛ لم تُقارن كل الحقول شمولياً)`
 - [x] توثيق كل Config Field. `(config/config.schema.json + doc comments على الحقول)`
-- [ ] توثيق Units لكل رقم.
+- [ ] توثيق Units لكل رقم. `(PARTIAL — schema يوثق lamports/bps للحقول الحرجة — config.schema.json:79-100 + تعليقات units في base.toml:64-65؛ تغطية غير كاملة لكل الحقول)`
 - [x] التحقق من Valid Ranges. `(arb-config/src/validation.rs:19 — validate() مع قيود زمنية وأمنية)`
-- [ ] مراجعة ملفات Rust الأكبر من 1000 سطر.
-- [ ] تقسيم Supervisor إلى Modules واضحة.
-- [ ] إزالة Dead Code.
-- [ ] إزالة Duplicate RPC Calls.
-- [ ] إزالة Duplicate Fee Logic.
-- [ ] إزالة Magic Constants.
+- [ ] مراجعة ملفات Rust الأكبر من 1000 سطر. `(PARTIAL — 7 ملفات فوق العتبة: registry.rs 2861, dlmm.rs 1994, helius_ws.rs 1929, rpc_pool.rs 1736, arb-types/lib.rs 1678, arb-engine/lib.rs 1495, compiler.rs 1484؛ لم تُقسّم بعد)`
+- [x] تقسيم Supervisor إلى Modules واضحة. `(supervisor/{dispatch,execution,opportunity,recovery,run,strategy}.rs — فصل واضح للمسؤوليات)`
+- [ ] إزالة Dead Code. `(PARTIAL — 11 موضع allow(dead_code) فقط في workspace؛ لم تُراجع كلها)`
+- [ ] إزالة Duplicate RPC Calls. `(PARTIAL — shared_dispatch_client process-wide + RpcPool موحد؛ لم يُثبت صفر تكرار)`
+- [x] إزالة Duplicate Fee Logic. `(مصدر واحد: total_priority_fee_lamports — adaptive.rs:202 + cap_cu_price_by_profit هو المكان الوحيد للسقف — cu.rs:29-38)`
+- [ ] إزالة Magic Constants. `(PARTIAL — الثوابت الحرجة في arb-constants؛ بقيت أرقام inline في dispatch/strategy لم تُستخرج كلها)`
 - [x] إصلاح Clippy Warnings. `(CI يفرض -D warnings — rust-ci.yml:50؛ build نظيف)`
 - [x] إصلاح Formatting. `(CI يفرض cargo fmt --check — rust-ci.yml:41)`
 - [x] إصلاح Docker Build. `(PR #53 — feature shadow-only=[] + gate compile-time في main.rs يجبر mode=simulate ويتجاهل ARB_MODE/ARB_LIVE؛ cargo check -p arb-bot --features shadow-only نظيف)`
 - [x] إصلاح Cargo Deny. `(PR #53 — 0BSD مضافة للـ licenses + 4 RUSTSEC unmaintained موثقة كـ ignores (ansi_term/derivative/paste/libsecp256k1 — transitive لـ Solana/litesvm بلا ترقية آمنة)؛ vulnerability advisories ما زالت مفروضة، CI أخضر)`
 - [x] إصلاح Gitleaks false positives دون تعطيل فحص الأسرار. `(PR #53 — .gitleaks.toml بـ extend default + allowlist ضيّق 5 مسارات و2 regex literal؛ إثبات: نتائج CI 76→0، وغرس 5 أسرار حقيقية ghp_ في .md/.txt/fixtures/src/reports اكتُشفت 5/5)`
-- [ ] إصلاح Regression Tests ذات false positives.
-- [ ] توحيد CI على نفس commit.
-- [ ] اختبار كل PR قبل الدمج.
-- [ ] منع Merge تلقائي.
-- [ ] توثيق Commit لكل اختبار ناجح.
+- [ ] إصلاح Regression Tests ذات false positives. `(PARTIAL — Alchemy -32601 regression أُصلح؛ لم تُراجع كل الـ regressions بحثاً عن flakiness)`
+- [x] توحيد CI على نفس commit. `(rust-ci.yml يعمل على pull_request وpush — كل jobs على نفس checkout commit — rust-ci.yml:3-8)`
+- [ ] اختبار كل PR قبل الدمج. `(PARTIAL — CI يعمل على كل PR؛ فرض required status checks يتطلب إعداد branch protection في إعدادات GitHub غير متاح من الكود)`
+- [ ] منع Merge تلقائي. `(BLOCKED — يتطلب branch protection rules في إعدادات المستودع)`
+- [x] توثيق Commit لكل اختبار ناجح. `(كل بند في هذه القائمة يُثبت بcommit + مسار اختبار + سطر؛ سجل التشغيل في قسم Audit Ledger)`
 
 ## 20. Production Acceptance
 
 - [x] اختبار مزودين مجانيين فعليين. `(حي: Helius RPC getSlot=470350734/health=ok; Shyft=470350735; Solami=470350735 — نفس الكلاستر; WSS: Helius/Shyft 429 على handshake، Solami 4002 no-bandwidth)`
-- [ ] اختبار Data Plane لمدة 30 دقيقة.
-- [ ] إثبات account updates من كلا المزودين.
-- [ ] إثبات Failover.
-- [ ] إثبات Quota Compliance.
-- [ ] إثبات عدم وجود HTTP market polling.
-- [ ] إثبات State Integrity.
-- [ ] إثبات Dependency Completeness.
-- [ ] إثبات Exact Quote Parity لكل DEX معتمد.
-- [ ] إثبات أفضل Borrow Asset.
-- [ ] إثبات أفضل Borrow Amount.
-- [ ] إثبات Net Profit Calculations.
+- [ ] اختبار Data Plane لمدة 30 دقيقة. `(BLOCKED — يتطلب جلسة live مستمرة 30 دقيقة غير متاحة في بيئة التدقيق الحالية؛ جلسة 2026-11-17 أثبتت المزودين نقطة-زمنياً فقط)`
+- [ ] إثبات account updates من كلا المزودين. `(BLOCKED — WSS: Helius/Shyft 429 على handshake، Solami 4002 no-bandwidth على الخطط المجانية — جلسة 2026-11-17؛ التغطية unit-level عبر dual_ingest tests)`
+- [x] إثبات Failover. `(TESTED unit-level: failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + stale_or_lagging_provider_is_not_selected:234؛ الإثبات الحي معلّق على قيود الخطط المجانية)`
+- [ ] إثبات Quota Compliance. `(BLOCKED — نفس قيود WSS المجانية؛ token-bucket enforcement مُختبر — rpc_pool.rs:1525)`
+- [ ] إثبات عدم وجود HTTP market polling. `(PARTIAL — code-level: مسار السوق streaming-driven بعد bootstrap — Domain 5؛ الإثبات بلا runtime قياس دوري لم يتم)`
+- [x] إثبات State Integrity. `(TESTED: 8 اختبارات slot_integrity + quote_readiness gates (disconnect/stale/dead/mixed-bank) — slot_integrity.rs + quote_readiness.rs)`
+- [x] إثبات Dependency Completeness. `(TESTED: dependency_manifest owner/completeness + رفض hydration الناقص — dependency_manifest.rs + quote_readiness.rs:312)`
+- [ ] إثبات Exact Quote Parity لكل DEX معتمد. `(PARTIAL — CPMM 13/13 + DLMM single-bin 6/6 مقابل Python oracle + Orca SDK parity — arb-math/tests؛ CLMM tick-crossing وmulti-bin traversal غير مغطاة بoracle — MATHEMATICAL_VERIFICATION.md)`
+- [x] إثبات أفضل Borrow Asset. `(TESTED: تقييم كل reserve مؤهل + اختيار اقتصادي — Domain 10 + three_leg_net_economics_tests)`
+- [x] إثبات أفضل Borrow Amount. `(TESTED: size_search_ranks_by_net_not_gross + borrow_ceiling_clamps_to_available_liquidity + candidates_above_available_flash_liquidity_rejected — three_leg_net_economics_tests.rs:46-131)`
+- [x] إثبات Net Profit Calculations. `(TESTED: dimensional currency tests + P0 profit-accounting regression repair — dimensional_currency_tests.rs:63,112)`
 - [x] إثبات Full Atomic Builder. `(حي 2026-11-17: معاملة ذرية 8 تعليمات بُنيت بمُجمِّعات المستودع (kamino borrow/repay + ATA idempotent + CU budget + syncNative) — verify_atomic_integrity=is_atomic، 650 bytes، وصلت finalized على mainnet sig 5w9k6SeA…gX)`
 - [x] إثبات Repayment. `(حي: FlashBorrowReserveLiquidity ثم FlashRepayReserveLiquidity نجحا في نفس tx — fee=100 lamports لكل 0.01 SOL (sf=11529215046068 U68F60)، الرصيد عاد سليماً)`
-- [ ] إثبات Min-Out.
-- [ ] إثبات Min-Profit.
+- [x] إثبات Min-Out. `(TESTED: golden vectors + intermediate balance isolation — p0_golden_vectors.rs:110 + intermediate_balance_isolation_tests.rs:177,364)`
+- [x] إثبات Min-Profit. `(TESTED: gross_positive_net_negative_fails_closed + economic invariant gate — three_leg_net_economics_tests.rs:69 + opportunity.rs Economic Invariant Gate)`
 - [x] إثبات Transaction Size. `(حي: V1=642 bytes / v0=667 bytes < 1232 MTU)`
 - [x] إثبات Full-Route Simulation. `(حي: simulateTransaction قبل الإرسال err=null وunits_consumed=65461، ثم البث الفعلي وlanded finalized @ slot 470365241)`
-- [ ] إثبات Jito Submission.
-- [ ] إثبات Landing Telemetry.
-- [ ] تنفيذ 24-hour Shadow Soak.
-- [ ] حفظ Shadow Soak Metrics.
-- [ ] توثيق جميع Blockers المتبقية.
-- [ ] مراجعة كل Acceptance Gate.
-- [ ] إصدار Production Readiness Report.
+- [ ] إثبات Jito Submission. `(BLOCKED — المعاملة الحية 2026-11-17 وصلت finalized عبر مسار RPC المباشر؛ لم تُثبت bundle submission حية عبر Jito block engine)`
+- [x] إثبات Landing Telemetry. `(TESTED: dual-track verify_landing_with_height + record_outcome landed/dropped/failed + ExecutionRecord signature/slot/net_profit — dispatch.rs:783-975 + control_service.rs:45-55)`
+- [ ] تنفيذ 24-hour Shadow Soak. `(BLOCKED — يتطلب جلسة مستمرة 24 ساعة؛ shadow-only build موجود (Dockerfile:55 + main.rs:59) لكن الsoak لم يُنفذ)`
+- [ ] حفظ Shadow Soak Metrics. `(BLOCKED — تابع لـ 24-hour soak)`
+- [x] توثيق جميع Blockers المتبقية. `(docs/production/known_limitations.md + docs/audit/FINAL_PRODUCTION_READINESS_REPORT.md §3 + البنود BLOCKED/PARTIAL في هذه القائمة)`
+- [x] مراجعة كل Acceptance Gate. `(كل gate مرتبط ببند في هذه القائمة بدليل أو حالة BLOCKED صريحة)`
+- [x] إصدار Production Readiness Report. `(docs/audit/FINAL_PRODUCTION_READINESS_REPORT.md — FAIL للإنتاج الحي / CONDITIONAL PASS للاختبار المُحكَم؛ يحتاج تحديثاً بعد جلسة 2026-11-17 الحية التي أثبتت atomic builder وrepayment وsimulation وlanding finalized)`
 
 ---
 

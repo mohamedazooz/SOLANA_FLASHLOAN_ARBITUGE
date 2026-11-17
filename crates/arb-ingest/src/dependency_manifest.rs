@@ -477,6 +477,36 @@ mod tests {
     }
 
     #[test]
+    fn empty_manifest_is_never_a_valid_route_dependency_set() {
+        let mut registry = DependencyManifestRegistry::default();
+        assert_eq!(
+            registry.register(PoolDependencyManifest::new(
+                PoolId(pk(1)),
+                DexProtocol::RaydiumV4
+            )),
+            Err(DependencyManifestError::EmptyManifest)
+        );
+        assert_eq!(
+            registry.route_requirements(&[]),
+            Err(DependencyManifestError::EmptyManifest)
+        );
+        let mut optional_only = PoolDependencyManifest::new(PoolId(pk(2)), DexProtocol::RaydiumV4);
+        optional_only
+            .add(AccountDependency {
+                pubkey: pk(20),
+                expected_owner: pk(90),
+                role: AccountRole::Observation,
+                required_for_quote: false,
+            })
+            .unwrap();
+        registry.register(optional_only).unwrap();
+        assert_eq!(
+            registry.route_requirements(&[PoolId(pk(2))]),
+            Err(DependencyManifestError::EmptyManifest)
+        );
+    }
+
+    #[test]
     fn conflicting_owner_for_same_dependency_fails_closed() {
         let mut registry = DependencyManifestRegistry::default();
         registry.register(manifest(1, 10, 90)).unwrap();
