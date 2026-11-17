@@ -151,19 +151,19 @@ pub fn build_arb_executor_three_leg_instruction(
     }
 }
 
-/// Assemble the complete atomic Solana transaction using the dedicated `ArbExecutor` CPI program.
-pub fn assemble_flash_funded_three_pool_cpi(
+/// Assemble strictly the instructions vector for the 3-leg flash-funded CPI route.
+///
+/// Order:
+/// `[0]` SetComputeUnitLimit
+/// `[1]` SetComputeUnitPrice
+/// `[2..4]` Ephemeral ATA CreateIdempotent (settlement, meme A, meme B)
+/// `[5]` Kamino FlashBorrow (top-level)
+/// `[6]` ArbExecutor execute_three_leg (genuine CPI for Hop 1, 2, 3)
+/// `[7]` Kamino FlashRepay (top-level, borrow_instruction_index = 5)
+/// `[8]` Jito Tip (optional)
+pub fn assemble_flash_funded_three_pool_cpi_instructions(
     params: &FlashArb3LegParams,
-    signer: &KeypairSigner,
-    lookup_tables: &[AddressLookupTable],
-) -> Result<FlashThreeLegArbitrageTx, FlashArb3LegError> {
-    if params.payer != signer.pubkey() {
-        return Err(FlashArb3LegError::PayerSignerMismatch {
-            payer: params.payer.to_string(),
-            signer: signer.pubkey().to_string(),
-        });
-    }
-
+) -> Result<(Vec<CompiledInstruction>, usize, usize), FlashArb3LegError> {
     // ── Invariant 1: three distinct pools ──
     if params.leg_1.lb_pair == params.leg_2.lb_pair
         || params.leg_1.lb_pair == params.leg_3.lb_pair
@@ -310,6 +310,38 @@ pub fn assemble_flash_funded_three_pool_cpi(
             Lamports(params.jito_tip_lamports),
         ));
     }
+
+    Ok((ixs, borrow_idx, repay_idx))
+}
+
+/// Assemble the complete atomic Solana transaction using the dedicated `ArbExecutor` CPI program.
+pub fn assemble_flash_funded_three_pool_cpi(
+    params: &FlashArb3LegParams,
+    signer: &KeypairSigner,
+    lookup_tables: &[AddressLookupTable],
+) -> Result<FlashThreeLegArbitrageTx, FlashArb3LegError> {
+    if params.payer != signer.pubkey() {
+        return Err(FlashArb3LegError::PayerSignerMismatch {
+            payer: params.payer.to_string(),
+            signer: signer.pubkey().to_string(),
+        });
+    }
+
+    let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool_cpi_instructions(params)?;
+    let repay_amount = params.repay_amount();
+    let flash_mint = params.leg_1.token_in();
+    let flash_program = params.leg_1.token_in_program();
+    let mint_a = params.leg_1.token_out();
+    let mint_a_program = params.leg_1.token_out_program();
+    let mint_b = params.leg_2.token_out();
+    let mint_b_program = params.leg_2.token_out_program();
+
+    let settlement_account =
+        get_associated_token_address_with_program_id(&params.payer, &flash_mint, &flash_program);
+    let intermediate_account_a =
+        get_associated_token_address_with_program_id(&params.payer, &mint_a, &mint_a_program);
+    let intermediate_account_b =
+        get_associated_token_address_with_program_id(&params.payer, &mint_b, &mint_b_program);
 
     // ── Atomicity integrity verification ──
     let format = if params.v1_transport_supported {
