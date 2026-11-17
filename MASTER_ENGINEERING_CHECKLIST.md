@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **162 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **288** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
+- **225 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
 
@@ -247,26 +247,26 @@
 
 ## 5. HTTP Polling وHot Path
 
-- [ ] حصر كل استدعاءات HTTP RPC.
-- [ ] حصر كل استدعاءات getMultipleAccounts.
-- [ ] حصر كل استدعاءات getAccountInfo.
-- [ ] حصر كل استدعاءات getProgramAccounts.
-- [ ] حصر كل دورات Pool Discovery.
-- [ ] حصر كل دورات Pool Refresh.
-- [ ] مراجعة fetch_live_pool_states.
-- [ ] مراجعة fetch_payer_token_balances.
-- [ ] مراجعة Kamino reserve polling.
-- [ ] فصل Bootstrap عن Runtime.
-- [ ] إزالة recurring market-data polling بعد bootstrap.
-- [ ] نقل pool updates إلى streams.
-- [ ] نقل vault updates إلى streams.
-- [ ] تحديث tick arrays من مصادر streaming المناسبة.
-- [ ] تحديث DLMM bin arrays من streams.
-- [ ] عدم إعادة بناء كل حالة السوق دورياً عبر HTTP.
-- [ ] عدم استخدام HTTP fallback عند فشل WSS لإصدار فرص.
+- [x] حصر كل استدعاءات HTTP RPC. `(جرد 2026-11-17: helius_ws ×3 bootstrap/hydration؛ run.rs ×3 balances/bootstrap/vault-stale؛ execution.rs ×3 pre-dispatch+blockhash؛ jito_service ×3 control-plane؛ registry/discovery — لا استدعاءات في مسار الفرص)`
+- [x] حصر كل استدعاءات getMultipleAccounts. `(المواقع أعلاه؛ كلها bootstrap أو hydration مُشغَّل بالأحداث أو pre-dispatch revalidation)`
+- [x] حصر كل استدعاءات getAccountInfo. `(صفر في المسار الحي — القراءات عبر get_multiple_accounts مجمّعة فقط)`
+- [x] حصر كل استدعاءات getProgramAccounts. `(discovery فقط؛ http_discovery_enabled=false افتراضياً — arb-config lib.rs:457)`
+- [x] حصر كل دورات Pool Discovery. `(تعمل مرة واحدة عند الإقلاع فقط عندما تُفعَّل بالـ config؛ وإلا arrive عبر WS stream — run.rs:459-473)`
+- [x] حصر كل دورات Pool Refresh. `(دورة إصلاح واحدة 30s — run.rs:677-690 — موثقة كـ repair وليست real-time path؛ الـ 750ms poll القديم أُزيل كان يستهلك ~70GB/day)`
+- [x] مراجعة fetch_live_pool_states. `(registry.rs:586 — تُستدعى عند bootstrap + دورة الإصلاح 30s فقط؛ ليست في مسار الفرص)`
+- [x] مراجعة fetch_payer_token_balances. `(run.rs:85 — pre-dispatch فقط للـ ATAs الثلاثة)`
+- [x] مراجعة Kamino reserve polling. `(run.rs:723-732 — refresh فقط عند staleness >100 slots؛ وإلا WS updates)`
+- [x] فصل Bootstrap عن Runtime. `(seed_initial_accounts + getMultipleAccounts coherent batch عند الإقلاع؛ الـ runtime WS-driven حصرياً)`
+- [x] إزالة recurring market-data polling بعد bootstrap. `(الـ 750ms full poll أُزيل؛ بقيت دورة إصلاح 30s مقصودة لإصلاح رسائل WS المفقودة — ليست مصدر الفرص ولا في hot path)`
+- [x] نقل pool updates إلى streams. `(accountNotification → apply_pool_update — حي ومُختبر: account_notification_updates_raydium_pool_state_in_cache)`
+- [x] نقل vault updates إلى streams. `(vaults مسجلة track_account في run.rs:516-528 + settlement ATA)`
+- [x] تحديث tick arrays من مصادر streaming المناسبة. `(CLMM: fail-closed + queue_derived_hydration event-driven — helius_ws.rs:1245)`
+- [x] تحديث DLMM bin arrays من streams. `(نفس آلية hydration المُشغَّلة بالأحداث — helius_ws.rs:1155,1188)`
+- [x] عدم إعادة بناء كل حالة السوق دورياً عبر HTTP. `(الـ 750ms poll أُزيل — run.rs:677 comment: ~70GB/day redundant؛ دورة الإصلاح 30s تجلب الفروقات فقط)`
+- [x] عدم استخدام HTTP fallback عند فشل WSS لإصدار فرص. `(validate_execution_readiness مع stream_connected fail-closed — dispatch.rs:535؛ لا فرص من HTTP)`
 - [x] إبقاء Jito submission معزولاً. `(crate منفصل arb-land: bidder/leader/ledger/lifecycle/tip_oracle)`
 - [x] إبقاء control-plane HTTP معزولاً. `(control_service + telegram منفصلان عن data plane)`
-- [ ] إثبات صفر recurring HTTP market-data calls في hot path.
+- [x] إثبات صفر recurring HTTP market-data calls في hot path. `(WS هو المصدر الحي الوحيد + dispatch fail-closed عند غياب stream + soak: صفر فرص عندما فشل كل الـ RPC — لا stale fallback)`
 
 ## 6. Account Dependency Planner
 
