@@ -533,32 +533,32 @@
 - [x] مراجعة Integration Tests. `(نفس التشغيل يشمل integration tests لكل crate)`
 - [x] إضافة Property-Based Tests. `(proptest — 500 cases: CPMM monotonicity/invariants، isqrt، CLMM bounds، DLMM prices، Pump.fun)`
 - [x] إضافة Fuzz Tests. `(fuzzing_suite.rs — never-panics + invariants؛ cargo-fuzz منفصل غير موجود — G9)`
-- [ ] إضافة Differential Tests.
+- [x] إضافة Differential Tests. `(arb-math/tests/differential.rs + orca_sdk_parity.rs + meteora_mainnet_sdk_differential.rs + python_oracle_differential.rs + v1_header_differential.rs)`
 - [x] إضافة Regression Tests. `(منها Alchemy -32601 regression وphase15 profit-accounting regressions — كلها ضمن التشغيل الناجح)`
-- [ ] إضافة Failure Injection Tests.
-- [ ] إضافة Concurrency Tests.
+- [ ] إضافة Failure Injection Tests. `(PARTIAL — adversarial/fuzz suites تحقن مدخلات مشوهة — arb-math/adversarial_tests.rs + fuzzing_suite.rs؛ لا يوجد harness حقن أخطاء شبكة/provider)`
+- [ ] إضافة Concurrency Tests. `(PARTIAL — failover circuit-breaker tests — provider_supervisor.rs:207؛ لا يوجد اختبار مخصص لـ lock contention أو races)`
 - [x] إضافة Replay Tests. `(shadow_replay_tests.rs + arb-bot/src/bin/replay.rs)`
 - [x] اختبار Integer Overflow. `(adversarial_tests.rs — extreme imbalance 1 lamport vs 10^18، deep pools 10^24)`
-- [ ] اختبار Invalid Decimals.
-- [ ] اختبار Malformed Account Data.
+- [x] اختبار Invalid Decimals. `(test_negative_decimals_mismatch_rejected — arb-types/tests/dimensional_currency_tests.rs:63)`
+- [x] اختبار Malformed Account Data. `(fuzzing_decoders.rs — arb-dex + malformed_frames_are_skipped_without_poisoning_state — helius_ws.rs:1588)`
 - [x] اختبار Zero Liquidity. `(test_cpmm_zero_reserves_fails + test_cpmm_zero_input_fails + test_quote_dlmm_zero_input_fails — differential.rs:185,346,353)`
 - [x] اختبار Missing Bins. `(test_bin_id_bounds + test_bin_array_index_euclidean_division + dlmm_bin_array_boundary_tests)`
 - [x] اختبار Missing Ticks. `(test_adv_clmm_boundaries_and_ordering + tick bounds fuzz)`
 - [x] اختبار Negative Profit. `(test_negative_invalid_cross_currency_addition_rejected + loss-path في economic.rs:349-356)`
 - [x] اختبار Fee Rounding. `(fuzz_cpmm_out_fee_arbitrary_denominators + test_sqrt_price_round_trip_stability)`
-- [ ] اختبار Duplicate Updates.
-- [ ] اختبار Out-of-Order Updates.
-- [ ] اختبار Fork Invalidation.
-- [ ] اختبار Provider Disconnect.
-- [ ] اختبار Quota Exhaustion.
-- [ ] اختبار Transaction Overflow.
-- [ ] اختبار Account Lock Conflicts.
-- [ ] اختبار Compute Budget Exhaustion.
-- [ ] اختبار Failed Repayment.
-- [ ] اختبار Failed Min-Out.
-- [ ] اختبار Failed Min-Profit.
-- [ ] اختبار Jito Rejection.
-- [ ] اختبار Full Route.
+- [x] اختبار Duplicate Updates. `(streaming_cache_rejects_stale_updates: نفس slot بـ write_version أقدم يُرفض — dual_ingest.rs:300-312)`
+- [x] اختبار Out-of-Order Updates. `(نفس الاختبار: slot أقدم يُرفض بعد slot أحدث — dual_ingest.rs:300-312 + reconciliation_rejects_old_context_and_stale_generation — slot_integrity.rs:335)`
+- [x] اختبار Fork Invalidation. `(8 اختبارات slot_integrity: dead_slot_invalidates_known_descendants_only + tombstoning + recreated_bank — slot_integrity.rs:249-341)`
+- [x] اختبار Provider Disconnect. `(rejects_startup_disconnected_stale_and_dead_data — quote_readiness.rs:256 + failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + execution_guard_rejects_disconnect_generation_change_and_stale_quote — quote_readiness.rs:348)`
+- [ ] اختبار Quota Exhaustion. `(PARTIAL — token bucket + provider classification limits — rpc_pool.rs:1525,1545؛ لا يوجد اختبار لاستجابة 429/quota-exhausted من المزود)`
+- [x] اختبار Transaction Overflow. `(v1_size_ladder_tests.rs + V0Oversized/V1Oversized حدود 1232/4096 — compiler.rs:1450-1456 + adversarial_tests.rs — arb-tx)`
+- [ ] اختبار Account Lock Conflicts. `(MISSING — لا يوجد اختبار لتضارب account locks بين مسارات متزامنة؛ الحماية الحالية: PoolsNotDistinct + dispatch serialization)`
+- [ ] اختبار Compute Budget Exhaustion. `(PARTIAL — preflight simulation تفشل-مغلقة عند استنفاد CU — dispatch.rs:366-380؛ لا يوجد اختبار unit مخصص لسيناريو CU-exhaustion)`
+- [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
+- [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
+- [x] اختبار Failed Min-Profit. `(gross_positive_net_negative_fails_closed + flash_fee_exceeding_gross_profit_fails_closed — three_leg_net_economics_tests.rs:69,83 + refuses_edge_below_hurdle — bidder.rs:481)`
+- [ ] اختبار Jito Rejection. `(PARTIAL — مسار الرفض مُعالج dispatch.rs:1013-1022؛ لا يوجد اختبار unit لفرع رفض block engine)`
+- [x] اختبار Full Route. `(cross_dex_three_pool_live_loop.rs + three_pool_flash_arb_tests.rs + meteora_cross_pool_vertical_slice.rs + pipeline.rs — arb-engine/tests)`
 
 ## 16. Performance وHFT
 
