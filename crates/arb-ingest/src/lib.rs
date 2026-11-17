@@ -398,6 +398,9 @@ pub struct IngestClient {
     tracked_accounts_tx: tokio::sync::watch::Sender<Vec<String>>,
     tracked_accounts_cache: parking_lot::RwLock<Vec<String>>,
     slot_integrity: parking_lot::Mutex<SlotIntegrity>,
+    /// High-water mark of gap counts already reported to arb-metrics, so the
+    /// counter is incremented by deltas rather than absolute values.
+    reported_slot_gaps: AtomicU64,
     stream_generation: AtomicU64,
     stream_connected: std::sync::atomic::AtomicBool,
     helius_connected: std::sync::atomic::AtomicBool,
@@ -433,6 +436,7 @@ impl IngestClient {
             tracked_accounts_tx,
             tracked_accounts_cache: parking_lot::RwLock::new(Vec::new()),
             slot_integrity: parking_lot::Mutex::new(SlotIntegrity::default()),
+            reported_slot_gaps: AtomicU64::new(0),
             stream_generation: AtomicU64::new(0),
             stream_connected: std::sync::atomic::AtomicBool::new(false),
             helius_connected: std::sync::atomic::AtomicBool::new(false),
@@ -629,6 +633,12 @@ impl IngestClient {
             .slot_integrity
             .lock()
             .observe_with_bank(slot, parent, status, bank_id);
+        let gaps_now = self.slot_integrity.lock().gaps_detected();
+        let reported = self.reported_slot_gaps.load(Ordering::Acquire);
+        if gaps_now > reported {
+            arb_metrics::inc_stream_slot_gaps(gaps_now - reported);
+            self.reported_slot_gaps.store(gaps_now, Ordering::Release);
+        }
         if let SlotUpdateOutcome::Dead { invalidated_slots } = &outcome {
             let invalidated: std::collections::HashSet<u64> =
                 invalidated_slots.iter().copied().collect();
@@ -636,6 +646,7 @@ impl IngestClient {
                 .slot_integrity
                 .lock()
                 .bank_keys_for_slots(invalidated_slots);
+            arb_metrics::inc_fork_invalidations(invalidated.len() as u64 + bank_keys.len() as u64);
             self.account_store.invalidate_slots(&invalidated);
             for (dead_slot, dead_bank) in bank_keys {
                 self.account_store.invalidate_bank(dead_slot, dead_bank);
@@ -675,6 +686,9 @@ impl IngestClient {
             .lock()
             .invalidate_bank(slot, cleared_bank_id);
         let removed = self.account_store.invalidate_bank(slot, cleared_bank_id);
+        if removed > 0 {
+            arb_metrics::inc_fork_invalidations(removed as u64);
+        }
         // PoolState currently has slot/write_version but no bank_id. Clear all pool
         // states at this slot rather than risk keeping one from the cleared candidate.
         self.cache

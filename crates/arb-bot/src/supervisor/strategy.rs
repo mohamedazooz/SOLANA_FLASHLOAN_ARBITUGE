@@ -375,6 +375,7 @@ impl Supervisor {
                     protocol: "meteora-dlmm-3leg".to_string(),
                     borrow_lamports: o.size_in.0,
                     expected_output_lamports: o.expected_out.0,
+                    gross_profit_lamports: 0,
                     net_profit_lamports: o.net_profit.0 as i64,
                     eligible: true,
                     reject_reason: None,
@@ -445,6 +446,7 @@ impl Supervisor {
                         protocol: "pumpfun-boost-migration".to_string(),
                         borrow_lamports: t.working_capital_eval.completion_cost_lamports,
                         expected_output_lamports: t.working_capital_eval.gross_sol_out_lamports,
+                        gross_profit_lamports: 0,
                         net_profit_lamports: t.working_capital_eval.net_profit_lamports,
                         eligible: t.working_capital_eval.is_executable,
                         reject_reason: if t.working_capital_eval.is_executable {

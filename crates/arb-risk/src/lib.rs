@@ -804,6 +804,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    fn inflight_bundle_limit_rejects_third_concurrent_send_and_recovers_on_landing() {
+        let rg = RiskGate::new(
+            RiskLimits::default(),
+            Arc::new(CircuitBreaker::default()),
+            Arc::new(KillSwitch::default()),
+        );
+        rg.record_bundle_sent(Slot(100));
+        rg.record_bundle_sent(Slot(100));
+        assert!(
+            rg.check_max_inflight_bundles(Slot(100)).is_err(),
+            "third concurrent inflight bundle must be rejected (default max 2)"
+        );
+        rg.record_bundle_landed(Slot(100), true);
+        assert!(
+            rg.check_max_inflight_bundles(Slot(100)).is_ok(),
+            "landing must free inflight capacity"
+        );
+        assert!(
+            rg.check_max_inflight_bundles(Slot(102)).is_ok(),
+            "stale slots must be cleaned so a later slot has fresh capacity"
+        );
+    }
+
+    #[test]
+    fn inflight_bundle_limit_honors_configured_maximum() {
+        let limits = RiskLimits {
+            max_inflight_bundles: 1,
+            ..RiskLimits::default()
+        };
+        let rg = RiskGate::new(
+            limits,
+            Arc::new(CircuitBreaker::default()),
+            Arc::new(KillSwitch::default()),
+        );
+        rg.record_bundle_sent(Slot(50));
+        assert!(rg.check_max_inflight_bundles(Slot(50)).is_err());
+    }
+
+    #[test]
     fn risk_gate_loss_tracking() {
         let rg = RiskGate::new(
             RiskLimits::default(),

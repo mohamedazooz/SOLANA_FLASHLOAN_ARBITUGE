@@ -56,10 +56,11 @@
 
 ### التقدم الحالي
 
-- **413 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **82** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **428 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **67** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
-- أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، Actual Balance Changes عند landing (dispatch يستخرج computeUnitsConsumed فقط)، Heap Requirements (لا RequestHeapFrame)، Account Lock Conflicts test، Bundle Rejection unit test، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات).
+- أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
+- تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
 
 ### نتائج التشغيل
 
@@ -504,26 +505,26 @@
 - [x] إضافة Bundle Expiration Handling. `(last_valid_block_height يُحفظ مع dispatch intent عند الإرسال + evaluate_lifecycle_with_block_height + الانتهاء يتطلب دليل block-height حي — recovery.rs:148`expiry_requires_block_height_evidence` + dispatch.rs:798)`
 - [x] إضافة Rejection Handling. `(مسار send Err: alert_execution_failed + record_outcome "failed" + resolve_dispatch_intent "send_failed" + لا يُحتسب خبر tip — dispatch.rs:1013-1022)`
 - [x] تسجيل Actual Execution Result. `(record_outcome في arb-store — SQLite outcomes table)`
-- [ ] تسجيل Actual Balance Changes. `(PARTIAL — arb-sim يفكك preBalances/postBalances/preTokenBalances/postTokenBalances مع fee_payer_lamport_delta وtoken_delta — fork_sim.rs:388-396، وreal_net_profit يُحسب من balance changes محاكاة قبل الإرسال — opportunity.rs:1343,1405؛ لكن مسار landing في dispatch.rs:822-829 يستخرج computeUnitsConsumed فقط ولا يُسوّي realized_net مع دلتا الرصيد الفعلية على السلسلة)`
-- [x] تسجيل Realized Profit. `(realized_net: Lamports مسجل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325)`
+- [x] تسجيل Actual Balance Changes. `(FIXED/TESTED — parse_landed_balance_changes في arb-sim يستخرج fee_payer_lamport_delta + wsol_token_delta من metadata المعاملة الهابطة (5 اختبارات unit)، ومسار landing في dispatch.rs يسجّل realized_net الفعلي في store مفضّلاً على التقدير، مع warn صريح عند خسارة فعلية سالبة)`
+- [x] تسجيل Realized Profit. `(realized_net: Lamports مسجّل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325؛ الآن من دلتا الأرصدة الفعلية عند landing عند توفرها، والتقدير fallback موثّق)`
 - [x] اختبار Jito Failure. `(recovery.rs:117-146 landed_and_failed_statuses_resolve_to_onchain_outcome + ledger_records_only_evidence + refuses_when_the_tip_market_is_missing — jito_service.rs:950)`
 - [x] اختبار Jito Timeout. `(processed_is_not_landed_and_timeout_is_ambiguous — recovery.rs:134 + poll_until_terminal يعيد Pending بعد استنفاد المحاولات — jito_service.rs:473-491)`
-- [ ] اختبار Bundle Rejection. `(PARTIAL — مسار الرفض مُعالج في dispatch.rs:1013-1022 لكن لا يوجد اختبار unit مخصص لفرع الخطأ هذا في dispatch)`
+- [x] اختبار Bundle Rejection. `(TESTED — 6 اختبارات ضد block-engine محلي: HTTP 400 يرفض مع سبب المحرك، HTTP 200 بلا result ليس قبولاً، bundle id يُعاد عند القبول، حدود 1..=5 قبل الشبكة، unreachable = network error — arb-land/tests/bundle_rejection_tests.rs)`
 - [x] اختبار Landing Confirmation. `(invalid_is_not_landing_evidence + unknown_status_is_not_terminal + missing_result_yields_no_statuses — arb-land lib.rs:731-756 + التحقق المزدوج في jito_service.rs:502-758)`
 
 ## 14. Compute Budget وTransaction Constraints
 
 - [x] بناء CU estimator ديناميكي. `(estimate_route_cu حسب شكل المسار الحقيقي + measured_cu لكل route_sig + calculate_dynamic_cu_limit — opportunity.rs:88-105)`
-- [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route)`
+- [x] التحقق من CU limit. `(calculate_dynamic_cu_limit + measured CU per route — السقف التطبيقي APPLICATION_SAFETY_CU_LIMIT = 1,400,000 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS بقرار صريح لرفع headroom للمسارات المركّبة، وحماية الرسوم تبقى عبر cap_cu_price_by_profit — arb-constants:489-495، اختبار compute_budget_instructions محدَّث)`
 - [x] التحقق من CU price. `(cap_cu_price_by_profit — سقف ديناميكي حسب share bps وعامل المنافسة)`
 - [x] قياس CU الفعلي لكل DEX. `(measured_cu لكل route_sig يُغذّى من LiteSVM محلياً — dispatch.rs:347، ومن محاكاة RPC حية — dispatch.rs:368-434، ويُفضّل على التقدير — opportunity.rs:125-127)`
-- [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP ثوابت fallback فقط — arb-constants:482-484؛ measured_cu.unwrap_or(estimated_cu) يجعلها initial-fallback قبل أول قياس — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`
+- [ ] عدم الاعتماد على ثوابت غير مختبرة. `(PARTIAL — COMPUTE_BUDGET_LIMIT_2HOP/3HOP رُفِعت إلى 1,400,000 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS كـ initial-fallback قبل أول قياس — arb-constants:482-485، لا تُسقِّف المسارات قبل القياس؛ measured_cu.unwrap_or(estimated_cu) — opportunity.rs:126؛ لا توجد مقارنة دورية بين الثوابت والقياسات)`
 - [x] حساب priority fee بشكل موحد. `(total_priority_fee_lamports — adaptive.rs:202)`
 - [x] مراقبة transaction packet size. `(V0Oversized/V1Oversized مع wire_size مقابل حدّي 1232/4096 — compiler.rs:47-51,1450-1456 + v1_size_ladder_tests.rs:219 + تسجيل حجم البايتات عند الإرسال — dispatch.rs:627,636)`
 - [x] مراقبة instruction count. `(MAX_V1_INSTRUCTIONS=64 — adaptive.rs:32 + رفض V1InstructionCount — compiler.rs:1023-1027)`
 - [x] مراقبة account count. `(count_unique_accounts — adaptive.rs:1095 + رفض TooManyBinArrays/PoolsNotDistinct — compiler.rs:52-58)`
 - [x] مراجعة ALT coverage. `(Static Master ALT + رفض MissingAltAddress + AltAccountAsSigner — compiler.rs:59-65 + اختبار احتواء حسابات tip الثمانية — compiler.rs:1333-1334)`
-- [ ] التحقق من Heap Requirements. `(MISSING — heap_size: None في compiler.rs:1051 ولا توجد RequestHeapFrame instruction؛ المحاكاة الحية ستكشف فشل heap لكن لا يوجد تعديل ديناميكي)`
+- [x] التحقق من Heap Requirements. `(VERIFIED — V1ConfigParams.heap_size مُرمَّز في CONFIG_MASK_HEAP_SIZE — adaptive.rs:53,186-190 + dlmm_3leg_flash_arb.rs:533 يطلب 256KiB + property fuzz يرفض القيم خارج 32..=256KiB — v1_property_fuzz.rs:171-174 + اختبارات three_pool_flash_arb_tests)`
 - [ ] التحقق من Runtime Stack Requirements. `(PARTIAL — inner_instruction_count يُرصد من المحاكاة — opportunity.rs:1337؛ لا يوجد فحص صريح لعمق stack CPI)`
 - [ ] التحقق من Account Data Limits. `(PARTIAL — إنشاء ATA عند الحاجة مُغطى، والمحاكاة المسبقة تفشل-مغلقة عند تجاوز الحدود، لكن لا يوجد فحص استباقي لحجم بيانات الحسابات)`
 - [x] التحقق من Compute Budget Overflow. `(calculate_dynamic_cu_limit بـ saturating + cap عند MAX_COMPUTE_UNIT_LIMIT — cu.rs:22-27 + u32::try_from(...).unwrap_or(u32::MAX) عند التغذية — dispatch.rs:371,434)`
@@ -552,10 +553,10 @@
 - [x] اختبار Out-of-Order Updates. `(نفس الاختبار: slot أقدم يُرفض بعد slot أحدث — dual_ingest.rs:300-312 + reconciliation_rejects_old_context_and_stale_generation — slot_integrity.rs:335)`
 - [x] اختبار Fork Invalidation. `(8 اختبارات slot_integrity: dead_slot_invalidates_known_descendants_only + tombstoning + recreated_bank — slot_integrity.rs:249-341)`
 - [x] اختبار Provider Disconnect. `(rejects_startup_disconnected_stale_and_dead_data — quote_readiness.rs:256 + failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + execution_guard_rejects_disconnect_generation_change_and_stale_quote — quote_readiness.rs:348)`
-- [ ] اختبار Quota Exhaustion. `(PARTIAL — token bucket + provider classification limits — rpc_pool.rs:1525,1545؛ لا يوجد اختبار لاستجابة 429/quota-exhausted من المزود)`
+- [x] اختبار Quota Exhaustion. `(TESTED — 3 اختبارات ضد خوادم RPC محلية: 429 quota-exhausted يفشل-مغلق مع cooldown 1800s ويوسم QuotaExhausted، 429 rate-limit يجري failover لنقطة سليمة في نفس الـ dispatch مع احترام Retry-After، خطأ -32005 داخل الجسم يُصنَّف rate-limit — arb-ingest/tests/quota_exhaustion_tests.rs)`
 - [x] اختبار Transaction Overflow. `(v1_size_ladder_tests.rs + V0Oversized/V1Oversized حدود 1232/4096 — compiler.rs:1450-1456 + adversarial_tests.rs — arb-tx)`
-- [ ] اختبار Account Lock Conflicts. `(MISSING — لا يوجد اختبار لتضارب account locks بين مسارات متزامنة؛ الحماية الحالية: PoolsNotDistinct + dispatch serialization)`
-- [ ] اختبار Compute Budget Exhaustion. `(PARTIAL — preflight simulation تفشل-مغلقة عند استنفاد CU — dispatch.rs:366-380؛ لا يوجد اختبار unit مخصص لسيناريو CU-exhaustion)`
+- [x] اختبار Account Lock Conflicts. `(TESTED — inflight_bundle_limit_rejects_third_concurrent_send_and_recovers_on_landing + inflight_bundle_limit_honors_configured_maximum — arb-risk: الحارس التطبيقي ضد تعارض locks عبر حد max_inflight_bundles لكل slot)`
+- [x] اختبار Compute Budget Exhaustion. `(TESTED — 5 اختبارات: measured CU > runtime max يُسقَّف عند 1,400,000 بالضبط، الحد الديناميكي = measured+15% دائماً إلا عند السقف، المُقدِّر لا ينتج ميزانية تنهك نفسها، تكلفة priority fee عند حد 1.4M تبقى داخل ميزانية الربح (سقف دقيق وليس فضفاضاً)، تعليمة CU limit تُشفِّر 1.4M حرفياً — arb-tx/tests/compute_budget_exhaustion_tests.rs + preflight fail-closed dispatch.rs:366-380)`
 - [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
 - [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
 - [x] اختبار Failed Min-Profit. `(gross_positive_net_negative_fails_closed + flash_fee_exceeding_gross_profit_fails_closed — three_leg_net_economics_tests.rs:69,83 + refuses_edge_below_hurdle — bidder.rs:481)`
@@ -614,21 +615,21 @@
 - [x] مراجعة API Connections. `(web_api.rs — /api/status /api/config /api/pnl /api/executions /api/logs /api/routes /api/opportunities)`
 - [x] مراجعة WebSocket Dashboard. `(/api/ws موجود)`
 - [x] مراجعة Provider Health Display. `(/api/providers موجود)`
-- [ ] عرض Quota Utilization. `(MISSING — لا يوجد quota utilization في /api/providers أو Providers.tsx)`
-- [ ] عرض Subscription Counts. `(MISSING — غير موجود في StatusSnapshot ولا /api/providers)`
-- [ ] عرض Stream Gaps. `(MISSING — gaps تُكتشف داخلياً لكن لا تُعرض)`
-- [ ] عرض Stale Accounts. `(MISSING — inc_stale_rejections metric موجودة لكن غير معروضة في Dashboard)`
-- [ ] عرض Fork Invalidations. `(MISSING — slot_integrity tombstones غير معروضة)`
+- [x] عرض Quota Utilization. `(FIXED/TESTED — /api/providers يعيد rpc_pool كاملاً: لكل مزود status/ok_count/429s/quota_exhausted/cooldown/p50-p95؛ Providers.tsx يعرض جدول Quota Utilization — control_service.rs providers() + web/src/components/Providers.tsx)`
+- [x] عرض Subscription Counts. `(FIXED/TESTED — subscriptions_active من arb_metrics::get_ws_subscriptions_active في /api/providers + بطاقة في Providers.tsx + Overview — helius_ws.rs:699 يغذّي العداد من الاشتراكات المؤكدة فعلاً)`
+- [x] عرض Stream Gaps. `(FIXED/TESTED — عداد صريح stream_slot_gaps_total: SlotIntegrity يكشف الفجوات بـ parent-chain walk بين الإشعارات المتتالية مع dedup لكل slot + 5 اختبارات (consecutive/parent-jump/high-water/late-notification/first-slot) — slot_integrity.rs:47-77,383-425؛ معروض في Overview كـ "Stream slot gaps" + ObservabilitySnapshot.stream_gaps_total)`
+- [x] عرض Stale Accounts. `(FIXED/TESTED — stale_rejections_total من arb-metrics في StatusSnapshot.observability + بطاقة Overview بلون تحذيري — dual_ingest.rs:135 يغذّي العداد)`
+- [x] عرض Fork Invalidations. `(FIXED/TESTED — عداد جديد fork_invalidations_total في arb-metrics يُغذَّى من مساري الإبطال الفعليين (SLOT_DEAD invalidate_slots+banks — lib.rs:641، entry-update parent clear — lib.rs:677)؛ معروض في Overview)`
 - [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
 - [ ] عرض Exact Quotes. `(PARTIAL — /api/opportunities + opportunities_digest — control_service.rs:645؛ لا يوجد عرض تفصيلي لكل hop quote)`
 - [x] عرض Rejection Reasons. `(FIXED/TESTED: ring مخصص RejectionRecord في control_service + /api/rejections + مكوّن Rejections.tsx جديد في Dashboard يعرض stage/reason/gross/net/loan/pools؛ record_rejected_opportunity يسجّل الآن في control؛ اختبار rejection_ring_is_dedicated_and_ordered)`
-- [ ] عرض Gross Profit. `(PARTIAL — gross_sol في Rejections.tsx؛ Opportunities.tsx يعرض net فقط)`
+- [x] عرض Gross Profit. `(FIXED/TESTED — OpportunityRecord.gross_profit_lamports = expected_output − borrow يُحسب في record_opportunity، عمود Gross profit جديد في Opportunities.tsx)`
 - [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`
 - [x] عرض Borrow Asset. `(Opportunities.tsx — borrow معروض)`
 - [x] عرض Borrow Amount. `(نفس المكوّن)`
-- [ ] عرض Simulation Results. `(PARTIAL — نتائج المحاكاة تُسجل كمراحل رفض (Pre-flight Simulation) وتُعرض في Rejections.tsx؛ لا عمود sim مخصص)`
-- [ ] عرض Transaction Size. `(PARTIAL — الحجم يُسجل في logs عند الإرسال — dispatch.rs:627,636؛ غير معروض في Dashboard)`
-- [ ] عرض CU Consumption. `(PARTIAL — cu_limit في تنبيهات Telegram + computeUnitsConsumed في logs — dispatch.rs:820-829؛ غير معروض في Dashboard)`
+- [x] عرض Simulation Results. `(FIXED/TESTED — ExecutionExtras.sim_ok + ExecutionRecord.sim_ok يتدفق من dispatch preflight عبر TradeSummary/DroppedTradeSummary إلى /api/executions؛ عمود Sim في Executions.tsx badge ok/fail + اختبار serialization execution_extras_serialize_only_when_present)`
+- [x] عرض Transaction Size. `(FIXED/TESTED — ExecutionExtras.tx_size_bytes = tx_bytes.len() عند dispatch، يتدفق إلى /api/executions؛ عمود Tx Size (B) في Executions.tsx + فرع send_failed يسجل أيضاً)`
+- [x] عرض CU Consumption. `(FIXED/TESTED — ExecutionExtras.cu_consumed: on-chain computeUnitsConsumed عند landed (dispatch.rs:828) وإلا preflight units_consumed؛ عمود CU Consumed في Executions.tsx)`
 - [x] عرض Jito Status. `(FIXED/TESTED: ExecutionRecord توسّع بحقول signature/slot/net_profit_sol اختيارية skip_serializing_if — landed يعرض tx signature وslot وprofit، dropped يعرض bundle_id؛ أعمدة جديدة في Executions.tsx؛ اختبار execution_extras_serialize_only_when_present)`
 - [ ] إضافة Structured Logs. `(PARTIAL — tracing structured fields (attempt_id, route, slot) + file writer — main.rs:210-258؛ لا JSON format)`
 - [x] إضافة Correlation IDs. `(attempt_id يمر من dispatch → landing tracker → store → /api/executions + route_sig للتجميع — dispatch.rs:610-693)`

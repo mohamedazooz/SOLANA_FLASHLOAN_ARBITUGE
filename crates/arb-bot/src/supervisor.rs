@@ -503,6 +503,16 @@ impl Supervisor {
             stream_connected: self.ingest.stream_connected(),
             helius_connected: self.ingest.helius_connected(),
             route_coverage: self.route_coverage(),
+            observability: crate::control_service::ObservabilitySnapshot {
+                ws_subscriptions_active: arb_metrics::get_ws_subscriptions_active(),
+                ws_reconnects_total: arb_metrics::get_ws_reconnects_total(),
+                stale_rejections_total: arb_metrics::get_stale_rejections_total(),
+                fork_invalidations_total: arb_metrics::get_fork_invalidations_total(),
+                resyncs_total: arb_metrics::get_resyncs_total(),
+                stream_gaps_total: arb_metrics::get_stream_slot_gaps_total(),
+                decode_errors_total: arb_metrics::get_decode_errors_total(),
+            },
+            providers_health: serde_json::to_value(self.rpc_pool.health_snapshot()).ok(),
         });
     }
 
@@ -635,6 +645,9 @@ impl Supervisor {
         let signature = trade.signature.clone();
         let slot = trade.slot;
         let profit_sol = trade.profit_sol;
+        let sim_ok = trade.sim_ok;
+        let tx_size_bytes = trade.tx_size_bytes;
+        let cu_consumed = trade.cu_consumed;
         guard.push(trade);
         drop(guard);
         if let Some(control) = control {
@@ -646,6 +659,9 @@ impl Supervisor {
                     signature: Some(signature),
                     slot: Some(slot),
                     net_profit_sol: Some(profit_sol),
+                    sim_ok,
+                    tx_size_bytes,
+                    cu_consumed,
                 },
             );
             control.record_execution_result(true);
@@ -669,6 +685,9 @@ impl Supervisor {
         let status = dropped.reason.clone();
         let bundle_id = dropped.bundle_id.clone();
         let slot = dropped.slot;
+        let sim_ok = dropped.sim_ok;
+        let tx_size_bytes = dropped.tx_size_bytes;
+        let cu_consumed = dropped.cu_consumed;
         guard.push(dropped);
         drop(guard);
         if let Some(control) = control {
@@ -680,6 +699,9 @@ impl Supervisor {
                     signature: (!bundle_id.is_empty()).then_some(bundle_id),
                     slot: (slot > 0).then_some(slot),
                     net_profit_sol: None,
+                    sim_ok,
+                    tx_size_bytes,
+                    cu_consumed,
                 },
             );
             control.record_execution_result(false);

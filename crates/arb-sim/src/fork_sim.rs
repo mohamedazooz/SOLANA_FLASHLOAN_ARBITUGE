@@ -488,6 +488,116 @@ impl ForkSimulator {
     }
 }
 
+/// Actual balance changes extracted from a landed transaction's
+/// `getTransaction` metadata (jsonParsed encoding).
+///
+/// Every field is computed only from on-chain evidence; nothing is invented.
+/// `realized_net_wsol` is the honest realized PnL in raw WSOL lamports:
+/// the fee payer's lamport delta plus any WSOL token-balance delta owned by
+/// the payer (profit may land as unwrapped lamports or wrapped WSOL).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LandedBalanceChanges {
+    /// `postBalances[0] - preBalances[0]` of the fee payer. Negative = fees and
+    /// tips paid; positive = net lamports received.
+    pub fee_payer_lamport_delta: i128,
+    /// Summed raw WSOL token delta across every token account owned by the
+    /// payer. `None` when the metadata carries no payer WSOL token balances.
+    pub wsol_token_delta: Option<i128>,
+    /// Realized net in raw WSOL lamports when any balance evidence exists:
+    /// `fee_payer_lamport_delta + wsol_token_delta` (token part treated as 0
+    /// when absent). `None` only when neither lamport nor token evidence exists.
+    pub realized_net_wsol: Option<i128>,
+}
+
+/// Parse a landed `getTransaction` response into actual balance changes.
+///
+/// `meta` is the full RPC response value (the function reads its `meta`
+/// object). `payer` and `wsol_mint` are base58 strings used to attribute
+/// token-balance entries; pool vaults owned by other authorities are ignored.
+pub fn parse_landed_balance_changes(
+    meta: &Value,
+    payer: &str,
+    wsol_mint: &str,
+) -> LandedBalanceChanges {
+    let meta_obj = meta.get("meta").unwrap_or(meta);
+
+    let pre = parse_u64_array(meta_obj.get("preBalances"));
+    let post = parse_u64_array(meta_obj.get("postBalances"));
+    let fee_payer_lamport_delta = match (pre.first(), post.first()) {
+        (Some(p), Some(q)) => *q as i128 - *p as i128,
+        _ => 0,
+    };
+    let has_lamport_evidence = !pre.is_empty() && !post.is_empty();
+
+    let payer_token_delta = |side: &Value| -> HashMap<u8, i128> {
+        let mut map = HashMap::new();
+        if let Some(arr) = side.as_array() {
+            for b in arr {
+                let idx = match b.get("accountIndex").and_then(Value::as_u64) {
+                    Some(i) => match u8::try_from(i) {
+                        Ok(i) => i,
+                        Err(_) => continue,
+                    },
+                    None => continue,
+                };
+                let mint = b.get("mint").and_then(Value::as_str).unwrap_or("");
+                if mint != wsol_mint {
+                    continue;
+                }
+                if let Some(owner) = b.get("owner").and_then(Value::as_str)
+                    && owner != payer
+                {
+                    continue;
+                }
+                if let Some(amount) = b
+                    .get("uiTokenAmount")
+                    .and_then(|u| u.get("amount"))
+                    .and_then(Value::as_str)
+                    && let Ok(a) = amount.parse::<i128>()
+                {
+                    map.insert(idx, a);
+                }
+            }
+        }
+        map
+    };
+
+    let pre_tokens = payer_token_delta(meta_obj.get("preTokenBalances").unwrap_or(&Value::Null));
+    let post_tokens = payer_token_delta(meta_obj.get("postTokenBalances").unwrap_or(&Value::Null));
+
+    let wsol_token_delta = if pre_tokens.is_empty() && post_tokens.is_empty() {
+        None
+    } else {
+        let mut keys: Vec<u8> = pre_tokens
+            .keys()
+            .chain(post_tokens.keys())
+            .copied()
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        Some(
+            keys.iter()
+                .map(|k| {
+                    post_tokens.get(k).copied().unwrap_or(0)
+                        - pre_tokens.get(k).copied().unwrap_or(0)
+                })
+                .sum::<i128>(),
+        )
+    };
+
+    let realized_net_wsol = if wsol_token_delta.is_some() || has_lamport_evidence {
+        Some(fee_payer_lamport_delta + wsol_token_delta.unwrap_or(0))
+    } else {
+        None
+    };
+
+    LandedBalanceChanges {
+        fee_payer_lamport_delta,
+        wsol_token_delta,
+        realized_net_wsol,
+    }
+}
+
 fn parse_u64_array(value: Option<&Value>) -> Vec<u64> {
     value
         .and_then(Value::as_array)
@@ -526,6 +636,107 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PAYER: &str = "Payer11111111111111111111111111111111111111";
+    const WSOL: &str = "So11111111111111111111111111111111111111112";
+
+    fn landed_meta(
+        pre_balances: Vec<u64>,
+        post_balances: Vec<u64>,
+        pre_tokens: Value,
+        post_tokens: Value,
+    ) -> Value {
+        json!({
+            "meta": {
+                "preBalances": pre_balances,
+                "postBalances": post_balances,
+                "preTokenBalances": pre_tokens,
+                "postTokenBalances": post_tokens,
+            }
+        })
+    }
+
+    fn payer_wsol_entry(idx: u64, amount: &str) -> Value {
+        json!({
+            "accountIndex": idx,
+            "mint": WSOL,
+            "owner": PAYER,
+            "uiTokenAmount": {"amount": amount, "decimals": 9}
+        })
+    }
+
+    #[test]
+    fn landed_profit_in_wsol_is_summed_from_payer_accounts_only() {
+        let meta = landed_meta(
+            vec![1_000_000_000, 5_000_000_000],
+            vec![995_000_000, 5_000_000_000],
+            json!([
+                payer_wsol_entry(2, "10000000"),
+                json!({"accountIndex": 3, "mint": WSOL, "owner": "Vault11111111111111111111111111111111111111",
+                       "uiTokenAmount": {"amount": "999", "decimals": 9}}),
+            ]),
+            json!([
+                payer_wsol_entry(2, "15500000"),
+                json!({"accountIndex": 3, "mint": WSOL, "owner": "Vault11111111111111111111111111111111111111",
+                       "uiTokenAmount": {"amount": "5000", "decimals": 9}}),
+            ]),
+        );
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.fee_payer_lamport_delta, -5_000_000);
+        assert_eq!(c.wsol_token_delta, Some(5_500_000));
+        assert_eq!(c.realized_net_wsol, Some(500_000));
+    }
+
+    #[test]
+    fn landed_profit_in_unwrapped_lamports_has_no_token_delta() {
+        let meta = landed_meta(
+            vec![1_000_000_000],
+            vec![1_001_200_000],
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+        );
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.fee_payer_lamport_delta, 1_200_000);
+        assert_eq!(c.wsol_token_delta, None);
+        assert_eq!(c.realized_net_wsol, Some(1_200_000));
+    }
+
+    #[test]
+    fn closed_payer_token_account_counts_as_full_negative_delta() {
+        let meta = landed_meta(
+            vec![1_000_000_000],
+            vec![999_000_000],
+            json!([payer_wsol_entry(1, "7000000")]),
+            json!([]),
+        );
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.wsol_token_delta, Some(-7_000_000));
+        assert_eq!(c.realized_net_wsol, Some(-8_000_000));
+    }
+
+    #[test]
+    fn missing_balance_evidence_yields_none_not_zero() {
+        let meta = json!({"meta": {}});
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.fee_payer_lamport_delta, 0);
+        assert_eq!(c.wsol_token_delta, None);
+        assert_eq!(c.realized_net_wsol, None);
+    }
+
+    #[test]
+    fn non_wsol_mints_are_ignored() {
+        let mut entry = payer_wsol_entry(1, "100");
+        entry["mint"] = json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+        let meta = landed_meta(
+            vec![1_000_000_000],
+            vec![999_000_000],
+            json!([entry]),
+            json!([entry]),
+        );
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.wsol_token_delta, None);
+        assert_eq!(c.realized_net_wsol, Some(-1_000_000));
+    }
 
     #[test]
     fn simulator_without_endpoint_fails_closed() {

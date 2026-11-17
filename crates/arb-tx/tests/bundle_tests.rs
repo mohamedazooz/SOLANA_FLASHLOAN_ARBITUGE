@@ -233,11 +233,11 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         "2-hop bundle must contain strictly 7 instructions"
     );
 
-    // [0] SetComputeUnitLimit: 260_000 CU
+    // [0] SetComputeUnitLimit: 1_400_000 CU (runtime max fallback)
     assert_eq!(get_cu_limit_for_hops(2), COMPUTE_BUDGET_LIMIT_2HOP);
     assert_eq!(ixs[0].data[0], 2); // SetComputeUnitLimit tag
     assert_eq!(&ixs[0].data[1..5], &COMPUTE_BUDGET_LIMIT_2HOP.to_le_bytes());
-    assert_eq!(&ixs[0].data[1..5], &[0xA0, 0xF7, 0x03, 0x00]); // 260,000 = 0x0003F7A0
+    assert_eq!(&ixs[0].data[1..5], &[0xC0, 0x5C, 0x15, 0x00]); // 1,400,000 = 0x00155CC0
 
     // [1] SetComputeUnitPrice
     assert_eq!(ixs[1].data[0], 3); // SetComputeUnitPrice tag
@@ -378,10 +378,10 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
         "3-hop bundle must contain strictly 8 instructions"
     );
 
-    // [0] SetComputeUnitLimit: 320_000 CU
+    // [0] SetComputeUnitLimit: 1_400_000 CU (runtime max fallback)
     assert_eq!(ixs[0].data[0], 2);
     assert_eq!(&ixs[0].data[1..5], &COMPUTE_BUDGET_LIMIT_3HOP.to_le_bytes());
-    assert_eq!(&ixs[0].data[1..5], &[0x00, 0xE2, 0x04, 0x00]); // 320,000 = 0x0004E200
+    assert_eq!(&ixs[0].data[1..5], &[0xC0, 0x5C, 0x15, 0x00]); // 1,400,000 = 0x00155CC0
 
     // [2] KaminoFlashBorrow at index 2
     assert_eq!(

@@ -37,6 +37,36 @@ export default function Overview({ status }: { status: StatusSnapshot | null }) 
         <Stat label="Executed" value={status.executed_total.toLocaleString()} />
         <Stat label="Successful" value={status.successful_total.toLocaleString()} tone="tone-green" />
         <Stat label="Failed" value={status.failed_total.toLocaleString()} tone="tone-red" />
+        {status.observability && (
+          <>
+            <Stat
+              label="WS subscriptions"
+              value={String(status.observability.ws_subscriptions_active)}
+              tone={status.observability.ws_subscriptions_active > 0 ? "tone-green" : "tone-red"}
+            />
+            <Stat label="Stream reconnects" value={String(status.observability.ws_reconnects_total)} />
+            <Stat
+              label="Stale rejections"
+              value={String(status.observability.stale_rejections_total)}
+              tone={status.observability.stale_rejections_total > 0 ? "tone-red" : ""}
+            />
+            <Stat
+              label="Fork invalidations"
+              value={String(status.observability.fork_invalidations_total)}
+            />
+            <Stat label="Resyncs" value={String(status.observability.resyncs_total)} />
+            <Stat
+              label="Stream slot gaps"
+              value={String(status.observability.stream_gaps_total)}
+              tone={status.observability.stream_gaps_total > 0 ? "tone-red" : ""}
+            />
+            <Stat
+              label="Decode errors"
+              value={String(status.observability.decode_errors_total)}
+              tone={status.observability.decode_errors_total > 0 ? "tone-red" : ""}
+            />
+          </>
+        )}
         <Stat
           label="Net PnL (SOL)"
           value={status.net_pnl_sol.toFixed(6)}

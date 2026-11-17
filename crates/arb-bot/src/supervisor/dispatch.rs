@@ -361,6 +361,11 @@ impl Supervisor {
                 // that can silently turn this guard off.
                 let sim_enabled = true;
 
+                // Pre-flight provenance carried into execution records: the sim
+                // outcome and wire size are known before any submission, while
+                // cu_consumed is replaced by on-chain meta when the tx lands.
+                let mut preflight_cu: Option<u64> = None;
+
                 if sim_enabled {
                     // RPC simulation: fail-closed safety check before dispatch
                     match self.simulator.simulate_async(tx_bytes.as_slice()).await {
@@ -370,6 +375,7 @@ impl Supervisor {
                                     route_sig.to_owned(),
                                     u32::try_from(sim_res.units_consumed).unwrap_or(u32::MAX),
                                 );
+                                preflight_cu = Some(sim_res.units_consumed);
                             }
                             if !sim_res.success {
                                 warn!(
@@ -433,6 +439,7 @@ impl Supervisor {
                                             route_sig.to_owned(),
                                             u32::try_from(units_consumed).unwrap_or(u32::MAX),
                                         );
+                                        preflight_cu = Some(units_consumed);
                                     }
                                     if let Some(err_str) = sim_err {
                                         warn!(
@@ -733,6 +740,10 @@ impl Supervisor {
                         let recent_landed_task = self.recent_landed.clone();
                         let recent_dropped_task = self.recent_dropped.clone();
                         let control_task = self.control().cloned();
+                        let payer_pubkey_task = payer.to_string();
+                        let tx_size_val = tx_bytes.len() as u64;
+                        let preflight_cu_task = preflight_cu;
+                        let mut actual_realized_net: Option<Lamports> = None;
                         let last_valid_height_task =
                             last_valid_block_height.unwrap_or(0).max(0) as u64;
 
@@ -811,6 +822,7 @@ impl Supervisor {
                             let effective_slot = landed_slot.unwrap_or(slot_val);
                             match status {
                                 arb_land::LandStatus::Landed => {
+                                    let mut onchain_cu: Option<u64> = None;
                                     if let Some(ref sig) = tx_signature {
                                         if let Ok(Some(meta)) =
                                             signature_rpc.get_transaction_with_metadata(sig).await
@@ -820,9 +832,34 @@ impl Supervisor {
                                                 .and_then(|m| m.get("computeUnitsConsumed"))
                                                 .and_then(|c| c.as_u64())
                                             {
+                                                onchain_cu = Some(cu);
                                                 debug!(
                                                     "On-chain confirmed compute units consumed: {cu}"
                                                 );
+                                            }
+                                            // Actual balance changes from on-chain metadata:
+                                            // realized net recorded to the store prefers this
+                                            // evidence over the pre-dispatch estimate.
+                                            let changes = arb_sim::parse_landed_balance_changes(
+                                                &meta,
+                                                &payer_pubkey_task,
+                                                arb_constants::WSOL_MINT,
+                                            );
+                                            if let Some(actual) = changes.realized_net_wsol {
+                                                info!(
+                                                    "Actual balance changes on-chain: fee_payer_delta={} wsol_token_delta={:?} realized_net_wsol={actual} (estimated {net_profit_val})",
+                                                    changes.fee_payer_lamport_delta,
+                                                    changes.wsol_token_delta
+                                                );
+                                                if let Ok(actual_u64) = u64::try_from(actual) {
+                                                    actual_realized_net =
+                                                        Some(Lamports(actual_u64));
+                                                } else {
+                                                    warn!(
+                                                        "Landed transaction realized a NET LOSS of {actual} raw WSOL lamports (estimated +{}) — store cannot represent negative realized net; loss recorded in logs only",
+                                                        net_profit_val.as_u64()
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -871,7 +908,7 @@ impl Supervisor {
                                     let _ = store.record_outcome(
                                         rec_id,
                                         "landed",
-                                        Some(net_profit_val),
+                                        actual_realized_net.or(Some(net_profit_val)),
                                     );
                                     let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {
@@ -910,6 +947,9 @@ impl Supervisor {
                                         slot: effective_slot,
                                         pools_count: pools_count_task,
                                         leader: effective_leader.clone(),
+                                        sim_ok: Some(true),
+                                        tx_size_bytes: Some(tx_size_val),
+                                        cu_consumed: onchain_cu.or(preflight_cu_task),
                                     };
                                     Supervisor::record_landed_trade_task(
                                         &recent_landed_task,
@@ -955,6 +995,9 @@ impl Supervisor {
                                         route: route_label_task.clone(),
                                         reason: format!("{status:?}"),
                                         slot: effective_slot,
+                                        sim_ok: Some(true),
+                                        tx_size_bytes: Some(tx_size_val),
+                                        cu_consumed: preflight_cu_task,
                                     };
                                     Supervisor::record_dropped_bundle_task(
                                         &recent_dropped_task,
@@ -993,6 +1036,9 @@ impl Supervisor {
                                         route: route_label_task.clone(),
                                         reason: "Failed".to_string(),
                                         slot: effective_slot,
+                                        sim_ok: Some(true),
+                                        tx_size_bytes: Some(tx_size_val),
+                                        cu_consumed: preflight_cu_task,
                                     };
                                     Supervisor::record_dropped_bundle_task(
                                         &recent_dropped_task,
@@ -1020,6 +1066,20 @@ impl Supervisor {
                             .await;
                         let _ = self.store.record_outcome(record.id, "failed", None);
                         let _ = self.store.resolve_dispatch_intent(record.id, "send_failed");
+                        if let Some(control) = self.control() {
+                            control.record_execution_with(
+                                "send_failed",
+                                route_label,
+                                &e.to_string(),
+                                crate::control_service::ExecutionExtras {
+                                    sim_ok: Some(true),
+                                    tx_size_bytes: Some(tx_bytes.len() as u64),
+                                    cu_consumed: preflight_cu,
+                                    ..Default::default()
+                                },
+                            );
+                            control.record_execution_result(false);
+                        }
                         // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
                     }
                 }

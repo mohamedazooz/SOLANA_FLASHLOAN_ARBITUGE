@@ -28,6 +28,8 @@ pub struct OpportunityRecord {
     pub protocol: String,
     pub borrow_lamports: u64,
     pub expected_output_lamports: u64,
+    /// Gross arbitrage profit before fees: expected_output - borrow.
+    pub gross_profit_lamports: i64,
     pub net_profit_lamports: i64,
     pub eligible: bool,
     pub reject_reason: Option<String>,
@@ -53,6 +55,12 @@ pub struct ExecutionRecord {
     pub slot: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub net_profit_sol: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sim_ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cu_consumed: Option<u64>,
 }
 
 /// Optional provenance fields attached to an execution record. Absent fields
@@ -62,6 +70,12 @@ pub struct ExecutionExtras {
     pub signature: Option<String>,
     pub slot: Option<u64>,
     pub net_profit_sol: Option<f64>,
+    /// Pre-flight simulation outcome captured at dispatch time.
+    pub sim_ok: Option<bool>,
+    /// Serialized transaction wire size in bytes.
+    pub tx_size_bytes: Option<u64>,
+    /// Compute units consumed — on-chain meta when landed, pre-flight estimate otherwise.
+    pub cu_consumed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,6 +125,7 @@ pub struct StatusSnapshot {
     pub started_at_unix: u64,
     pub uptime_secs: u64,
     pub route_coverage: Vec<ProtocolCoverage>,
+    pub observability: ObservabilitySnapshot,
 }
 
 struct ControlInner {
@@ -144,6 +159,19 @@ pub struct ProtocolCoverage {
     pub avg_fee_bps: f64,
 }
 
+/// Data-plane observability counters surfaced to the dashboard. Every field
+/// comes from an actual runtime counter (arb-metrics), never a guess.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ObservabilitySnapshot {
+    pub ws_subscriptions_active: u64,
+    pub ws_reconnects_total: u64,
+    pub stale_rejections_total: u64,
+    pub fork_invalidations_total: u64,
+    pub resyncs_total: u64,
+    pub stream_gaps_total: u64,
+    pub decode_errors_total: u64,
+}
+
 /// Read-only view of supervisor state, refreshed by the supervisor loop.
 /// Stored as data (not closures) so the control service never locks the
 /// supervisor itself.
@@ -154,6 +182,10 @@ pub struct ControlDeps {
     pub stream_connected: bool,
     pub helius_connected: bool,
     pub route_coverage: Vec<ProtocolCoverage>,
+    pub observability: ObservabilitySnapshot,
+    /// Serialized `RpcPoolHealth` (per-provider quota utilization, 429s,
+    /// cooldowns, statuses). `None` until the supervisor publishes it.
+    pub providers_health: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +353,7 @@ impl ControlService {
         } else {
             arb_metrics::get_simulated_net_profit_total()
         };
+        let deps_obs = deps.observability.clone();
         StatusSnapshot {
             mode: mode.to_string(),
             execution_enabled: self.inner.execution_enabled.load(Ordering::Acquire),
@@ -339,6 +372,7 @@ impl ControlService {
             started_at_unix: now_unix().saturating_sub(self.inner.started_at.elapsed().as_secs()),
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
             route_coverage: deps.route_coverage,
+            observability: deps_obs,
         }
     }
 
@@ -381,6 +415,8 @@ impl ControlService {
         serde_json::json!({
             "primary_stream": { "connected": deps.stream_connected, "slot": deps.slot },
             "helius": { "connected": deps.helius_connected, "slot": deps.slot },
+            "rpc_pool": deps.providers_health,
+            "subscriptions_active": deps.observability.ws_subscriptions_active,
         })
     }
 
@@ -430,6 +466,12 @@ impl ControlService {
     // ---- telemetry ingestion (called by the supervisor loop) ------------
 
     pub fn record_opportunity(&self, mut record: OpportunityRecord) {
+        record.gross_profit_lamports = i64::try_from(
+            record
+                .expected_output_lamports
+                .saturating_sub(record.borrow_lamports),
+        )
+        .unwrap_or(0);
         record.captured_at_unix = now_unix();
         if record.eligible {
             self.inner.profitable_total.fetch_add(1, Ordering::Relaxed);
@@ -490,6 +532,9 @@ impl ControlService {
             signature: extras.signature,
             slot: extras.slot,
             net_profit_sol: extras.net_profit_sol,
+            sim_ok: extras.sim_ok,
+            tx_size_bytes: extras.tx_size_bytes,
+            cu_consumed: extras.cu_consumed,
         };
         let mut ring = self.inner.executions.lock();
         if ring.len() == EXECUTION_RING_CAP {
@@ -795,6 +840,7 @@ mod tests {
                 protocol: "dlmm".into(),
                 borrow_lamports: 1,
                 expected_output_lamports: 2,
+                gross_profit_lamports: 0,
                 net_profit_lamports: 3,
                 eligible: true,
                 reject_reason: None,
@@ -860,6 +906,9 @@ mod tests {
         assert!(bare.get("signature").is_none());
         assert!(bare.get("slot").is_none());
         assert!(bare.get("net_profit_sol").is_none());
+        assert!(bare.get("sim_ok").is_none());
+        assert!(bare.get("tx_size_bytes").is_none());
+        assert!(bare.get("cu_consumed").is_none());
 
         svc.record_execution_with(
             "landed",
@@ -869,12 +918,18 @@ mod tests {
                 signature: Some("sig123".into()),
                 slot: Some(42),
                 net_profit_sol: Some(0.001),
+                sim_ok: Some(true),
+                tx_size_bytes: Some(650),
+                cu_consumed: Some(65_461),
             },
         );
         let rich = serde_json::to_value(&svc.executions(1)[0]).unwrap();
         assert_eq!(rich["signature"], "sig123");
         assert_eq!(rich["slot"], 42);
         assert_eq!(rich["net_profit_sol"], 0.001);
+        assert_eq!(rich["sim_ok"], true);
+        assert_eq!(rich["tx_size_bytes"], 650);
+        assert_eq!(rich["cu_consumed"], 65_461);
     }
 
     #[test]

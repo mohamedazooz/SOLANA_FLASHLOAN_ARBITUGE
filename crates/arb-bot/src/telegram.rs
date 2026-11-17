@@ -988,6 +988,12 @@ pub struct TradeSummary {
     pub pools_count: usize,
     #[serde(default)]
     pub leader: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cu_consumed: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -996,6 +1002,12 @@ pub struct DroppedTradeSummary {
     pub route: String,
     pub reason: String,
     pub slot: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sim_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cu_consumed: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize)]

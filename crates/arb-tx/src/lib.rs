@@ -270,14 +270,17 @@ mod tests {
         let dynamic_cu = calculate_dynamic_cu_limit(100_000);
         assert_eq!(dynamic_cu, 115_000); // 100k + 15%
 
-        let capped_cu = calculate_dynamic_cu_limit(400_000);
-        assert_eq!(capped_cu, MAX_COMPUTE_UNIT_LIMIT); // Capped at MAX_COMPUTE_UNIT_LIMIT (350k)
+        let uncapped_cu = calculate_dynamic_cu_limit(400_000);
+        assert_eq!(uncapped_cu, 460_000); // 400k + 15% — below the 1.4M ceiling, not clamped
 
-        // Verify 260k and 320k constants and helpers
-        assert_eq!(COMPUTE_BUDGET_LIMIT_2HOP, 260_000);
-        assert_eq!(COMPUTE_BUDGET_LIMIT_3HOP, 320_000);
-        assert_eq!(get_cu_limit_for_hops(2), 260_000);
-        assert_eq!(get_cu_limit_for_hops(3), 320_000);
+        let capped_cu = calculate_dynamic_cu_limit(1_300_000);
+        assert_eq!(capped_cu, MAX_COMPUTE_UNIT_LIMIT); // 1.3M + 15% clamped at 1.4M runtime max
+
+        // Verify per-hop fallback constants and helper (raised to runtime max)
+        assert_eq!(COMPUTE_BUDGET_LIMIT_2HOP, 1_400_000);
+        assert_eq!(COMPUTE_BUDGET_LIMIT_3HOP, 1_400_000);
+        assert_eq!(get_cu_limit_for_hops(2), 1_400_000);
+        assert_eq!(get_cu_limit_for_hops(3), 1_400_000);
     }
 
     #[test]

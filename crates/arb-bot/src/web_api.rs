@@ -494,6 +494,57 @@ async fn index() -> Html<String> {
     Html(include_str!("../../../dashboard/index.html").to_string())
 }
 
+/// Content type for a served asset, by extension. Unknown extensions are
+/// rejected before any file read.
+fn asset_content_type(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit_once('.')?.1.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "js" | "mjs" => "application/javascript",
+        "css" => "text/css",
+        "html" => "text/html",
+        "svg" => "image/svg+xml",
+        "json" => "application/json",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "map" => "application/json",
+        _ => return None,
+    })
+}
+
+/// Read-only static asset serving for the built Vite dashboard (`web/dist`).
+/// Path traversal is rejected: the resolved path must stay inside `web/dist`.
+async fn assets(Path(path): Path<String>) -> Response {
+    if path.contains("..") || path.contains('\\') || asset_content_type(&path).is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let fs_path = std::path::Path::new("web/dist").join(&path);
+    let Ok(canonical) = fs_path.canonicalize() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(dist_root) = std::path::Path::new("web/dist").canonicalize() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !canonical.starts_with(&dist_root) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match std::fs::read(&canonical) {
+        Ok(bytes) => {
+            let ct = asset_content_type(&path).unwrap_or("application/octet-stream");
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, ct),
+                    (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn health() -> &'static str {
     "OK\n"
 }
@@ -518,6 +569,7 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(ws_events))
         .route("/", get(index))
+        .route("/assets/{*path}", get(assets))
         .route("/health", get(health))
         .layer(middleware::from_fn(security_headers))
         .layer(DefaultBodyLimit::max(64 * 1024))
@@ -561,6 +613,61 @@ mod tests {
     use tower::ServiceExt;
 
     const PASSWORD: &str = "test-operator-pass-123";
+
+    #[test]
+    fn asset_content_type_maps_known_extensions_only() {
+        assert_eq!(
+            asset_content_type("assets/index-abc.js"),
+            Some("application/javascript")
+        );
+        assert_eq!(asset_content_type("assets/index-abc.css"), Some("text/css"));
+        assert_eq!(asset_content_type("favicon.ico"), Some("image/x-icon"));
+        assert_eq!(asset_content_type("assets/shell.php"), None);
+        assert_eq!(asset_content_type("noext"), None);
+    }
+
+    #[tokio::test]
+    async fn assets_route_rejects_traversal_and_unknown_extensions() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let app = router(test_control()).unwrap();
+        for evil in [
+            "/assets/../Cargo.toml",
+            "/assets/..%2FCargo.toml",
+            "/assets/evil.php",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::get(evil).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "must reject {evil}");
+        }
+    }
+
+    #[tokio::test]
+    async fn assets_route_serves_built_dashboard_assets_when_present() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let app = router(test_control()).unwrap();
+        let res = app
+            .oneshot(
+                Request::get("/assets/index-W0K1hsM-.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        if std::path::Path::new("web/dist/assets/index-W0K1hsM-.js").exists() {
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers().get("content-type").unwrap(),
+                "application/javascript"
+            );
+        } else {
+            assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        }
+    }
 
     // WEB_ADMIN_PASSWORD is process-global; every test that reads or mutates it
     // must hold this lock so cargo's parallel test threads cannot race.

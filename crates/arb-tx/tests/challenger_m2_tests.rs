@@ -375,11 +375,11 @@ fn test_adversarial_account_metas_matrix() {
 // ---------------------------------------------------------------------------
 #[test]
 fn test_adversarial_cu_budget_enforcement() {
-    // 4.1 Strict hop mapping
-    assert_eq!(get_cu_limit_for_hops(2), 260_000);
-    assert_eq!(get_cu_limit_for_hops(3), 320_000);
-    assert_eq!(COMPUTE_BUDGET_LIMIT_2HOP, 260_000);
-    assert_eq!(COMPUTE_BUDGET_LIMIT_3HOP, 320_000);
+    // 4.1 Strict hop mapping (fallbacks raised to the Solana runtime max)
+    assert_eq!(get_cu_limit_for_hops(2), 1_400_000);
+    assert_eq!(get_cu_limit_for_hops(3), 1_400_000);
+    assert_eq!(COMPUTE_BUDGET_LIMIT_2HOP, 1_400_000);
+    assert_eq!(COMPUTE_BUDGET_LIMIT_3HOP, 1_400_000);
 
     // 4.2 MAX_COMPUTE_UNIT_LIMIT must NOT clamp 320,000
     assert!(
@@ -407,7 +407,7 @@ fn test_adversarial_cu_budget_enforcement() {
     )
     .unwrap();
     let cu_bytes_2hop: [u8; 4] = ixs_2hop[0].data[1..5].try_into().unwrap();
-    assert_eq!(u32::from_le_bytes(cu_bytes_2hop), 260_000);
+    assert_eq!(u32::from_le_bytes(cu_bytes_2hop), 1_400_000);
 
     // 3-Hop
     let opp_3hop = create_n_hop_opportunity(3, 1_000_000_000);
@@ -423,7 +423,7 @@ fn test_adversarial_cu_budget_enforcement() {
     )
     .unwrap();
     let cu_bytes_3hop: [u8; 4] = ixs_3hop[0].data[1..5].try_into().unwrap();
-    assert_eq!(u32::from_le_bytes(cu_bytes_3hop), 320_000);
+    assert_eq!(u32::from_le_bytes(cu_bytes_3hop), 1_400_000);
 
     // 4.4 Boundary rejections: 0, 1, 4, 10 hops
     for invalid_hops in [0, 1, 4, 5, 10] {

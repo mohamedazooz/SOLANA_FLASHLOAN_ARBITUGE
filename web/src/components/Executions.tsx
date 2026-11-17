@@ -28,6 +28,9 @@ export default function Executions() {
             <th>Route</th>
             <th>Signature / Bundle</th>
             <th>Slot</th>
+            <th>Sim</th>
+            <th>Tx Size (B)</th>
+            <th>CU Consumed</th>
             <th>Net Profit (SOL)</th>
             <th>Detail</th>
           </tr>
@@ -54,6 +57,17 @@ export default function Executions() {
                 {r.signature ? `${r.signature.slice(0, 8)}…${r.signature.slice(-6)}` : "—"}
               </td>
               <td className="mono">{r.slot ?? "—"}</td>
+              <td>
+                {r.sim_ok == null ? (
+                  "—"
+                ) : (
+                  <span className={`badge ${r.sim_ok ? "badge-green" : "badge-red"}`}>
+                    {r.sim_ok ? "ok" : "fail"}
+                  </span>
+                )}
+              </td>
+              <td className="mono">{r.tx_size_bytes ?? "—"}</td>
+              <td className="mono">{r.cu_consumed ?? "—"}</td>
               <td className="mono">
                 {r.net_profit_sol != null ? r.net_profit_sol.toFixed(6) : "—"}
               </td>
@@ -62,7 +76,7 @@ export default function Executions() {
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={7} className="muted">
+              <td colSpan={10} className="muted">
                 No executions recorded yet (shadow mode records would appear here).
               </td>
             </tr>

@@ -478,15 +478,18 @@ pub const HOP_SLIPPAGE_MAX_BPS: u64 = 1_000;
 // Compute Budget Limits
 // ============================================================================
 
-/// Compute budget limit for 2-hop arbitrage.
-pub const COMPUTE_BUDGET_LIMIT_2HOP: u32 = 260_000;
-/// Compute budget limit for 3-hop arbitrage.
-pub const COMPUTE_BUDGET_LIMIT_3HOP: u32 = 320_000;
+/// Compute budget limit for 2-hop arbitrage (initial fallback before first measured CU).
+pub const COMPUTE_BUDGET_LIMIT_2HOP: u32 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS;
+/// Compute budget limit for 3-hop arbitrage (initial fallback before first measured CU).
+pub const COMPUTE_BUDGET_LIMIT_3HOP: u32 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS;
 /// Solana runtime protocol consensus maximum compute units per transaction.
 pub const SOLANA_RUNTIME_MAX_COMPUTE_UNITS: u32 = 1_400_000;
-/// Application-level safety ceiling for arbitrage execution.
-/// Keeps priority fee exposure bounded and prevents runaway compute costs on complex routes.
-pub const APPLICATION_SAFETY_CU_LIMIT: u32 = 350_000;
+/// Application-level ceiling for arbitrage execution.
+/// Set to the Solana runtime protocol consensus maximum so complex multi-DEX
+/// flash routes are never clamped below their measured requirement. Priority
+/// fee exposure stays bounded through `cap_cu_price_by_profit` (profit-share
+/// cap), not through a CU ceiling.
+pub const APPLICATION_SAFETY_CU_LIMIT: u32 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS;
 /// Maximum compute unit limit enforced by application policy (delegates to APPLICATION_SAFETY_CU_LIMIT).
 pub const MAX_COMPUTE_UNIT_LIMIT: u32 = APPLICATION_SAFETY_CU_LIMIT;
 /// Compute unit buffer percentage.
