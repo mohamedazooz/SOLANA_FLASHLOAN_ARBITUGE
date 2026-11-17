@@ -116,8 +116,7 @@ fn slippage_is_applied_exactly_once_per_boundary() {
             // amount_in for leg i is the MIN_OUT from previous leg (not expected_out)
             let expected_amount_in = legs[i - 1].1; // previous leg's min_out
             assert_eq!(
-                amount_in,
-                expected_amount_in,
+                amount_in, expected_amount_in,
                 "leg {i} input must be the previous hop's MIN_OUT (not expected_out), contract [borrow, out_1..]"
             );
         }
@@ -162,7 +161,8 @@ fn previous_min_out_covers_next_input_for_every_pair() {
             if slippage == 0 {
                 // At zero slippage, min_out == next_in (no haircut)
                 assert_eq!(
-                    min_out, next_in,
+                    min_out,
+                    next_in,
                     "slippage 0 bps: leg {i} min_out {min_out} != leg {} input {next_in}",
                     i + 1
                 );
@@ -228,8 +228,6 @@ fn min_out_exactly_equal_to_next_input_is_accepted() {
     assert_eq!(legs[0].1, 1_100);
     assert_eq!(legs[1].0, 1_100);
 }
-
-
 
 /// §5.2 (5) — rounding / zero-output / overflow boundaries.
 #[test]
