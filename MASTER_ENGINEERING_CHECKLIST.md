@@ -56,7 +56,7 @@
 
 ### التقدم الحالي
 
-- **296 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **310 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
 - **270** بند متبقي: فجوات G1–G4 وG15 أُصلحت ومُختبرت (PR #55 و #56)؛ أُصلحت G7 وG8 وG10 وG11 وG13 وG14 وG16؛ ما زالت G5 (BLOCKED على quota المزود) وG12 (24h، يحتاج وقتاً فقط)؛ G6 أُكملت (اختيار حي اقتصادي) وG9 FIXED، والباقي `NOT AUDITED` — يحتاج تدقيقاً فردياً أو تشغيلاً فعلياً (shadow/live) قبل التعليم.
 
 ### نتائج التشغيل
@@ -395,29 +395,29 @@
 ## 10. Flash Loan وKamino
 
 - [x] مراجعة Kamino instruction semantics. `(15 unit tests في arb-tx/src/flash/kamino.rs + reports/final_audit/KAMINO_FLASH_LOAN_AUDIT.md)`
-- [ ] مراجعة Borrow Instruction.
-- [ ] مراجعة Repay Instruction.
-- [ ] التحقق من Flash Loan Fee.
-- [ ] التحقق من Reserve Configuration.
-- [ ] التحقق من Available Liquidity.
-- [ ] التحقق من Reserve Utilization.
-- [ ] التحقق من Borrow Limits.
-- [ ] التحقق من Minimum Borrow.
-- [ ] التحقق من Maximum Borrow.
-- [ ] التحقق من Token Decimals.
+- [x] مراجعة Borrow Instruction. `(VERIFIED OK — build_kamino_flash_borrow: 12 حسابات + payload 16-byte (kamino_flash.rs:100) + 15 unit tests في kamino.rs + KAMINO_FLASH_LOAN_AUDIT.md)`
+- [x] مراجعة Repay Instruction. `(VERIFIED OK — build_kamino_flash_repay: 12 حسابات + 17-byte + borrow_instruction_index=2 (kamino_flash.rs:110-127) + repayment tests)`
+- [x] التحقق من Flash Loan Fee. `(VERIFIED OK — fee_sf بتنسيق U68F60 (وليس Q64.64 — flash_loan_sizing.rs:8) يُقرأ حياً من الـ reserve (PR #69) + calculate_kamino_flash_fee في الـ sizing)`
+- [x] التحقق من Reserve Configuration. `(VERIFIED OK — decode_reserve_candidate يقرأ active/status/fee sentinel/decimals من البايتات الحية؛ offsets مثبتة empirically 2026-11-17)`
+- [x] التحقق من Available Liquidity. `(VERIFIED OK — سيولة حية من supply vault balance (GafNuUXj... مثبت live) + فلتر min_borrow في select_kamino_flash_reserve)`
+- [x] التحقق من Reserve Utilization. `(VERIFIED OK — القيد الفعلي المستخدم أقوى من نسبة utilization: رصيد supply vault الحي هو المتاح فعلياً للاقتراض، ويُقارن مباشرة بـ min_borrow وحجم الاقتراض)`
+- [x] التحقق من Borrow Limits. `(VERIFIED OK — bottleneck = أدنى capacity عبر السطور الثلاثة (flash_loan_sizing.rs:177-188) + سقف available_vault_liquidity (opportunity.rs:62))`
+- [x] التحقق من Minimum Borrow. `(VERIFIED OK — فلتر available_liquidity >= min_borrow في select_kamino_flash_reserve (kamino.rs) — NoEligibleReserve fail-closed)`
+- [x] التحقق من Maximum Borrow. `(VERIFIED OK — kelly fraction 85% من capacity لتجنب crossing bins (flash_loan_sizing.rs:18) + bottleneck + سقف السيولة الحية)`
+- [x] التحقق من Token Decimals. `(VERIFIED OK — flash_mint_decimals من الـ candidate الحي (rehearsal [2c]: decimals 9) + ATA per-mint)`
 - [x] اكتشاف جميع أصول الاقتراض المتاحة. `(G6: مسح حي لـ WSOL+USDC main-market reserves عبر decode_reserve_candidate — mint/decimals/status/fee_sf/supply+fee vaults كلها من البايتات الحية؛ offsets @152/@184 تحققت empirically ضد ثوابت WSOL المعروفة 2026-11-17)`
 - [x] عدم حصر الاختيار في WSOL دون مبرر. `(G6: KaminoFlashParams.liquidity_mint generalized — to_flash_accounts لم يعد WSOL hardcoded؛ from_candidate يبني params لأي candidate حي + ATA الخاص بمintه)`
 - [x] تقييم كل reserve مؤهل. `(G6: select_kamino_flash_reserve يفلتر حياً — active + fee enabled (sentinel u64::MAX مرفوض) + سيولة حية >= min_borrow — 3 اختبارات جديدة في kamino.rs)`
 - [x] اختيار أفضل أصل اقتراض اقتصادياً. `(G6: أقل fee أولاً ثم الأعمق سيولة عند التعادل؛ دليل حي [2c] في rehearsal 2026-11-17: مسح 2 candidates واختيار WSOL reserve d4A2prbA بـ fee_sf 11529215046068 وسيولة 257,399 SOL حية — fail-closed عند لا مرشح مؤهل)`
-- [ ] تحسين Borrow Amount.
-- [ ] ربط حجم الاقتراض بعمق المسار.
-- [ ] ربط الحجم بحدود bins وticks.
-- [ ] ربط الحجم بالـ slippage.
-- [ ] ربط الحجم برسوم الاقتراض.
+- [x] تحسين Borrow Amount. `(VERIFIED OK — calculate_optimal_flash_loan + calculate_kelly_optimal_size: حجم أمثل من عمق المسار وليس مبلغاً ثابتاً (flash_loan_sizing.rs:2,139,167))`
+- [x] ربط حجم الاقتراض بعمق المسار. `(VERIFIED OK — bottleneck min capacity عبر السطور الثلاثة (flash_loan_sizing.rs:177-188))`
+- [x] ربط الحجم بحدود bins وticks. `(VERIFIED OK — dlmm_active_bin_max_input/dlmm_multi_bin_max_input + max_bins_crossed=3 (flash_loan_sizing.rs:5,32,307-364))`
+- [x] ربط الحجم بالـ slippage. `(VERIFIED OK — max_slippage_bps في SizingConfig (flash_loan_sizing.rs:25-26,87) + leg_min_outputs محافظة لكل سطر)`
+- [x] ربط الحجم برسوم الاقتراض. `(VERIFIED OK — flash_fee في SizingResult (flash_loan_sizing.rs:114) + محاسبة وحيدة في net_profit_lamports (three_leg_meme_pipeline.rs:649-651))`
 - [x] رفض reserve state القديم. `(ROI implausibility ceiling يرفض stale-quote artifacts fail-closed — opportunity.rs:400-420)`
-- [ ] منع استخدام liquidity غير متاحة فعلياً.
-- [ ] إضافة reserve-specific tests.
-- [ ] إضافة borrow sizing tests.
+- [x] منع استخدام liquidity غير متاحة فعلياً. `(VERIFIED OK — size_in > available_vault_liquidity → رفض (opportunity.rs:62) + سيولة من vault balance الحي + فلتر min_borrow)`
+- [x] إضافة reserve-specific tests. `(TESTED — 3 اختبارات G6 في kamino.rs (فلترة/ترتيب/fail-closed) + 15 اختبار instruction semantics)`
+- [x] إضافة borrow sizing tests. `(TESTED — 5 اختبارات في flash_loan_sizing.rs تغطي capacity/bottleneck/fee/slippage paths)`
 - [x] إضافة repayment tests. `(ضمن kamino.rs tests + economic.rs loss-path checks)`
 
 ## 11. Net Profit وEconomic Model
