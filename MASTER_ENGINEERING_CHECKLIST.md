@@ -56,10 +56,11 @@
 
 ### التقدم الحالي
 
-- **413 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **82** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **417 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **78** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
-- أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، Actual Balance Changes عند landing (dispatch يستخرج computeUnitsConsumed فقط)، Heap Requirements (لا RequestHeapFrame)، Account Lock Conflicts test، Bundle Rejection unit test، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات).
+- أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
+- تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
 
 ### نتائج التشغيل
 
@@ -508,7 +509,7 @@
 - [x] تسجيل Realized Profit. `(realized_net: Lamports مسجّل ومُجمَّع — arb-store/src/lib.rs:37,187-199,311-325؛ الآن من دلتا الأرصدة الفعلية عند landing عند توفرها، والتقدير fallback موثّق)`
 - [x] اختبار Jito Failure. `(recovery.rs:117-146 landed_and_failed_statuses_resolve_to_onchain_outcome + ledger_records_only_evidence + refuses_when_the_tip_market_is_missing — jito_service.rs:950)`
 - [x] اختبار Jito Timeout. `(processed_is_not_landed_and_timeout_is_ambiguous — recovery.rs:134 + poll_until_terminal يعيد Pending بعد استنفاد المحاولات — jito_service.rs:473-491)`
-- [ ] اختبار Bundle Rejection. `(PARTIAL — مسار الرفض مُعالج في dispatch.rs:1013-1022 لكن لا يوجد اختبار unit مخصص لفرع الخطأ هذا في dispatch)`
+- [x] اختبار Bundle Rejection. `(TESTED — 6 اختبارات ضد block-engine محلي: HTTP 400 يرفض مع سبب المحرك، HTTP 200 بلا result ليس قبولاً، bundle id يُعاد عند القبول، حدود 1..=5 قبل الشبكة، unreachable = network error — arb-land/tests/bundle_rejection_tests.rs)`
 - [x] اختبار Landing Confirmation. `(invalid_is_not_landing_evidence + unknown_status_is_not_terminal + missing_result_yields_no_statuses — arb-land lib.rs:731-756 + التحقق المزدوج في jito_service.rs:502-758)`
 
 ## 14. Compute Budget وTransaction Constraints
@@ -523,7 +524,7 @@
 - [x] مراقبة instruction count. `(MAX_V1_INSTRUCTIONS=64 — adaptive.rs:32 + رفض V1InstructionCount — compiler.rs:1023-1027)`
 - [x] مراقبة account count. `(count_unique_accounts — adaptive.rs:1095 + رفض TooManyBinArrays/PoolsNotDistinct — compiler.rs:52-58)`
 - [x] مراجعة ALT coverage. `(Static Master ALT + رفض MissingAltAddress + AltAccountAsSigner — compiler.rs:59-65 + اختبار احتواء حسابات tip الثمانية — compiler.rs:1333-1334)`
-- [ ] التحقق من Heap Requirements. `(MISSING — heap_size: None في compiler.rs:1051 ولا توجد RequestHeapFrame instruction؛ المحاكاة الحية ستكشف فشل heap لكن لا يوجد تعديل ديناميكي)`
+- [x] التحقق من Heap Requirements. `(VERIFIED — V1ConfigParams.heap_size مُرمَّز في CONFIG_MASK_HEAP_SIZE — adaptive.rs:53,186-190 + dlmm_3leg_flash_arb.rs:533 يطلب 256KiB + property fuzz يرفض القيم خارج 32..=256KiB — v1_property_fuzz.rs:171-174 + اختبارات three_pool_flash_arb_tests)`
 - [ ] التحقق من Runtime Stack Requirements. `(PARTIAL — inner_instruction_count يُرصد من المحاكاة — opportunity.rs:1337؛ لا يوجد فحص صريح لعمق stack CPI)`
 - [ ] التحقق من Account Data Limits. `(PARTIAL — إنشاء ATA عند الحاجة مُغطى، والمحاكاة المسبقة تفشل-مغلقة عند تجاوز الحدود، لكن لا يوجد فحص استباقي لحجم بيانات الحسابات)`
 - [x] التحقق من Compute Budget Overflow. `(calculate_dynamic_cu_limit بـ saturating + cap عند MAX_COMPUTE_UNIT_LIMIT — cu.rs:22-27 + u32::try_from(...).unwrap_or(u32::MAX) عند التغذية — dispatch.rs:371,434)`
@@ -554,7 +555,7 @@
 - [x] اختبار Provider Disconnect. `(rejects_startup_disconnected_stale_and_dead_data — quote_readiness.rs:256 + failover_skips_open_circuit_and_recovers_after_success — provider_supervisor.rs:207 + execution_guard_rejects_disconnect_generation_change_and_stale_quote — quote_readiness.rs:348)`
 - [ ] اختبار Quota Exhaustion. `(PARTIAL — token bucket + provider classification limits — rpc_pool.rs:1525,1545؛ لا يوجد اختبار لاستجابة 429/quota-exhausted من المزود)`
 - [x] اختبار Transaction Overflow. `(v1_size_ladder_tests.rs + V0Oversized/V1Oversized حدود 1232/4096 — compiler.rs:1450-1456 + adversarial_tests.rs — arb-tx)`
-- [ ] اختبار Account Lock Conflicts. `(MISSING — لا يوجد اختبار لتضارب account locks بين مسارات متزامنة؛ الحماية الحالية: PoolsNotDistinct + dispatch serialization)`
+- [x] اختبار Account Lock Conflicts. `(TESTED — inflight_bundle_limit_rejects_third_concurrent_send_and_recovers_on_landing + inflight_bundle_limit_honors_configured_maximum — arb-risk: الحارس التطبيقي ضد تعارض locks عبر حد max_inflight_bundles لكل slot)`
 - [ ] اختبار Compute Budget Exhaustion. `(PARTIAL — preflight simulation تفشل-مغلقة عند استنفاد CU — dispatch.rs:366-380؛ لا يوجد اختبار unit مخصص لسيناريو CU-exhaustion)`
 - [x] اختبار Failed Repayment. `(test_cpi_fails_closed_when_repayment_not_covered — arb_executor_cpi_tests.rs:274)`
 - [x] اختبار Failed Min-Out. `(min_hop1_out/hop2_min_out golden values — intermediate_balance_isolation_tests.rs:177,364 + parsed_min_out — p0_golden_vectors.rs:110)`
