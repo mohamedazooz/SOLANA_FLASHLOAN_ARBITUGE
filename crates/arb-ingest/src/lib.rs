@@ -7,9 +7,7 @@ pub mod gmgn;
 pub mod yellowstone_grpc;
 pub use gmgn::{GmgnClient, TrendingToken};
 #[cfg(feature = "yellowstone-grpc")]
-pub use yellowstone_grpc::{
-    GeyserSubscribeRequest, YellowstoneClient, YellowstoneConfig, YellowstoneEvent,
-};
+pub use yellowstone_grpc::{YellowstoneClient, YellowstoneConfig, YellowstoneEvent};
 pub mod meteora_data_api;
 pub use meteora_data_api::{DiscoveredMeteoraPool, MeteoraDataApiClient, MeteoraPoolItem};
 pub mod dependency_manifest;
