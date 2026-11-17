@@ -28,6 +28,8 @@ pub struct OpportunityRecord {
     pub protocol: String,
     pub borrow_lamports: u64,
     pub expected_output_lamports: u64,
+    /// Gross arbitrage profit before fees: expected_output - borrow.
+    pub gross_profit_lamports: i64,
     pub net_profit_lamports: i64,
     pub eligible: bool,
     pub reject_reason: Option<String>,
@@ -111,6 +113,7 @@ pub struct StatusSnapshot {
     pub started_at_unix: u64,
     pub uptime_secs: u64,
     pub route_coverage: Vec<ProtocolCoverage>,
+    pub observability: ObservabilitySnapshot,
 }
 
 struct ControlInner {
@@ -144,6 +147,18 @@ pub struct ProtocolCoverage {
     pub avg_fee_bps: f64,
 }
 
+/// Data-plane observability counters surfaced to the dashboard. Every field
+/// comes from an actual runtime counter (arb-metrics), never a guess.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ObservabilitySnapshot {
+    pub ws_subscriptions_active: u64,
+    pub ws_reconnects_total: u64,
+    pub stale_rejections_total: u64,
+    pub fork_invalidations_total: u64,
+    pub resyncs_total: u64,
+    pub decode_errors_total: u64,
+}
+
 /// Read-only view of supervisor state, refreshed by the supervisor loop.
 /// Stored as data (not closures) so the control service never locks the
 /// supervisor itself.
@@ -154,6 +169,10 @@ pub struct ControlDeps {
     pub stream_connected: bool,
     pub helius_connected: bool,
     pub route_coverage: Vec<ProtocolCoverage>,
+    pub observability: ObservabilitySnapshot,
+    /// Serialized `RpcPoolHealth` (per-provider quota utilization, 429s,
+    /// cooldowns, statuses). `None` until the supervisor publishes it.
+    pub providers_health: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -321,6 +340,7 @@ impl ControlService {
         } else {
             arb_metrics::get_simulated_net_profit_total()
         };
+        let deps_obs = deps.observability.clone();
         StatusSnapshot {
             mode: mode.to_string(),
             execution_enabled: self.inner.execution_enabled.load(Ordering::Acquire),
@@ -339,6 +359,7 @@ impl ControlService {
             started_at_unix: now_unix().saturating_sub(self.inner.started_at.elapsed().as_secs()),
             uptime_secs: self.inner.started_at.elapsed().as_secs(),
             route_coverage: deps.route_coverage,
+            observability: deps_obs,
         }
     }
 
@@ -381,6 +402,8 @@ impl ControlService {
         serde_json::json!({
             "primary_stream": { "connected": deps.stream_connected, "slot": deps.slot },
             "helius": { "connected": deps.helius_connected, "slot": deps.slot },
+            "rpc_pool": deps.providers_health,
+            "subscriptions_active": deps.observability.ws_subscriptions_active,
         })
     }
 
@@ -430,6 +453,12 @@ impl ControlService {
     // ---- telemetry ingestion (called by the supervisor loop) ------------
 
     pub fn record_opportunity(&self, mut record: OpportunityRecord) {
+        record.gross_profit_lamports = i64::try_from(
+            record
+                .expected_output_lamports
+                .saturating_sub(record.borrow_lamports),
+        )
+        .unwrap_or(0);
         record.captured_at_unix = now_unix();
         if record.eligible {
             self.inner.profitable_total.fetch_add(1, Ordering::Relaxed);
@@ -795,6 +824,7 @@ mod tests {
                 protocol: "dlmm".into(),
                 borrow_lamports: 1,
                 expected_output_lamports: 2,
+                gross_profit_lamports: 0,
                 net_profit_lamports: 3,
                 eligible: true,
                 reject_reason: None,

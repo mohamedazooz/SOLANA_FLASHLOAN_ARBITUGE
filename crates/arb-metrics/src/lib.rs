@@ -27,6 +27,7 @@ pub mod metric_names {
     pub const PUMP_SPREAD_BPS: &str = "pump_spread_bps";
     pub const GRADUATION_EVENTS_TOTAL: &str = "graduation_events_total";
     pub const WS_RECONNECTS_TOTAL: &str = "ws_reconnects_total";
+    pub const FORK_INVALIDATIONS_TOTAL: &str = "fork_invalidations_total";
     pub const WS_SUBSCRIPTIONS_ACTIVE: &str = "ws_subscriptions_active";
 }
 
@@ -197,6 +198,18 @@ static WS_SUBSCRIPTIONS_ACTIVE: Lazy<IntGauge> = Lazy::new(|| {
     gauge
 });
 
+static FORK_INVALIDATIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        metric_names::FORK_INVALIDATIONS_TOTAL,
+        "State items invalidated by dead/uncleared fork banks",
+    )
+    .unwrap_or_else(|_| {
+        IntCounter::new(metric_names::FORK_INVALIDATIONS_TOTAL, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(counter.clone()));
+    counter
+});
+
 #[derive(Debug)]
 pub struct MetricsHandle {
     handle: JoinHandle<()>,
@@ -317,6 +330,34 @@ pub fn inc_ws_reconnects() {
 }
 pub fn set_ws_subscriptions_active(v: u64) {
     WS_SUBSCRIPTIONS_ACTIVE.set(v as i64);
+}
+
+pub fn inc_fork_invalidations(n: u64) {
+    FORK_INVALIDATIONS_TOTAL.inc_by(n);
+}
+
+pub fn get_stale_rejections_total() -> u64 {
+    STALE_REJECTIONS_TOTAL.get()
+}
+
+pub fn get_ws_reconnects_total() -> u64 {
+    WS_RECONNECTS_TOTAL.get()
+}
+
+pub fn get_ws_subscriptions_active() -> u64 {
+    WS_SUBSCRIPTIONS_ACTIVE.get().max(0) as u64
+}
+
+pub fn get_resyncs_total() -> u64 {
+    RESYNCS_TOTAL.get()
+}
+
+pub fn get_decode_errors_total() -> u64 {
+    DECODE_ERRORS_TOTAL.get()
+}
+
+pub fn get_fork_invalidations_total() -> u64 {
+    FORK_INVALIDATIONS_TOTAL.get()
 }
 
 #[cfg(test)]

@@ -503,6 +503,15 @@ impl Supervisor {
             stream_connected: self.ingest.stream_connected(),
             helius_connected: self.ingest.helius_connected(),
             route_coverage: self.route_coverage(),
+            observability: crate::control_service::ObservabilitySnapshot {
+                ws_subscriptions_active: arb_metrics::get_ws_subscriptions_active(),
+                ws_reconnects_total: arb_metrics::get_ws_reconnects_total(),
+                stale_rejections_total: arb_metrics::get_stale_rejections_total(),
+                fork_invalidations_total: arb_metrics::get_fork_invalidations_total(),
+                resyncs_total: arb_metrics::get_resyncs_total(),
+                decode_errors_total: arb_metrics::get_decode_errors_total(),
+            },
+            providers_health: serde_json::to_value(self.rpc_pool.health_snapshot()).ok(),
         });
     }
 

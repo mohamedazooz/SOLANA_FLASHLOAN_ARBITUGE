@@ -636,6 +636,7 @@ impl IngestClient {
                 .slot_integrity
                 .lock()
                 .bank_keys_for_slots(invalidated_slots);
+            arb_metrics::inc_fork_invalidations(invalidated.len() as u64 + bank_keys.len() as u64);
             self.account_store.invalidate_slots(&invalidated);
             for (dead_slot, dead_bank) in bank_keys {
                 self.account_store.invalidate_bank(dead_slot, dead_bank);
@@ -675,6 +676,9 @@ impl IngestClient {
             .lock()
             .invalidate_bank(slot, cleared_bank_id);
         let removed = self.account_store.invalidate_bank(slot, cleared_bank_id);
+        if removed > 0 {
+            arb_metrics::inc_fork_invalidations(removed as u64);
+        }
         // PoolState currently has slot/write_version but no bank_id. Clear all pool
         // states at this slot rather than risk keeping one from the cleared candidate.
         self.cache

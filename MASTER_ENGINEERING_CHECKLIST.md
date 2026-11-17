@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **419 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **76** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **424 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **71** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -615,15 +615,15 @@
 - [x] مراجعة API Connections. `(web_api.rs — /api/status /api/config /api/pnl /api/executions /api/logs /api/routes /api/opportunities)`
 - [x] مراجعة WebSocket Dashboard. `(/api/ws موجود)`
 - [x] مراجعة Provider Health Display. `(/api/providers موجود)`
-- [ ] عرض Quota Utilization. `(MISSING — لا يوجد quota utilization في /api/providers أو Providers.tsx)`
-- [ ] عرض Subscription Counts. `(MISSING — غير موجود في StatusSnapshot ولا /api/providers)`
-- [ ] عرض Stream Gaps. `(MISSING — gaps تُكتشف داخلياً لكن لا تُعرض)`
-- [ ] عرض Stale Accounts. `(MISSING — inc_stale_rejections metric موجودة لكن غير معروضة في Dashboard)`
-- [ ] عرض Fork Invalidations. `(MISSING — slot_integrity tombstones غير معروضة)`
+- [x] عرض Quota Utilization. `(FIXED/TESTED — /api/providers يعيد rpc_pool كاملاً: لكل مزود status/ok_count/429s/quota_exhausted/cooldown/p50-p95؛ Providers.tsx يعرض جدول Quota Utilization — control_service.rs providers() + web/src/components/Providers.tsx)`
+- [x] عرض Subscription Counts. `(FIXED/TESTED — subscriptions_active من arb_metrics::get_ws_subscriptions_active في /api/providers + بطاقة في Providers.tsx + Overview — helius_ws.rs:699 يغذّي العداد من الاشتراكات المؤكدة فعلاً)`
+- [ ] عرض Stream Gaps. `(PARTIAL — reconnects + resyncs معروضان الآن في Overview (ws_reconnects_total/resyncs_total)؛ لا يزال لا يوجد عداد gap صريح بمقارنة تسلسل slots — dual_ingest يكتشف داخلياً دون تصدير)`
+- [x] عرض Stale Accounts. `(FIXED/TESTED — stale_rejections_total من arb-metrics في StatusSnapshot.observability + بطاقة Overview بلون تحذيري — dual_ingest.rs:135 يغذّي العداد)`
+- [x] عرض Fork Invalidations. `(FIXED/TESTED — عداد جديد fork_invalidations_total في arb-metrics يُغذَّى من مساري الإبطال الفعليين (SLOT_DEAD invalidate_slots+banks — lib.rs:641، entry-update parent clear — lib.rs:677)؛ معروض في Overview)`
 - [x] عرض Candidate Routes. `(RouteMonitor.tsx + /api/routes)`
 - [ ] عرض Exact Quotes. `(PARTIAL — /api/opportunities + opportunities_digest — control_service.rs:645؛ لا يوجد عرض تفصيلي لكل hop quote)`
 - [x] عرض Rejection Reasons. `(FIXED/TESTED: ring مخصص RejectionRecord في control_service + /api/rejections + مكوّن Rejections.tsx جديد في Dashboard يعرض stage/reason/gross/net/loan/pools؛ record_rejected_opportunity يسجّل الآن في control؛ اختبار rejection_ring_is_dedicated_and_ordered)`
-- [ ] عرض Gross Profit. `(PARTIAL — gross_sol في Rejections.tsx؛ Opportunities.tsx يعرض net فقط)`
+- [x] عرض Gross Profit. `(FIXED/TESTED — OpportunityRecord.gross_profit_lamports = expected_output − borrow يُحسب في record_opportunity، عمود Gross profit جديد في Opportunities.tsx)`
 - [x] عرض Net Profit. `(Opportunities.tsx — net_profit معروض)`
 - [x] عرض Borrow Asset. `(Opportunities.tsx — borrow معروض)`
 - [x] عرض Borrow Amount. `(نفس المكوّن)`

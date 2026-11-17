@@ -56,6 +56,16 @@ export interface StatusSnapshot {
   failed_total: number;
   net_pnl_sol: number;
   uptime_secs: number;
+  observability?: ObservabilitySnapshot;
+}
+
+export interface ObservabilitySnapshot {
+  ws_subscriptions_active: number;
+  ws_reconnects_total: number;
+  stale_rejections_total: number;
+  fork_invalidations_total: number;
+  resyncs_total: number;
+  decode_errors_total: number;
 }
 
 export interface OpportunityRecord {
@@ -65,6 +75,7 @@ export interface OpportunityRecord {
   protocol: string;
   borrow_lamports: number;
   expected_output_lamports: number;
+  gross_profit_lamports?: number;
   net_profit_lamports: number;
   eligible: boolean;
   reject_reason: string | null;

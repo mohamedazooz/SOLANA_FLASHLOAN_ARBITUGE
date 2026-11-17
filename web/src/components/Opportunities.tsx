@@ -51,6 +51,7 @@ export default function Opportunities() {
             <th>Protocol</th>
             <th>Borrow (SOL)</th>
             <th>Expected out</th>
+            <th>Gross profit</th>
             <th>Net profit (SOL)</th>
             <th>Status</th>
           </tr>
@@ -64,6 +65,11 @@ export default function Opportunities() {
               <td>{r.protocol}</td>
               <td className="mono">{lamportsToSol(r.borrow_lamports)}</td>
               <td className="mono">{lamportsToSol(r.expected_output_lamports)}</td>
+              <td className="mono">
+                {r.gross_profit_lamports !== undefined
+                  ? lamportsToSol(r.gross_profit_lamports)
+                  : lamportsToSol(r.expected_output_lamports - r.borrow_lamports)}
+              </td>
               <td className={`mono ${r.net_profit_lamports >= 0 ? "tone-green" : "tone-red"}`}>
                 {lamportsToSol(r.net_profit_lamports)}
               </td>
