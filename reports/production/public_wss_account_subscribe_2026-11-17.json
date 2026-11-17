@@ -1,0 +1,29 @@
+{
+  "wss_url": "wss://api.mainnet-beta.solana.com",
+  "subscriptions": {
+    "id_1": 131610788,
+    "id_2": 131610789,
+    "id_3": 0
+  },
+  "account_updates": [
+    {
+      "subscription": 131610788,
+      "owner": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+      "data_len": 906,
+      "slot": 470547162,
+      "context_slot_matches_notification": true
+    },
+    {
+      "subscription": 131610788,
+      "owner": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+      "data_len": 906,
+      "slot": 470547169,
+      "context_slot_matches_notification": true
+    }
+  ],
+  "slot_notifications": 23,
+  "pool_owner_program_ok": true,
+  "mint_owner_program_ok": false,
+  "pool_update_arrived": true,
+  "mint_update_arrived": false
+}
