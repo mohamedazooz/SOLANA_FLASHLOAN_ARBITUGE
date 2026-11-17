@@ -56,8 +56,8 @@
 
 ### التقدم الحالي
 
-- **447 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
-- **48** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
+- **450 / 495** بند متحقق بدليل ومُعلَّم `[x]` (منها 6 بنود بدليل حي من mainnet شاملة معاملة flash-loan landed).
+- **45** بند متبقي — كلها الآن مُصنّفة صراحة: PARTIAL (منفذ جزئياً بدليل) / MISSING (مكون ناقص) / BLOCKED (قيود خطط مجانية أو وقت 24h/30min) / NOT AUDITED (مراجعة سطرية لم يتم) — لا يوجد بند بلا تصنيف.
 - **الـ 20 محوراً كاملة التدقيق** (Domains 1–20) على commit `c75346b` وما بعده.
 - أهم المتبقيات القابلة للتنفيذ: G5 (Mirage protobuf parser — BLOCKED على quota)، 24-hour Shadow Soak (run-shadow.sh متاح)، تقسيم الملفات >1000 سطر (7 ملفات)، اختبارات Failure Injection + Quota Exhaustion 429 + CU Exhaustion (Domain 15)، 7 شاشات ناقصة في Dashboard (Domain 18)، تحديث FINAL_PRODUCTION_READINESS_REPORT.md بدليل جلسة mainnet الحية 2026-11-17.
 - تم إنجازه في الجلسة الأخيرة: Actual Balance Changes عند landing (FIXED/TESTED — parse_landed_balance_changes في dispatch)، Heap Requirements (VERIFIED)، Account Lock Conflicts (TESTED)، Bundle Rejection (TESTED — 6 اختبارات block-engine محلي).
@@ -567,9 +567,9 @@
 
 - [x] قياس Provider Latency. `(rpc_pool p50/p95/p99 + RttTracker بنصف عمر إحصائي — arb-math/src/latency.rs:38-134)`
 - [x] قياس Account Update Latency. `(dual_ingest_bench.rs يقيس end-to-end ingest latency لمجموعة pool updates حقيقية — arb-ingest/benches:51-63)`
-- [ ] قياس State Processing Latency. `(PARTIAL — مُغطى داخل dual_ingest_bench كوحدة واحدة؛ لا توجد metric منفصلة في runtime)`
-- [ ] قياس Route Discovery Latency. `(PARTIAL — مدمجة مع quote في t_ingest_to_quote_us — strategy.rs:463؛ لا فصل بين discovery وquote)`
-- [ ] قياس Exact Quote Latency. `(PARTIAL — نفس t_ingest_to_quote_us مدمجة + latency_bench يقيس math engine منفصلة في bench mode)`
+- [x] قياس State Processing Latency. `(TESTED — histogram runtime منفصلة state_processing_latency_us في /metrics — strategy.rs يقيس من بداية strategy_cycle (ضعف promotion للـ PumpSwap) حتى جاهزية pools snapshot — arb-metrics ثبتت ومسجلة في REGISTRY)`
+- [x] قياس Route Discovery Latency. `(TESTED — histogram runtime منفصلة route_discovery_latency_us — strategy.rs يقيس من بداية phase 2 (graph build) حتى ترتيب merged (كل فئات الاكتشاف: base cycles، cross-pool، Bellman-Ford، multi-hop، 3-leg، boost))`
+- [x] قياس Exact Quote Latency. `(TESTED — histogram runtime منفصلة exact_quote_latency_us تقيس محركي التسعير الفعليين: find_cross_pool_dlmm_cycles (بحث الحجم) و build_three_leg_meme_pipeline (chained quotes) — strategy.rs + run.rs)`
 - [x] قياس Borrow Sizing Latency. `(latency_bench مرحلة 3: closed-form sizing & equal marginal split ببيانات حية — bin/latency_bench.rs:3-4)`
 - [x] قياس Transaction Build Latency. `(t_assembly_us — opportunity.rs:758,916 + يظهر في تقرير Telegram E2E — dispatch.rs:837-845)`
 - [x] قياس Simulation Latency. `(FIXED/TESTED — Histogram simulation_latency_us في arb-metrics (buckets 1k–5M µs) + observe_simulation_latency_us؛ مُقاس فعلياً حول simulate_async و RpcPool::simulate_transaction fallback في dispatch.rs مع debug log؛ مُصدَّر في /metrics)`

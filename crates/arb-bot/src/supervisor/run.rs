@@ -262,7 +262,10 @@ impl Supervisor {
             ..arb_engine::ThreeLegMemeContextParams::for_discovery(payer)
         };
 
-        let result = match arb_engine::build_three_leg_meme_pipeline(fresh_pools, &params) {
+        let t_exact = std::time::Instant::now();
+        let pipeline = arb_engine::build_three_leg_meme_pipeline(fresh_pools, &params);
+        arb_metrics::observe_exact_quote_latency_us(t_exact.elapsed().as_micros() as f64);
+        let result = match pipeline {
             Ok(r) => r,
             Err(e) => {
                 debug!("Meteora 3-leg DLMM capture skipped: {e}");

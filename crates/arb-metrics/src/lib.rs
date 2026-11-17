@@ -33,6 +33,9 @@ pub mod metric_names {
     pub const STREAM_SLOT_GAPS_TOTAL: &str = "stream_slot_gaps_total";
     pub const WS_SUBSCRIPTIONS_ACTIVE: &str = "ws_subscriptions_active";
     pub const SIMULATION_LATENCY_US: &str = "simulation_latency_us";
+    pub const STATE_PROCESSING_LATENCY_US: &str = "state_processing_latency_us";
+    pub const ROUTE_DISCOVERY_LATENCY_US: &str = "route_discovery_latency_us";
+    pub const EXACT_QUOTE_LATENCY_US: &str = "exact_quote_latency_us";
     pub const PROCESS_RSS_BYTES: &str = "process_rss_bytes";
     pub const PROCESS_CPU_PERCENT: &str = "process_cpu_percent";
 }
@@ -241,6 +244,81 @@ static SIMULATION_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
     histogram
 });
 
+static STATE_PROCESSING_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::STATE_PROCESSING_LATENCY_US,
+            "Strategy-cycle state-processing duration in microseconds (stream promotion + snapshot to pools ready)",
+        )
+        .buckets(vec![
+            1_000.0,
+            5_000.0,
+            10_000.0,
+            25_000.0,
+            50_000.0,
+            100_000.0,
+            250_000.0,
+            500_000.0,
+            1_000_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static ROUTE_DISCOVERY_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::ROUTE_DISCOVERY_LATENCY_US,
+            "Strategy-cycle candidate-route discovery duration in microseconds (graph classes + Bellman-Ford + multi-hop + 3-leg + boost scan)",
+        )
+        .buckets(vec![
+            1_000.0,
+            5_000.0,
+            10_000.0,
+            25_000.0,
+            50_000.0,
+            100_000.0,
+            250_000.0,
+            500_000.0,
+            1_000_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static EXACT_QUOTE_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::EXACT_QUOTE_LATENCY_US,
+            "Exact-quote engine invocation duration in microseconds (cross-pool size search, 3-leg chained quote pipeline)",
+        )
+        .buckets(vec![
+            1_000.0,
+            5_000.0,
+            10_000.0,
+            25_000.0,
+            50_000.0,
+            100_000.0,
+            250_000.0,
+            500_000.0,
+            1_000_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
 static PROCESS_RSS_BYTES: Lazy<IntGauge> = Lazy::new(|| {
     let gauge = IntGauge::new(
         metric_names::PROCESS_RSS_BYTES,
@@ -405,6 +483,18 @@ pub fn inc_stream_slot_gaps(n: u64) {
 
 pub fn observe_simulation_latency_us(us: f64) {
     SIMULATION_LATENCY_US.observe(us);
+}
+
+pub fn observe_state_processing_latency_us(us: f64) {
+    STATE_PROCESSING_LATENCY_US.observe(us);
+}
+
+pub fn observe_route_discovery_latency_us(us: f64) {
+    ROUTE_DISCOVERY_LATENCY_US.observe(us);
+}
+
+pub fn observe_exact_quote_latency_us(us: f64) {
+    EXACT_QUOTE_LATENCY_US.observe(us);
 }
 
 pub fn set_process_rss_bytes(v: u64) {

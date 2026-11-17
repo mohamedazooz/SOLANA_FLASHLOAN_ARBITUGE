@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-10 commit (this push) — refactor(death): dead-code sweep 653 — 447/495
+* **Commit:** batch-11 commit (this push) — feat(metrics): separate runtime latency histograms 570-572 — 450/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1195 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -103,9 +103,19 @@ Nothing in flight — batches 1–4 complete, committed and pushed.
 
 **Checklist after batch 10: 447 / 495 — 48 remaining.**
 
+### Batch 11 — checklist 570, 571, 572 (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 570 State latency | New Prometheus histogram `state_processing_latency_us` measured in `strategy_cycle`: from cycle entry (PumpSwap promotion boundary) to pools-snapshot ready | `arb-metrics/src/lib.rs`, `supervisor/strategy.rs` |
+| 571 Discovery latency | New histogram `route_discovery_latency_us`: section-2 start (graph build) through all discovery classes (base cycles, DLMM cross-pool, Bellman-Ford, multi-hop, 3-leg, boost) until candidates merged | same |
+| 572 Exact-quote latency | New histogram `exact_quote_latency_us` measured around the two exact-quote engines: `find_cross_pool_dlmm_cycles` (size search) and `build_three_leg_meme_pipeline` (chained quotes) — per invocation | same + `supervisor/run.rs` |
+
+**Checklist after batch 11: 450 / 495 — 45 remaining.**
+
 ### Checklist ledger
 
-* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653.
+* Marked `[x]` this session: 618, 619, 621, 622, 626, 620, 630, 631, 632, 575, 584, 585, 634, 638, 563, 541, 624, 542, 222, 504, 637, 578, 580, 581, 586, 647, 609, 656, 653, 570, 571, 572.
 
 ## Problems discovered (this session)
 
