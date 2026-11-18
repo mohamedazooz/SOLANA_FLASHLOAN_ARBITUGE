@@ -16,6 +16,11 @@ solana_keypair.json
 *.keypair.json
 *.keypair
 tls/
+askpass.bat
+test_keys.py
+decode_jwt.py
+arbitrage_report.json
+live_pool_opportunities.json
 
 # ==============================================================================
 # Build Artifacts & Binaries
