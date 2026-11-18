@@ -54,6 +54,8 @@ file:line locations read first-hand.
 | PIPE-11 | P2 | Slot-linear `attempt_id` (INSERT OR REPLACE) + route-id collision window; no cross-tick opportunity dedup | arb-store | fixed @ 14231ec |
 | PIPE-12 | P2 | `landed_status_str` hardcodes "Confirmed / Finalized" regardless of actual lifecycle | `dispatch.rs:988-996`, `jito_service.rs:780-810` | fixed @ fcfb93a |
 | PIPE-14 | P2 | Serialized blocking RPC probes on the hot path | supervisor | closed — see Closure notes |
+| CI-01 | P1 | main-branch CI red after Phase-1/2 merge: fmt drift + Linux-only crates unbuildable under `--all-features` on the default feature set; resolved at merge commit bb82057 (conflict resolution + clang/zstd-free matrix) and CI feature-matrix fix 771a712 (explicit per-feature list instead of `--all-features`) | `.github/workflows/ci.yml`, workspace manifests | fixed @ 771a712 |
+| CI-02 | P1 | Split-routing feature (`arb-bot/split-routing`, `arb-engine/split-routing`) broken by dead-code sweep a317a29 — `RouteArchitectWorker` method wrappers removed while engine free fns live; feature-gated build failed in CI | `arb-engine/src/route_architect.rs`, `arb-bot/src/supervisor/route_architect_worker.rs` | fixed @ 9c76993 |
 
 ## Closure notes (2026-11-18)
 

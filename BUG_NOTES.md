@@ -342,3 +342,56 @@ solana-pubkey = "2.2"
 3. Proceed with Pump.fun-Raydium arbitrage engine implementation
 
 **Permission Request:** هل تعطيني الإذن (Permission) للذهاب وتعديل هذه المشاكل الآن؟
+
+---
+
+## 2026-11-18 — Audit-phase appendix (branch `vibe/audit-final`, PR #77)
+
+### BUG-005 — Quarantined duplicate Pump++Raydium legacy modules (default-off)
+
+- **Context**: discovered during per-feature CI matrix work (CI-02) on
+  `vibe/audit-final` after merging `origin/main`.
+- **Location**: `arb-tx/src/pump_v1_legacy_builder.rs` behind feature
+  `pump-v1-legacy-builder` (crates/arb-tx/Cargo.toml:37);
+  `arb-engine/src/pump_raydium_{builder,engine,shared}.rs` behind feature
+  `pump-raydium-legacy-engine` (crates/arb-engine/Cargo.toml:8). Both default-off.
+- **Root cause**: these modules were merged from parallel Phase work and (a)
+  depend on an upward `arb-engine` dependency from arb-tx and (b) duplicate logic
+  that the canonical `arb-tx/src/compiler.rs` and `arb-math` already own,
+  violating the one-source-of-truth invariant. They also failed to compile under
+  the feature matrix.
+- **Impact if enabled**: duplicate fee/quote implementations could diverge from
+  the canonical calculators (double counting / drift). Disabled = no runtime impact.
+- **Proposed fix**: permanently delete the quarantined modules and instead port
+  any missing pump+raydium route capability into `arb-tx/src/compiler.rs` /
+  `arb-engine` split-routing path, or keep the features forever default-off and
+  drop them from the CI matrix. Requires owner decision.
+- **Status**: quarantined, not deleted — needs explicit operator decision.
+
+### BUG-006 — ProfitGuardValidator boundary: `>` instead of `>=` — FIXED in this branch
+
+- **Location**: `arb-engine/src/pump_raydium_guard.rs:225`.
+- **Root cause**: the guard used strict `>` when comparing net profit after
+  single-pass fee deduction against `min_net_profit_lamports`, rejecting an
+  opportunity whose net profit lands exactly on the configured floor —
+  inconsistent with every other guard in the codebase (all use `>=`).
+- **Fix**: comparison updated to `>=` with a single-pass fee deduction (fees are
+  subtracted once; no double-count). Regression covered by the guard tests in
+  `arb-engine` (4 guard tests in the lib suite).
+- **Status**: fixed on `vibe/audit-final`.
+
+### BUG-007 — Deploy-to-VPS workflow expects repository secrets (operator action)
+
+- **Location**: `.github/workflows/deploy-vps.yml`.
+- **Root cause**: the workflow needs `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`
+  repository secrets; they are not present (the CI token cannot create
+  them). It also auto-restarts the bot on every push to `main`.
+- **Impact**: workflow fails (or restarts the bot) until the operator either
+  adds the secrets or disables the workflow. This is an operator decision, not a
+  code fix.
+- **Status**: open — operator action required.
+
+**Permission note (per Law 5):** BUG-005 (quarantined-module deletion) and
+BUG-007 (secrets) require user consent. BUG-006 was fixed as part of the
+approved audit scope because it guards profit acceptance (financial-correctness
+critical path) and has a regression test.

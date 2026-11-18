@@ -33,6 +33,11 @@ pub mod metric_names {
     pub const STREAM_SLOT_GAPS_TOTAL: &str = "stream_slot_gaps_total";
     pub const WS_SUBSCRIPTIONS_ACTIVE: &str = "ws_subscriptions_active";
     pub const SIMULATION_LATENCY_US: &str = "simulation_latency_us";
+    pub const ASSEMBLY_LATENCY_US: &str = "assembly_latency_us";
+    pub const SIGNING_LATENCY_US: &str = "signing_latency_us";
+    pub const SUBMIT_RTT_MS: &str = "submit_rtt_ms";
+    pub const LANDING_LATENCY_MS: &str = "landing_latency_ms";
+    pub const E2E_LATENCY_MS: &str = "e2e_latency_ms";
     pub const STATE_PROCESSING_LATENCY_US: &str = "state_processing_latency_us";
     pub const ROUTE_DISCOVERY_LATENCY_US: &str = "route_discovery_latency_us";
     pub const EXACT_QUOTE_LATENCY_US: &str = "exact_quote_latency_us";
@@ -237,6 +242,110 @@ static SIMULATION_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
             1_000_000.0,
             2_000_000.0,
             5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static ASSEMBLY_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::ASSEMBLY_LATENCY_US,
+            "Instruction building + tx compilation duration in microseconds",
+        )
+        .buckets(vec![
+            1_000.0,
+            5_000.0,
+            10_000.0,
+            25_000.0,
+            50_000.0,
+            100_000.0,
+            250_000.0,
+            500_000.0,
+            1_000_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static SIGNING_LATENCY_US: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::SIGNING_LATENCY_US,
+            "Ed25519 transaction signing duration in microseconds",
+        )
+        .buckets(vec![
+            1_000.0,
+            5_000.0,
+            10_000.0,
+            25_000.0,
+            50_000.0,
+            100_000.0,
+            250_000.0,
+            500_000.0,
+            1_000_000.0,
+            2_000_000.0,
+            5_000_000.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static SUBMIT_RTT_MS: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::SUBMIT_RTT_MS,
+            "Broadcast submission round-trip (local processing excluded) in milliseconds",
+        )
+        .buckets(vec![
+            10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0, 1_600.0, 3_200.0, 6_400.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static LANDING_LATENCY_MS: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::LANDING_LATENCY_MS,
+            "Dispatch-to-landing verification duration in milliseconds (includes leader wait)",
+        )
+        .buckets(vec![
+            10.0, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0, 1_600.0, 3_200.0, 6_400.0,
+        ]),
+    )
+    .expect("static metric");
+    let _ = REGISTRY.register(Box::new(histogram.clone()));
+    histogram
+});
+
+static E2E_LATENCY_MS: Lazy<Histogram> = Lazy::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            metric_names::E2E_LATENCY_MS,
+            "End-to-end opportunity lifecycle (ingest+quote+build+sign+broadcast+landing) in milliseconds",
+        )
+        .buckets(vec![
+            10.0,
+            25.0,
+            50.0,
+            100.0,
+            200.0,
+            400.0,
+            800.0,
+            1_600.0,
+            3_200.0,
+            6_400.0,
         ]),
     )
     .expect("static metric");
@@ -485,6 +594,26 @@ pub fn observe_simulation_latency_us(us: f64) {
     SIMULATION_LATENCY_US.observe(us);
 }
 
+pub fn observe_assembly_latency_us(us: f64) {
+    ASSEMBLY_LATENCY_US.observe(us);
+}
+
+pub fn observe_signing_latency_us(us: f64) {
+    SIGNING_LATENCY_US.observe(us);
+}
+
+pub fn observe_submit_rtt_ms(ms: f64) {
+    SUBMIT_RTT_MS.observe(ms);
+}
+
+pub fn observe_landing_latency_ms(ms: f64) {
+    LANDING_LATENCY_MS.observe(ms);
+}
+
+pub fn observe_e2e_latency_ms(ms: f64) {
+    E2E_LATENCY_MS.observe(ms);
+}
+
 pub fn observe_state_processing_latency_us(us: f64) {
     STATE_PROCESSING_LATENCY_US.observe(us);
 }
@@ -544,6 +673,32 @@ pub fn get_process_cpu_percent() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn latency_histograms_observe() {
+        observe_assembly_latency_us(2_500.0);
+        observe_signing_latency_us(300.0);
+        observe_submit_rtt_ms(42.0);
+        observe_landing_latency_ms(150.0);
+        observe_e2e_latency_ms(220.0);
+        observe_simulation_latency_us(9_000.0);
+        let families = REGISTRY.gather();
+        let metric_names_present: Vec<String> =
+            families.iter().map(|f| f.name().to_string()).collect();
+        for expected in [
+            "assembly_latency_us",
+            "signing_latency_us",
+            "submit_rtt_ms",
+            "landing_latency_ms",
+            "e2e_latency_ms",
+            "simulation_latency_us",
+        ] {
+            assert!(
+                metric_names_present.iter().any(|n| n == expected),
+                "metric family missing: {expected}"
+            );
+        }
+    }
+
     #[test]
     fn metrics_register() {
         inc_opportunities();

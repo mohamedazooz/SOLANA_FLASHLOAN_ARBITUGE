@@ -917,6 +917,7 @@ impl Supervisor {
                 }
             };
             let t_assembly_us = t_assembly_start.elapsed().as_micros() as u64;
+            arb_metrics::observe_assembly_latency_us(t_assembly_us as f64);
             let t_signing_start = std::time::Instant::now();
 
             // V1-only profile: never consume fabricated/static ALTs and never
@@ -1132,6 +1133,7 @@ impl Supervisor {
                 }
             };
             let t_signing_us = t_signing_start.elapsed().as_micros() as u64;
+            arb_metrics::observe_signing_latency_us(t_signing_us as f64);
 
             // 5. No simulateTransaction on the hot path (latency).
             // Rejection is delegated to on-chain guards: Kamino flash-repay
