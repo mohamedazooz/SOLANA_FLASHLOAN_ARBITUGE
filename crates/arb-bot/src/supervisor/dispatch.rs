@@ -1170,20 +1170,37 @@ impl Supervisor {
                         });
                     }
                     Err(e) => {
-                        error!("Bundle dispatch failed: {}", e);
-                        self.telegram
-                            .alert_execution_failed("dispatch", &e.to_string(), route_label)
-                            .await;
+                        // PIPE-05: a transport error is AMBIGUOUS, never a
+                        // final failure (same doctrine as recovery.rs): the
+                        // bytes may already have propagated and landed. The
+                        // durable dispatch intent (persisted pre-send) is NOT
+                        // resolved here; a spawned evidence check polls the
+                        // signature and resolves it from proof, and anything
+                        // still unknown is reconciled with block-height
+                        // evidence at the next startup. Never a guessed
+                        // "send_failed" terminal resolution.
+                        warn!(
+                            error = %e,
+                            attempt_id = record.id,
+                            route = %route_label,
+                            "send errored — outcome ambiguous; recording honestly and checking signature evidence before any terminal resolution"
+                        );
                         let _ = self.store.record_outcome(
                             record.id,
-                            "failed",
+                            "send_ambiguous",
                             None,
                             NetProvenance::Estimated,
                         );
-                        let _ = self.store.resolve_dispatch_intent(record.id, "send_failed");
+                        self.telegram
+                            .alert_execution_failed(
+                                "dispatch",
+                                &format!("send errored (ambiguous — evidence check running): {e}"),
+                                route_label,
+                            )
+                            .await;
                         if let Some(control) = self.control() {
                             control.record_execution_with(
-                                "send_failed",
+                                "send_ambiguous",
                                 route_label,
                                 &e.to_string(),
                                 crate::control_service::ExecutionExtras {
@@ -1195,7 +1212,66 @@ impl Supervisor {
                             );
                             control.record_execution_result(false);
                         }
-                        // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
+                        let signature_rpc = self.rpc_pool.clone();
+                        let store = self.store.clone();
+                        let control_task = self.control().cloned();
+                        let pre_sig_task = pre_sig.clone();
+                        let attempt_id = record.id;
+                        let route_for_task = route_label.to_string();
+                        let err_for_task = e.clone();
+                        tokio::spawn(async move {
+                            let poll = signature_rpc
+                                .poll_signature_until_terminal(
+                                    &pre_sig_task,
+                                    super::recovery::SEND_ERROR_POLL_ATTEMPTS,
+                                    super::recovery::SEND_ERROR_POLL_INTERVAL,
+                                )
+                                .await
+                                .ok();
+                            match super::recovery::classify_send_error(poll) {
+                                Some(resolution) => {
+                                    warn!(
+                                        attempt_id,
+                                        resolution,
+                                        send_error = %err_for_task,
+                                        "send errored but on-chain evidence resolved the dispatch outcome"
+                                    );
+                                    let _ = store.record_outcome(
+                                        attempt_id,
+                                        resolution,
+                                        None,
+                                        NetProvenance::Estimated,
+                                    );
+                                    let _ = store.resolve_dispatch_intent(attempt_id, resolution);
+                                    if let Some(control) = control_task {
+                                        control.record_execution_with(
+                                            resolution,
+                                            &route_for_task,
+                                            &format!(
+                                                "send errored, resolved by on-chain evidence: {resolution}"
+                                            ),
+                                            crate::control_service::ExecutionExtras {
+                                                sim_ok: Some(true),
+                                                tx_size_bytes: None,
+                                                cu_consumed: preflight_cu,
+                                                ..Default::default()
+                                            },
+                                        );
+                                    }
+                                }
+                                None => {
+                                    // Still unknown: NOT terminal. The intent
+                                    // stays pending; the startup reconciler
+                                    // proves landing/expiration with
+                                    // block-height evidence. No resubmit — the
+                                    // same signed tx must never be re-signed.
+                                    warn!(
+                                        attempt_id,
+                                        "send outcome unresolvable after bounded poll — dispatch intent left pending for startup reconciliation (no resubmit)"
+                                    );
+                                }
+                            }
+                        });
                     }
                 }
             }
