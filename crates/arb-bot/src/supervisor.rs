@@ -737,7 +737,8 @@ impl Supervisor {
         let pnl = self.store.pnl_daily("today").unwrap_or_else(|e| {
             warn!("daily report: pnl_daily failed: {}", e);
             arb_store::PnlDaily {
-                realized_net: arb_types::Lamports(0),
+                realized_net: 0,
+                simulated_net: 0,
                 attempts: 0,
                 successful: 0,
             }

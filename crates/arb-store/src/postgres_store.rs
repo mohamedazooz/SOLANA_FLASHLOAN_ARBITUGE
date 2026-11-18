@@ -7,7 +7,10 @@
 //! time (fail-closed); point the store at a TLS-terminating proxy or extend
 //! this module with a rustls connector before using such a host.
 
-use crate::{AttemptRecord, DispatchIntentRecord, FillRecord, POSTGRES_INIT_SQL, PnlDaily, Store};
+use crate::{
+    AttemptRecord, DispatchIntentRecord, FillRecord, NetProvenance, POSTGRES_INIT_SQL, PnlDaily,
+    Store,
+};
 use arb_types::{ArbError, Lamports, Result, TokenAmount};
 use std::sync::{Arc, Mutex};
 use tokio_postgres::Row;
@@ -183,17 +186,18 @@ impl Store for PostgresStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<Lamports>,
+        realized_net: Option<i64>,
+        provenance: NetProvenance,
     ) -> Result<()> {
         let client = self.client.clone();
         let status = status.to_string();
-        let net: Option<i64> = realized_net.map(|n| n.as_u64() as i64);
+        let provenance = provenance.as_str().to_string();
 
         self.block_on(async move {
             client
                 .execute(
-                    "INSERT INTO outcomes (attempt_id, status, realized_net) VALUES ($1, $2, $3)",
-                    &[&attempt_id, &status, &net],
+                    "INSERT INTO outcomes (attempt_id, status, realized_net, provenance) VALUES ($1, $2, $3, $4)",
+                    &[&attempt_id, &status, &realized_net, &provenance],
                 )
                 .await
                 .map_err(|e| ArbError::Internal(format!("Failed to insert PG outcome: {e}")))?;
@@ -275,7 +279,8 @@ impl Store for PostgresStore {
             let query_str = format!(
                 "SELECT COUNT(*)::BIGINT,
                         COALESCE(SUM(CASE WHEN status = 'landed' THEN 1 ELSE 0 END),0)::BIGINT,
-                        COALESCE(SUM(realized_net), 0)::BIGINT
+                        COALESCE(SUM(realized_net) FILTER (WHERE status = 'landed' AND provenance = 'actual'), 0)::BIGINT,
+                        COALESCE(SUM(realized_net) FILTER (WHERE status IN ('canary', 'simulated')), 0)::BIGINT
                  FROM outcomes WHERE {filter}"
             );
             let row = client
@@ -286,11 +291,13 @@ impl Store for PostgresStore {
             let total_attempts: i64 = row.try_get(0).unwrap_or(0);
             let successful: i64 = row.try_get(1).unwrap_or(0);
             let total_realized: i64 = row.try_get(2).unwrap_or(0);
+            let total_simulated: i64 = row.try_get(3).unwrap_or(0);
 
             Ok(PnlDaily {
                 attempts: total_attempts.max(0) as u64,
                 successful: successful.max(0) as u64,
-                realized_net: Lamports(total_realized.max(0) as u64),
+                realized_net: total_realized,
+                simulated_net: total_simulated,
             })
         })
     }

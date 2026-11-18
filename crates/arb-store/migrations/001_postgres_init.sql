@@ -16,8 +16,12 @@ CREATE TABLE IF NOT EXISTS outcomes (
     attempt_id BIGINT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
     status VARCHAR(32) NOT NULL,
     realized_net BIGINT,
+    provenance VARCHAR(16),
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+-- Databases created before provenance existed evolve in place (idempotent).
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS provenance VARCHAR(16);
+CREATE INDEX IF NOT EXISTS idx_pg_outcomes_pnl ON outcomes(status, provenance, created_at);
 
 CREATE TABLE IF NOT EXISTS fills (
     id BIGSERIAL PRIMARY KEY,
