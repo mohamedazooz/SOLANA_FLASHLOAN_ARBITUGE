@@ -1,16 +1,7 @@
 name: Deploy to VPS
 
-# Triggered on every push to main — builds on the VPS and restarts the bot.
-# Secrets required (Settings > Secrets and variables > Actions):
-#   VPS_HOST        - server IP
-#   VPS_USER        - SSH user
-#   VPS_SSH_KEY     - ed25519 private deploy key
-#   VPS_PORT        - SSH port (default 22)
-
+# Deployment is manual via workflow_dispatch until mainnet PR approval & full test validation.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
