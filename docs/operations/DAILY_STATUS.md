@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-17 commit (this push) — fix(economics): wire recent_landed_cu to confirmed landings + live/hardcode pricing exhaustive audit — 454/495
+* **Commit:** batch-18 commit (this push) — refactor(math): split dlmm.rs into responsibility submodules — 651 (3/7) — 454/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1207 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -172,8 +172,15 @@ Gates: fmt clean, clippy `-D warnings` clean, workspace **1207 passed / 0 failed
 * Marked `[x]` batch 16: 531.
 * Batch 17: repaired disconnection behind item 493 (recent_landed_cu); exhaustive pricing audit in FINANCIAL_LOGIC_AUDIT.md §7–9.
 
-## Problems discovered (this session)
+### Batch 18 — item 651 (3/7): split arb-math/dlmm.rs 1994 → 9 responsibility submodules (same session)
 
+| Item | What changed | Files |
+|---|---|---|
+| 651 (evidence update, stays PARTIAL) | Largest checklist file split by responsibility with dynamic anchor-based extraction, full-content multiset assertion (zero content loss), doc-run attachment preservation, and glob re-exports in `dlmm/mod.rs` keeping every `arb_math::dlmm::` public path verbatim: `math.rs` 111 (Q64.64 primitives + shared constants), `state.rs` 198 (DlmmError/CollectFeeMode/structs), `limits.rs` 149 (active/multi-bin input caps + 3-hop scaler), `fee.rs` 219 (base/variable fee + volatility decay), `fill.rs` 485 (layer fills + `consume_bin_liquidity`), `quote.rs` 139 (`quote_dlmm_multi_bin`/`view`), `exact_out.rs` 303 (SDK-mirroring exact-out + price-impact), `tests.rs` 453 (moved verbatim). 3 private helpers widened to `pub(super)` for cross-submodule use: `input_for_gross_out`, `limit_order_amounts_by_direction`, `calculate_price_impact_bps`. | `crates/arb-math/src/dlmm/{mod,math,state,limits,fee,fill,quote,exact_out,tests}.rs` (new), `dlmm.rs` deleted |
+
+Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets -- -D warnings` zero warnings; `cargo test --workspace --all-targets` **passed=1207 failed=0** (baseline preserved).
+
+## Problems discovered (this session)
 | Severity | Issue | Root cause | Status |
 |---|---|---|---|
 | P2 | Vite dashboard JS/CSS 404 | `/api` router had no `/assets` route | **FIXED/TESTED** (`337a458`) |
