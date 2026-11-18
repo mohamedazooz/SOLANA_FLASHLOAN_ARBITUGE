@@ -1,6 +1,6 @@
 //! Persistent Storage Layer (SQLite with WAL Pragmas) & Accounting.
 
-use arb_types::{ArbError, Lamports, Result, TokenAmount};
+use arb_types::{ArbError, Lamports, Result, SignedLamports, TokenAmount};
 use rusqlite::{Connection, params};
 use std::sync::Mutex;
 use tracing::{debug, info};
@@ -34,7 +34,8 @@ pub struct FillRecord {
 
 #[derive(Debug, Clone)]
 pub struct PnlDaily {
-    pub realized_net: Lamports,
+    /// Realized net PnL for the day. Can be negative (loss).
+    pub realized_net: SignedLamports,
     pub attempts: u64,
     pub successful: u64,
 }
@@ -66,7 +67,7 @@ pub trait Store: Send + Sync {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<Lamports>,
+        realized_net: Option<SignedLamports>,
     ) -> Result<()>;
     fn get_attempt(&self, id: i64) -> Result<Option<AttemptRecord>>;
     fn get_recent_attempts(&self, limit: i64) -> Result<Vec<AttemptRecord>>;
@@ -194,7 +195,7 @@ impl Store for SqliteStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<Lamports>,
+        realized_net: Option<SignedLamports>,
     ) -> Result<()> {
         let conn = self
             .conn
@@ -202,7 +203,7 @@ impl Store for SqliteStore {
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         conn.execute(
             "INSERT INTO outcomes (attempt_id, status, realized_net) VALUES (?1, ?2, ?3)",
-            params![attempt_id, status, realized_net.map(|n| n.as_u64() as i64),],
+            params![attempt_id, status, realized_net.map(|n| n.as_i64()),],
         )
         .map_err(|e| ArbError::Internal(format!("Failed to insert outcome: {e}")))?;
         Ok(())
@@ -328,7 +329,7 @@ impl Store for SqliteStore {
             Ok(PnlDaily {
                 attempts: total_attempts.max(0) as u64,
                 successful: successful.max(0) as u64,
-                realized_net: Lamports(total_realized.max(0) as u64),
+                realized_net: SignedLamports::new(total_realized),
             })
         });
 
@@ -443,7 +444,7 @@ impl Store for SqliteStore {
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     attempts: Mutex<Vec<AttemptRecord>>,
-    outcomes: Mutex<Vec<(i64, String, Option<Lamports>)>>,
+    outcomes: Mutex<Vec<(i64, String, Option<SignedLamports>)>>,
     fills: Mutex<Vec<FillRecord>>,
     dispatch_intents: Mutex<Vec<(DispatchIntentRecord, String)>>,
 }
@@ -469,7 +470,7 @@ impl Store for MemoryStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<Lamports>,
+        realized_net: Option<SignedLamports>,
     ) -> Result<()> {
         let mut o = self
             .outcomes
@@ -513,7 +514,7 @@ impl Store for MemoryStore {
     }
 
     fn pnl_daily(&self, _day: &str) -> Result<PnlDaily> {
-        let mut total = Lamports::ZERO;
+        let mut total = SignedLamports::ZERO;
         let mut n = 0u64;
         let mut successful = 0u64;
         let o = self
@@ -658,12 +659,12 @@ mod tests {
         assert_eq!(fetched.expected_net.as_u64(), 50_000);
 
         store
-            .record_outcome(101, "landed", Some(Lamports(45_000)))
+            .record_outcome(101, "landed", Some(SignedLamports::new(45_000)))
             .expect("invariant");
         let pnl = store.pnl_daily("today").expect("invariant");
         assert_eq!(pnl.attempts, 1);
         assert_eq!(pnl.successful, 1);
-        assert_eq!(pnl.realized_net.as_u64(), 45_000);
+        assert_eq!(pnl.realized_net.as_i64(), 45_000);
 
         let recent = store.get_recent_attempts(10).expect("invariant");
         assert_eq!(recent.len(), 1);
@@ -733,7 +734,7 @@ mod tests {
                 })
                 .unwrap();
             store
-                .record_outcome(id, "landed", Some(Lamports(1)))
+                .record_outcome(id, "landed", Some(SignedLamports::new(1)))
                 .unwrap();
             store
                 .record_fill(&FillRecord {

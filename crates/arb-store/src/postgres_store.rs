@@ -8,7 +8,7 @@
 //! this module with a rustls connector before using such a host.
 
 use crate::{AttemptRecord, DispatchIntentRecord, FillRecord, POSTGRES_INIT_SQL, PnlDaily, Store};
-use arb_types::{ArbError, Lamports, Result, TokenAmount};
+use arb_types::{ArbError, Lamports, Result, SignedLamports, TokenAmount};
 use std::sync::{Arc, Mutex};
 use tokio_postgres::Row;
 use tracing::info;
@@ -183,11 +183,11 @@ impl Store for PostgresStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<Lamports>,
+        realized_net: Option<SignedLamports>,
     ) -> Result<()> {
         let client = self.client.clone();
         let status = status.to_string();
-        let net: Option<i64> = realized_net.map(|n| n.as_u64() as i64);
+        let net: Option<i64> = realized_net.map(|n| n.as_i64());
 
         self.block_on(async move {
             client
@@ -290,7 +290,7 @@ impl Store for PostgresStore {
             Ok(PnlDaily {
                 attempts: total_attempts.max(0) as u64,
                 successful: successful.max(0) as u64,
-                realized_net: Lamports(total_realized.max(0) as u64),
+                realized_net: SignedLamports::new(total_realized),
             })
         })
     }
