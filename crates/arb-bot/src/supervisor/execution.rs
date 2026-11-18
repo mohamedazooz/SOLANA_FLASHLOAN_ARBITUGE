@@ -292,8 +292,10 @@ impl Supervisor {
             self.live_sol_price(),
         )
         .map_err(anyhow::Error::msg)?;
-        if !inputs.is_fresh(1500) {
-            anyhow::bail!("verified Yellowstone economic inputs exceed max_state_age_slots");
+        if !inputs.is_fresh(arb_constants::KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS) {
+            anyhow::bail!(
+                "verified Yellowstone economic inputs exceed Kamino RPC snapshot age ceiling"
+            );
         }
         Ok(inputs)
     }
