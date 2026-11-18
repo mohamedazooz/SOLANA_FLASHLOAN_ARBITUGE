@@ -1109,12 +1109,32 @@ impl RpcPool {
     /// Fetch batch account info and latest chain context slot.
     /// Routes 100-account batches to endpoints with `max_batch_size >= 100` (excluding quota-exhausted)
     /// and automatically falls back to 5-account chunks across remaining healthy endpoints (including RPCFast).
+    ///
+    /// DATA-01 honesty note: accounts in one call can come from DIFFERENT
+    /// responses (multi-chunk merge or 5-key fallback fan-out), each with its
+    /// own `context.slot`. This wrapper collapses them to the max — fine for
+    /// whole-chunk stamping demos; freshness-critical callers must use
+    /// [`Self::get_multiple_accounts_with_slots`] and stamp per account.
     pub async fn get_multiple_accounts_with_slot(
         &self,
         pubkeys: &[&str],
     ) -> Result<(Vec<Option<serde_json::Value>>, u64)> {
+        let (accounts, slots) = self.get_multiple_accounts_with_slots(pubkeys).await?;
+        let latest_slot = slots.iter().copied().max().unwrap_or(0);
+        Ok((accounts, latest_slot))
+    }
+
+    /// Like [`Self::get_multiple_accounts_with_slot`] but returns the
+    /// `context.slot` of the response that carried EACH account, so a slow
+    /// replica can never borrow a faster replica's slot and mask staleness
+    /// (DATA-01). `0` means the response carried no slot — callers already
+    /// treat that as "fall back to current slot".
+    pub async fn get_multiple_accounts_with_slots(
+        &self,
+        pubkeys: &[&str],
+    ) -> Result<(Vec<Option<serde_json::Value>>, Vec<u64>)> {
         if pubkeys.is_empty() {
-            return Ok((Vec::new(), 0));
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let has_healthy_batch_100 = self.telemetry.iter().enumerate().any(|(idx, t)| {
@@ -1128,7 +1148,7 @@ impl RpcPool {
         });
 
         let mut all_accounts = Vec::with_capacity(pubkeys.len());
-        let mut latest_slot = 0u64;
+        let mut all_slots = Vec::with_capacity(pubkeys.len());
 
         if has_healthy_batch_100 {
             for chunk in pubkeys.chunks(100) {
@@ -1146,9 +1166,10 @@ impl RpcPool {
                     .await
                 {
                     Ok(res) => {
-                        if let Some(s) = res.pointer("/context/slot").and_then(|v| v.as_u64()) {
-                            latest_slot = latest_slot.max(s);
-                        }
+                        let chunk_slot = res
+                            .pointer("/context/slot")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
                         let accounts = res["value"]
                             .as_array()
                             .context("Invalid accounts array format")?;
@@ -1158,6 +1179,7 @@ impl RpcPool {
                             } else {
                                 Some(acc.clone())
                             });
+                            all_slots.push(chunk_slot);
                         }
                     }
                     Err(_) => {
@@ -1169,9 +1191,10 @@ impl RpcPool {
                                     json!([sub, {"encoding": "base64", "commitment": "processed"}]),
                                 )
                                 .await?;
-                            if let Some(s) = res.pointer("/context/slot").and_then(|v| v.as_u64()) {
-                                latest_slot = latest_slot.max(s);
-                            }
+                            let sub_slot = res
+                                .pointer("/context/slot")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
                             let accounts = res["value"]
                                 .as_array()
                                 .context("Invalid accounts array format")?;
@@ -1181,12 +1204,13 @@ impl RpcPool {
                                 } else {
                                     Some(acc.clone())
                                 });
+                                all_slots.push(sub_slot);
                             }
                         }
                     }
                 }
             }
-            return Ok((all_accounts, latest_slot));
+            return Ok((all_accounts, all_slots));
         }
 
         for chunk in pubkeys.chunks(5) {
@@ -1196,9 +1220,10 @@ impl RpcPool {
                     json!([chunk, {"encoding": "base64", "commitment": "processed"}]),
                 )
                 .await?;
-            if let Some(s) = res.pointer("/context/slot").and_then(|v| v.as_u64()) {
-                latest_slot = latest_slot.max(s);
-            }
+            let chunk_slot = res
+                .pointer("/context/slot")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let accounts = res["value"]
                 .as_array()
                 .context("Invalid accounts array format")?;
@@ -1208,9 +1233,10 @@ impl RpcPool {
                 } else {
                     Some(acc.clone())
                 });
+                all_slots.push(chunk_slot);
             }
         }
-        Ok((all_accounts, latest_slot))
+        Ok((all_accounts, all_slots))
     }
 
     /// Fetch batch account info for multiple pools/vaults
@@ -1731,6 +1757,95 @@ mod tests {
             .unwrap_err();
         assert!(err2.to_string().contains("cooldown"));
         assert!(started2.elapsed() < std::time::Duration::from_secs(5));
+        server.join().unwrap();
+    }
+
+    // DATA-01 regression: per-account slots must track the response that carried
+    // each account, not a pool-wide max. A raw HTTP endpoint answers two
+    // getMultipleAccounts chunks (100 + 50 keys <= the 100-key batch limit) with
+    // different context.slot values (1000 then 2000); each account must be
+    // stamped with its own chunk's slot.
+    #[tokio::test]
+    async fn per_account_slots_track_their_own_chunk() {
+        let nulls_100 = vec!["null"; 100].join(",");
+        let body1 = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"context\":{{\"slot\":1000}},\"value\":[{nulls_100}]}}}}"
+        );
+        let nulls_50 = vec!["null"; 50].join(",");
+        let body2 = format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{\"context\":{{\"slot\":2000}},\"value\":[{nulls_50}]}}}}"
+        );
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(vec![body1, body2]));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut served = 0;
+            while served < 2 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                // Drain the request (headers + Content-Length body) before
+                // answering, so closing the connection does not RST the client
+                // mid-response.
+                let mut raw = Vec::new();
+                loop {
+                    let mut buf = [0u8; 4096];
+                    let n = match stream.read(&mut buf) {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n");
+                    if let Some(h) = header_end {
+                        let headers = String::from_utf8_lossy(&raw[..h]);
+                        let clen = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= h + 4 + clen {
+                            break;
+                        }
+                    }
+                }
+                let body = {
+                    let mut b = bodies.lock().unwrap();
+                    let out = b[0].clone();
+                    b.remove(0);
+                    out
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                served += 1;
+            }
+        });
+
+        let url = format!("http://{addr}");
+        let pool = RpcPool::new(vec![url]);
+        let key = "Key".to_string();
+        let keys: Vec<&str> = vec![key.as_str(); 150];
+        let (accounts, slots) = match pool.get_multiple_accounts_with_slots(&keys).await {
+            Ok(v) => v,
+            Err(e) => panic!("call failed: {e:#}"),
+        };
+
+        assert_eq!(accounts.len(), 150);
+        assert_eq!(slots.len(), 150);
+        assert!(accounts.iter().all(|v| v.is_none()));
+        assert!(slots[..100].iter().all(|&s| s == 1000));
+        assert!(slots[100..].iter().all(|&s| s == 2000));
         server.join().unwrap();
     }
 }
