@@ -1,6 +1,6 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
-use arb_types::InflightStatus;
+use arb_types::{InflightStatus, SignedLamports};
 use base64::prelude::*;
 
 pub(super) struct DispatchContext<'a> {
@@ -756,7 +756,7 @@ impl Supervisor {
                         let payer_pubkey_task = payer.to_string();
                         let tx_size_val = tx_bytes.len() as u64;
                         let preflight_cu_task = preflight_cu;
-                        let mut actual_realized_net: Option<Lamports> = None;
+                        let mut actual_realized_net: Option<SignedLamports> = None;
                         let last_valid_height_task =
                             last_valid_block_height.unwrap_or(0).max(0) as u64;
 
@@ -872,14 +872,19 @@ impl Supervisor {
                                                     changes.fee_payer_lamport_delta,
                                                     changes.wsol_token_delta
                                                 );
-                                                if let Ok(actual_u64) = u64::try_from(actual) {
-                                                    actual_realized_net =
-                                                        Some(Lamports(actual_u64));
+                                                // Convert i128 to SignedLamports (supports both profits and losses)
+                                                // Use checked conversion to avoid overflow
+                                                if let Ok(actual_i64) = i64::try_from(actual) {
+                                                    actual_realized_net = Some(SignedLamports::new(actual_i64));
                                                 } else {
                                                     warn!(
-                                                        "Landed transaction realized a NET LOSS of {actual} raw WSOL lamports (estimated +{}) — store cannot represent negative realized net; loss recorded in logs only",
-                                                        net_profit_val.as_u64()
+                                                        "Landed transaction realized PnL {} exceeds i64 range; truncating to i64",
+                                                        actual
                                                     );
+                                                    // Fall back to clamping to i64 range
+                                                    actual_realized_net = Some(SignedLamports::new(
+                                                        actual.clamp(i64::MIN as i128, i64::MAX as i128) as i64
+                                                    ));
                                                 }
                                             }
                                         }
@@ -911,12 +916,22 @@ impl Supervisor {
                                         total_e2e_ms
                                     );
 
+                                    // Use actual realized net if available, otherwise fall back to expected
+                                    let realized_sol_val = if let Some(realized) = actual_realized_net {
+                                        realized.as_i64() as f64 / 1e9
+                                    } else {
+                                        profit_sol_val
+                                    };
+                                    let realized_usd_val = realized_sol_val * live_sol_price;
+                                    let profit_sign = if realized_sol_val >= 0.0 { "+" } else { "" };
+
                                     info!(
-                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: +{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
+                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: {}{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
                                         b_id,
                                         effective_slot,
-                                        profit_sol_val,
-                                        profit_usd_val,
+                                        profit_sign,
+                                        realized_sol_val,
+                                        realized_usd_val,
                                         loan_size_sol_val,
                                         tokens_str_val,
                                         venues_str_val,
@@ -929,7 +944,7 @@ impl Supervisor {
                                     let _ = store.record_outcome(
                                         rec_id,
                                         "landed",
-                                        actual_realized_net.or(Some(net_profit_val)),
+                                        actual_realized_net,
                                     );
                                     let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {

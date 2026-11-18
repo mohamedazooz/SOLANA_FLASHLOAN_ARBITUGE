@@ -60,7 +60,7 @@ parking_lot = "0.12"
 proptest = "1"
 criterion = "0.5"
 ruint = "1.12"
-solana-pubkey = "2.2"
+solana-pubkey = "4.2"
 solami = { version = "0.1.58", features = ["full"] }
 
 [profile.release]

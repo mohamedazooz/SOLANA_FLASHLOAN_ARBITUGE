@@ -1493,3 +1493,25 @@ mod tests {
         assert!(protocols.contains(&DexProtocol::RaydiumV4));
     }
 }
+
+// Pump.fun-Raydium Arbitrage Engine
+pub mod pump_raydium_arb;
+pub use pump_raydium_arb::{
+    ArbitrageDirection, PumpRaydiumConfig, PumpRaydiumEngine, PumpRaydiumOpportunity,
+    RaydiumPool, RaydiumPoolType,
+};
+pub mod pump_raydium_sizing;
+pub use pump_raydium_sizing::{
+    SizingConfig, SizingResult, size_brents_method, size_cpmm_cpmm, size_golden_section,
+    size_newton_raphson,
+};
+pub mod pump_raydium_graph;
+pub use pump_raydium_graph::{
+    ArbitrageCycle, BellmanFordResult, CycleType, GraphNode, Hop, PumpRaydiumGraph,
+    SwapEdge,
+};
+pub mod pump_raydium_guard;
+pub use pump_raydium_guard::{
+    AssertMinimumProfit, ProfitGuardBuilder, ProfitGuardConfig, ProfitGuardError,
+    ProfitGuardValidator,
+};
