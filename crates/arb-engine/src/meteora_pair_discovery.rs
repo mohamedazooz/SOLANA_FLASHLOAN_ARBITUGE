@@ -49,6 +49,7 @@ pub enum PoolRejectionReason {
     ZeroLiquidity,
     TokenProgramMismatch,
     RiskyTokenOrTransferFee,
+    InvalidFeeRatio,
 }
 
 impl PoolRejectionReason {
@@ -61,8 +62,21 @@ impl PoolRejectionReason {
             Self::ZeroLiquidity => "ZERO_LIQUIDITY",
             Self::TokenProgramMismatch => "TOKEN_PROGRAM_MISMATCH",
             Self::RiskyTokenOrTransferFee => "RISKY_TOKEN_OR_TRANSFER_FEE",
+            Self::InvalidFeeRatio => "INVALID_FEE_RATIO",
         }
     }
+}
+
+/// Canonical fee bps conversion (`fee_numerator / fee_denominator` scaled to
+/// bps), matching the conversion used in `lib.rs` and `bellman_ford.rs`.
+/// Discovery previously cast `fee_numerator` straight to bps, which silently
+/// misreads pools with non-BPS fee denominators.
+fn pool_fee_bps(pool: &PoolState) -> Option<u16> {
+    if pool.fee_denominator == 0 {
+        return None;
+    }
+    let bps = (u128::from(pool.fee_numerator) * 10_000) / u128::from(pool.fee_denominator);
+    u16::try_from(bps).ok()
 }
 
 /// Aggregate report of the Meteora DLMM pool pair discovery process.
@@ -227,6 +241,16 @@ impl MeteoraDlmmPoolPairDiscovery {
                     let exec_a = pool_a.execution_accounts.as_ref().unwrap().clone();
                     let exec_b = pool_b.execution_accounts.as_ref().unwrap().clone();
 
+                    let (Some(pool_a_fee_bps), Some(pool_b_fee_bps)) =
+                        (pool_fee_bps(pool_a), pool_fee_bps(pool_b))
+                    else {
+                        *report
+                            .rejections_by_reason
+                            .entry(PoolRejectionReason::InvalidFeeRatio.as_str())
+                            .or_insert(0) += 1;
+                        continue;
+                    };
+
                     report.eligible_pairs.push(MeteoraDlmmEligiblePair {
                         pool_a: pool_a.pool_id,
                         pool_b: pool_b.pool_id,
@@ -237,8 +261,8 @@ impl MeteoraDlmmPoolPairDiscovery {
                         pool_b_active_id: dlmm_b.active_bin_id,
                         pool_a_bin_step: dlmm_a.bin_step_bps,
                         pool_b_bin_step: dlmm_b.bin_step_bps,
-                        pool_a_fee_bps: pool_a.fee_numerator as u16,
-                        pool_b_fee_bps: pool_b.fee_numerator as u16,
+                        pool_a_fee_bps,
+                        pool_b_fee_bps,
                         pool_a_reserve_in: pool_a.reserve_in,
                         pool_a_reserve_out: pool_a.reserve_out,
                         pool_b_reserve_in: pool_b.reserve_in,
@@ -287,6 +311,7 @@ pub struct CrossProtocolPairDiscoveryReport {
     pub active_and_valid_pools: usize,
     pub unique_token_pairs: usize,
     pub distinct_eligible_pairs: usize,
+    pub rejections_by_reason: HashMap<&'static str, usize>,
     pub eligible_pairs: Vec<CrossProtocolEligiblePair>,
 }
 
@@ -378,6 +403,16 @@ impl CrossProtocolPairDiscovery {
                     let exec_a = pool_a.execution_accounts.as_ref().unwrap().clone();
                     let exec_b = pool_b.execution_accounts.as_ref().unwrap().clone();
 
+                    let (Some(pool_a_fee_bps), Some(pool_b_fee_bps)) =
+                        (pool_fee_bps(pool_a), pool_fee_bps(pool_b))
+                    else {
+                        *report
+                            .rejections_by_reason
+                            .entry(PoolRejectionReason::InvalidFeeRatio.as_str())
+                            .or_insert(0) += 1;
+                        continue;
+                    };
+
                     report.eligible_pairs.push(CrossProtocolEligiblePair {
                         pool_a: pool_a.pool_id,
                         protocol_a: pool_a.protocol,
@@ -386,8 +421,8 @@ impl CrossProtocolPairDiscovery {
                         canonical_mint_x: *mint_x,
                         canonical_mint_y: *mint_y,
                         token_programs: [prog_x_a, prog_y_a],
-                        pool_a_fee_bps: pool_a.fee_numerator as u16,
-                        pool_b_fee_bps: pool_b.fee_numerator as u16,
+                        pool_a_fee_bps,
+                        pool_b_fee_bps,
                         pool_a_reserve_in: pool_a.reserve_in,
                         pool_a_reserve_out: pool_a.reserve_out,
                         pool_b_reserve_in: pool_b.reserve_in,
@@ -488,5 +523,127 @@ mod tests {
         let pair = &report.eligible_pairs[0];
         assert_eq!(pair.protocol_a, DexProtocol::MeteoraDlmm);
         assert_eq!(pair.protocol_b, DexProtocol::RaydiumCpmm);
+    }
+
+    // DATA-03 regression: fee_bps must be derived from the fee RATIO
+    // (numerator/denominator scaled to bps), not from the raw numerator.
+    fn dlmm_pool_with_fee(
+        pool_id: PoolId,
+        mint_x: MintId,
+        mint_y: MintId,
+        fee_numerator: u64,
+        fee_denominator: u64,
+    ) -> PoolState {
+        PoolState {
+            pool_id,
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(100),
+            write_version: 1,
+            base_mint: mint_x,
+            quote_mint: mint_y,
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 10_000_000_000,
+            reserve_out: 50_000_000_000,
+            fee_numerator,
+            fee_denominator,
+            is_active: true,
+            has_risky_token: false,
+            kind: arb_types::PoolKind::Dlmm,
+            clmm: None,
+            dlmm: Some(arb_types::DlmmState {
+                active_bin_id: 0,
+                status: 0,
+                bin_step_bps: 25,
+                params: Some(arb_types::DlmmFeeParams {
+                    function_type: 0,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
+                reserve_x: Pubkey::new_unique(),
+                reserve_y: Pubkey::new_unique(),
+                oracle: Pubkey::new_unique(),
+                bin_array_pdas: vec![Pubkey::new_unique()],
+                bitmap_extension: None,
+                pool_token_x: mint_x.0,
+                pool_token_y: mint_y.0,
+            }),
+            last_update_slot: 100,
+            last_update_ms: 1000,
+        }
+    }
+
+    // A museum-style ppm fee (2,500 / 1,000,000 = 0.25% = 25 bps) previously
+    // surfaced as 2,500 "bps" (25%) from the raw `as u16` cast of the numerator.
+    #[test]
+    fn dlmm_pair_fee_bps_scales_with_denominator() {
+        let mint_x = MintId(Pubkey::new_unique());
+        let mint_y = MintId(Pubkey::new_unique());
+        let pool_a = dlmm_pool_with_fee(
+            PoolId(Pubkey::new_unique()),
+            mint_x,
+            mint_y,
+            2_500,
+            1_000_000,
+        );
+        let pool_b = dlmm_pool_with_fee(PoolId(Pubkey::new_unique()), mint_x, mint_y, 25, 10_000);
+
+        let dlmm_report =
+            MeteoraDlmmPoolPairDiscovery::discover_pairs(&[pool_a.clone(), pool_b.clone()]);
+        assert_eq!(dlmm_report.distinct_eligible_pool_pairs, 1);
+        let pair = &dlmm_report.eligible_pairs[0];
+        assert_eq!(pair.pool_a_fee_bps, 25);
+        assert_eq!(pair.pool_b_fee_bps, 25);
+        assert_eq!(
+            dlmm_report
+                .rejections_by_reason
+                .get("INVALID_FEE_RATIO")
+                .copied()
+                .unwrap_or(0),
+            0
+        );
+
+        let cp_report = CrossProtocolPairDiscovery::discover_pairs(&[pool_a, pool_b]);
+        assert_eq!(cp_report.distinct_eligible_pairs, 1);
+        assert_eq!(cp_report.eligible_pairs[0].pool_a_fee_bps, 25);
+        assert_eq!(cp_report.eligible_pairs[0].pool_b_fee_bps, 25);
+    }
+
+    // A zero (or unrepresentable) fee denominator must fail closed: no pair,
+    // and the rejection is counted under INVALID_FEE_RATIO.
+    #[test]
+    fn dlmm_pair_with_zero_fee_denominator_is_rejected() {
+        let mint_x = MintId(Pubkey::new_unique());
+        let mint_y = MintId(Pubkey::new_unique());
+        let pool_a = dlmm_pool_with_fee(PoolId(Pubkey::new_unique()), mint_x, mint_y, 25, 0);
+        let pool_b = dlmm_pool_with_fee(PoolId(Pubkey::new_unique()), mint_x, mint_y, 25, 10_000);
+
+        let dlmm_report =
+            MeteoraDlmmPoolPairDiscovery::discover_pairs(&[pool_a.clone(), pool_b.clone()]);
+        assert_eq!(dlmm_report.distinct_eligible_pool_pairs, 0);
+        assert_eq!(
+            dlmm_report
+                .rejections_by_reason
+                .get("INVALID_FEE_RATIO")
+                .copied()
+                .unwrap_or(0),
+            1
+        );
+
+        let cp_report = CrossProtocolPairDiscovery::discover_pairs(&[pool_a, pool_b]);
+        assert_eq!(cp_report.distinct_eligible_pairs, 0);
+        assert_eq!(
+            cp_report
+                .rejections_by_reason
+                .get("INVALID_FEE_RATIO")
+                .copied()
+                .unwrap_or(0),
+            1
+        );
     }
 }
