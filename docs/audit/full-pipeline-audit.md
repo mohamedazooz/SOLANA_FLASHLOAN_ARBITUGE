@@ -22,8 +22,8 @@ file:line locations read first-hand.
 | PIPE-01 | P1 | `pnl_daily` aggregates without `status='landed'` filter; simulated/canary rows contaminate daily PnL | `arb-store/src/lib.rs:305-334`; `postgres_store.rs:260-290` | fixed @ f72afbc |
 | PIPE-03 | P1 | Dashboard "net" figures derive from MATH-02 estimate feed | dispatch/store path | fixed @ f72afbc |
 | MATH-03 | P1 | Pump-path flash-fee approximated `sf >> 32` instead of canonical U68F60 `fee_from_sf` | `strategy.rs:454`, `pump_boost_arb.rs`, `pump_fun_raydium.rs` | fixed @ 7f4693c |
-| MATH-04 | P2 | `ExecutionCosts` unit ambiguity (lamports vs base token) — latent while WSOL-only | `arb-math/src/economic.rs` | open |
-| MATH-05 | P2 | `CostLedger` defined, never consumed by production path | `arb-math/src/economic.rs` | open |
+| MATH-04 | P2 | `ExecutionCosts` unit ambiguity (lamports vs base token) — latent while WSOL-only | `arb-math/src/economic.rs` + `economic_integration.rs` | fixed @ 9a334f8 |
+| MATH-05 | P2 | `CostLedger` defined, never consumed by production path | `arb-math/src/economic.rs` | fixed @ 9a334f8 |
 | PIPE-13 | P2 | Strategy ranking mixes different-mint net profits (no common quote) | supervisor strategy sort | fixed @ 3582d67 |
 | PIPE-06 | P2 | Failed-tx loss booked as flat 5,000-lamport constant (ignores priority fee + tip actually spent) | `dispatch.rs:1045` | fixed @ fcfb93a |
 
