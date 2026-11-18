@@ -549,7 +549,9 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
 
 pub fn load(path: &str) -> anyhow::Result<Config> {
     if let Ok(arb) = arb_config::loader::load(path) {
-        return Ok(from_arb_config(arb));
+        let config = from_arb_config(arb);
+        validate_live_freshness(&config, crate::live_execution_enabled())?;
+        return Ok(config);
     }
     use anyhow::Context;
     let contents =
@@ -615,7 +617,37 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         info!("⚡ Flash Loan enabled — zero-risk atomic flash loan execution active");
     }
 
+    validate_live_freshness(&config, crate::live_execution_enabled())?;
+
     Ok(config)
+}
+
+/// LIVE-mode freshness ceiling, in slots. The value is the project's own
+/// recorded production discipline (`config/base.toml` and
+/// `config/production.toml`: `max_state_age_slots = 2`), not an invented
+/// number. Simulation tolerates the looser root-`config.toml` HTTP-RPC
+/// polling drift; live execution never does.
+pub const LIVE_MAX_STATE_AGE_SLOTS: u64 = 2;
+
+/// Fail-closed startup gate (PIPE-08): live mode refuses configurations that
+/// carry development freshness tolerances. Opportunities whose pool states
+/// lag beyond this ceiling are racy for atomic execution — the whole point of
+/// atomicity is that quotes and payment land in the same epoch of state.
+/// `live_mode` is passed explicitly (main.rs resolves the BotMode) so the
+/// check never races the `ARB_LIVE` env in tests.
+pub fn validate_live_freshness(config: &Config, live_mode: bool) -> anyhow::Result<()> {
+    if !live_mode {
+        return Ok(());
+    }
+    if config.strategy.max_state_age_slots > LIVE_MAX_STATE_AGE_SLOTS {
+        anyhow::bail!(
+            "live mode requires strategy.max_state_age_slots <= {LIVE_MAX_STATE_AGE_SLOTS}, \
+             got {} — HTTP-RPC polling tolerance must not reach live execution; \
+             use config/production.toml freshness discipline or a streaming feed",
+            config.strategy.max_state_age_slots
+        );
+    }
+    Ok(())
 }
 
 fn fmt_parse_error(path: &str) -> anyhow::Error {
@@ -624,7 +656,7 @@ fn fmt_parse_error(path: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod config_file_tests {
-    use super::Config;
+    use super::{Config, LIVE_MAX_STATE_AGE_SLOTS, validate_live_freshness};
 
     /// Regression: `min_liquidity_bin_raw` was declared `u128`, which the
     /// `toml` crate cannot deserialize, so the tracked root `config.toml`
@@ -640,6 +672,29 @@ mod config_file_tests {
                 .unwrap_or_else(|e| panic!("{full} must deserialize into Config: {e}"));
             let _ = parsed;
         }
+    }
+
+    /// PIPE-08: start from the tracked production-shaped example (2 slots),
+    /// then prove the live gate refuses the dev tolerance (300) at startup.
+    #[test]
+    fn live_freshness_gate() {
+        let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.example.toml");
+        let contents =
+            std::fs::read_to_string(full).expect("config.example.toml must exist and be readable");
+        let mut cfg: Config =
+            toml::from_str(&contents).expect("config.example.toml must deserialize");
+        assert_eq!(cfg.strategy.max_state_age_slots, 2);
+        assert!(validate_live_freshness(&cfg, true).is_ok());
+
+        cfg.strategy.max_state_age_slots = 3;
+        assert!(validate_live_freshness(&cfg, true).is_err());
+        assert_eq!(cfg.strategy.max_state_age_slots, 3);
+
+        cfg.strategy.max_state_age_slots = 300;
+        assert!(validate_live_freshness(&cfg, true).is_err());
+        // The same dev tolerance is legitimate outside live mode.
+        assert!(validate_live_freshness(&cfg, false).is_ok());
+        assert_eq!(LIVE_MAX_STATE_AGE_SLOTS, 2);
     }
 }
 
