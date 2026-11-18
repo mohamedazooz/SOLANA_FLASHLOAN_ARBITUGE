@@ -5,6 +5,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+pump-raydium-legacy-engine = []
 default = []
 split-routing = []
 

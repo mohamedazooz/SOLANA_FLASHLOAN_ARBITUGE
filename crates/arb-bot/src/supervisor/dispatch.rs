@@ -1,5 +1,6 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
+use arb_store::NetProvenance;
 use arb_types::{InflightStatus, SignedLamports};
 use base64::prelude::*;
 
@@ -47,6 +48,13 @@ fn format_mint_short(pk: &Pubkey) -> String {
     } else {
         s
     }
+}
+
+/// Signed view of a u64 lamports value for the signed-outcome store. Values
+/// beyond `i64::MAX` are unreachable for bounded borrows configured by the
+/// risk gate; clamp instead of silently wrapping.
+fn signed_lamports(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
 }
 
 impl Supervisor {
@@ -141,10 +149,17 @@ impl Supervisor {
                 // counted as fills or recorded as realized PnL. Record
                 // the simulated edge under the simulated metric and a
                 // distinct "canary" outcome for auditability.
+                // Simulated figure with `estimated` provenance lands in the
+                // simulated bucket, never in realized PnL (PIPE-01).
                 arb_metrics::add_simulated_net_profit(profit_sol);
-                let _ = self
-                    .store
-                    .record_outcome(record.id, "canary", Some(real_net_profit));
+                let _ = self.store.record_outcome(
+                    record.id,
+                    "canary",
+                    Some(SignedLamports::new(signed_lamports(
+                        real_net_profit.as_u64(),
+                    ))),
+                    arb_store::NetProvenance::Estimated,
+                );
                 self.telegram
                     .alert_opportunity_with_telemetry(
                         &format!("Canary-Simulated-{}", route_label),
@@ -165,9 +180,14 @@ impl Supervisor {
             }
             BotMode::Simulate => {
                 arb_metrics::add_simulated_net_profit(profit_sol);
-                let _ = self
-                    .store
-                    .record_outcome(record.id, "simulated", Some(real_net_profit));
+                let _ = self.store.record_outcome(
+                    record.id,
+                    "simulated",
+                    Some(SignedLamports::new(signed_lamports(
+                        real_net_profit.as_u64(),
+                    ))),
+                    arb_store::NetProvenance::Estimated,
+                );
                 if real_net_profit.as_u64() >= self.config.strategy.min_net_profit_abs {
                     self.telegram
                         .alert_opportunity_with_telemetry(
@@ -534,9 +554,12 @@ impl Supervisor {
                     || self.control().is_some_and(|c| c.is_emergency_stopped())
                 {
                     warn!(route = %route_label, "Execution aborted by fire-time kill switch / emergency stop");
-                    let _ = self
-                        .store
-                        .record_outcome(record.id, "aborted_kill_switch", None);
+                    let _ = self.store.record_outcome(
+                        record.id,
+                        "aborted_kill_switch",
+                        None,
+                        NetProvenance::Estimated,
+                    );
                     self.telegram
                         .alert_execution_failed(
                             "risk-gate",
@@ -602,6 +625,7 @@ impl Supervisor {
                         record.id,
                         "dispatch_aborted_unreconcilable",
                         None,
+                        NetProvenance::Estimated,
                     );
                     return;
                 };
@@ -623,9 +647,12 @@ impl Supervisor {
                         route = %route_label,
                         "dispatch aborted: durable intent persistence failed — refusing to send an unrecoverable transaction"
                     );
-                    let _ =
-                        self.store
-                            .record_outcome(record.id, "dispatch_aborted_unpersisted", None);
+                    let _ = self.store.record_outcome(
+                        record.id,
+                        "dispatch_aborted_unpersisted",
+                        None,
+                        NetProvenance::Estimated,
+                    );
                     self.telegram
                         .alert_execution_failed(
                             "dispatch-intent-persistence",
@@ -708,7 +735,12 @@ impl Supervisor {
                         self.previous_tips
                             .lock()
                             .insert((current_slot.0, opp.route_id.0), tip);
-                        let _ = self.store.record_outcome(record.id, "sent", None);
+                        let _ = self.store.record_outcome(
+                            record.id,
+                            "sent",
+                            None,
+                            NetProvenance::Estimated,
+                        );
 
                         // Asynchronous Landing Tracker via getBundleStatuses and getSignatureStatuses (Layer 08)
                         let tx_signature = arb_tx::extract_transaction_signature(tx_bytes);
@@ -723,7 +755,6 @@ impl Supervisor {
                         let b_id = bundle_id.clone();
                         let net_profit_val = opp.net_profit;
                         let profit_sol_val = profit_sol;
-                        let profit_usd_val = profit_sol * live_sol_price;
                         let sol_price_val = live_sol_price;
                         let slot_val = current_slot.0;
                         let route_label_task = route_label.to_string();
@@ -764,7 +795,7 @@ impl Supervisor {
                             // Dual-track landing verification:
                             // SWQoS queries getSignatureStatuses directly.
                             // Jito Bundle queries Jito getBundleStatuses AND cross-verifies with getSignatureStatuses.
-                            let (status, landed_slot, _err_reason) = if was_swqos_task {
+                            let (status, landed_slot, _err_reason, lifecycle) = if was_swqos_task {
                                 let (sig_status, slot, err) = signature_rpc
                                     .poll_signature_with_details(
                                         &b_id,
@@ -808,7 +839,7 @@ impl Supervisor {
                                 } else {
                                     arb_land::LandStatus::Sent
                                 };
-                                (st, slot, reason)
+                                (st, slot, reason, lifecycle)
                             } else {
                                 let (lifecycle, slot, err) = js
                                     .verify_landing_with_height(
@@ -829,7 +860,7 @@ impl Supervisor {
                                 } else {
                                     arb_land::LandStatus::Sent
                                 };
-                                (st, slot, err)
+                                (st, slot, err, lifecycle)
                             };
 
                             let effective_slot = landed_slot.unwrap_or(slot_val);
@@ -860,7 +891,8 @@ impl Supervisor {
                                             }
                                             // Actual balance changes from on-chain metadata:
                                             // realized net recorded to the store prefers this
-                                            // evidence over the pre-dispatch estimate.
+                                            // evidence over the pre-dispatch estimate. Signed:
+                                            // losses must persist as losses (MATH-01).
                                             let changes = arb_sim::parse_landed_balance_changes(
                                                 &meta,
                                                 &payer_pubkey_task,
@@ -872,23 +904,37 @@ impl Supervisor {
                                                     changes.fee_payer_lamport_delta,
                                                     changes.wsol_token_delta
                                                 );
-                                                // Convert i128 to SignedLamports (supports both profits and losses)
-                                                // Use checked conversion to avoid overflow
-                                                if let Ok(actual_i64) = i64::try_from(actual) {
-                                                    actual_realized_net = Some(SignedLamports::new(actual_i64));
-                                                } else {
-                                                    warn!(
-                                                        "Landed transaction realized PnL {} exceeds i64 range; truncating to i64",
-                                                        actual
-                                                    );
-                                                    // Fall back to clamping to i64 range
-                                                    actual_realized_net = Some(SignedLamports::new(
-                                                        actual.clamp(i64::MIN as i128, i64::MAX as i128) as i64
-                                                    ));
+                                                match i64::try_from(actual) {
+                                                    Ok(signed) => {
+                                                        actual_realized_net =
+                                                            Some(SignedLamports::new(signed));
+                                                        if signed < 0 {
+                                                            warn!(
+                                                                "Landed transaction realized a NET LOSS of {signed} raw WSOL lamports (estimated +{}); signed loss persisted with actual provenance",
+                                                                net_profit_val.as_u64()
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(_) => {
+                                                        warn!(
+                                                            "Landed realized net {actual} exceeds i64 storage range; recorded as estimate-free (no actual provenance)"
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
                                     }
+                                    // Reported realized figure prefers on-chain actual
+                                    // evidence; the estimate is only used when no
+                                    // balance metadata exists, and is then tagged
+                                    // `estimated` so aggregation can never merge
+                                    // it into realized PnL (MATH-01/PIPE-01/03).
+                                    let realized_reported_sol = actual_realized_net
+                                        .map(|n| match n {
+                                            SignedLamports(v) if v >= 0 => v as f64 / 1e9,
+                                            SignedLamports(v) => -(v.unsigned_abs() as f64) / 1e9,
+                                        })
+                                        .unwrap_or(profit_sol_val);
                                     let landing_ms = land_start.elapsed().as_secs_f64() * 1000.0;
                                     let total_e2e_ms = (t_ingest_to_quote_us
                                         + t_risk_us
@@ -917,13 +963,15 @@ impl Supervisor {
                                     );
 
                                     // Use actual realized net if available, otherwise fall back to expected
-                                    let realized_sol_val = if let Some(realized) = actual_realized_net {
-                                        realized.as_i64() as f64 / 1e9
-                                    } else {
-                                        profit_sol_val
-                                    };
+                                    let realized_sol_val =
+                                        if let Some(realized) = actual_realized_net {
+                                            realized.as_i64() as f64 / 1e9
+                                        } else {
+                                            profit_sol_val
+                                        };
                                     let realized_usd_val = realized_sol_val * live_sol_price;
-                                    let profit_sign = if realized_sol_val >= 0.0 { "+" } else { "" };
+                                    let profit_sign =
+                                        if realized_sol_val >= 0.0 { "+" } else { "" };
 
                                     info!(
                                         "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: {}{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
@@ -941,10 +989,21 @@ impl Supervisor {
                                             .replace("<b>", "")
                                             .replace("</b>", "")
                                     );
+                                    let (realized_lamports, realized_provenance) =
+                                        match actual_realized_net {
+                                            Some(v) => (Some(v), arb_store::NetProvenance::Actual),
+                                            None => (
+                                                i64::try_from(net_profit_val.as_u64())
+                                                    .ok()
+                                                    .map(SignedLamports::new),
+                                                arb_store::NetProvenance::Estimated,
+                                            ),
+                                        };
                                     let _ = store.record_outcome(
                                         rec_id,
                                         "landed",
-                                        actual_realized_net,
+                                        realized_lamports,
+                                        realized_provenance,
                                     );
                                     let _ = store.resolve_dispatch_intent(rec_id, "landed");
                                     if let Some(r) = rung_for_record {
@@ -959,21 +1018,26 @@ impl Supervisor {
                                     // Phase E: track bundle landed for landing rate
                                     risk_gate.record_bundle_landed(Slot(effective_slot), true);
                                     arb_metrics::inc_fills();
-                                    arb_metrics::add_net_profit(profit_sol_val);
+                                    // MATH-02: metrics consume the on-chain actual
+                                    // when it exists, never the pre-dispatch estimate.
+                                    arb_metrics::add_net_profit(realized_reported_sol);
                                     arb_metrics::set_breaker_state(0);
 
                                     let effective_leader = js
                                         .leader_for(Slot(effective_slot))
                                         .map(|pk| pk.to_string())
                                         .unwrap_or_else(|| leader_task.clone());
-                                    let landed_status_str =
-                                        "Confirmed / Finalized (مؤكد في البلوك)";
+                                    // PIPE-12: report the commitment level the
+                                    // verification track actually proved, never a
+                                    // hardcoded Confirmed/Finalized claim.
+                                    let landed_status_str = lifecycle.landing_status_str();
 
                                     // Record landed trade in memory for 5-minute performance digest
+                                    // (realized figure — actual when on-chain evidence exists).
                                     let summary = crate::telegram::TradeSummary {
                                         route: route_label_task.clone(),
-                                        profit_sol: profit_sol_val,
-                                        profit_usd: profit_usd_val,
+                                        profit_sol: realized_reported_sol,
+                                        profit_usd: realized_reported_sol * sol_price_val,
                                         loan_sol: loan_size_sol_val,
                                         signature: tx_signature
                                             .as_deref()
@@ -997,8 +1061,8 @@ impl Supervisor {
                                         .notify_trade_executed(
                                             tx_signature.as_deref(),
                                             &b_id,
-                                            profit_sol_val,
-                                            profit_usd_val,
+                                            realized_reported_sol,
+                                            realized_reported_sol * sol_price_val,
                                             loan_size_sol_val,
                                             pools_count_task,
                                             &tokens_str_val,
@@ -1012,7 +1076,12 @@ impl Supervisor {
                                 }
                                 arb_land::LandStatus::Dropped | arb_land::LandStatus::Expired => {
                                     warn!("⚠️ Execution {:?} in block: {}", status, b_id);
-                                    let _ = store.record_outcome(rec_id, "dropped", None);
+                                    let _ = store.record_outcome(
+                                        rec_id,
+                                        "dropped",
+                                        None,
+                                        NetProvenance::Estimated,
+                                    );
                                     let _ = store.resolve_dispatch_intent(
                                         rec_id,
                                         match status {
@@ -1051,13 +1120,40 @@ impl Supervisor {
                                 }
                                 arb_land::LandStatus::Failed => {
                                     warn!("⚠️ Execution reverted on-chain: {}", b_id);
-                                    let _ = store.record_outcome(rec_id, "failed", None);
+                                    let _ = store.record_outcome(
+                                        rec_id,
+                                        "failed",
+                                        None,
+                                        NetProvenance::Estimated,
+                                    );
                                     let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
                                     risk_gate.record_bundle_landed(Slot(effective_slot), false);
-                                    risk_gate.record_loss(5_000.0 / 1e9 * sol_price_val);
+                                    // A landed-but-reverted transaction pays the
+                                    // 5,000-lamport base fee AND the priority fee
+                                    // (deducted pre-execution); its tip transfer is
+                                    // rolled back with the rest of the tx. Read the
+                                    // real on-chain fee from transaction metadata;
+                                    // the flat 5,000-lamport figure is only the
+                                    // no-evidence fallback (PIPE-06).
+                                    let mut failure_fee_lamports = 5_000u64;
+                                    if let Some(ref sig) = tx_signature {
+                                        if let Ok(Some(meta)) =
+                                            signature_rpc.get_transaction_with_metadata(sig).await
+                                        {
+                                            if let Some(fee) = arb_sim::meta_fee_lamports(&meta) {
+                                                failure_fee_lamports = fee;
+                                                debug!(
+                                                    "Failed-on-chain tx paid {fee} lamports (base + priority)"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    risk_gate.record_loss(
+                                        failure_fee_lamports as f64 / 1e9 * sol_price_val,
+                                    );
                                     risk_gate.on_failure(Slot(effective_slot));
                                     arb_metrics::set_breaker_state(
                                         if risk_gate.is_breaker_open(Slot(effective_slot)) {
@@ -1096,15 +1192,37 @@ impl Supervisor {
                         });
                     }
                     Err(e) => {
-                        error!("Bundle dispatch failed: {}", e);
+                        // PIPE-05: a transport error is AMBIGUOUS, never a
+                        // final failure (same doctrine as recovery.rs): the
+                        // bytes may already have propagated and landed. The
+                        // durable dispatch intent (persisted pre-send) is NOT
+                        // resolved here; a spawned evidence check polls the
+                        // signature and resolves it from proof, and anything
+                        // still unknown is reconciled with block-height
+                        // evidence at the next startup. Never a guessed
+                        // "send_failed" terminal resolution.
+                        warn!(
+                            error = %e,
+                            attempt_id = record.id,
+                            route = %route_label,
+                            "send errored — outcome ambiguous; recording honestly and checking signature evidence before any terminal resolution"
+                        );
+                        let _ = self.store.record_outcome(
+                            record.id,
+                            "send_ambiguous",
+                            None,
+                            NetProvenance::Estimated,
+                        );
                         self.telegram
-                            .alert_execution_failed("dispatch", &e.to_string(), route_label)
+                            .alert_execution_failed(
+                                "dispatch",
+                                &format!("send errored (ambiguous — evidence check running): {e}"),
+                                route_label,
+                            )
                             .await;
-                        let _ = self.store.record_outcome(record.id, "failed", None);
-                        let _ = self.store.resolve_dispatch_intent(record.id, "send_failed");
                         if let Some(control) = self.control() {
                             control.record_execution_with(
-                                "send_failed",
+                                "send_ambiguous",
                                 route_label,
                                 &e.to_string(),
                                 crate::control_service::ExecutionExtras {
@@ -1116,7 +1234,66 @@ impl Supervisor {
                             );
                             control.record_execution_result(false);
                         }
-                        // Unaccepted bundle / transport error does not spend tip or base tx fee (0 SOL loss)
+                        let signature_rpc = self.rpc_pool.clone();
+                        let store = self.store.clone();
+                        let control_task = self.control().cloned();
+                        let pre_sig_task = pre_sig.clone();
+                        let attempt_id = record.id;
+                        let route_for_task = route_label.to_string();
+                        let err_for_task = e.clone();
+                        tokio::spawn(async move {
+                            let poll = signature_rpc
+                                .poll_signature_until_terminal(
+                                    &pre_sig_task,
+                                    super::recovery::SEND_ERROR_POLL_ATTEMPTS,
+                                    super::recovery::SEND_ERROR_POLL_INTERVAL,
+                                )
+                                .await
+                                .ok();
+                            match super::recovery::classify_send_error(poll) {
+                                Some(resolution) => {
+                                    warn!(
+                                        attempt_id,
+                                        resolution,
+                                        send_error = %err_for_task,
+                                        "send errored but on-chain evidence resolved the dispatch outcome"
+                                    );
+                                    let _ = store.record_outcome(
+                                        attempt_id,
+                                        resolution,
+                                        None,
+                                        NetProvenance::Estimated,
+                                    );
+                                    let _ = store.resolve_dispatch_intent(attempt_id, resolution);
+                                    if let Some(control) = control_task {
+                                        control.record_execution_with(
+                                            resolution,
+                                            &route_for_task,
+                                            &format!(
+                                                "send errored, resolved by on-chain evidence: {resolution}"
+                                            ),
+                                            crate::control_service::ExecutionExtras {
+                                                sim_ok: Some(true),
+                                                tx_size_bytes: None,
+                                                cu_consumed: preflight_cu,
+                                                ..Default::default()
+                                            },
+                                        );
+                                    }
+                                }
+                                None => {
+                                    // Still unknown: NOT terminal. The intent
+                                    // stays pending; the startup reconciler
+                                    // proves landing/expiration with
+                                    // block-height evidence. No resubmit — the
+                                    // same signed tx must never be re-signed.
+                                    warn!(
+                                        attempt_id,
+                                        "send outcome unresolvable after bounded poll — dispatch intent left pending for startup reconciliation (no resubmit)"
+                                    );
+                                }
+                            }
+                        });
                     }
                 }
             }

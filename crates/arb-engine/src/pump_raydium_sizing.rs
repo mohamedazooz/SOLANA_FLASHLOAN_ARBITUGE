@@ -213,7 +213,11 @@ pub fn size_cpmm_cpmm(
         net_profit,
         iterations: 1, // Closed-form solution
         is_valid,
-        error: if is_valid { None } else { Some("Not profitable".to_string()) },
+        error: if is_valid {
+            None
+        } else {
+            Some("Not profitable".to_string())
+        },
     }
 }
 
@@ -294,7 +298,11 @@ where
         net_profit: gross_profit, // Flash fee not included here
         iterations,
         is_valid: gross_profit > 0,
-        error: if gross_profit > 0 { None } else { Some("Not profitable".to_string()) },
+        error: if gross_profit > 0 {
+            None
+        } else {
+            Some("Not profitable".to_string())
+        },
     }
 }
 
@@ -318,8 +326,14 @@ where
     let mut c = a;
     let mut d = b;
     let mut e = a;
-    let mut fa = { let (_, o) = f(a); o as i64 - a as i64 };
-    let mut fb = { let (_, o) = f(b); o as i64 - b as i64 };
+    let mut fa = {
+        let (_, o) = f(a);
+        o as i64 - a as i64
+    };
+    let mut fb = {
+        let (_, o) = f(b);
+        o as i64 - b as i64
+    };
     let mut fc = fa;
 
     if fa > 0 && fb > 0 {
@@ -397,11 +411,7 @@ where
             s
         };
 
-        let new_x = if x < (b - a) / 2 {
-            a + x
-        } else {
-            b - x
-        };
+        let new_x = if x < (b - a) / 2 { a + x } else { b - x };
 
         let (_, new_output) = f(new_x);
         let new_f = new_output as i64 - new_x as i64;
@@ -432,7 +442,11 @@ where
         net_profit: gross_profit,
         iterations: iter,
         is_valid: gross_profit > 0,
-        error: if gross_profit > 0 { None } else { Some("Not profitable".to_string()) },
+        error: if gross_profit > 0 {
+            None
+        } else {
+            Some("Not profitable".to_string())
+        },
     }
 }
 
@@ -457,8 +471,14 @@ where
     let mut x1 = b - GOLDEN_RATIO * (b - a);
     let mut x2 = a + GOLDEN_RATIO * (b - a);
 
-    let mut f1 = { let (_, o) = f(x1 as u64); o as i64 - x1 as i64 };
-    let mut f2 = { let (_, o) = f(x2 as u64); o as i64 - x2 as i64 };
+    let mut f1 = {
+        let (_, o) = f(x1 as u64);
+        o as i64 - x1 as i64
+    };
+    let mut f2 = {
+        let (_, o) = f(x2 as u64);
+        o as i64 - x2 as i64
+    };
 
     let mut iter = 0;
 
@@ -473,14 +493,20 @@ where
             x2 = x1;
             f2 = f1;
             x1 = b - GOLDEN_RATIO * (b - a);
-            f1 = { let (_, o) = f(x1 as u64); o as i64 - x1 as i64 };
+            f1 = {
+                let (_, o) = f(x1 as u64);
+                o as i64 - x1 as i64
+            };
         } else {
             // Maximum is in [x1, b]
             a = x1;
             x1 = x2;
             f1 = f2;
             x2 = a + GOLDEN_RATIO * (b - a);
-            f2 = { let (_, o) = f(x2 as u64); o as i64 - x2 as i64 };
+            f2 = {
+                let (_, o) = f(x2 as u64);
+                o as i64 - x2 as i64
+            };
         }
 
         if (b - a) < config.tolerance_lamports as f64 {
@@ -502,7 +528,11 @@ where
         net_profit: gross_profit,
         iterations: iter,
         is_valid: gross_profit > 0,
-        error: if gross_profit > 0 { None } else { Some("Not profitable".to_string()) },
+        error: if gross_profit > 0 {
+            None
+        } else {
+            Some("Not profitable".to_string())
+        },
     }
 }
 
@@ -540,10 +570,10 @@ mod tests {
         // Equal reserves, no fees - no arbitrage
         let result = size_cpmm_cpmm(
             1_000_000, 1_000_000, // pump reserves
-            0,                     // pump fee
+            0,         // pump fee
             1_000_000, 1_000_000, // raydium reserves
-            0,                     // raydium fee
-            0,                     // flash fee
+            0,         // raydium fee
+            0,         // flash fee
             &config,
         );
 
@@ -560,10 +590,10 @@ mod tests {
         // This creates an arbitrage opportunity
         let result = size_cpmm_cpmm(
             1_000_000, 1_000_000, // pump reserves
-            25,                   // pump fee
+            25,        // pump fee
             1_000_000, 1_100_000, // raydium reserves
-            25,                   // raydium fee
-            50,                   // flash fee
+            25,        // raydium fee
+            50,        // flash fee
             &config,
         );
 
@@ -607,4 +637,3 @@ mod tests {
         assert!(result.optimal_input >= 40 && result.optimal_input <= 60);
     }
 }
-

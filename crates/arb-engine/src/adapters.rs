@@ -668,43 +668,60 @@ fn quote_cpmm_hop(
 }
 
 fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<(u64, u64, u16)> {
-    let c0 = pool
-        .clmm
-        .clone()
-        .ok_or(ArbError::InvalidInput("missing CLMM state".into()))?;
-    if c0.liquidity == 0 || c0.sqrt_price == 0 {
-        return Err(ArbError::InvalidInput("uninitialized CLMM state".into()));
-    }
-    let fee_rate = c0.fee_rate;
-    if fee_rate == 0 {
-        return Err(ArbError::InvalidInput(
-            "CLMM native fee rate is missing".into(),
-        ));
-    }
+    // (DATA-04) Borrow instead of deep-cloning the whole `ClmmState` (every
+    // tick array, every tick) per quote. Scalars are copied out, the facade
+    // view is built while the immutable borrow is live, and only the facade
+    // Vec — required by `compute_swap`'s signature — is allocated.
+    let (sqrt_price, liquidity, tick_current, tick_spacing, fee_rate) = {
+        let c = pool
+            .clmm
+            .as_ref()
+            .ok_or(ArbError::InvalidInput("missing CLMM state".into()))?;
+        if c.liquidity == 0 || c.sqrt_price == 0 {
+            return Err(ArbError::InvalidInput("uninitialized CLMM state".into()));
+        }
+        if c.fee_rate == 0 {
+            return Err(ArbError::InvalidInput(
+                "CLMM native fee rate is missing".into(),
+            ));
+        }
+        (
+            c.sqrt_price,
+            c.liquidity,
+            c.tick_current,
+            c.tick_spacing,
+            c.fee_rate,
+        )
+    };
 
-    let arrays: Vec<TickArrayFacade> = c0
-        .tick_arrays
-        .iter()
-        .map(|ta| TickArrayFacade {
-            start_tick_index: ta.start_tick_index,
-            ticks: ta
-                .ticks
-                .iter()
-                .map(|t| TickFacade {
-                    tick_index: t.tick_index,
-                    initialized: t.initialized,
-                    liquidity_net: t.liquidity_net,
-                    liquidity_gross: 0,
-                })
-                .collect(),
-        })
-        .collect();
+    let arrays: Vec<TickArrayFacade> = {
+        let c = pool
+            .clmm
+            .as_ref()
+            .ok_or(ArbError::InvalidInput("missing CLMM state".into()))?;
+        c.tick_arrays
+            .iter()
+            .map(|ta| TickArrayFacade {
+                start_tick_index: ta.start_tick_index,
+                ticks: ta
+                    .ticks
+                    .iter()
+                    .map(|t| TickFacade {
+                        tick_index: t.tick_index,
+                        initialized: t.initialized,
+                        liquidity_net: t.liquidity_net,
+                        liquidity_gross: 0,
+                    })
+                    .collect(),
+            })
+            .collect()
+    };
 
     let q = clmm::compute_swap(
-        c0.sqrt_price,
-        c0.tick_current,
-        c0.liquidity,
-        c0.tick_spacing,
+        sqrt_price,
+        tick_current,
+        liquidity,
+        tick_spacing,
         fee_rate,
         amount_in,
         a_to_b,
@@ -719,10 +736,10 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     }
 
     let q0 = clmm::compute_swap(
-        c0.sqrt_price,
-        c0.tick_current,
-        c0.liquidity,
-        c0.tick_spacing,
+        sqrt_price,
+        tick_current,
+        liquidity,
+        tick_spacing,
         0,
         amount_in,
         a_to_b,
@@ -747,9 +764,11 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
 }
 
 fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<(u64, u64, u16)> {
+    // (DATA-04) Read scalars and the small fee-param struct through a borrow
+    // instead of deep-cloning the whole `DlmmState` (every bin) per quote.
     let d0 = pool
         .dlmm
-        .clone()
+        .as_ref()
         .ok_or(ArbError::InvalidInput("missing DLMM state".into()))?;
     let params = d0.params.clone().ok_or(ArbError::InvalidInput(
         "DLMM fee config not ingested".into(),

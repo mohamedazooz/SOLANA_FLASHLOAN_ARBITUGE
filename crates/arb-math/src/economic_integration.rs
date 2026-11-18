@@ -15,7 +15,7 @@
 //! amount or profit guard.
 
 use crate::economic::EconomicQuote;
-use arb_types::{ArbError, MintId, Result, Slot};
+use arb_types::{ArbError, Lamports, MintId, Result, Slot};
 use ruint::aliases::U256;
 
 /// Total execution cost across all categories, counted exactly once.
@@ -24,48 +24,90 @@ use ruint::aliases::U256;
 /// exactly once; callers must not re-deduct any of these elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ExecutionCosts {
-    /// DEX trading fees (swap fees, protocol fees, dynamic fees).
+    /// DEX trading fees (swap fees, protocol fees, dynamic fees). BASE-MINT raw units.
     pub dex_fees_raw: u128,
-    /// Flash loan fees (borrow premium).
+    /// Flash loan fees (borrow premium). BASE-MINT raw units.
     pub flash_loan_fees_raw: u128,
-    /// Solana base transaction fee (per signature).
-    pub base_transaction_fees_raw: u128,
-    /// Priority fee (CU limit × micro-lamports / 1e6).
-    pub priority_fees_raw: u128,
-    /// Jito tip paid to validator tip account.
-    pub jito_tips_raw: u128,
-    /// Token transfer fees (Token-2022 transfer fee extension).
+    /// Solana base transaction fee (per signature). LAMPORTS.
+    pub base_transaction_fee_lamports: u64,
+    /// Priority fee (CU limit × micro-lamports / 1e6). LAMPORTS.
+    pub priority_fee_lamports: u64,
+    /// Jito tip paid to validator tip account. LAMPORTS.
+    pub jito_tip_lamports: u64,
+    /// Token transfer fees (Token-2022 transfer fee extension). BASE-MINT raw units.
     pub transfer_fees_raw: u128,
-    /// Token extension fees (where applicable).
+    /// Token extension fees (where applicable). BASE-MINT raw units.
     pub token_extension_fees_raw: u128,
-    /// Slippage cost (expected − min_out, counted once).
+    /// Slippage cost (expected − min_out, counted once). BASE-MINT raw units.
     pub slippage_cost_raw: u128,
-    /// Conversion costs (SOL↔token denomination conversion friction).
+    /// Conversion costs (SOL↔token denomination conversion friction). BASE-MINT raw units.
     pub conversion_costs_raw: u128,
-    /// Other protocol-specific execution costs.
+    /// Other protocol-specific execution costs. BASE-MINT raw units.
     pub other_execution_costs_raw: u128,
-    /// Rent deposits for ephemeral ATAs (refundable, tracked separately).
-    pub rent_deposits_raw: u128,
+    /// Rent deposits for ephemeral ATAs (refundable, tracked separately). LAMPORTS.
+    pub rent_deposit_lamports: u64,
 }
 
 impl ExecutionCosts {
-    /// Total non-rent execution costs, each counted exactly once.
-    pub fn total_non_rent(&self) -> u128 {
-        self.dex_fees_raw
-            .saturating_add(self.flash_loan_fees_raw)
-            .saturating_add(self.base_transaction_fees_raw)
-            .saturating_add(self.priority_fees_raw)
-            .saturating_add(self.jito_tips_raw)
-            .saturating_add(self.transfer_fees_raw)
-            .saturating_add(self.token_extension_fees_raw)
-            .saturating_add(self.slippage_cost_raw)
-            .saturating_add(self.conversion_costs_raw)
-            .saturating_add(self.other_execution_costs_raw)
+    /// Total non-rent execution costs, each counted exactly once, returned in
+    /// BASE-MINT raw units (MATH-04). The lamports-denominated costs (base
+    /// signature fee, priority fee, Jito tip) are summed first and converted
+    /// ONCE through the explicit rational rate `rate_num / rate_denom` — the
+    /// identical conversion `build_economic_quote` applies — then added to the
+    /// token-denominated costs with checked arithmetic. For a WSOL base mint
+    /// the rate is exactly 1/1 and the conversion is an identity. Fails closed
+    /// on overflow (FIN-06): never saturates a loss into a smaller one.
+    pub fn total_non_rent_base(
+        &self,
+        lamports_to_base_rate_num: u128,
+        lamports_to_base_rate_denom: u128,
+    ) -> Result<u128> {
+        let lamports = self
+            .base_transaction_fee_lamports
+            .checked_add(self.priority_fee_lamports)
+            .and_then(|v| v.checked_add(self.jito_tip_lamports))
+            .ok_or(ArbError::Overflow)?;
+        let lamports_base = crate::economic::lamports_to_base_raw(
+            Lamports(lamports),
+            lamports_to_base_rate_num,
+            lamports_to_base_rate_denom,
+        )?;
+        let lamports_i = i128::try_from(lamports_base).map_err(|_| ArbError::Overflow)?;
+        let dex = i128::try_from(self.dex_fees_raw).map_err(|_| ArbError::Overflow)?;
+        let flash = i128::try_from(self.flash_loan_fees_raw).map_err(|_| ArbError::Overflow)?;
+        let transfer = i128::try_from(self.transfer_fees_raw).map_err(|_| ArbError::Overflow)?;
+        let ext = i128::try_from(self.token_extension_fees_raw).map_err(|_| ArbError::Overflow)?;
+        let slip = i128::try_from(self.slippage_cost_raw).map_err(|_| ArbError::Overflow)?;
+        let conv = i128::try_from(self.conversion_costs_raw).map_err(|_| ArbError::Overflow)?;
+        let other =
+            i128::try_from(self.other_execution_costs_raw).map_err(|_| ArbError::Overflow)?;
+        let token_side: i128 = 0i128
+            .checked_add(dex)
+            .and_then(|v| v.checked_add(flash))
+            .and_then(|v| v.checked_add(lamports_i))
+            .and_then(|v| v.checked_add(transfer))
+            .and_then(|v| v.checked_add(ext))
+            .and_then(|v| v.checked_add(slip))
+            .and_then(|v| v.checked_add(conv))
+            .and_then(|v| v.checked_add(other))
+            .ok_or(ArbError::Overflow)?;
+        u128::try_from(token_side).map_err(|_| ArbError::Overflow)
     }
 
-    /// Total costs including rent deposits.
-    pub fn total_all(&self) -> u128 {
-        self.total_non_rent().saturating_add(self.rent_deposits_raw)
+    /// Total costs including rent deposits, in BASE-MINT raw units.
+    pub fn total_all_base(
+        &self,
+        lamports_to_base_rate_num: u128,
+        lamports_to_base_rate_denom: u128,
+    ) -> Result<u128> {
+        let rent_base = crate::economic::lamports_to_base_raw(
+            Lamports(self.rent_deposit_lamports),
+            lamports_to_base_rate_num,
+            lamports_to_base_rate_denom,
+        )?;
+        self.total_non_rent_base(lamports_to_base_rate_num, lamports_to_base_rate_denom)?
+            .checked_add(rent_base)
+            .ok_or(ArbError::Overflow)
     }
 }
 
@@ -205,7 +247,10 @@ impl UnifiedEconomicCalculator {
         let borrow = U256::from(borrow_amount_raw);
         let expected = U256::from(expected_final_output_raw);
         let _minimum_out = U256::from(minimum_final_output_raw);
-        let total_costs = U256::from(costs.total_non_rent());
+        let total_costs = U256::from(costs.total_non_rent_base(
+            self.config.lamports_to_base_rate_num,
+            self.config.lamports_to_base_rate_den,
+        )?);
 
         // Gross profit = expected output − borrow principal.
         let gross_signed = if expected >= borrow {
@@ -255,9 +300,16 @@ impl UnifiedEconomicCalculator {
             0
         };
 
-        // Profit before tip = net_signed + jito_tips (tip is part of costs).
+        // (MATH-04) Profit before tip: the tip is lamports; convert it to
+        // base-mint raw units with the same explicit rate, exactly once.
+        let tip_base = crate::economic::lamports_to_base_raw(
+            Lamports(costs.jito_tip_lamports),
+            self.config.lamports_to_base_rate_num,
+            self.config.lamports_to_base_rate_den,
+        )?;
+        // Profit before tip = net_signed + jito tip in base units.
         let profit_before_tip = net_signed
-            .checked_add(i128::try_from(costs.jito_tips_raw).map_err(|_| ArbError::Overflow)?)
+            .checked_add(i128::try_from(tip_base).map_err(|_| ArbError::Overflow)?)
             .ok_or(ArbError::Overflow)?;
 
         // Maximum acceptable Jito tip: tip such that conservative net ≥ min_profit.
@@ -319,7 +371,10 @@ impl UnifiedEconomicCalculator {
             minimum_final_output_raw,
             gross_profit_raw,
             gross_profit_signed: gross_signed,
-            total_costs_raw: costs.total_non_rent(),
+            total_costs_raw: costs.total_non_rent_base(
+                self.config.lamports_to_base_rate_num,
+                self.config.lamports_to_base_rate_den,
+            )?,
             net_profit_raw,
             net_profit_signed: net_signed,
             net_roi_bps,
@@ -342,15 +397,15 @@ impl UnifiedEconomicCalculator {
         ExecutionCosts {
             dex_fees_raw: quote.dex_fees_raw.as_u128(),
             flash_loan_fees_raw: quote.flash_loan_fee_raw.as_u128(),
-            base_transaction_fees_raw: 0, // set by caller from network fees
-            priority_fees_raw: 0,         // set by caller
-            jito_tips_raw: quote.jito_tip_lamports.as_u64() as u128,
+            base_transaction_fee_lamports: 0, // set by caller from network fees
+            priority_fee_lamports: 0,         // set by caller
+            jito_tip_lamports: quote.jito_tip_lamports.as_u64(),
             transfer_fees_raw: quote.transfer_fees_raw.as_u128(),
             token_extension_fees_raw: 0,
             slippage_cost_raw: 0,
             conversion_costs_raw: 0,
             other_execution_costs_raw: quote.other_verified_costs_raw.as_u128(),
-            rent_deposits_raw: quote.account_creation_cost_raw.as_u128(),
+            rent_deposit_lamports: 0, // set by caller (rent is lamports, never base raw)
         }
     }
 
@@ -408,15 +463,15 @@ mod tests {
         ExecutionCosts {
             dex_fees_raw: 1_000,
             flash_loan_fees_raw: 500,
-            base_transaction_fees_raw: 5_000,
-            priority_fees_raw: 10_000,
-            jito_tips_raw: 25_000,
+            base_transaction_fee_lamports: 5_000,
+            priority_fee_lamports: 10_000,
+            jito_tip_lamports: 25_000,
             transfer_fees_raw: 2_000,
             token_extension_fees_raw: 0,
             slippage_cost_raw: 3_000,
             conversion_costs_raw: 0,
             other_execution_costs_raw: 1_000,
-            rent_deposits_raw: 0,
+            rent_deposit_lamports: 0,
         }
     }
 
@@ -430,18 +485,38 @@ mod tests {
     #[test]
     fn test_total_costs_no_double_count() {
         let costs = test_costs();
-        let total = costs.total_non_rent();
+        // Identity rate 1/1: lamports costs convert through as themselves.
+        let total = costs.total_non_rent_base(1, 1).unwrap();
         // 1000 + 500 + 5000 + 10000 + 25000 + 2000 + 0 + 3000 + 0 + 1000 = 47,500
         assert_eq!(total, 47_500);
+    }
+
+    /// (MATH-04 regression) Lamports-denominated costs must convert through
+    /// the explicit rational rate exactly once before joining the token-side
+    /// raw sum. rate_num=2 / rate_den=1: one lamport == two base raw units.
+    #[test]
+    fn test_lamports_costs_convert_through_rate_exactly_once() {
+        let costs = test_costs();
+        // token side = 1000+500+2000+0+3000+0+1000 = 7,500
+        // lamports side = 5000+10000+25000 = 40,000 lamports -> 80,000 base raw
+        assert_eq!(costs.total_non_rent_base(2, 1).unwrap(), 87_500);
+        // Direction 1/2 rounds up: 40,000 lamports -> 20,000 base raw.
+        assert_eq!(costs.total_non_rent_base(1, 2).unwrap(), 27_500);
+        // Zero rate component fails closed.
+        assert!(costs.total_non_rent_base(0, 1).is_err());
+        assert!(costs.total_non_rent_base(1, 0).is_err());
     }
 
     #[test]
     fn test_total_all_includes_rent() {
         let costs = ExecutionCosts {
-            rent_deposits_raw: 2_039_280,
+            rent_deposit_lamports: 2_039_280,
             ..test_costs()
         };
-        assert_eq!(costs.total_all(), costs.total_non_rent() + 2_039_280);
+        assert_eq!(
+            costs.total_all_base(1, 1).unwrap(),
+            costs.total_non_rent_base(1, 1).unwrap() + 2_039_280
+        );
     }
 
     #[test]
@@ -574,15 +649,15 @@ mod tests {
         let costs = ExecutionCosts {
             dex_fees_raw: 1_000,
             flash_loan_fees_raw: 500,
-            base_transaction_fees_raw: 5_000,
-            priority_fees_raw: 10_000,
-            jito_tips_raw: 1_000,
+            base_transaction_fee_lamports: 5_000,
+            priority_fee_lamports: 10_000,
+            jito_tip_lamports: 1_000,
             transfer_fees_raw: 0,
             token_extension_fees_raw: 0,
             slippage_cost_raw: 0,
             conversion_costs_raw: 0,
             other_execution_costs_raw: 0,
-            rent_deposits_raw: 0,
+            rent_deposit_lamports: 0,
         };
         // Borrow 1M, output 1.1M, gross = 100k, costs = 17.5k, net = 82.5k
         // ROI = 82.5k / 1M × 10_000 = 825 bps
@@ -606,15 +681,15 @@ mod tests {
         let costs = ExecutionCosts {
             dex_fees_raw: 1_000,
             flash_loan_fees_raw: 500,
-            base_transaction_fees_raw: 5_000,
-            priority_fees_raw: 10_000,
-            jito_tips_raw: 1_000,
+            base_transaction_fee_lamports: 5_000,
+            priority_fee_lamports: 10_000,
+            jito_tip_lamports: 1_000,
             transfer_fees_raw: 0,
             token_extension_fees_raw: 0,
             slippage_cost_raw: 0,
             conversion_costs_raw: 0,
             other_execution_costs_raw: 0,
-            rent_deposits_raw: 0,
+            rent_deposit_lamports: 0,
         };
         // Borrow 1M, output 1.1M, gross = 100k, costs = 17.5k, net = 82.5k
         // Risk reserve = 1% of 82.5k = 825
@@ -662,11 +737,12 @@ mod tests {
             source_slot: arb_types::Slot(100),
             quote_timestamp_ms: 0,
             calculation_version: 2,
+            cost_ledger: Default::default(),
         };
         let costs = UnifiedEconomicCalculator::from_economic_quote(&quote);
         assert_eq!(costs.dex_fees_raw, 1_000);
         assert_eq!(costs.flash_loan_fees_raw, 500);
-        assert_eq!(costs.jito_tips_raw, 25_000);
+        assert_eq!(costs.jito_tip_lamports, 25_000);
         assert_eq!(costs.transfer_fees_raw, 2_000);
         assert_eq!(costs.other_execution_costs_raw, 1_000);
     }

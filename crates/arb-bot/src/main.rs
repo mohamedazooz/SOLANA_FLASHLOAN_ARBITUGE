@@ -357,6 +357,8 @@ async fn main() -> Result<()> {
         if !live_execution_enabled() {
             anyhow::bail!("Mode live requires ARB_LIVE=1 (explicit truthy value).");
         }
+        // PIPE-08: live mode cannot carry dev freshness tolerances.
+        config::validate_live_freshness(&config, true)?;
         warn!("LIVE execution mode active on real network funds!");
     } else {
         info!("Running in safe mode (dry-run / simulate). No live transactions will be submitted.");

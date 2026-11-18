@@ -24,8 +24,13 @@ pub struct DailyReport {
     pub attempts: u64,
     /// Attempts that landed today.
     pub landed: u64,
-    /// Durable realized net profit today (lamports).
-    pub realized_net_lamports: u64,
+    /// Durable realized net profit today (lamports, SIGNED — losses are
+    /// negative). On-chain-actual provenance only; estimates live in
+    /// `simulated_net_lamports`.
+    pub realized_net_lamports: i64,
+    /// Simulated/canary net profit today (lamports). Kept separate from
+    /// realized so a simulation can never be presented as realized PnL.
+    pub simulated_net_lamports: i64,
     /// Dropped bundles / rejected opportunities accumulated in the reporting
     /// rings since the last drain (the 5-minute digest drains the same rings).
     pub dropped_recent: u64,
@@ -59,7 +64,8 @@ impl DailyReport {
         format!(
             "📊 <b>تقرير يومي — {}</b>\n\
              • محاولات: {} | منفذة: {} ({:.2}%)\n\
-             • صافي الربح المحقق: {} lamports\n\
+             • صافي الربح المحقق: {} lamports (actual only; السالب = خسارة)\n\
+             • صافي المحاكى: {} lamports\n\
              • فرص: {} | فجوات الـ stream: {}\n\
              • Bundles مُسقطة منذ آخر drain: {} | مرفوضة: {}\n\
              <b>أسباب الرفض الأعلى:</b>\n{reasons}",
@@ -68,6 +74,7 @@ impl DailyReport {
             self.landed,
             self.landing_rate_bps() as f64 / 100.0,
             self.realized_net_lamports,
+            self.simulated_net_lamports,
             self.opportunities_total,
             self.stream_gaps_total,
             self.dropped_recent,
@@ -111,7 +118,8 @@ pub fn build_daily_report(
         slot,
         attempts: pnl.attempts,
         landed: pnl.successful,
-        realized_net_lamports: pnl.realized_net.0,
+        realized_net_lamports: pnl.realized_net.as_i64(),
+        simulated_net_lamports: pnl.simulated_net.as_i64(),
         dropped_recent,
         rejected_recent,
         opportunities_total,
@@ -206,7 +214,8 @@ mod tests {
             arb_store::PnlDaily {
                 attempts: 40,
                 successful: 10,
-                realized_net: arb_types::Lamports(123_456),
+                realized_net: arb_types::SignedLamports::new(123_456),
+                simulated_net: arb_types::SignedLamports::new(987_000),
             },
             7,
             100,
@@ -218,6 +227,7 @@ mod tests {
         assert_eq!(report.attempts, 40);
         assert_eq!(report.landed, 10);
         assert_eq!(report.realized_net_lamports, 123_456);
+        assert_eq!(report.simulated_net_lamports, 987_000);
         assert_eq!(report.landing_rate_bps(), 2_500);
         assert_eq!(report.top_rejection_reasons.len(), 4);
         assert_eq!(

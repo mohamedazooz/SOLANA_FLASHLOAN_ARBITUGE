@@ -13,7 +13,7 @@
 #[cfg(feature = "yellowstone-grpc")]
 mod imp {
     use crate::{IngestClient, ProviderId};
-    use arb_types::{ArbError, PoolId};
+    use arb_types::ArbError;
     use futures::{StreamExt, stream};
     use parking_lot::RwLock;
     use solana_pubkey::Pubkey;
@@ -366,11 +366,11 @@ mod imp {
             };
             self.ingest.account_store().apply(snap);
 
-            // Best-effort: if this account is a tracked pool, update derived state.
-            // Full vault-vs-pool decoding is handled by helius_ws/solami; we reuse the
-            // same cache + apply_pool_update path but do not fabricate pool fields here.
-            let _ = pool_id_from_account(&info);
-
+            // SCOPE (DATA-08): this stream feeds the shared account store
+            // (provider-id and generation aware) and slot freshness only. It
+            // does NOT register pools and does NOT update derived pool state —
+            // that belongs to the helius_ws path. A client consuming this
+            // stream must not treat pool-level state as updated by it.
             Ok(())
         }
 
@@ -384,12 +384,6 @@ mod imp {
                 .ingest
                 .record_slot_update_with_bank(slot.slot, parent, status, bank_id);
         }
-    }
-
-    /// Placeholder: Yellowstone account data for a pool does not map 1:1 to a pool id;
-    /// callers must resolve pools through the vault registry. Kept for future wiring.
-    fn pool_id_from_account(info: &SubscribeUpdateAccountInfo) -> Option<PoolId> {
-        Some(PoolId(Pubkey::try_from(info.pubkey.as_slice()).ok()?))
     }
 }
 

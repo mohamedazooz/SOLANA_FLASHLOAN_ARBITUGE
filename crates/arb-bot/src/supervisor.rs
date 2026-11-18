@@ -16,8 +16,8 @@ use arb_sim::{ForkSimulator, Simulator};
 use arb_store::{AttemptRecord, PostgresStore, SqliteStore, Store};
 use arb_tx::{KaminoFlashParams, KeypairSigner, TxBuilder};
 use arb_types::{
-    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolState, RouteId, Slot, SwapHop,
-    TipDecision, TokenAmount,
+    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolState, RouteId, SignedLamports,
+    Slot, SwapHop, TipDecision, TokenAmount,
 };
 use solana_pubkey::Pubkey;
 use std::collections::HashSet;
@@ -737,7 +737,8 @@ impl Supervisor {
         let pnl = self.store.pnl_daily("today").unwrap_or_else(|e| {
             warn!("daily report: pnl_daily failed: {}", e);
             arb_store::PnlDaily {
-                realized_net: arb_types::Lamports(0),
+                realized_net: SignedLamports::ZERO,
+                simulated_net: SignedLamports::ZERO,
                 attempts: 0,
                 successful: 0,
             }

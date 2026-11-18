@@ -283,7 +283,7 @@ impl Default for PumpRaydiumConfig {
         Self {
             min_net_profit_lamports: MIN_NET_PROFIT_LAMPORTS,
             max_slippage_bps: MAX_SLIPPAGE_BPS,
-            flash_loan_fee_bps: 50, // 0.5%
+            flash_loan_fee_bps: 50,                   // 0.5%
             priority_fee_micro_lamports_per_cu: 1000, // 1000 μL per CU
             estimated_cu: 50_000,
         }
@@ -347,7 +347,9 @@ impl PumpRaydiumEngine {
                         ArbitrageDirection::PumpBuyRaydiumSell,
                         ArbitrageDirection::PumpSellRaydiumBuy,
                     ] {
-                        if let Some(opp) = self.evaluate_opportunity(pump_pool, raydium_pool, direction) {
+                        if let Some(opp) =
+                            self.evaluate_opportunity(pump_pool, raydium_pool, direction)
+                        {
                             if opp.is_profitable {
                                 opportunities.push(opp);
                             }
@@ -377,11 +379,17 @@ impl PumpRaydiumEngine {
             ArbitrageDirection::PumpBuyRaydiumSell => {
                 // Buy on Pump: SOL -> Token
                 // Pump.fun: base_mint = SOL, quote_mint = Token
-                (pump_pool.virtual_sol_reserves, pump_pool.virtual_token_reserves)
+                (
+                    pump_pool.virtual_sol_reserves,
+                    pump_pool.virtual_token_reserves,
+                )
             }
             ArbitrageDirection::PumpSellRaydiumBuy => {
                 // Sell on Pump: Token -> SOL
-                (pump_pool.virtual_token_reserves, pump_pool.virtual_sol_reserves)
+                (
+                    pump_pool.virtual_token_reserves,
+                    pump_pool.virtual_sol_reserves,
+                )
             }
         };
 
@@ -646,12 +654,12 @@ mod tests {
         // Raydium: x=1M, y=1.1M, fee=30 bps
         // This creates an arbitrage opportunity
         let (input, output, spread) = engine.calculate_optimal_input_cpmm_cpmm(
-            1_000_000,  // pump_x (SOL)
-            1_000_000,  // pump_y (Token)
-            25,         // pump_fee_bps
-            1_000_000,  // ray_x (Token)
-            1_100_000,  // ray_y (SOL)
-            30,         // ray_fee_bps
+            1_000_000, // pump_x (SOL)
+            1_000_000, // pump_y (Token)
+            25,        // pump_fee_bps
+            1_000_000, // ray_x (Token)
+            1_100_000, // ray_y (SOL)
+            30,        // ray_fee_bps
         );
 
         // Should find some arbitrage opportunity

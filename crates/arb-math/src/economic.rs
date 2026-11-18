@@ -85,7 +85,7 @@ pub struct CostEntry {
 }
 
 /// Cost ledger with double-count and double-deduction prevention.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CostLedger {
     entries: Vec<CostEntry>,
     next_id: CostId,
@@ -116,6 +116,17 @@ impl CostLedger {
         self.entries
             .iter()
             .filter(|e| e.included_in_quote && !e.deducted_already && e.unit == unit)
+            .try_fold(0u128, |sum, e| {
+                sum.checked_add(e.amount_raw).ok_or(ArbError::Overflow)
+            })
+    }
+
+    /// Total of entries already consumed by a quote / deducted by a decision,
+    /// per unit. The reconciliation counterpart of `total_included_not_deducted`.
+    pub fn total_deducted_by_unit(&self, unit: CostUnit) -> Result<u128> {
+        self.entries
+            .iter()
+            .filter(|e| e.deducted_already && e.unit == unit)
             .try_fold(0u128, |sum, e| {
                 sum.checked_add(e.amount_raw).ok_or(ArbError::Overflow)
             })
@@ -181,6 +192,11 @@ pub struct EconomicQuote {
     pub gross_profit_signed_raw: i128,
     /// Minimum acceptable profit in base-mint raw units.
     pub min_profit_raw: TokenAmount,
+    /// Canonical cost ledger: one witness entry per consumed cost with the
+    /// unit (lamports vs base-mint raw), scope and consumption flags recorded.
+    /// Single accounting source for every cost in this quote; consumers must
+    /// reconcile against it instead of re-deriving fees.
+    pub cost_ledger: CostLedger,
     /// True when conservative net PnL clears `min_profit_raw`.
     pub meets_min_profit: bool,
     pub source_slot: Slot,
@@ -198,7 +214,11 @@ impl EconomicQuote {
 /// Convert a SOL-denominated lamport cost into base-mint raw units using an
 /// explicit, verified rational rate `rate_num / rate_denom`. Checked arithmetic throughout —
 /// overflow rejects the quote rather than silently saturating.
-fn lamports_to_base_raw(lamports: Lamports, rate_num: u128, rate_denom: u128) -> Result<u128> {
+pub(crate) fn lamports_to_base_raw(
+    lamports: Lamports,
+    rate_num: u128,
+    rate_denom: u128,
+) -> Result<u128> {
     if rate_num == 0 || rate_denom == 0 {
         return Err(ArbError::InvalidInput(
             "zero conversion rate component".into(),
@@ -360,6 +380,96 @@ pub fn build_economic_quote(
     let gross_profit_raw = positive_projection(gross_signed)?;
     let meets_min_profit = minimum_net_signed >= i128::from(min_profit_raw.as_u64());
 
+    // (MATH-05) The ledger is the canonically witnessable copy of every cost
+    // this quote consumed. `included_in_quote` and `deducted_already` are both
+    // true by construction: `expected_net_profit_signed_raw` was computed by
+    // subtracting exactly these amounts above, so recording them otherwise
+    // would contractually allow a caller to deduct any of them a second time.
+    let mut cost_ledger = CostLedger::new();
+    let consumed = |cost_type: CostType,
+                    scope: CostScope,
+                    amount_raw: u128,
+                    unit: CostUnit,
+                    protocol: &'static str,
+                    led: &mut CostLedger| {
+        led.add(CostEntry {
+            cost_type,
+            scope,
+            amount_raw,
+            unit,
+            protocol,
+            included_in_quote: true,
+            deducted_already: true,
+            observed_slot: source_slot,
+            source: "build_economic_quote-input",
+            calculation_method: "consumed-in-EconomicQuote-v2",
+            id: CostId::default(),
+        });
+    };
+    consumed(
+        CostType::FlashLoanPremium,
+        CostScope::PerLoan,
+        flash_loan_fee_raw.as_u128(),
+        CostUnit::TokenRaw,
+        "kamino",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::AmmSwapFee,
+        CostScope::PerHop,
+        dex_fees_raw.as_u128(),
+        CostUnit::TokenRaw,
+        "dex-land",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::TransferFee,
+        CostScope::PerHop,
+        transfer_fees_raw.as_u128(),
+        CostUnit::TokenRaw,
+        "token-2022",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::AtaCreation,
+        CostScope::PerTransaction,
+        account_creation_cost_raw.as_u128(),
+        CostUnit::TokenRaw,
+        "solana-runtime",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::OtherVerifiedCost,
+        CostScope::PerTransaction,
+        other_verified_costs_raw.as_u128(),
+        CostUnit::TokenRaw,
+        "caller",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::BaseSignatureFee,
+        CostScope::PerTransaction,
+        network_fee_lamports.as_u64() as u128,
+        CostUnit::Lamports,
+        "solana-runtime",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::PriorityFee,
+        CostScope::PerTransaction,
+        priority_fee_lamports.as_u64() as u128,
+        CostUnit::Lamports,
+        "solana-runtime",
+        &mut cost_ledger,
+    );
+    consumed(
+        CostType::JitoTip,
+        CostScope::PerTransaction,
+        jito_tip_lamports.as_u64() as u128,
+        CostUnit::Lamports,
+        "jito",
+        &mut cost_ledger,
+    );
     Ok(EconomicQuote {
         base_mint,
         base_decimals,
@@ -382,6 +492,7 @@ pub fn build_economic_quote(
         gross_profit_raw,
         gross_profit_signed_raw: gross_signed,
         min_profit_raw,
+        cost_ledger,
         meets_min_profit,
         source_slot,
         quote_timestamp_ms,

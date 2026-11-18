@@ -22,11 +22,11 @@ pub use dlmm_validation::{
     validate_lb_pair_account, validate_pool_pair_compatibility,
 };
 pub use meteora_damm_v2::MeteoraDammV2Pool;
-pub use programs::{Network, ProgramInfo, ProgramRegistry, program_registry};
 pub use meteora_dbc::MeteoraDbcPool;
 pub use meteora_dlmm::MeteoraDlmmPool;
 pub use meteora_dlmm_pro::MeteoraDlmmProPool;
 pub use orca_whirlpool::OrcaWhirlpool;
+pub use programs::{Network, ProgramInfo, ProgramRegistry, program_registry};
 pub use pump_fun::PumpFunBondingCurve;
 pub use pump_swap::{PumpSwapFeeConfig, PumpSwapFeeTier, PumpSwapPool, PumpSwapPoolHeader};
 pub use raydium_clmm::RaydiumClmmPool;

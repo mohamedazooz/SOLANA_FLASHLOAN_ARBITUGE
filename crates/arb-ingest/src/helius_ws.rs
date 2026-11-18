@@ -424,7 +424,9 @@ impl HeliusWsClient {
                 async move {
                     let refs_owned: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
                     let refs: Vec<&str> = refs_owned.iter().map(|s| s.as_str()).collect();
-                    (chunk, rpc.get_multiple_accounts_with_slot(&refs).await)
+                    // DATA-01: per-account slots — the 5-key fallback fans out
+                    // across endpoints; a max would mask a slow replica.
+                    (chunk, rpc.get_multiple_accounts_with_slots(&refs).await)
                 }
             }))
             .await;
@@ -439,7 +441,7 @@ impl HeliusWsClient {
 
         let expected_owners = self.tracked_accounts.read().clone();
         for (chunk_pks, chunk_res) in chunk_results {
-            let Ok((accounts, slot)) = chunk_res else {
+            let Ok((accounts, slots)) = chunk_res else {
                 debug!(
                     "seed_initial_accounts: batch fetch of {} accounts failed: {}",
                     chunk_pks.len(),
@@ -447,8 +449,8 @@ impl HeliusWsClient {
                 );
                 continue;
             };
-            latest_slot = latest_slot.max(slot);
-            for (val, pk) in accounts.into_iter().zip(chunk_pks.iter()) {
+            latest_slot = latest_slot.max(slots.iter().copied().max().unwrap_or(0));
+            for ((val, acct_slot), pk) in accounts.into_iter().zip(slots).zip(chunk_pks.iter()) {
                 let Some(acc) = val else { continue };
                 let Some(owner_str) = acc.get("owner").and_then(|o| o.as_str()) else {
                     continue;
@@ -482,7 +484,7 @@ impl HeliusWsClient {
                 let snap = AccountSnapshot {
                     pubkey: *pk,
                     owner: onchain_owner,
-                    slot,
+                    slot: acct_slot,
                     write_version: 1,
                     is_startup: true,
                     provider_id: yellowstone.provider_id(),

@@ -112,6 +112,19 @@ impl PacedAccountFetcher {
         Self::new(endpoints, max_concurrent, min_interval_ms)
     }
 
+    /// Process-shared instance (DATA-10): `from_env` builds a fresh
+    /// `reqwest::Client` per call, which discards the previous connection pool
+    /// and forces new TLS handshakes on every discovery/hydration use. The
+    /// fetcher packs all state in `Arc` fields, so cloning is nearly free —
+    /// one instance is initialized lazily from env and cloned everywhere.
+    /// The shared semaphore also makes the global request pacing (interval +
+    /// endpoint cooldowns) coherent across concurrent callers instead of
+    /// multiplicative per construction site.
+    pub fn shared() -> Self {
+        static SHARED: std::sync::OnceLock<PacedAccountFetcher> = std::sync::OnceLock::new();
+        SHARED.get_or_init(Self::from_env).clone()
+    }
+
     /// Places endpoint `idx` on cooldown and emits the failure warning ONLY on
     /// the no-cooldown → cooldown state transition.
     ///
@@ -296,5 +309,23 @@ impl PacedAccountFetcher {
         } else {
             Ok((slot, decoded_bytes))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DATA-10: `shared()` must hand out clones of ONE lazily-initialized
+    /// instance (Arc-packed state), never rebuild a `reqwest::Client`
+    /// (and its TLS/connection pool) per call.
+    #[test]
+    fn shared_returns_clones_of_one_instance() {
+        let a = PacedAccountFetcher::shared();
+        let b = PacedAccountFetcher::shared();
+        assert!(Arc::ptr_eq(&a.semaphore, &b.semaphore));
+        assert!(Arc::ptr_eq(&a.endpoints, &b.endpoints));
+        assert!(Arc::ptr_eq(&a.endpoint_cooldowns, &b.endpoint_cooldowns));
+        assert_eq!(a.min_interval, b.min_interval);
     }
 }

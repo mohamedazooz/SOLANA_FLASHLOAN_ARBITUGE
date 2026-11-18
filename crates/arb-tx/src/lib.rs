@@ -1174,10 +1174,3 @@ mod tests {
         assert!(validate_jito_bundle(&[oversized]).is_err());
     }
 }
-
-// Pump.fun-Raydium V1 Transaction Builder
-pub mod pump_raydium_builder;
-pub use pump_raydium_builder::{
-    create_arbitrage_message_config, estimate_arbitrage_cu, PumpRaydiumV1Builder,
-    V1BuilderConfig,
-};

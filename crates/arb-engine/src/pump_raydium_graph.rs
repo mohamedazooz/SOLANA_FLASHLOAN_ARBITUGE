@@ -200,13 +200,16 @@ impl PumpRaydiumGraph {
         token_node.is_pump_token = true;
 
         // Ensure SOL node exists
-        let sol_node = self.nodes.entry(self.sol_mint).or_insert_with(|| GraphNode {
-            mint: self.sol_mint,
-            edges_out: Vec::new(),
-            edges_in: Vec::new(),
-            is_sol: true,
-            is_pump_token: false,
-        });
+        let sol_node = self
+            .nodes
+            .entry(self.sol_mint)
+            .or_insert_with(|| GraphNode {
+                mint: self.sol_mint,
+                edges_out: Vec::new(),
+                edges_in: Vec::new(),
+                is_sol: true,
+                is_pump_token: false,
+            });
 
         // Add edges: SOL -> Token and Token -> SOL
         let fee_bps = pool.fee_bps.unwrap_or(0);
@@ -602,14 +605,12 @@ impl PumpRaydiumGraph {
                         // This is a simplified version - full reconstruction would
                         // trace back through predecessors
                         let cycle = ArbitrageCycle {
-                            hops: vec![
-                                Hop {
-                                    from: *mint,
-                                    to: edge.to,
-                                    pool_id: edge.pool_id,
-                                    protocol: edge.protocol,
-                                },
-                            ],
+                            hops: vec![Hop {
+                                from: *mint,
+                                to: edge.to,
+                                pool_id: edge.pool_id,
+                                protocol: edge.protocol,
+                            }],
                             cycle_type: CycleType::PumpRaydium2Hop,
                         };
                         negative_cycle = Some(cycle);
@@ -657,11 +658,8 @@ mod tests {
 
         let mut graph = PumpRaydiumGraph::new(sol_mint);
 
-        let pump_pool = PumpFunBondingCurve::new(
-            PoolId(Pubkey::new_unique()),
-            sol_mint,
-            token_mint,
-        );
+        let pump_pool =
+            PumpFunBondingCurve::new(PoolId(Pubkey::new_unique()), sol_mint, token_mint);
 
         graph.add_pump_pool(pump_pool);
 
@@ -687,11 +685,8 @@ mod tests {
         let mut graph = PumpRaydiumGraph::new(sol_mint);
 
         // Add Pump.fun pool
-        let pump_pool = PumpFunBondingCurve::new(
-            PoolId(Pubkey::new_unique()),
-            sol_mint,
-            token_mint,
-        );
+        let pump_pool =
+            PumpFunBondingCurve::new(PoolId(Pubkey::new_unique()), sol_mint, token_mint);
         graph.add_pump_pool(pump_pool);
 
         // Add Raydium pool
@@ -746,4 +741,3 @@ mod tests {
         assert_eq!(cycle.num_hops(), 2);
     }
 }
-

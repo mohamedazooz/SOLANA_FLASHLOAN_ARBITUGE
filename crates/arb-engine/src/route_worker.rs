@@ -95,6 +95,23 @@ pub fn calculate_optimal_split_two_pools(
     (x1_bounded.round() as u64, x2_bounded.round() as u64)
 }
 
+impl RouteArchitectWorker {
+    /// Delegating method surface (tests/benches call the method path).
+    #[cfg(feature = "split-routing")]
+    pub fn calculate_optimal_split_two_pools(
+        pool1: &PoolDepth,
+        pool2: &PoolDepth,
+        total_loan: u64,
+    ) -> (u64, u64) {
+        calculate_optimal_split_two_pools(pool1, pool2, total_loan)
+    }
+
+    #[cfg(feature = "split-routing")]
+    pub fn calculate_optimal_split_n_pools(pools: &[PoolDepth], total_loan: u64) -> Vec<u64> {
+        calculate_optimal_split_n_pools(pools, total_loan)
+    }
+}
+
 /// Calculate CPMM output tokens for a given leg
 pub fn cpmm_output(amount_in: u64, r_in: u128, r_out: u128, fee_bps: u64) -> u64 {
     if amount_in == 0 || r_in == 0 || r_out == 0 {

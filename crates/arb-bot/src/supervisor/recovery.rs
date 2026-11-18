@@ -42,6 +42,36 @@ pub(super) fn classify_reconciliation(
     }
 }
 
+/// Bounded signature poll after a send-transport error (PIPE-05): the
+/// transaction may still be propagating, so ~5 s (one span across several
+/// slots) is enough to catch a landed tx without stalling the dispatch loop
+/// — the check runs in a spawned task. Anything still unknown after this is
+/// left pending for `reconcile_pending_dispatches`, which resolves it with
+/// block-height evidence. This module's doctrine: a timeout is ambiguous,
+/// never a failure.
+pub(super) const SEND_ERROR_POLL_ATTEMPTS: usize = 12;
+pub(super) const SEND_ERROR_POLL_INTERVAL: Duration = Duration::from_millis(400);
+
+/// Deterministic resolution for a dispatch whose send call itself errored
+/// (transport failure / timeout / dropped response). The send result is
+/// ambiguous — the bytes may already have propagated and landed. Evidence
+/// decides:
+///
+/// - terminal poll result → `"landed"` / `"failed_onchain"` (proved, resolvable now);
+/// - anything else → `None`: leave the durable dispatch intent pending so
+///   `reconcile_pending_dispatches` proves landing/expiration with
+///   block-height evidence at the next startup. Never resolve a terminal
+///   failure on a guess.
+pub(super) fn classify_send_error(
+    poll: Option<arb_ingest::SignatureStatus>,
+) -> Option<&'static str> {
+    match poll {
+        Some(s) if s.is_landed() => Some("landed"),
+        Some(arb_ingest::SignatureStatus::Failed) => Some("failed_onchain"),
+        _ => None,
+    }
+}
+
 impl Supervisor {
     /// Reconcile every pending dispatch intent persisted by a previous run.
     /// Called once at startup, before the run loop starts dispatching.
@@ -218,5 +248,40 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[0].last_valid_block_height, Some(4_242));
         assert_eq!(pending[1].last_valid_block_height, None);
+    }
+
+    #[test]
+    fn landed_send_error_resolves_to_landed() {
+        // PIPE-05: a landed status from the post-send-error poll is terminal
+        // evidence; the dispatch intent is resolvable without a restart.
+        assert_eq!(
+            classify_send_error(Some(SignatureStatus::Confirmed)),
+            Some("landed")
+        );
+        assert_eq!(
+            classify_send_error(Some(SignatureStatus::Finalized)),
+            Some("landed")
+        );
+    }
+
+    #[test]
+    fn failed_onchain_send_error_resolves_to_failed_onchain() {
+        // PIPE-05: if the tx reached the chain and failed, that IS a real
+        // failure (base fee spent) — recorded honestly, not "send_failed".
+        assert_eq!(
+            classify_send_error(Some(SignatureStatus::Failed)),
+            Some("failed_onchain")
+        );
+    }
+
+    #[test]
+    fn unproven_send_error_leaves_intent_pending() {
+        // PIPE-05 regression: ambiguity must never be terminal. Processed is
+        // non-terminal (may still land or expire), Pending/unproven are
+        // unknown — both leave the durable intent pending for startup
+        // reconciliation instead of a guessed "send_failed".
+        assert_eq!(classify_send_error(Some(SignatureStatus::Processed)), None);
+        assert_eq!(classify_send_error(Some(SignatureStatus::Pending)), None);
+        assert_eq!(classify_send_error(None), None);
     }
 }

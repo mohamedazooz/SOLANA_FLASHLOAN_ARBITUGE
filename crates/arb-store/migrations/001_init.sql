@@ -14,8 +14,11 @@ CREATE TABLE IF NOT EXISTS outcomes (
     attempt_id INTEGER NOT NULL REFERENCES attempts(id),
     status TEXT NOT NULL,
     realized_net INTEGER,
+    provenance TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_outcomes_pnl
+    ON outcomes(status, provenance, created_at);
 
 CREATE TABLE IF NOT EXISTS fills (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

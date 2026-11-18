@@ -1146,13 +1146,16 @@ impl Supervisor {
             );
 
             // Record attempt in persistent store (PostgreSQL / SQLite)
-            // Use a composite monotonic ID (slot * 10,000 + seq) to prevent primary key collision
-            // when multiple attempts occur in the exact same slot.
+            // PIPE-11: composite ID = slot * 1_000_000 + a process-monotonic
+            // sequence. Within one slot the sequence is strictly increasing,
+            // so (slot, seq) pairs are unique by construction; combined with
+            // plain-INSERT fails-closed stores, an ID collision can never
+            // silently REPLACE a previous attempt's durable evidence.
             static ATTEMPT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-            let seq = ATTEMPT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 10_000;
+            let seq = ATTEMPT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let attempt_id = (current_slot.0 as i64)
-                .saturating_mul(10_000)
-                .saturating_add(seq as i64);
+                .saturating_mul(1_000_000)
+                .saturating_add(i64::try_from(seq).unwrap_or(i64::MAX));
 
             let record = AttemptRecord {
                 id: attempt_id,
@@ -1169,7 +1172,17 @@ impl Supervisor {
                 tip_lamports: Some(tip),
                 decision: format!("{}", self.mode()),
             };
-            let _ = self.store.record_attempt(&record);
+            // PIPE-11 fail-closed: an attempt that cannot be persisted has no
+            // durable evidence and is unreconcilable (R12 doctrine) — refuse
+            // to dispatch it instead of trading blind.
+            if let Err(err) = self.store.record_attempt(&record) {
+                warn!(
+                    ?err,
+                    attempt_id = attempt_id,
+                    "attempt persistence failed — refusing to dispatch (unpersisted attempt is unreconcilable)"
+                );
+                continue;
+            }
 
             // All monetary values below are in BASE MINT raw units (e.g.,
             // USDC raw units when base_mint is USDC). We convert to

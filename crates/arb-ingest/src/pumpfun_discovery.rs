@@ -1,7 +1,15 @@
-//! Dynamic Pump.fun Bonding Curve Discovery via BankkRoll Unofficial API Specifications.
+//! Dynamic Pump.fun Bonding Curve Discovery via the public frontend endpoints.
 //!
 //! Queries pump.fun's high-speed frontend endpoints to discover, rank, and track the
 //! top 30 most active and liquid bonding curves before and during graduation.
+//!
+//! PROVENANCE (DATA-06): this is an unofficial, undocumented candidate source —
+//! Cloudflare-protected, rate-limited, and free to change shape without notice.
+//! It may ONLY propose candidate mints for on-chain validation: every pool
+//! registered from it is subsequently hydrated from live chain state
+//! (bonding-curve decode), and an API failure here degrades to an empty
+//! candidate list. It must never feed authoritative market data nor cause a
+//! stale-cache fallback.
 
 use crate::discovery::DiscoveredPoolState;
 use arb_constants::{PUMP_FUN_BONDING_CURVE_SEED, PUMP_FUN_PROGRAM_ID, WSOL_MINT};
@@ -15,9 +23,6 @@ use tracing::{debug, info, warn};
 
 /// Public frontend API endpoint cataloged in BankkRoll/pumpfun-apis.
 pub const PUMP_FUN_API_BASE: &str = "https://frontend-api.pump.fun";
-
-/// Fallback alternative endpoint.
-pub const PUMP_DEV_API_BASE: &str = "https://pumpdev.io/api";
 
 /// Deserialized Pump.fun coin metadata from the frontend API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,8 +137,11 @@ impl PumpFunDiscoveryClient {
         }
 
         if all_coins.is_empty() {
+            // Candidate tier only: an empty result degrades discovery, it is
+            // never papered over with cached snapshots or synthetic entries.
             debug!(
-                "Pump.fun discovery returned empty set from public endpoint, falling back to mock / offline pools"
+                "Pump.fun discovery returned empty candidate set from public endpoint; \
+                 continuing without pump candidates (fail-open on tier, fail-closed on data)"
             );
         }
 
@@ -174,10 +182,23 @@ impl PumpFunDiscoveryClient {
                 .0
             };
 
-            // Calculate score based on USD market cap and virtual reserves
+            // Fail closed on unknown reserves (DATA-06): inventing the 30-SOL
+            // launch value here would fabricate both ranking position and the
+            // reported `liquidity_usd` of a pool we know nothing about.
+            let Some(virtual_sol) = coin.virtual_sol_reserves else {
+                debug!(
+                    "Pump.fun candidate {} missing virtual_sol_reserves; dropped (fail closed)",
+                    coin.mint
+                );
+                continue;
+            };
+
+            // RANKING-ONLY SOL price approximation (relative ordering across
+            // pump candidates; never consumed by economics, sizing, or profit
+            // math). usd_market_cap is the primary signal when published.
+            const RANKING_SOL_USD: f64 = 180.0;
+            let sol_tvl_est = (virtual_sol as f64 / 1e9) * RANKING_SOL_USD;
             let usd_tvl = coin.usd_market_cap.unwrap_or(0.0);
-            let virtual_sol = coin.virtual_sol_reserves.unwrap_or(30_000_000_000);
-            let sol_tvl_est = (virtual_sol as f64 / 1e9) * 180.0; // Approximation for ranking
             let effective_tvl = usd_tvl.max(sol_tvl_est);
 
             // Favor curves that are active but not completed (between 20% and 98% progress)
@@ -234,7 +255,7 @@ impl PumpFunDiscoveryClient {
     pub fn find_boost_migration_targets(
         &self,
         coins: &[PumpFunCoin],
-        flash_loan_fee_bps: u64,
+        flash_loan_fee_sf: u64,
         execution_tip_lamports: u64,
         min_net_profit_lamports: u64,
     ) -> Vec<PumpBoostTarget> {
@@ -290,13 +311,16 @@ impl PumpFunDiscoveryClient {
                 real_sol_reserves,
                 vsol,
                 vtok,
-                flash_loan_fee_bps,
+                flash_loan_fee_sf,
                 execution_tip_lamports,
                 6_500, // 65% immediate execution efficiency
                 min_net_profit_lamports,
             );
 
             // 2. Evaluate Working Capital mode (patient TWAP absorption: 90% capture efficiency)
+            // sf = 0: wallet balance funds this mode, not a flash loan. The
+            // canonical formula still applies its 1-lamport floor — a
+            // conservative (overstated) cost, fail-closed direction.
             let working_capital_eval = arb_math::pump_boost_arb::evaluate_pump_boost_arb(
                 real_sol_reserves,
                 vsol,
@@ -346,6 +370,39 @@ pub struct PumpBoostTarget {
 mod tests {
     use super::*;
 
+    fn coin(mint: &str, virtual_sol: Option<u64>) -> PumpFunCoin {
+        PumpFunCoin {
+            mint: mint.to_string(),
+            name: Some("T".into()),
+            symbol: Some("T".into()),
+            description: None,
+            bonding_curve: None,
+            associated_bonding_curve: None,
+            virtual_sol_reserves: virtual_sol,
+            virtual_token_reserves: Some(1_073_000_000_000_000),
+            total_supply: Some(1_000_000_000_000_000),
+            complete: false,
+            market_cap: None,
+            usd_market_cap: None,
+            reply_count: None,
+            last_trade_timestamp: None,
+            raydium_pool: None,
+        }
+    }
+
+    /// (DATA-06 regression) Candidates with unreported reserves must be
+    /// dropped, not silently scored against the 30-SOL launch default.
+    #[test]
+    fn test_missing_virtual_reserves_drop_fail_closed() {
+        let client = PumpFunDiscoveryClient::new();
+        let known = coin(&Pubkey::new_unique().to_string(), Some(96_000_000_000));
+        let unknown_mint = Pubkey::new_unique().to_string();
+        let unknown = coin(&unknown_mint, None);
+
+        let pools = client.select_top_n(&[known, unknown], 30);
+        assert_eq!(pools.len(), 1);
+        assert_ne!(pools[0].quote_mint.0.to_string(), unknown_mint);
+    }
     #[test]
     fn test_pumpfun_curve_derivation() {
         let client = PumpFunDiscoveryClient::new();
@@ -407,9 +464,9 @@ mod tests {
 
         let targets = client.find_boost_migration_targets(
             &[coin],
-            30,          // 30 bps flash loan fee
-            100_000_000, // 0.10 SOL Jito tip
-            0,           // min profit 0 for testing
+            3_458_764_513_820_540, // 30 bps as raw U68F60 sf (30 * 2^60/10000, truncated)
+            100_000_000,           // 0.10 SOL Jito tip
+            0,                     // min profit 0 for testing
         );
 
         assert_eq!(targets.len(), 1);

@@ -1034,10 +1034,14 @@ fn try_compile_v1(
         }));
     }
 
-    // Total priority fee in lamports = ceil(cu_limit * micro_lamports / 1e6).
-    let cu = ctx.cu_limit as u64;
-    let micro = ctx.priority_fee_micro_lamports;
-    let total_priority_fee_lamports = cu.saturating_mul(micro).saturating_add(999_999) / 1_000_000;
+    // PIPE-10: reuse the canonical ceil conversion
+    // (`adaptive::total_priority_fee_lamports`, SIMD-0385 doc example),
+    // fail-closed on overflow instead of saturating into a wrong fee.
+    let total_priority_fee_lamports = crate::adaptive::total_priority_fee_lamports(
+        ctx.priority_fee_micro_lamports,
+        u64::from(ctx.cu_limit),
+    )
+    .ok_or_else(|| TxError::SanitizationError("V1 priority fee overflow".into()))?;
 
     // Loaded accounts data size limit: executable program data counts toward
     // the limit (live-measured minimum ~10.2 MiB for a flash spine), so request

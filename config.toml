@@ -14,7 +14,7 @@ regions = ["frankfurt", "amsterdam", "ny"]
 tip_floor_percentile = "p50"
 tip_share_bps = 5500
 max_tip_lamports = 100000
-max_tip_share_bps = 9500
+max_tip_share_bps = 7000
 min_keep_lamports = 20000         # 20,000 lamports (~$0.004 USD retained net profit floor)
 
 # --- Adaptive tip pricing ---------------------------------------------------
@@ -77,7 +77,7 @@ min_net_profit_abs = 20000         # 20,000 lamports (~$0.004 USD floor to captu
 min_net_profit_bps = 1              # 1 bps
 max_price_impact_bps = 500          # 500 bps max impact bound (relaxed for flash-loan multi-hop arbs)
 hop_slippage_bps = 10               # per-hop min-out floor (bps); hard-capped at 1000 by the builders
-max_state_age_slots = 300            # 300 slots state age window (~2 min) - Option 3 (HTTP-RPC only). Gated by ARB_MAX_IMPLAUSIBLE_ROI_BPS implausibility check.
+max_state_age_slots = 300            # 300 slots state age window (~2 min) - Option 3 (HTTP-RPC only). Gated by ARB_MAX_IMPLAUSIBLE_ROI_BPS implausibility check. LIVE MODE REFUSES TO START above 2 slots (config/production.toml freshness discipline).
 graph_max_age_slots = 300            # discovery-graph horizon relaxed to 300 slots (~2 min)
 use_flash_loan = true
 max_per_venue = 33                 # top 33 most active pools per DEX venue across all 9 protocols
@@ -102,16 +102,16 @@ min_profit_lamports = 20000    # 20,000 lamports floor
 size_ladder = 6                # evaluate 6 sizes across candidate ladder
 
 [risk]
-max_trade_size_usd = 100000.0       # $100,000 max borrow size cap (accommodates 500 SOL dynamic sizing)
-max_daily_loss_usd = 500.0
-max_hourly_loss_usd = 200.0
-max_consecutive_failures = 1000
+max_trade_size_usd = 100000.0       # $100,000 max borrow size cap (accommodates 500 SOL dynamic sizing). NOTE: config/base.toml production discipline says 10,000 — deliberate operator widening.
+max_daily_loss_usd = 5.0            # USD; aligned to config/base.toml & production.toml discipline (PIPE-08, was 500)
+max_hourly_loss_usd = 2.0           # USD (>0, <= daily); aligned to base.toml discipline
+max_consecutive_failures = 8        # count (>0); was 1000 — a breaker that never trips
 min_landing_rate = 0.0              # Statistical check requires 20+ bundles; default 0 to prevent cold-start lock
-max_orders_per_hour = 10000         # High-frequency live throughput cap
-max_attempts_per_slot = 32
+max_orders_per_hour = 120           # count/hr; was 10000 (base.toml: 120)
+max_attempts_per_slot = 3           # count (>0); was 32 (base.toml: 3)
 cooldown_slots = 2                  # 2 slots breaker cooldown window
-max_inflight_bundles = 32
-max_tip_spend_ratio = 0.98
+max_inflight_bundles = 2            # count (>0); was 32 (base.toml: 2; unauth Jito endpoint is 1 rps/IP)
+max_tip_spend_ratio = 0.7           # ratio [0,1]; was 0.98 — consistent with max_tip_share_bps=7000
 max_implausible_roi_bps = 1500      # bps: 15% ceiling rejecting phantom stale-quote spikes
 
 [store]

@@ -1495,20 +1495,28 @@ mod tests {
 }
 
 // Pump.fun-Raydium Arbitrage Engine
+//core modules (arb/sizing/graph) are gated: they were merged unbuildable in
+//PR #75 (56 compile errors, no callers) — repair behind the feature before
+//promoting them; the on-chain profit guard compiles and stays public.
+#[cfg(feature = "pump-raydium-legacy-engine")]
 pub mod pump_raydium_arb;
+#[cfg(feature = "pump-raydium-legacy-engine")]
 pub use pump_raydium_arb::{
-    ArbitrageDirection, PumpRaydiumConfig, PumpRaydiumEngine, PumpRaydiumOpportunity,
-    RaydiumPool, RaydiumPoolType,
+    ArbitrageDirection, PumpRaydiumConfig, PumpRaydiumEngine, PumpRaydiumOpportunity, RaydiumPool,
+    RaydiumPoolType,
 };
+#[cfg(feature = "pump-raydium-legacy-engine")]
 pub mod pump_raydium_sizing;
+#[cfg(feature = "pump-raydium-legacy-engine")]
 pub use pump_raydium_sizing::{
     SizingConfig, SizingResult, size_brents_method, size_cpmm_cpmm, size_golden_section,
     size_newton_raphson,
 };
+#[cfg(feature = "pump-raydium-legacy-engine")]
 pub mod pump_raydium_graph;
+#[cfg(feature = "pump-raydium-legacy-engine")]
 pub use pump_raydium_graph::{
-    ArbitrageCycle, BellmanFordResult, CycleType, GraphNode, Hop, PumpRaydiumGraph,
-    SwapEdge,
+    ArbitrageCycle, BellmanFordResult, CycleType, GraphNode, Hop, PumpRaydiumGraph, SwapEdge,
 };
 pub mod pump_raydium_guard;
 pub use pump_raydium_guard::{

@@ -45,19 +45,17 @@ impl fmt::Display for Lamports {
 }
 
 /// Signed lamports for PnL (can be negative for losses).
-/// 
+///
 /// This type is used exclusively for profit/loss calculations where
 /// negative values represent losses. Unlike `Lamports` which is always
 /// non-negative (u64), `SignedLamports` uses i64 to support both profits
 /// and losses.
-/// 
+///
 /// # Financial Integrity
 /// - Expected PnL: Calculated before execution, can be positive or negative
 /// - Realized PnL: Derived from actual on-chain settlement, can be positive or negative
 /// - NEVER convert Expected to Realized without settlement evidence
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SignedLamports(pub i64);
 
 impl SignedLamports {
@@ -85,7 +83,7 @@ impl SignedLamports {
 
     /// Returns the absolute value as Lamports (non-negative)
     pub fn abs(self) -> Lamports {
-        Lamports(self.0.unsigned_abs() as u64)
+        Lamports(self.0.unsigned_abs())
     }
 
     /// Returns the raw i64 value
@@ -427,19 +425,19 @@ mod tests {
     fn signed_lamports_arithmetic() {
         let a = SignedLamports::new(100_000);
         let b = SignedLamports::new(50_000);
-        
+
         // checked_add
         assert_eq!(a.checked_add(b), Some(SignedLamports::new(150_000)));
-        
+
         // checked_sub
         assert_eq!(a.checked_sub(b), Some(SignedLamports::new(50_000)));
-        
+
         // saturating_add
         assert_eq!(a.saturating_add(b), SignedLamports::new(150_000));
-        
+
         // saturating_sub
         assert_eq!(a.saturating_sub(b), SignedLamports::new(50_000));
-        
+
         // Test with negative
         let c = SignedLamports::new(-25_000);
         assert_eq!(a.checked_add(c), Some(SignedLamports::new(75_000)));
@@ -450,10 +448,10 @@ mod tests {
     fn signed_lamports_overflow() {
         let max = SignedLamports::new(i64::MAX);
         assert_eq!(max.checked_add(SignedLamports::new(1)), None);
-        
+
         let min = SignedLamports::new(i64::MIN);
         assert_eq!(min.checked_sub(SignedLamports::new(1)), None);
-        
+
         // Saturating operations
         assert_eq!(max.saturating_add(SignedLamports::new(1)), max);
         assert_eq!(min.saturating_sub(SignedLamports::new(1)), min);
@@ -463,7 +461,7 @@ mod tests {
     fn signed_lamports_display() {
         let profit = SignedLamports::new(100_000);
         assert_eq!(format!("{}", profit), "+100000 lamports");
-        
+
         let loss = SignedLamports::new(-50_000);
         assert_eq!(format!("{}", loss), "-50000 lamports");
     }
@@ -472,10 +470,10 @@ mod tests {
     fn signed_lamports_from_traits() {
         let from_i64: SignedLamports = 100_000.into();
         assert_eq!(from_i64.as_i64(), 100_000);
-        
+
         let from_lamports: SignedLamports = Lamports(50_000).into();
         assert_eq!(from_lamports.as_i64(), 50_000);
-        
+
         let to_i64: i64 = SignedLamports::new(75_000).into();
         assert_eq!(to_i64, 75_000);
     }

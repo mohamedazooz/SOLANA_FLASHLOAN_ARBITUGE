@@ -70,7 +70,7 @@ impl MultiDexRegistry {
         for chunk in keys.chunks(100) {
             let refs_owned: Vec<String> = chunk.iter().map(|k| k.to_string()).collect();
             let refs: Vec<&str> = refs_owned.iter().map(|s| s.as_str()).collect();
-            let Ok((accounts, slot)) = rpc.get_multiple_accounts_with_slot(&refs).await else {
+            let Ok((accounts, slots)) = rpc.get_multiple_accounts_with_slots(&refs).await else {
                 // RPC starvation used to be swallowed here: pools silently went
                 // stale and every downstream tick was skipped (283 skipped ticks
                 // measured in one 150s run). Make the failure LOUD on transition
@@ -84,13 +84,17 @@ impl MultiDexRegistry {
                 }
                 continue;
             };
+            let slot = slots.iter().copied().max().unwrap_or(0);
             if CONSECUTIVE_RPC_FAILURES.swap(0, Ordering::Relaxed) > 0 {
                 info!(
                     "batch_fetch_accounts: RPC recovered after consecutive failures (slot {slot})"
                 );
             }
             max_slot = max_slot.max(slot);
-            for (val, pk) in accounts.into_iter().zip(chunk.iter()) {
+            // DATA-01: stamp each account with the slot of the response that
+            // carried it — the sub-chunk fallback fans out across endpoints,
+            // so a single max would mask a slow replica's staleness.
+            for ((val, chunk_slot), pk) in accounts.into_iter().zip(slots).zip(chunk.iter()) {
                 let Some(acc) = val else { continue };
                 let Some(raw_b64) = acc
                     .get("data")
@@ -100,7 +104,7 @@ impl MultiDexRegistry {
                     continue;
                 };
                 if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
-                    into.insert(*pk, (slot, bytes));
+                    into.insert(*pk, (chunk_slot, bytes));
                 }
             }
         }

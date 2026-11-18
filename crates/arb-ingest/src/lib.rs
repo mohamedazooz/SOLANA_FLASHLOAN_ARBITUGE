@@ -23,7 +23,9 @@ pub use dependency_manifest::{
     resolve_protocol_dependencies,
 };
 #[cfg(feature = "extra-ingest")]
-pub use dexscreener::{DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken};
+pub use dexscreener::{
+    DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken, classify_pair_protocol,
+};
 pub use provider_supervisor::{
     CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus,
     ProviderSupervisor, SupervisorPolicy, validate_dependency_group,
@@ -632,23 +634,33 @@ impl IngestClient {
         status: i32,
         bank_id: Option<u64>,
     ) -> SlotUpdateOutcome {
-        let outcome = self
-            .slot_integrity
-            .lock()
-            .observe_with_bank(slot, parent, status, bank_id);
-        let gaps_now = self.slot_integrity.lock().gaps_detected();
-        let reported = self.reported_slot_gaps.load(Ordering::Acquire);
-        if gaps_now > reported {
-            arb_metrics::inc_stream_slot_gaps(gaps_now - reported);
-            self.reported_slot_gaps.store(gaps_now, Ordering::Release);
-        }
-        if let SlotUpdateOutcome::Dead { invalidated_slots } = &outcome {
-            let invalidated: std::collections::HashSet<u64> =
-                invalidated_slots.iter().copied().collect();
-            let bank_keys = self
-                .slot_integrity
-                .lock()
-                .bank_keys_for_slots(invalidated_slots);
+        // (DATA-09) One slot_integrity critical section per update. The
+        // observation, gap watermark, fork-invalidated bank-key lookup and the
+        // CREATED_BANK liveness re-check all read the same in-memory structure;
+        // folding them removes 2-3 lock round trips per WS callback under
+        // contention. No I/O or foreign lock is held inside the scope.
+        let (outcome, invalidated, dead_now) = {
+            let mut si = self.slot_integrity.lock();
+            let outcome = si.observe_with_bank(slot, parent, status, bank_id);
+            let gaps_now = si.gaps_detected();
+            let reported = self.reported_slot_gaps.load(Ordering::Acquire);
+            if gaps_now > reported {
+                arb_metrics::inc_stream_slot_gaps(gaps_now - reported);
+                self.reported_slot_gaps.store(gaps_now, Ordering::Release);
+            }
+            let invalidated = match &outcome {
+                SlotUpdateOutcome::Dead { invalidated_slots } => {
+                    let invalidated: std::collections::HashSet<u64> =
+                        invalidated_slots.iter().copied().collect();
+                    let bank_keys = si.bank_keys_for_slots(invalidated_slots);
+                    Some((invalidated, bank_keys))
+                }
+                _ => None,
+            };
+            let dead_now = si.is_dead(slot);
+            (outcome, invalidated, dead_now)
+        };
+        if let Some((invalidated, bank_keys)) = invalidated {
             arb_metrics::inc_fork_invalidations(invalidated.len() as u64 + bank_keys.len() as u64);
             self.account_store.invalidate_slots(&invalidated);
             for (dead_slot, dead_bank) in bank_keys {
@@ -664,10 +676,7 @@ impl IngestClient {
                 .retain(|key, _| !invalidated.contains(&key.slot.0));
             self.cache.version.fetch_add(1, Ordering::AcqRel);
         }
-        if status == slot_integrity::SLOT_CREATED_BANK
-            && bank_id.is_some()
-            && !self.slot_is_dead(slot)
-        {
+        if status == slot_integrity::SLOT_CREATED_BANK && bank_id.is_some() && !dead_now {
             self.account_store.reopen_slot_for_new_bank(slot);
         }
         self.record_slot(slot);

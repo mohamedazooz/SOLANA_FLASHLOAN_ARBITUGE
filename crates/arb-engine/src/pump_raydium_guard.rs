@@ -16,7 +16,7 @@
 //! This is implemented as a custom instruction that can be added to any
 //! arbitrage transaction.
 
-use arb_types::{ArbError, Lamports, Result};
+use arb_types::{ArbError, Result};
 use solana_pubkey::Pubkey;
 
 // ============================================================================
@@ -135,6 +135,12 @@ pub struct ProfitGuardBuilder {
     config: ProfitGuardConfig,
 }
 
+impl Default for ProfitGuardBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProfitGuardBuilder {
     /// Create a new builder with default configuration.
     pub fn new() -> Self {
@@ -204,32 +210,19 @@ impl ProfitGuardValidator {
     ) -> bool {
         let net_profit = post_balance.saturating_sub(pre_balance);
 
-        let required_profit = self.config.min_net_profit_lamports;
-
-        if self.config.include_flash_fee {
-            // Net profit must cover flash loan fee
-            if net_profit <= flash_loan_fee {
-                return false;
-            }
-        }
-
-        if self.config.include_priority_fee {
-            // Net profit must cover priority fee
-            if net_profit <= priority_fee {
-                return false;
-            }
-        }
-
-        // Final check
-        if self.config.include_flash_fee && self.config.include_priority_fee {
-            net_profit > required_profit + flash_loan_fee + priority_fee
-        } else if self.config.include_flash_fee {
-            net_profit > required_profit + flash_loan_fee
-        } else if self.config.include_priority_fee {
-            net_profit > required_profit + priority_fee
-        } else {
-            net_profit > required_profit
-        }
+        // Single-pass cost deduction: fees are subtracted once, then the
+        // remainder must meet or exceed the minimum (>=, not >) — the
+        // boundary "profit after all costs == min" is a pass, not a fail.
+        let fees = match (
+            self.config.include_flash_fee,
+            self.config.include_priority_fee,
+        ) {
+            (true, true) => flash_loan_fee.saturating_add(priority_fee),
+            (true, false) => flash_loan_fee,
+            (false, true) => priority_fee,
+            (false, false) => 0,
+        };
+        net_profit.saturating_sub(fees) >= self.config.min_net_profit_lamports
     }
 
     /// Calculate the minimum required post-balance.
@@ -352,11 +345,9 @@ impl std::error::Error for ProfitGuardError {}
 ///     }
 /// }
 /// ```
-
 // ============================================================================
 // Tests
 // ============================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,16 +402,13 @@ mod tests {
 
         // Test unprofitable trade (net profit < min)
         assert!(!validator.validate(
-            1_000_000,
-            1_040_000, // +40k (less than min 50k)
-            5_000,
-            5_000,
+            1_000_000, 1_040_000, // +40k (less than min 50k)
+            5_000, 5_000,
         ));
 
         // Test flash fee too high
         assert!(!validator.validate(
-            1_000_000,
-            1_050_000, // +50k
+            1_000_000, 1_050_000, // +50k
             60_000,    // flash fee > profit
             5_000,
         ));
@@ -436,11 +424,7 @@ mod tests {
 
         let validator = ProfitGuardValidator::new(config);
 
-        let min_post = validator.min_required_post_balance(
-            1_000_000,
-            5_000,
-            5_000,
-        );
+        let min_post = validator.min_required_post_balance(1_000_000, 5_000, 5_000);
 
         // 1_000_000 + 50_000 + 5_000 + 5_000 = 1_060_000
         assert_eq!(min_post, 1_060_000);
@@ -455,7 +439,9 @@ mod tests {
 
         assert_eq!(guard.profit_account, profit_account);
         assert_eq!(guard.pre_balance_lamports, 1_000_000);
-        assert_eq!(guard.min_net_profit_lamports, arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS);
+        assert_eq!(
+            guard.min_net_profit_lamports,
+            arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS
+        );
     }
 }
-

@@ -124,11 +124,16 @@ pub fn evaluate_boost_amm_dump(
 ///
 /// Returns an evaluation specifying exact completion requirements, estimated profits,
 /// and whether the trade safely satisfies minimum net profit criteria.
+///
+/// `flash_loan_fee_sf` is the RAW Kamino U68F60 scaling factor
+/// (`ReserveConfig.fees.flash_loan_fee_sf`, 60 fractional bits) read from the
+/// verified reserve account — NEVER a bps integer, which cannot represent the
+/// on-chain value (see `economic::calculate_flash_fee_raw`).
 pub fn evaluate_pump_boost_arb(
     real_sol_reserves: u64,
     virtual_sol_reserves: u64,
     virtual_token_reserves: u64,
-    flash_loan_fee_bps: u64,
+    flash_loan_fee_sf: u64,
     execution_tip_lamports: u64,
     capture_efficiency_bps: u64,
     min_net_profit_lamports: u64,
@@ -147,12 +152,14 @@ pub fn evaluate_pump_boost_arb(
     let (gross_sol, boost_absorbed) =
         evaluate_boost_amm_dump(acquired_tokens, capture_efficiency_bps)?;
 
-    // 4. Cost of Flash Loan (principal = cost)
-    let flash_fee = (U256::from(cost)
-        .checked_mul(U256::from(flash_loan_fee_bps))?
-        .checked_div(U256::from(10_000u64))?)
-    .try_into()
-    .ok()?;
+    // 4. Cost of Flash Loan (principal = cost). Canon: round(cost * sf / 2^60)
+    // with the klend floor/disabled semantics — one source of truth with the
+    // execution-time fee, no local reimplementation.
+    let flash_fee: u64 = match crate::economic::calculate_flash_fee_raw(cost, flash_loan_fee_sf) {
+        Ok(f) => f,
+        // Flash loans disabled on the reserve — no opportunity at all.
+        Err(_) => return None,
+    };
 
     // 5. Total expenses = completion cost + flash fee + Jito tip
     let total_expenses = (cost as u128)
@@ -175,4 +182,83 @@ pub fn evaluate_pump_boost_arb(
         net_profit_lamports,
         is_executable,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fixtures mirrored from the arb-ingest discovery test: a curve at
+    /// 66 real SOL (graduation cost 19 SOL) with 30 + 66 virtual SOL.
+    fn eval(fee_sf: u64) -> BoostArbEvaluation {
+        evaluate_pump_boost_arb(
+            66_000_000_000,
+            96_000_000_000,
+            335_000_000_000_000,
+            fee_sf,
+            100_000_000, // 0.10 SOL tip
+            9_000,       // 90% capture
+            0,
+        )
+        .expect("evaluation must produce a target at these reserves")
+    }
+
+    /// MATH-03 regression: the fee must come from the canonical
+    /// `calculate_flash_fee_raw` chain (round(cost * sf / 2^60), klend
+    /// floor semantics), NOT from a bps reinterpretation. The historical
+    /// bug passed `sf >> 32` as bps: for the real main-market WBOL reserve
+    /// (sf = 11_529_215_046_068 = 1e-5 = 0.1 bps) that read as 2684 "bps"
+    /// = 26.84% — a 26,840x fee overstatement that gated the BOOST route
+    /// on a phantom cost.
+    #[test]
+    fn flash_fee_matches_canonical_formula() {
+        // 19 SOL graduation cost, 0.1 bps reserve fee -> round(1.9 SOL * 1e-5)...
+        // cost * sf / 2^60 = 19e9 * 11_529_215_046_068 / 2^60 = 190_000 lamports
+        let ev = eval(11_529_215_046_068);
+        assert_eq!(ev.completion_cost_lamports, 19_000_000_000);
+        assert_eq!(ev.flash_loan_fee_lamports, 190_000);
+
+        // Exact-equivalence bridge to the canonical implementation the
+        // assembler repays with: fee(cost, sf) == calculate_flash_fee_raw.
+        let canonical = crate::economic::calculate_flash_fee_raw(
+            ev.completion_cost_lamports,
+            11_529_215_046_068,
+        )
+        .expect("canonical fee must compute for a valid reserve sf");
+        assert_eq!(flash_loan_fee_lamports_of(ev), canonical);
+    }
+
+    fn flash_loan_fee_lamports_of(ev: BoostArbEvaluation) -> u64 {
+        ev.flash_loan_fee_lamports
+    }
+
+    /// 30 bps must read as `sf = round(30 * 2^60 / 10_000)` — the identity
+    /// the arb-ingest test fixture uses — with the fee landing at exactly
+    /// `cost * 30 / 10_000` (no bps double-haircut, no >> 32 distortion).
+    #[test]
+    fn bps_sf_identity_30_bps() {
+        let sf_30_bps = ((30u128 * (1u128 << 60)) / 10_000) as u64;
+        assert_eq!(sf_30_bps, 3_458_764_513_820_540);
+        let ev = eval(sf_30_bps);
+        // 19_000_000_000 * 30 / 10_000 = 57_000_000 lamports
+        assert_eq!(ev.flash_loan_fee_lamports, 57_000_000);
+    }
+
+    /// A disabled reserve (sf == u64::MAX, klend's `FlashLoansDisabled` bit)
+    /// yields no opportunity rather than a fabricated fee.
+    #[test]
+    fn flash_loans_disabled_reserve_yields_none() {
+        assert!(
+            evaluate_pump_boost_arb(
+                66_000_000_000,
+                96_000_000_000,
+                335_000_000_000_000,
+                u64::MAX,
+                100_000_000,
+                9_000,
+                0,
+            )
+            .is_none()
+        );
+    }
 }

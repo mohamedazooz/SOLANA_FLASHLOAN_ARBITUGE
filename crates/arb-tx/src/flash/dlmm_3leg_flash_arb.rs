@@ -512,19 +512,17 @@ pub fn build_flash_funded_three_pool_transaction(
     // Choose format: V0 (with ALT) or V1 (4096 bytes)
     let wire_bytes = if params.v1_transport_supported {
         // V1: native resource config in message, no ALT needed.
-        // SIMD-0385: priority fee in the header is the TOTAL fee in
-        // lamports, not micro-lamports per CU. Convert with ceil.
-        let priority_fee_lamports = ((params.priority_fee_micro_lamports as u128)
-            .saturating_mul(params.cu_limit as u128)
-            .saturating_add(999_999))
-            / 1_000_000;
-        if priority_fee_lamports > u64::MAX as u128 {
-            return Err(FlashArb3LegError::AltCompilation(
-                "V1 priority fee exceeds u64 lamports".to_string(),
-            ));
-        }
+        // PIPE-10: canonical ceil conversion (SIMD-0385: priority fee in the
+        // header is the TOTAL fee in lamports), fail-closed on overflow.
+        let priority_fee_lamports = crate::adaptive::total_priority_fee_lamports(
+            params.priority_fee_micro_lamports,
+            u64::from(params.cu_limit),
+        )
+        .ok_or_else(|| {
+            FlashArb3LegError::AltCompilation("V1 priority fee exceeds u64 lamports".to_string())
+        })?;
         let config = crate::adaptive::V1ConfigParams {
-            priority_fee_lamports: Some(priority_fee_lamports as u64),
+            priority_fee_lamports: Some(priority_fee_lamports),
             compute_unit_limit: Some(params.cu_limit),
             // Executable program data counts toward the limit (live-measured
             // minimum ~10.2 MiB for a flash spine), so request the runtime

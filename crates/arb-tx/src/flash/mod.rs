@@ -29,5 +29,10 @@ pub use kamino::{
 pub use kamino_flash::*;
 pub use meteora_atomic_builder::*;
 
+//experimental: gated — was merged unbuildable in PR #73 (depends on
+//arb-engine upward + ambiguous AccountMeta under the flash glob re-exports).
+//Repair behind this feature before promoting it; never compiled by default.
+#[cfg(feature = "pump-v1-legacy-builder")]
 pub mod pump_raydium_builder;
+#[cfg(feature = "pump-v1-legacy-builder")]
 pub use pump_raydium_builder::*;

@@ -186,7 +186,8 @@ impl PumpRaydiumV1Builder {
 
     /// Add an instruction to the transaction.
     pub fn add_instruction(&mut self, program_id: Pubkey, data: Vec<u8>) -> &mut Self {
-        self.instructions.push(self.build_instruction(program_id, data));
+        self.instructions
+            .push(self.build_instruction(program_id, data));
         self
     }
 
@@ -218,7 +219,11 @@ impl PumpRaydiumV1Builder {
     }
 
     /// Build the complete Transaction V1.
-    pub fn build(&self, payer: &Pubkey, recent_blockhash: &[u8; 32]) -> Result<VersionedTransaction> {
+    pub fn build(
+        &self,
+        payer: &Pubkey,
+        recent_blockhash: &[u8; 32],
+    ) -> Result<VersionedTransaction> {
         if self.opportunity.is_none() {
             return Err(arb_types::ArbError::InvalidInput(
                 "No arbitrage opportunity set".into(),
@@ -262,9 +267,14 @@ impl PumpRaydiumV1Builder {
 
         // Build the message header
         let header = solana_message::MessageHeader {
-            num_required_signatures: self.account_metas.iter().filter(|m| m.is_signer).count() as u8,
+            num_required_signatures: self.account_metas.iter().filter(|m| m.is_signer).count()
+                as u8,
             num_readonly_signed_accounts: 0,
-            num_readonly_unsigned_accounts: self.account_metas.iter().filter(|m| !m.is_signer && !m.is_writable).count() as u8,
+            num_readonly_unsigned_accounts: self
+                .account_metas
+                .iter()
+                .filter(|m| !m.is_signer && !m.is_writable)
+                .count() as u8,
         };
 
         // Build instructions
@@ -423,10 +433,7 @@ impl PumpRaydiumV1Builder {
         // Token mint (32 bytes)
         data.extend_from_slice(token_mint.as_ref());
 
-        self.add_instruction(
-            Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap(),
-            data,
-        );
+        self.add_instruction(Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap(), data);
 
         Ok(())
     }
@@ -438,11 +445,19 @@ impl PumpRaydiumV1Builder {
         let (is_buy, input_mint, output_mint) = match opportunity.direction {
             ArbitrageDirection::PumpBuyRaydiumSell => {
                 // Buy on Pump: SOL -> Token
-                (true, opportunity.pump_pool.base_mint.0, opportunity.pump_pool.quote_mint.0)
+                (
+                    true,
+                    opportunity.pump_pool.base_mint.0,
+                    opportunity.pump_pool.quote_mint.0,
+                )
             }
             ArbitrageDirection::PumpSellRaydiumBuy => {
                 // Sell on Pump: Token -> SOL
-                (false, opportunity.pump_pool.quote_mint.0, opportunity.pump_pool.base_mint.0)
+                (
+                    false,
+                    opportunity.pump_pool.quote_mint.0,
+                    opportunity.pump_pool.base_mint.0,
+                )
             }
         };
 
@@ -463,10 +478,7 @@ impl PumpRaydiumV1Builder {
         // Minimum output (8 bytes, little-endian) - use 0 for now
         data.extend_from_slice(&0u64.to_le_bytes());
 
-        self.add_instruction(
-            Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(),
-            data,
-        );
+        self.add_instruction(Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap(), data);
 
         Ok(())
     }
@@ -532,10 +544,7 @@ impl PumpRaydiumV1Builder {
         // Token mint (32 bytes)
         data.extend_from_slice(token_mint.as_ref());
 
-        self.add_instruction(
-            Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap(),
-            data,
-        );
+        self.add_instruction(Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap(), data);
 
         Ok(())
     }
@@ -580,7 +589,9 @@ pub fn create_arbitrage_message_config(
 }
 
 /// Estimate compute units for a Pump.fun-Raydium arbitrage transaction.
-pub fn estimate_arbitrage_cu(raydium_pool_type: arb_engine::pump_raydium_arb::RaydiumPoolType) -> u32 {
+pub fn estimate_arbitrage_cu(
+    raydium_pool_type: arb_engine::pump_raydium_arb::RaydiumPoolType,
+) -> u32 {
     match raydium_pool_type {
         arb_engine::pump_raydium_arb::RaydiumPoolType::AMMv4 => 45_000,
         arb_engine::pump_raydium_arb::RaydiumPoolType::CPMM => 40_000,
@@ -635,4 +646,3 @@ mod tests {
         assert_eq!(config.priority_fee_lamports, 1_000_000);
     }
 }
-
