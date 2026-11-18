@@ -38,7 +38,7 @@ file:line locations read first-hand.
 | DATA-06 | P2 | Unofficial pump.fun endpoints; mock-tolerant fallbacks | pump facade | open |
 | DATA-07 | P2 | Phoenix unsupported (no variant) — documented limitation | arb-dex | open |
 | DATA-08 | P2 | Yellowstone gRPC account stream does not feed pool registration (identity placeholder) | arb-ingest gRPC path | open |
-| DATA-09 | P2 | `slot_integrity` mutex acquired 3× per update | arb-ingest | open |
+| DATA-09 | P2 | `slot_integrity` mutex acquired 3× per update | arb-ingest | fixed @ <this> |
 | DATA-10 | P2 | `PacedAccountFetcher::from_env` per-call construction → TLS handshake churn | arb-ingest | open |
 | DATA-11 | P2 | Priority-fee estimate fabricates 10,000 lamports/CU on parse failure instead of surfacing | `rpc_pool.rs` get_priority_fee_estimate | fixed @ a7ae487 |
 
