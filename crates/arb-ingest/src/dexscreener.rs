@@ -73,6 +73,58 @@ pub struct DexScreenerClient {
     base_url: String,
 }
 
+/// Classify a DexScreener pair into a supported `DexProtocol` from its
+/// `dexId` + `labels`, failing closed (None) whenever the protocol itself is
+/// not positively identifiable from the pair record alone.
+///
+/// Label taxonomy verified live on 2026-11-18 (BONK
+/// `DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263`,
+/// https://api.dexscreener.com/latest/dex/tokens/...):
+/// - dexId `raydium` ships labels `CLMM`, `CPMM`, or NO labels at all; the
+///   unlabeled form is Raydium AMM v4 — confirmed on-chain for 3/3 unlabeled
+///   BONK pairs (owner `675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`,
+///   752-byte AmmInfo).
+/// - dexId `meteora` ships labels `DLMM` (Meteora DLMM) and `DYN` (DAMM v2 /
+///   Dynamic AMM — no decode branch exists in this workspace, so it must be
+///   excluded, never classified as DLMM).
+/// - dexId `orca` ships label `wp` (whirlpools).
+///
+/// Anything else (unknown labels, future raydium generations, other DEXes)
+/// returns `None` and the pair is dropped.
+pub fn classify_pair_protocol(dex_id: &str, labels: &[String]) -> Option<DexProtocol> {
+    let has_label = |want: &str| labels.iter().any(|l| l.eq_ignore_ascii_case(want));
+    match dex_id.to_lowercase().as_str() {
+        "raydium" => {
+            if has_label("cpmm") {
+                Some(DexProtocol::RaydiumCpmm)
+            } else if has_label("clmm") {
+                Some(DexProtocol::RaydiumClmm)
+            } else if labels.is_empty() || labels.iter().all(|l| l.eq_ignore_ascii_case("v4")) {
+                // Unlabeled (or explicitly "v4") = Raydium AMM v4. Verified
+                // empirically above; unknown extra labels still fail closed.
+                Some(DexProtocol::RaydiumV4)
+            } else {
+                None
+            }
+        }
+        "raydium-clmm" | "raydium_clmm" => Some(DexProtocol::RaydiumClmm),
+        "raydium-cpmm" | "raydium_cpmm" => Some(DexProtocol::RaydiumCpmm),
+        "orca" | "whirlpool" => Some(DexProtocol::OrcaWhirlpool),
+        "meteora" | "meteora-dlmm" | "dlmm" => {
+            if has_label("dlmm") {
+                Some(DexProtocol::MeteoraDlmm)
+            } else {
+                // Includes meteora `DYN` (DAMM v2) pairs — no decoder exists
+                // (DATA-05); they must never be registered as DLMM.
+                None
+            }
+        }
+        "pumpfun" | "pump.fun" | "pump" => Some(DexProtocol::PumpFun),
+        "pumpswap" | "pump-swap" => Some(DexProtocol::PumpSwap),
+        _ => None,
+    }
+}
+
 impl Default for DexScreenerClient {
     fn default() -> Self {
         Self::new()
@@ -166,27 +218,13 @@ impl DexScreenerClient {
                 symbol = sym.clone();
             }
 
-            let protocol = match pair.dex_id.to_lowercase().as_str() {
-                "raydium" => {
-                    if let Some(ref labels) = pair.labels {
-                        if labels.iter().any(|l| l.eq_ignore_ascii_case("cpmm")) {
-                            DexProtocol::RaydiumCpmm
-                        } else if labels.iter().any(|l| l.eq_ignore_ascii_case("clmm")) {
-                            DexProtocol::RaydiumClmm
-                        } else {
-                            DexProtocol::RaydiumV4
-                        }
-                    } else {
-                        DexProtocol::RaydiumV4
-                    }
-                }
-                "raydium-clmm" | "raydium_clmm" => DexProtocol::RaydiumClmm,
-                "raydium-cpmm" | "raydium_cpmm" => DexProtocol::RaydiumCpmm,
-                "orca" | "whirlpool" => DexProtocol::OrcaWhirlpool,
-                "meteora" | "meteora-dlmm" | "dlmm" => DexProtocol::MeteoraDlmm,
-                "pumpfun" | "pump.fun" | "pump" => DexProtocol::PumpFun,
-                "pumpswap" | "pump-swap" => DexProtocol::PumpSwap,
-                _ => continue, // Ignore unrecognized / unsupported DEXes
+            let labels: Vec<String> = pair.labels.clone().unwrap_or_default();
+            let protocol = classify_pair_protocol(&pair.dex_id, &labels);
+            let protocol = match protocol {
+                Some(p) => p,
+                // Unrecognized or unclassifiable pair (unknown DEX, unknown
+                // raydium/meteora labels such as `DYN`): drop — fail closed.
+                None => continue,
             };
 
             let liq_usd = pair.liquidity.as_ref().and_then(|l| l.usd).unwrap_or(0.0);
@@ -235,6 +273,55 @@ impl DexScreenerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (DATA-02 regression) Evidence-derived label mapping: every fixture
+    /// value was observed live on the DexScreener API (BONK, 2026-11-18) and
+    /// unlabeled-V4 pairs were confirmed on-chain (owner 675kPX9M…, 752-byte
+    /// AmmInfo). `DYN` (DAMM v2) must NOT classify as MeteoraDlmm.
+    #[test]
+    fn test_raydium_meteora_label_classification_fails_closed() {
+        let proto = |dex: &str, labels: Vec<&str>| {
+            classify_pair_protocol(
+                dex,
+                &labels.into_iter().map(str::to_string).collect::<Vec<_>>(),
+            )
+        };
+
+        // Verified-on-chain forms.
+        assert_eq!(proto("raydium", vec![]), Some(DexProtocol::RaydiumV4));
+        assert_eq!(proto("raydium", vec!["v4"]), Some(DexProtocol::RaydiumV4));
+        assert_eq!(
+            proto("raydium", vec!["CPMM"]),
+            Some(DexProtocol::RaydiumCpmm)
+        );
+        assert_eq!(
+            proto("raydium", vec!["CLMM"]),
+            Some(DexProtocol::RaydiumClmm)
+        );
+        assert_eq!(
+            proto("raydium-clmm", vec![]),
+            Some(DexProtocol::RaydiumClmm)
+        );
+        assert_eq!(
+            proto("raydium-cpmm", vec![]),
+            Some(DexProtocol::RaydiumCpmm)
+        );
+
+        // Meteora: DLMM label required; DYN (DAMM v2) is excluded.
+        assert_eq!(
+            proto("meteora", vec!["DLMM"]),
+            Some(DexProtocol::MeteoraDlmm)
+        );
+        assert_eq!(proto("meteora", vec!["DYN"]), None);
+        assert_eq!(proto("meteora", vec![]), None);
+
+        // Unknown raydium label generation fails closed (no V4 blind default).
+        assert_eq!(proto("raydium", vec!["launchlab"]), None);
+
+        // Unrecognized DEXes fail closed.
+        assert_eq!(proto("moonshot", vec![]), None);
+        assert_eq!(proto("phoenix", vec![]), None);
+    }
 
     #[test]
     fn test_dexscreener_json_parsing_and_filtering() {

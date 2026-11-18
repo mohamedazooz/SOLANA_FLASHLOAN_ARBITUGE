@@ -23,7 +23,9 @@ pub use dependency_manifest::{
     resolve_protocol_dependencies,
 };
 #[cfg(feature = "extra-ingest")]
-pub use dexscreener::{DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken};
+pub use dexscreener::{
+    DexPair, DexScreenerClient, DiscoveredPool, MultiVenueToken, classify_pair_protocol,
+};
 pub use provider_supervisor::{
     CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus,
     ProviderSupervisor, SupervisorPolicy, validate_dependency_group,
