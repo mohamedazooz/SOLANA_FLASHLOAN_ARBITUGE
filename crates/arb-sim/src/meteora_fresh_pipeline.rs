@@ -433,34 +433,50 @@ impl MeteoraDlmmFreshStatePipeline {
                 // build failure falls back to the legacy packet rather than dropping the
                 // candidate, because v1 support is a transport property, not a route one.
                 let v1 = if self.config.two_pool_v1 {
-                    let priority_fee_lamports = ((self.config.priority_fee_micro_lamports as u128)
-                        .saturating_mul(self.config.cu_limit as u128)
-                        .saturating_add(999_999))
-                        / 1_000_000;
-                    let v1_config = arb_tx::MeteoraTwoPoolV1Config {
-                        compute_unit_limit: self.config.cu_limit,
-                        priority_fee_lamports: u64::try_from(priority_fee_lamports)
-                            .unwrap_or(u64::MAX),
-                        loaded_accounts_data_size_limit:
-                            arb_tx::METEORA_TWO_POOL_V1_DEFAULT_LOADED_DATA_LIMIT,
-                    };
-                    match MeteoraDlmmAtomicArbitrageBuilder::build_atomic_two_swap_v1(
-                        signer,
-                        &pair.pool_a_state,
-                        &pair.pool_b_state,
-                        swap_a_first,
-                        amount_in,
-                        hop1_out,
-                        min_final_out.max(1),
-                        self.config.slippage_bps,
-                        v1_config,
-                        dummy_blockhash,
-                        hop1_bins,
-                        hop2_bins,
-                    ) {
-                        Ok(t) => Some(t),
-                        Err(e) => {
-                            warn!("V1 two-pool build failed, falling back to legacy packet: {e}");
+                    // PIPE-10: canonical ceil conversion, fail-closed on
+                    // overflow — an unrepresentable fee falls back to the
+                    // legacy packet instead of signing a u64::MAX tip.
+                    let v1_config = arb_tx::adaptive::total_priority_fee_lamports(
+                        self.config.priority_fee_micro_lamports,
+                        u64::from(self.config.cu_limit),
+                    )
+                    .map(|priority_fee_lamports| {
+                        arb_tx::MeteoraTwoPoolV1Config {
+                            compute_unit_limit: self.config.cu_limit,
+                            priority_fee_lamports,
+                            loaded_accounts_data_size_limit:
+                                arb_tx::METEORA_TWO_POOL_V1_DEFAULT_LOADED_DATA_LIMIT,
+                        }
+                    });
+                    match v1_config {
+                        Some(v1_config) => {
+                            match MeteoraDlmmAtomicArbitrageBuilder::build_atomic_two_swap_v1(
+                                signer,
+                                &pair.pool_a_state,
+                                &pair.pool_b_state,
+                                swap_a_first,
+                                amount_in,
+                                hop1_out,
+                                min_final_out.max(1),
+                                self.config.slippage_bps,
+                                v1_config,
+                                dummy_blockhash,
+                                hop1_bins,
+                                hop2_bins,
+                            ) {
+                                Ok(t) => Some(t),
+                                Err(e) => {
+                                    warn!(
+                                        "V1 two-pool build failed, falling back to legacy packet: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        None => {
+                            warn!(
+                                "V1 priority fee overflows lamports; falling back to legacy packet"
+                            );
                             None
                         }
                     }
