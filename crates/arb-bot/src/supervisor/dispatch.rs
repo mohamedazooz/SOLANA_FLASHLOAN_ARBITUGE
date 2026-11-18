@@ -791,7 +791,7 @@ impl Supervisor {
                             // Dual-track landing verification:
                             // SWQoS queries getSignatureStatuses directly.
                             // Jito Bundle queries Jito getBundleStatuses AND cross-verifies with getSignatureStatuses.
-                            let (status, landed_slot, _err_reason) = if was_swqos_task {
+                            let (status, landed_slot, _err_reason, lifecycle) = if was_swqos_task {
                                 let (sig_status, slot, err) = signature_rpc
                                     .poll_signature_with_details(
                                         &b_id,
@@ -835,7 +835,7 @@ impl Supervisor {
                                 } else {
                                     arb_land::LandStatus::Sent
                                 };
-                                (st, slot, reason)
+                                (st, slot, reason, lifecycle)
                             } else {
                                 let (lifecycle, slot, err) = js
                                     .verify_landing_with_height(
@@ -856,7 +856,7 @@ impl Supervisor {
                                 } else {
                                     arb_land::LandStatus::Sent
                                 };
-                                (st, slot, err)
+                                (st, slot, err, lifecycle)
                             };
 
                             let effective_slot = landed_slot.unwrap_or(slot_val);
@@ -1005,8 +1005,10 @@ impl Supervisor {
                                         .leader_for(Slot(effective_slot))
                                         .map(|pk| pk.to_string())
                                         .unwrap_or_else(|| leader_task.clone());
-                                    let landed_status_str =
-                                        "Confirmed / Finalized (مؤكد في البلوك)";
+                                    // PIPE-12: report the commitment level the
+                                    // verification track actually proved, never a
+                                    // hardcoded Confirmed/Finalized claim.
+                                    let landed_status_str = lifecycle.landing_status_str();
 
                                     // Record landed trade in memory for 5-minute performance digest
                                     // (realized figure — actual when on-chain evidence exists).
@@ -1107,7 +1109,29 @@ impl Supervisor {
                                         js.record(r, InflightStatus::Failed);
                                     }
                                     risk_gate.record_bundle_landed(Slot(effective_slot), false);
-                                    risk_gate.record_loss(5_000.0 / 1e9 * sol_price_val);
+                                    // A landed-but-reverted transaction pays the
+                                    // 5,000-lamport base fee AND the priority fee
+                                    // (deducted pre-execution); its tip transfer is
+                                    // rolled back with the rest of the tx. Read the
+                                    // real on-chain fee from transaction metadata;
+                                    // the flat 5,000-lamport figure is only the
+                                    // no-evidence fallback (PIPE-06).
+                                    let mut failure_fee_lamports = 5_000u64;
+                                    if let Some(ref sig) = tx_signature {
+                                        if let Ok(Some(meta)) =
+                                            signature_rpc.get_transaction_with_metadata(sig).await
+                                        {
+                                            if let Some(fee) = arb_sim::meta_fee_lamports(&meta) {
+                                                failure_fee_lamports = fee;
+                                                debug!(
+                                                    "Failed-on-chain tx paid {fee} lamports (base + priority)"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    risk_gate.record_loss(
+                                        failure_fee_lamports as f64 / 1e9 * sol_price_val,
+                                    );
                                     risk_gate.on_failure(Slot(effective_slot));
                                     arb_metrics::set_breaker_state(
                                         if risk_gate.is_breaker_open(Slot(effective_slot)) {

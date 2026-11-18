@@ -70,6 +70,19 @@ impl TransactionLifecycle {
         matches!(self, Self::Finalized | Self::Failed | Self::Expired)
     }
 
+    /// Human-readable landing status assertion, strictly bounded by what the
+    /// verification track actually proved (PIPE-12). Never claims
+    /// Confirmed/Finalized unless the lifecycle state carries that level;
+    /// unproven landings are labelled as such.
+    pub fn landing_status_str(self) -> &'static str {
+        match self {
+            Self::Finalized => "Finalized (نهائي على السلسلة)",
+            Self::Confirmed => "Confirmed (مؤكد على السلسلة)",
+            Self::Processed => "Processed (في البلوك، بانتظار التأكيد)",
+            _ => "Landed (في البلوك، مستوى التأكيد غير مثبت)",
+        }
+    }
+
     /// Check if transition from `self` to `next` is valid under monotonic ordering.
     pub fn can_transition_to(&self, next: TransactionLifecycle) -> bool {
         if *self == next {
@@ -237,5 +250,38 @@ mod tests {
         assert!(s3.is_landed());
         assert!(s3.is_confirmed());
         assert!(s3.is_terminal());
+    }
+
+    // PIPE-12 regression: the landing status string must never claim a higher
+    // commitment level than the lifecycle actually proved.
+    #[test]
+    fn landing_status_str_matches_proved_commitment_level() {
+        assert!(
+            TransactionLifecycle::Finalized
+                .landing_status_str()
+                .contains("Finalized")
+        );
+        assert!(
+            TransactionLifecycle::Confirmed
+                .landing_status_str()
+                .contains("Confirmed")
+        );
+        assert!(
+            TransactionLifecycle::Processed
+                .landing_status_str()
+                .contains("Processed")
+        );
+        // Unproven / ambiguous states must NOT claim Confirmed or Finalized.
+        for state in [
+            TransactionLifecycle::Prepared,
+            TransactionLifecycle::Simulated,
+            TransactionLifecycle::Signed,
+            TransactionLifecycle::Submitted,
+            TransactionLifecycle::Unknown,
+        ] {
+            let s = state.landing_status_str();
+            assert!(!s.contains("Finalized"), "{state} claims Finalized: {s}");
+            assert!(!s.contains("Confirmed"), "{state} claims Confirmed: {s}");
+        }
     }
 }

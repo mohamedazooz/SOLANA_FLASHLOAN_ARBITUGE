@@ -546,6 +546,17 @@ pub struct LandedBalanceChanges {
     pub realized_net_wsol: Option<i128>,
 }
 
+/// Total fee actually charged by the network for the transaction, read from
+/// `getTransaction` response metadata (`meta.fee`, which includes the base
+/// signature fee and the priority fee). Returned in raw lamports.
+/// `None` when the metadata carries no fee field (PIPE-06: callers fall back
+/// to the 5,000-lamport base-fee estimate only when this is `None`).
+pub fn meta_fee_lamports(meta: &Value) -> Option<u64> {
+    meta.get("meta")
+        .and_then(|m| m.get("fee"))
+        .and_then(Value::as_u64)
+}
+
 /// Parse a landed `getTransaction` response into actual balance changes.
 ///
 /// `meta` is the full RPC response value (the function reads its `meta`
@@ -924,5 +935,22 @@ mod tests {
         assert_eq!(result.token_delta(0), Some(750));
         result.realized_net_lamports = Some(750);
         assert_eq!(result.realized_net_lamports, Some(750));
+    }
+
+    // PIPE-06 regression: meta.fee (base + priority) is the authoritative
+    // loss for a landed-but-reverted transaction.
+    #[test]
+    fn meta_fee_lamports_reads_total_fee_and_none_when_missing() {
+        let failed_tx = serde_json::json!({
+            "meta": { "fee": 50_010, "status": { "Err": "InstructionError(0, Custom(1))" } },
+        });
+        assert_eq!(meta_fee_lamports(&failed_tx), Some(50_010));
+        let no_fee = serde_json::json!({ "meta": { "computeUnitsConsumed": 42 } });
+        assert_eq!(meta_fee_lamports(&no_fee), None);
+        let empty = serde_json::json!({});
+        assert_eq!(meta_fee_lamports(&empty), None);
+        // Success shape too: fee is present regardless of status outcome.
+        let succeeded = serde_json::json!({ "meta": { "fee": 7_500, "status": { "Ok": null } } });
+        assert_eq!(meta_fee_lamports(&succeeded), Some(7_500));
     }
 }

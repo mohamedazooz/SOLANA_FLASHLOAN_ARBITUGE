@@ -14,7 +14,7 @@ pub mod paper_trading_report;
 pub mod profitability_gate;
 pub use fork_sim::{
     DEFAULT_FORK_SIM_TIMEOUT_MS, ForkSimResult, ForkSimulator, ForkState, LandedBalanceChanges,
-    SimAccountSnapshot, SimTokenBalance, parse_landed_balance_changes,
+    SimAccountSnapshot, SimTokenBalance, meta_fee_lamports, parse_landed_balance_changes,
 };
 pub use litesvm_sim::{LocalSimResult, simulate_locally};
 pub use meteora_fresh_pipeline::{
