@@ -39,7 +39,7 @@ file:line locations read first-hand.
 | DATA-07 | P2 | Phoenix unsupported (no variant) — documented limitation | arb-dex | open |
 | DATA-08 | P2 | Yellowstone gRPC account stream does not feed pool registration (identity placeholder) | arb-ingest gRPC path | open |
 | DATA-09 | P2 | `slot_integrity` mutex acquired 3× per update | arb-ingest | fixed @ 04f0112 |
-| DATA-10 | P2 | `PacedAccountFetcher::from_env` per-call construction → TLS handshake churn | arb-ingest | fixed @ <this-c> |
+| DATA-10 | P2 | `PacedAccountFetcher::from_env` per-call construction → TLS handshake churn | arb-ingest | fixed @ da2fa07 |
 | DATA-11 | P2 | Priority-fee estimate fabricates 10,000 lamports/CU on parse failure instead of surfacing | `rpc_pool.rs` get_priority_fee_estimate | fixed @ a7ae487 |
 
 ### Pipeline / execution
