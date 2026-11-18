@@ -23,13 +23,12 @@ ed25519-dalek = { version = "2.1", default-features = false, features = ["fast",
 
 [dev-dependencies]
 proptest = { workspace = true }
-solana-address = { version = "4.2", default-features = false }
-solana-hash = { version = "4.2", default-features = false }
-solana-instruction = { version = "4.2", default-features = false }
-solana-message = { version = "4.2", default-features = false, features = ["std", "serde"] }
+solana-address = { version = "=2.7.0", default-features = false }
+solana-hash = { version = "=4.6.0", default-features = false }
+solana-instruction = { version = "=3.5.0", default-features = false }
+solana-message = { version = "=4.6.0", default-features = false, features = ["std", "serde"] }
 solana-pubkey = { workspace = true, features = ["serde"] }
-solana-signer = { version = "4.2", default-features = false }
-solana-transaction = { version = "4.2", default-features = false }
+solana-signer = { version = "=3.0.1", default-features = false }
 
 [lints]
 workspace = true
