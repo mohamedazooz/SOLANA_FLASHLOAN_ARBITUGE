@@ -290,7 +290,7 @@ pub async fn resolve_mints_decimals(
         return out;
     }
 
-    let fetcher = PacedAccountFetcher::from_env();
+    let fetcher = PacedAccountFetcher::shared();
     for mint in unique {
         let bytes = match fetcher.fetch_single_account(&mint.0).await {
             Ok((_, b)) => b,
@@ -428,7 +428,7 @@ pub async fn fetch_accounts_chunked_with_slot(
         return (Vec::new(), 0);
     }
 
-    let fetcher = PacedAccountFetcher::from_env();
+    let fetcher = PacedAccountFetcher::shared();
     let mut out = Vec::with_capacity(keys.len());
     let mut latest_slot = 0u64;
 
