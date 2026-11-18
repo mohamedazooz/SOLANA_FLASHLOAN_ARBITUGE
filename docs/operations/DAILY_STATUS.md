@@ -4,7 +4,7 @@
 
 * **Date:** 2026-11-17 (session ongoing)
 * **Branch:** `vibe/ws-provider-audit-0fcd5e` → PR #70
-* **Commit:** batch-18 commit (this push) — refactor(math): split dlmm.rs into responsibility submodules — 651 (3/7) — 454/495
+* **Commit:** batch-18b commit (this push) — test(config): units documentation for every numeric config field + automated enforcement — 649 — 455/495
 * **Previous commits:** `642a548` (batch 5), `3576f13` (batch 4), `e5a56c8` (batch 3), `924bdaa` (batch 2)
 * **Current phase:** Phase 14 (Observability) + Phase 15 (Controlled Production Readiness) — remaining checklist items
 * **Verified readiness level:** LEVEL 2 — TEST VERIFIED (1207 tests passed, 0 failed). Not LEVEL 3+: 24h shadow soak BLOCKED, dual-provider WSS BLOCKED on free plans.
@@ -180,8 +180,15 @@ Gates: fmt clean, clippy `-D warnings` clean, workspace **1207 passed / 0 failed
 
 Gates: `cargo fmt --all` clean; `cargo clippy --workspace --all-targets -- -D warnings` zero warnings; `cargo test --workspace --all-targets` **passed=1207 failed=0** (baseline preserved).
 
-## Problems discovered (this session)
-| Severity | Issue | Root cause | Status |
+### Batch 18b — item 649: units documentation for every numeric config field + enforcement test (same session)
+
+| Item | What changed | Files |
+|---|---|---|
+| 649 → [x] TESTED | 25 documentation edits: every numeric field in the runtime `Config` struct tree (`ChronosConfig`, `JupiterConfig`, `JitoConfig`, `WalletConfig`, `StrategyConfig`, `DlmmCrossPoolTuning`, `DlmmThreeLegTuning`, `RiskConfig`) now carries explicit unit docs (lamports / bps / milliseconds / seconds / slots / USD / fraction 0..=1 / dimensionless multiplier / count / raw units / 1-per-seconds) with load-validation ranges where they apply. New automated enforcement test scans the config.rs source and fails the build if any numeric `pub` field (incl. `Option<...>`) lacks a contiguous doc run containing a unit token from a closed list (walk-up crosses `#[serde]` attributes), guarding against documentation drift. Source-level `arb-config::AppConfig` already carries units in its types (`Bps`/`Lamports`/`Milliseconds`/`Seconds`). Counter 454→**455/495**, 40 remaining. | `crates/arb-bot/src/config.rs`, `crates/arb-bot/tests/config_units_documented.rs` (new) |
+
+Gates: fmt clean; clippy -D warnings zero warnings; `cargo test --workspace --all-targets` **passed=1208 failed=0**.
+
+## Problems discovered (this session)| Severity | Issue | Root cause | Status |
 |---|---|---|---|
 | P2 | Vite dashboard JS/CSS 404 | `/api` router had no `/assets` route | **FIXED/TESTED** (`337a458`) |
 | P3 | Gap-detection semantics | First implementation counted raw slot jumps; parent-chain evidence requires walking ancestors so an authoritative parent link narrows the unobserved window | **FIXED** — test `late_and_reordered_notifications_never_inflate_gaps` caught it (expected 38, not 39) before push |

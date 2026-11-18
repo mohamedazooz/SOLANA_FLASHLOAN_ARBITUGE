@@ -23,14 +23,20 @@ pub struct Config {
 pub struct ChronosConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Units: 1/seconds — exponential decay rate λ applied to observation age.
+    /// Range-checked at load to [0.1, 100.0].
     #[serde(default = "default_lambda")]
     pub decay_lambda_per_sec: f64,
+    /// Units: milliseconds — observation age past which the Chronos EV decay has fully consumed an edge. Range-checked at load to [100, 5000].
     #[serde(default = "default_max_age_ms")]
     pub max_age_ms: u64,
+    /// Units: USD — minimum expected value for an opportunity to stay eligible under the Chronos EV gate.
     #[serde(default = "default_min_ev_usd")]
     pub min_ev_usd: f64,
+    /// Units: lamports — conservative cost charged against EV for each recent failed attempt.
     #[serde(default = "default_failed_cost")]
     pub failed_attempt_cost_lamports: u64,
+    /// Units: dimensionless coefficient — multiplier applied to the failed-attempt count inside the EV risk penalty.
     #[serde(default = "default_beta_risk")]
     pub beta_risk_factor: f64,
 }
@@ -105,6 +111,7 @@ pub struct JupiterConfig {
     pub base_url: String,
     #[serde(default = "default_jupiter_api_key_env")]
     pub api_key_env: String,
+    /// Units: milliseconds — Jupiter REST request timeout.
     #[serde(default = "default_jupiter_timeout_ms")]
     pub timeout_ms: u64,
 }
@@ -144,24 +151,28 @@ pub struct RpcConfig {
 pub struct JitoConfig {
     pub regions: Vec<String>,
     pub tip_floor_percentile: String,
+    /// Units: basis points (bps) — target share of the net edge spent as Jito tip.
     pub tip_share_bps: u64,
+    /// Units: lamports — hard ceiling on the tip amount per bundle.
     pub max_tip_lamports: u64,
+    /// Units: basis points (bps) — maximum share of the net edge spendable as tip.
     pub max_tip_share_bps: u64,
+    /// Units: lamports — retained net-profit floor that tips may never consume.
     pub min_keep_lamports: u64,
 
     // --- Adaptive tip pricing -------------------------------------------
     // Every field below defaults, so an existing `config.toml` keeps
     // parsing unchanged and the operator opts in by setting a value.
-    /// Fraction of the edge that must survive every cost, tip included.
+    /// Fraction (dimensionless, 0..=1) of the edge that must survive every cost, tip included.
     #[serde(default = "default_keep_share")]
     pub keep_share: f64,
-    /// Multiplicative cap on how far a retry may raise the previous tip.
+    /// Dimensionless multiplier (≥ 1.0) — cap on how far a retry may raise the previous tip.
     #[serde(default = "default_ladder_growth")]
     pub ladder_growth: f64,
-    /// Age past which a tip-floor snapshot is treated as absent.
+    /// Units: milliseconds — age past which a tip-floor snapshot is treated as absent (fail-closed).
     #[serde(default = "default_tip_floor_max_age_ms")]
     pub tip_floor_max_age_ms: u64,
-    /// Tip-floor poll interval; clamped to the endpoint's 1 rps per-IP limit.
+    /// Units: milliseconds — tip-floor poll interval; clamped to the endpoint's 1 rps per-IP limit.
     #[serde(default = "default_tip_floor_poll_ms")]
     pub tip_floor_poll_ms: u64,
     /// Refuse to tip when the slot's leader is not known to run Jito-Solana.
@@ -176,10 +187,10 @@ pub struct JitoConfig {
     /// Interval between leader-schedule refreshes, in seconds.
     #[serde(default = "default_leader_refresh_secs")]
     pub leader_refresh_secs: u64,
-    /// Minimum edge in lamports required to qualify for SWQoS direct submission fallback.
+    /// Units: lamports — minimum edge required to qualify for SWQoS direct submission fallback.
     #[serde(default = "default_swqos_fallback_hurdle_lamports")]
     pub swqos_fallback_hurdle_lamports: u64,
-    /// Priority fee in lamports used for SWQoS direct submission fallback.
+    /// Units: lamports — priority fee charged for SWQoS direct submission fallback.
     #[serde(default = "default_swqos_fallback_priority_fee_lamports")]
     pub swqos_fallback_priority_fee_lamports: u64,
 }
@@ -188,14 +199,18 @@ pub struct JitoConfig {
 pub struct WalletConfig {
     pub keypair_path: String,
     pub cold_wallet_pubkey: Option<String>,
+    /// Units: lamports — minimum payer SOL balance below which submission readiness is degraded.
     pub min_sol_balance_lamports: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct StrategyConfig {
     pub base_tokens: Vec<String>,
+    /// Units: lamports — absolute net-profit floor after all costs (USD override via MIN_NET_PROFIT_USD env).
     pub min_net_profit_abs: u64,
+    /// Units: basis points (bps) — relative net-profit floor over the borrowed principal.
     pub min_net_profit_bps: u64,
+    /// Units: basis points (bps) — execution price-impact ceiling for eligibility.
     pub max_price_impact_bps: u64,
     /// Per-hop min-out floor slippage (bps) applied to every swap leg when
     /// deriving `min_amount_out`. Overridden onto every opportunity before
@@ -204,6 +219,7 @@ pub struct StrategyConfig {
     /// `DEFAULT_HOP_SLIPPAGE_BPS` (10).
     #[serde(default = "default_hop_slippage_bps")]
     pub hop_slippage_bps: u64,
+    /// Units: slots — maximum age of a pool snapshot for quote freshness (fail-closed rejection past it).
     pub max_state_age_slots: u64,
     /// Maximum slot age for a pool to enter the *discovery* graph. `None`
     /// means "same policy as quote freshness" (`max_state_age_slots`).
@@ -212,15 +228,16 @@ pub struct StrategyConfig {
     pub graph_max_age_slots: Option<u64>,
     pub use_flash_loan: bool,
     /// Hard cap on dynamically discovered pools (each costs account reads
-    /// every tick). `None` uses the discovery default.
+    /// every tick). Units: count of registered pools. `None` uses the
+    /// discovery default.
     pub max_pools: Option<usize>,
     /// Maximum number of top active pools to select per DEX venue.
-    /// `None` defaults to 33.
+    /// Units: count of pools per venue. `None` defaults to 33.
     #[serde(default)]
     pub max_per_venue: Option<usize>,
     /// How often the pool catalog is refreshed, in seconds. `None` uses 300.
     pub discovery_refresh_secs: Option<u64>,
-    /// Minimum TVL (USD) for a discovered pool. `None` uses the default.
+    /// Minimum TVL for a discovered pool. Units: USD. `None` uses the default.
     pub discovery_min_tvl_usd: Option<f64>,
     /// MeteoraDlmmCrossPoolArbitrageStrategy tuning. `None` uses safe
     /// defaults (this strategy is always evaluated in the candidate
@@ -264,7 +281,7 @@ fn default_max_route_hops() -> usize {
 /// section is valid.
 #[derive(Debug, Deserialize, Clone)]
 pub struct DlmmCrossPoolTuning {
-    /// Maximum distinct pool *pairs* evaluated per scan. Default 256.
+    /// Maximum distinct pool *pairs* evaluated per scan. Units: count of pairs. Default 256.
     #[serde(default = "dcp_default_max_pairs")]
     pub max_pairs: usize,
     /// Minimum candidate input size in base-mint raw units. Default 100k.
@@ -274,10 +291,10 @@ pub struct DlmmCrossPoolTuning {
     /// additional cap beyond the risk gate's `max_sizing`.
     #[serde(default = "dcp_default_max_input")]
     pub max_input: u64,
-    /// Coarse candidate samples (ladder + linear fill). Default 10.
+    /// Coarse candidate samples (ladder + linear fill). Units: count of samples. Default 10.
     #[serde(default = "dcp_default_coarse")]
     pub coarse_samples: usize,
-    /// Local refinement iterations. Default 8.
+    /// Local refinement iterations. Units: count of iterations. Default 8.
     #[serde(default = "dcp_default_refine")]
     pub refine_samples: usize,
     /// Minimum gross cycle spread (bps). Default 10 (epsilon).
@@ -345,7 +362,7 @@ pub struct DlmmThreeLegTuning {
     /// Hard minimal net profit (lamports) for the pipeline's internal gate.
     #[serde(default = "three_leg_default_min_profit")]
     pub min_profit_lamports: u64,
-    /// Number of candidate sizes the 3-leg size optimizer evaluates. Default 4.
+    /// Units: count of candidate sizes the 3-leg size optimizer evaluates. Default 4.
     #[serde(default = "three_leg_default_sizes")]
     pub size_ladder: usize,
 }
@@ -416,19 +433,29 @@ fn default_cooldown_slots() -> u64 {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RiskConfig {
+    /// Units: USD — per-trade notional cap (env override MAX_TRADE_SIZE_USD).
     pub max_trade_size_usd: f64,
+    /// Units: USD — rolling daily realized-loss circuit-breaker bound.
     pub max_daily_loss_usd: f64,
+    /// Units: USD — rolling hourly realized-loss circuit-breaker bound.
     pub max_hourly_loss_usd: f64,
+    /// Units: count — consecutive failed attempts before the risk circuit opens.
     pub max_consecutive_failures: u64,
+    /// Units: fraction (0..=1) — minimum confirmed-landing rate for continued execution.
     pub min_landing_rate: f64,
+    /// Units: count per slot — dispatch attempts allowed within one slot.
     pub max_attempts_per_slot: u32,
+    /// Units: count — concurrent in-flight Jito bundles allowed.
     pub max_inflight_bundles: u32,
+    /// Units: fraction (0..=1, load-validated) — maximum tip spend as a ratio of realized edge.
     pub max_tip_spend_ratio: f64,
+    /// Units: count per hour — submission-rate ceiling.
     #[serde(default = "default_max_orders_per_hour")]
     pub max_orders_per_hour: usize,
+    /// Units: slots — cooldown after a failed attempt before the same route is retried.
     #[serde(default = "default_cooldown_slots")]
     pub cooldown_slots: u64,
-    /// Maximum allowable ROI ceiling in basis points (phantom quote filter).
+    /// Units: basis points (bps) — maximum allowable ROI ceiling (phantom quote filter).
     #[serde(default = "default_max_implausible_roi_bps")]
     pub max_implausible_roi_bps: u64,
 }
