@@ -320,15 +320,15 @@ impl Supervisor {
                 });
                 merged.extend(src);
             }
-            merged.sort_by_key(|o| std::cmp::Reverse(o.net_profit.0));
+            let ranked = rank_opportunities_cross_mint(merged);
             info!(
                 "Slot {}: graph discovered {} candidate route(s) after dedupe; graph edges={}, base_anchors={}",
                 current_slot.0,
-                merged.len(),
+                ranked.len(),
                 graph_edges,
                 graph_anchors
             );
-            (merged, seen_pool_sets)
+            (ranked, seen_pool_sets)
         };
         let (mut merged, mut seen_pool_sets) = opportunities;
         arb_metrics::observe_route_discovery_latency_us(
@@ -485,8 +485,7 @@ impl Supervisor {
             }
         }
 
-        merged.sort_by_key(|o| std::cmp::Reverse(o.net_profit.0));
-        let opportunities = merged;
+        let opportunities = rank_opportunities_cross_mint(merged);
 
         let t_ingest_to_quote_us = quote_ingest_time.elapsed().as_micros() as u64;
         self.heartbeat
@@ -507,5 +506,124 @@ impl Supervisor {
         .await;
 
         Ok(())
+    }
+}
+
+/// PIPE-13: cross-mint ranking for the merged opportunity set.
+///
+/// `net_profit` values from different sources are denominated in their own
+/// base mint's raw lamport-equivalent unit. WSOL-anchored routes are exact
+/// lamports; for non-WSOL bases the conversion rides a price assumption
+/// (`derive_rational_rate`), so comparing raw units across mints mixes
+/// apples and oranges — a 6-decimal meme token's raw net can trivially
+/// dwarf a real WSOL profit by scale alone.
+///
+/// Deterministic, conservative order:
+/// 1. WSOL-anchored opportunities (exact common quote) first, by net profit
+///    descending — verified economics always outrank assumed conversions.
+/// 2. Every other base mint as its own group (first-seen insertion order),
+///    each ranked internally by net profit descending. Group-local ranking
+///    only affects processing latency, never per-dispatch accounting: every
+///    opportunity is independently re-validated and re-costed before
+///    dispatch, so a locally-imprecise group order is honest and safe.
+pub(super) fn rank_opportunities_cross_mint(
+    opps: Vec<ExecutionOpportunity>,
+) -> Vec<ExecutionOpportunity> {
+    let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).expect("WSOL mint constant parses");
+    let by_net_desc =
+        |a: &ExecutionOpportunity, b: &ExecutionOpportunity| b.net_profit.0.cmp(&a.net_profit.0);
+
+    let mut wsol_group: Vec<ExecutionOpportunity> = Vec::new();
+    let mut other_groups: Vec<(MintId, Vec<ExecutionOpportunity>)> = Vec::new();
+    let mut unanchored: Vec<ExecutionOpportunity> = Vec::new();
+    for o in opps {
+        match o.hops.first().map(|h| h.mint_in) {
+            Some(m) if m.0 == wsol => wsol_group.push(o),
+            Some(m) => {
+                if let Some(group) = other_groups.iter_mut().find(|(gm, _)| *gm == m) {
+                    group.1.push(o);
+                } else {
+                    other_groups.push((m, vec![o]));
+                }
+            }
+            // No hops => no base mint to group by; keep in arrival order at
+            // the tail (nothing comparable was averred about their profits).
+            None => unanchored.push(o),
+        }
+    }
+    wsol_group.sort_by(by_net_desc);
+    for group in other_groups.iter_mut().map(|(_, g)| g) {
+        group.sort_by(by_net_desc);
+    }
+
+    let mut ranked = wsol_group;
+    ranked.extend(other_groups.into_iter().flat_map(|(_, g)| g));
+    ranked.extend(unanchored);
+    ranked
+}
+
+#[cfg(test)]
+mod rank_tests {
+    use super::*;
+    use arb_types::{PoolId, PumpSwapTradeIntent, TokenProgramKind};
+
+    fn hop(mint_in: MintId, mint_out: MintId) -> SwapHop {
+        SwapHop {
+            pool_id: PoolId::new([1u8; 32]),
+            protocol: DexProtocol::MeteoraDlmm,
+            mint_in,
+            mint_out,
+            fee_bps: 25,
+            active_bin_id: None,
+            token_programs: [TokenProgramKind::Token2022, TokenProgramKind::Token2022],
+            trade_intent: PumpSwapTradeIntent::default(),
+            execution_accounts: None,
+        }
+    }
+
+    fn opp(base: MintId, net: u64) -> ExecutionOpportunity {
+        let wsol = MintId(Pubkey::from_str(arb_constants::WSOL_MINT).unwrap());
+        ExecutionOpportunity {
+            route_id: RouteId(1),
+            slot: Slot(1),
+            size_in: TokenAmount(1),
+            expected_out: TokenAmount(1),
+            hop_inputs: Vec::new(),
+            gross_profit: Lamports(net),
+            net_profit: Lamports(net),
+            base_decimals: 9,
+            price_impact_bps: Bps(0),
+            hops: vec![hop(base, wsol)],
+            expected_min_final_output: 0,
+            hop_slippage_bps: 0,
+        }
+    }
+
+    /// PIPE-13 regression: a huge raw-unit net on a 6-decimal meme base must
+    /// not outrank an exact WSOL-lamport profit (the old direct sort placed
+    /// it first by scale alone); same-mint ordering is respected.
+    #[test]
+    fn wsol_anchored_profits_outrank_assumed_cross_mint_conversions() {
+        let wsol = MintId(Pubkey::from_str(arb_constants::WSOL_MINT).unwrap());
+        let meme_6dec = MintId(Pubkey::new_from_array([9u8; 32]));
+        let meme_b = MintId(Pubkey::new_from_array([8u8; 32]));
+
+        let ranked = rank_opportunities_cross_mint(vec![
+            opp(meme_6dec, u64::MAX / 2), // raw-scale inflated
+            opp(wsol, 100),
+            opp(meme_b, u64::MAX - 1), // different meme mint
+            opp(wsol, 200),
+        ]);
+
+        assert_eq!(ranked[0].net_profit, Lamports(200));
+        assert_eq!(ranked[1].net_profit, Lamports(100));
+        // Assumed-conversion groups keep deterministic first-seen order and
+        // are ranked internally, after every exact-WSOL profit.
+        let meme_group_ids: Vec<[u8; 32]> = ranked[2..]
+            .iter()
+            .map(|o| o.hops[0].mint_in.0.to_bytes())
+            .collect();
+        assert_eq!(meme_group_ids[0], [9u8; 32]);
+        assert_eq!(meme_group_ids[1], [8u8; 32]);
     }
 }
