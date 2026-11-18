@@ -77,16 +77,16 @@ impl AssertMinimumProfit {
     /// Format: [discriminator: u8, pre_balance: u64, min_profit: u64]
     pub fn serialize(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(17);
-        
+
         // Discriminator for AssertMinimumProfit
         data.push(0x42); // 'B' for "Balance check"
-        
+
         // Pre-balance (8 bytes, little-endian)
         data.extend_from_slice(&self.pre_balance_lamports.to_le_bytes());
-        
+
         // Min profit (8 bytes, little-endian)
         data.extend_from_slice(&self.min_net_profit_lamports.to_le_bytes());
-        
+
         data
     }
 
@@ -97,21 +97,21 @@ impl AssertMinimumProfit {
                 "AssertMinimumProfit: insufficient data".into(),
             ));
         }
-        
+
         if data[0] != 0x42 {
             return Err(ArbError::DeserializationError(
                 "AssertMinimumProfit: invalid discriminator".into(),
             ));
         }
-        
+
         let pre_balance = u64::from_le_bytes(data[1..9].try_into().map_err(|_| {
             ArbError::DeserializationError("AssertMinimumProfit: invalid pre_balance".into())
         })?);
-        
+
         let min_profit = u64::from_le_bytes(data[9..17].try_into().map_err(|_| {
             ArbError::DeserializationError("AssertMinimumProfit: invalid min_profit".into())
         })?);
-        
+
         // We don't have the profit_account in the data, it's in the account list
         Ok(Self {
             profit_account: Pubkey::default(), // Will be set from account list
@@ -203,23 +203,23 @@ impl ProfitGuardValidator {
         priority_fee: u64,
     ) -> bool {
         let net_profit = post_balance.saturating_sub(pre_balance);
-        
+
         let required_profit = self.config.min_net_profit_lamports;
-        
+
         if self.config.include_flash_fee {
             // Net profit must cover flash loan fee
             if net_profit <= flash_loan_fee {
                 return false;
             }
         }
-        
+
         if self.config.include_priority_fee {
             // Net profit must cover priority fee
             if net_profit <= priority_fee {
                 return false;
             }
         }
-        
+
         // Final check
         if self.config.include_flash_fee && self.config.include_priority_fee {
             net_profit > required_profit + flash_loan_fee + priority_fee
@@ -240,15 +240,15 @@ impl ProfitGuardValidator {
         priority_fee: u64,
     ) -> u64 {
         let mut required = pre_balance.saturating_add(self.config.min_net_profit_lamports);
-        
+
         if self.config.include_flash_fee {
             required = required.saturating_add(flash_loan_fee);
         }
-        
+
         if self.config.include_priority_fee {
             required = required.saturating_add(priority_fee);
         }
-        
+
         required
     }
 }
@@ -308,43 +308,43 @@ impl std::error::Error for ProfitGuardError {}
 ///         msg,
 ///         program_error::ProgramError,
 ///     };
-///     
+///
 ///     /// Custom error codes
 ///     #[error_code]
 ///     pub enum ArbError {
 ///         #[msg("Unprofitable arbitrage")]
 ///         UnprofitableArbitrage = 0x1000,
 ///     }
-///     
+///
 ///     pub fn process_instruction(
 ///         program_id: &Pubkey,
 ///         accounts: &[AccountInfo],
 ///         instruction_data: &[u8],
 ///     ) -> ProgramResult {
 ///         let discriminator = instruction_data[0];
-///         
+///
 ///         if discriminator == 0x42 {
 ///             // AssertMinimumProfit instruction
 ///             if instruction_data.len() < 17 {
 ///                 return Err(ProgramError::InvalidInstructionData);
 ///             }
-///             
+///
 ///             let pre_balance = u64::from_le_bytes(
 ///                 instruction_data[1..9].try_into().map_err(|_| ProgramError::InvalidInstructionData)?
 ///             );
 ///             let min_profit = u64::from_le_bytes(
 ///                 instruction_data[9..17].try_into().map_err(|_| ProgramError::InvalidInstructionData)?
 ///             );
-///             
+///
 ///             let profit_account = &accounts[0];
 ///             let post_balance = profit_account.lamports();
-///             
+///
 ///             if post_balance < pre_balance.saturating_add(min_profit) {
-///                 msg!("Profit guard failed: post_balance={} < required={}", 
+///                 msg!("Profit guard failed: post_balance={} < required={}",
 ///                     post_balance, pre_balance + min_profit);
 ///                 return Err(ArbError::UnprofitableArbitrage.into());
 ///             }
-///             
+///
 ///             Ok(())
 ///         } else {
 ///             Err(ProgramError::InvalidInstructionData)
@@ -366,15 +366,15 @@ mod tests {
     fn test_assert_minimum_profit_serialization() {
         let profit_account = Pubkey::new_unique();
         let guard = AssertMinimumProfit::new(profit_account, 1_000_000, 50_000);
-        
+
         let data = guard.serialize();
         assert_eq!(data.len(), 17);
         assert_eq!(data[0], 0x42);
-        
+
         // Check pre_balance
         let pre_balance = u64::from_le_bytes(data[1..9].try_into().unwrap());
         assert_eq!(pre_balance, 1_000_000);
-        
+
         // Check min_profit
         let min_profit = u64::from_le_bytes(data[9..17].try_into().unwrap());
         assert_eq!(min_profit, 50_000);
@@ -385,7 +385,7 @@ mod tests {
         let mut data = vec![0x42];
         data.extend_from_slice(&1_000_000u64.to_le_bytes());
         data.extend_from_slice(&50_000u64.to_le_bytes());
-        
+
         let guard = AssertMinimumProfit::deserialize(&data).unwrap();
         assert_eq!(guard.pre_balance_lamports, 1_000_000);
         assert_eq!(guard.min_net_profit_lamports, 50_000);
@@ -398,9 +398,9 @@ mod tests {
             include_flash_fee: true,
             include_priority_fee: true,
         };
-        
+
         let validator = ProfitGuardValidator::new(config);
-        
+
         // Test profitable trade
         assert!(validator.validate(
             1_000_000, // pre_balance
@@ -408,7 +408,7 @@ mod tests {
             5_000,     // flash_fee
             5_000,     // priority_fee
         ));
-        
+
         // Test unprofitable trade (net profit < min)
         assert!(!validator.validate(
             1_000_000,
@@ -416,7 +416,7 @@ mod tests {
             5_000,
             5_000,
         ));
-        
+
         // Test flash fee too high
         assert!(!validator.validate(
             1_000_000,
@@ -433,15 +433,15 @@ mod tests {
             include_flash_fee: true,
             include_priority_fee: true,
         };
-        
+
         let validator = ProfitGuardValidator::new(config);
-        
+
         let min_post = validator.min_required_post_balance(
             1_000_000,
             5_000,
             5_000,
         );
-        
+
         // 1_000_000 + 50_000 + 5_000 + 5_000 = 1_060_000
         assert_eq!(min_post, 1_060_000);
     }
@@ -450,11 +450,12 @@ mod tests {
     fn test_profit_guard_builder() {
         let builder = ProfitGuardBuilder::new();
         let profit_account = Pubkey::new_unique();
-        
+
         let guard = builder.build(profit_account, 1_000_000);
-        
+
         assert_eq!(guard.profit_account, profit_account);
         assert_eq!(guard.pre_balance_lamports, 1_000_000);
         assert_eq!(guard.min_net_profit_lamports, arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS);
     }
 }
+

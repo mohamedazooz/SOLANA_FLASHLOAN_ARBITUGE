@@ -239,25 +239,25 @@ where
         }
 
         let (_, output) = f(x);
-        
+
         // For arbitrage, we want output - input to be maximized
         // The derivative condition is: marginal_return = 1
         // We approximate this by checking if increasing input decreases marginal return
-        
+
         // Try x + delta
         let delta = x.max(1);
         let (_, output_plus) = f(x.saturating_add(delta));
-        
+
         // Marginal return at x
         let marginal = if x == 0 { 0 } else { output as i64 - x as i64 };
-        
+
         // Marginal return at x + delta
-        let marginal_plus = if x.saturating_add(delta) == 0 { 
-            0 
-        } else { 
-            output_plus as i64 - (x.saturating_add(delta)) as i64 
+        let marginal_plus = if x.saturating_add(delta) == 0 {
+            0
+        } else {
+            output_plus as i64 - (x.saturating_add(delta)) as i64
         };
-        
+
         // If marginal return is decreasing, we've passed the optimum
         if marginal_plus < marginal {
             // Optimum is between prev_x and x
@@ -272,18 +272,18 @@ where
             prev_x = x;
             x = x.saturating_add(delta);
         }
-        
+
         // Check convergence
         if (x as i64 - prev_x as i64).unsigned_abs() as u64 <= config.tolerance_lamports {
             break;
         }
-        
+
         iterations += 1;
     }
 
     // Clamp to bounds
     x = x.clamp(config.min_trade_size, config.max_trade_size);
-    
+
     let (_, output) = f(x);
     let gross_profit = output as i64 - x as i64;
 
@@ -312,7 +312,7 @@ where
 {
     // Brent's method implementation for finding maximum of f(x) - x
     // We want to find x where the derivative of (output - input) is zero
-    
+
     let mut a = config.min_trade_size;
     let mut b = config.max_trade_size;
     let mut c = a;
@@ -321,13 +321,13 @@ where
     let mut fa = { let (_, o) = f(a); o as i64 - a as i64 };
     let mut fb = { let (_, o) = f(b); o as i64 - b as i64 };
     let mut fc = fa;
-    
+
     if fa > 0 && fb > 0 {
         // Both ends are profitable, search for maximum
         // Use golden section search
         return size_golden_section(f, config);
     }
-    
+
     if fa < 0 && fb < 0 {
         return SizingResult {
             optimal_input: 0,
@@ -339,14 +339,14 @@ where
             error: Some("No profitable region found".to_string()),
         };
     }
-    
+
     // Standard Brent's method for root finding
     let mut iter = 0;
     loop {
         if iter >= config.max_iterations {
             break;
         }
-        
+
         if fb > 0 && fc > 0 {
             // Root is between a and c
             c = a;
@@ -360,11 +360,11 @@ where
             c = b;
             fc = fb;
         }
-        
+
         if (b as i64 - a as i64).unsigned_abs() as u64 <= config.tolerance_lamports {
             break;
         }
-        
+
         // Try to fit parabola
         let s = if a == c {
             // Secant method
@@ -389,26 +389,26 @@ where
                 s.unsigned_abs() as u64
             }
         };
-        
+
         // Accept the interpolation if it's within bounds
         let x = if s < (b - a) / 2 || s > b - a {
             b - a
         } else {
             s
         };
-        
+
         let new_x = if x < (b - a) / 2 {
             a + x
         } else {
             b - x
         };
-        
+
         let (_, new_output) = f(new_x);
         let new_f = new_output as i64 - new_x as i64;
-        
+
         d = b - a;
         e = b - a;
-        
+
         if new_f < 0 {
             b = new_x;
             fb = new_f;
@@ -416,15 +416,15 @@ where
             a = new_x;
             fa = new_f;
         }
-        
+
         iter += 1;
     }
-    
+
     // Return the best point found
     let x = (a + b) / 2;
     let (_, output) = f(x);
     let gross_profit = output as i64 - x as i64;
-    
+
     SizingResult {
         optimal_input: x,
         expected_output: output,
@@ -450,23 +450,23 @@ where
     F: Fn(u64) -> (u64, u64), // (input, output)
 {
     const GOLDEN_RATIO: f64 = 0.6180339887498948;
-    
+
     let mut a = config.min_trade_size as f64;
     let mut b = config.max_trade_size as f64;
-    
+
     let mut x1 = b - GOLDEN_RATIO * (b - a);
     let mut x2 = a + GOLDEN_RATIO * (b - a);
-    
+
     let mut f1 = { let (_, o) = f(x1 as u64); o as i64 - x1 as i64 };
     let mut f2 = { let (_, o) = f(x2 as u64); o as i64 - x2 as i64 };
-    
+
     let mut iter = 0;
-    
+
     loop {
         if iter >= config.max_iterations {
             break;
         }
-        
+
         if f1 > f2 {
             // Maximum is in [a, x2]
             b = x2;
@@ -482,19 +482,19 @@ where
             x2 = a + GOLDEN_RATIO * (b - a);
             f2 = { let (_, o) = f(x2 as u64); o as i64 - x2 as i64 };
         }
-        
+
         if (b - a) < config.tolerance_lamports as f64 {
             break;
         }
-        
+
         iter += 1;
     }
-    
+
     let x = if f1 > f2 { x1 } else { x2 };
     let x_int = x as u64;
     let (_, output) = f(x_int);
     let gross_profit = output as i64 - x_int as i64;
-    
+
     SizingResult {
         optimal_input: x_int,
         expected_output: output,
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn test_cpmm_cpmm_sizing_no_opportunity() {
         let config = SizingConfig::default();
-        
+
         // Equal reserves, no fees - no arbitrage
         let result = size_cpmm_cpmm(
             1_000_000, 1_000_000, // pump reserves
@@ -546,7 +546,7 @@ mod tests {
             0,                     // flash fee
             &config,
         );
-        
+
         assert!(!result.is_valid);
         assert_eq!(result.optimal_input, 0);
     }
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn test_cpmm_cpmm_sizing_with_opportunity() {
         let config = SizingConfig::default();
-        
+
         // Pump: x=1M, y=1M, fee=25 bps
         // Raydium: x=1M, y=1.1M, fee=25 bps
         // This creates an arbitrage opportunity
@@ -566,7 +566,7 @@ mod tests {
             50,                   // flash fee
             &config,
         );
-        
+
         if result.is_valid {
             assert!(result.optimal_input > 0);
             assert!(result.expected_output > result.optimal_input);
@@ -592,7 +592,7 @@ mod tests {
             min_trade_size: 1,
             max_trade_size: 1000,
         };
-        
+
         // Simple quadratic function: output = -x^2 + 100x + input
         // Maximum at x = 50
         let result = size_golden_section(
@@ -602,8 +602,9 @@ mod tests {
             },
             &config,
         );
-        
+
         // Should find maximum near x=50
         assert!(result.optimal_input >= 40 && result.optimal_input <= 60);
     }
 }
+

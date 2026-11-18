@@ -161,7 +161,7 @@ impl PumpRaydiumGraph {
     /// Create a new empty graph.
     pub fn new(sol_mint: MintId) -> Self {
         let mut nodes = HashMap::new();
-        
+
         // Add SOL node
         nodes.insert(
             sol_mint,
@@ -173,7 +173,7 @@ impl PumpRaydiumGraph {
                 is_pump_token: false,
             },
         );
-        
+
         Self {
             nodes,
             pump_pools: HashMap::new(),
@@ -185,10 +185,10 @@ impl PumpRaydiumGraph {
     /// Add a Pump.fun bonding curve to the graph.
     pub fn add_pump_pool(&mut self, pool: PumpFunBondingCurve) {
         let token_mint = pool.quote_mint;
-        
+
         // Store the pool
         self.pump_pools.insert(token_mint, pool.clone());
-        
+
         // Get or create the token node
         let token_node = self.nodes.entry(token_mint).or_insert_with(|| GraphNode {
             mint: token_mint,
@@ -198,7 +198,7 @@ impl PumpRaydiumGraph {
             is_pump_token: true,
         });
         token_node.is_pump_token = true;
-        
+
         // Ensure SOL node exists
         let sol_node = self.nodes.entry(self.sol_mint).or_insert_with(|| GraphNode {
             mint: self.sol_mint,
@@ -207,10 +207,10 @@ impl PumpRaydiumGraph {
             is_sol: true,
             is_pump_token: false,
         });
-        
+
         // Add edges: SOL -> Token and Token -> SOL
         let fee_bps = pool.fee_bps.unwrap_or(0);
-        
+
         // SOL -> Token edge
         let sol_to_token_rate = self.calculate_pump_rate(&pool, true);
         let edge_sol_to_token = SwapEdge {
@@ -224,7 +224,7 @@ impl PumpRaydiumGraph {
         };
         sol_node.edges_out.push(edge_sol_to_token.clone());
         token_node.edges_in.push(edge_sol_to_token);
-        
+
         // Token -> SOL edge
         let token_to_sol_rate = self.calculate_pump_rate(&pool, false);
         let edge_token_to_sol = SwapEdge {
@@ -245,10 +245,10 @@ impl PumpRaydiumGraph {
         let pool_id = pool.pool_id();
         let base_mint = pool.base_mint();
         let quote_mint = pool.quote_mint();
-        
+
         // Store the pool
         self.raydium_pools.insert(pool_id, pool.clone());
-        
+
         // Get or create nodes
         let base_node = self.nodes.entry(base_mint).or_insert_with(|| GraphNode {
             mint: base_mint,
@@ -257,7 +257,7 @@ impl PumpRaydiumGraph {
             is_sol: base_mint == self.sol_mint,
             is_pump_token: false,
         });
-        
+
         let quote_node = self.nodes.entry(quote_mint).or_insert_with(|| GraphNode {
             mint: quote_mint,
             edges_out: Vec::new(),
@@ -265,18 +265,18 @@ impl PumpRaydiumGraph {
             is_sol: quote_mint == self.sol_mint,
             is_pump_token: false,
         });
-        
+
         // Add edges: base -> quote and quote -> base
         let fee_bps = pool.fee_bps().unwrap_or(25);
         let (base_reserve, quote_reserve) = pool.reserves();
-        
+
         // base -> quote edge
         let base_to_quote_rate = if base_reserve > 0 && quote_reserve > 0 {
             (quote_reserve << 64) / base_reserve
         } else {
             0
         };
-        
+
         let edge_base_to_quote = SwapEdge {
             from: base_mint,
             to: quote_mint,
@@ -288,14 +288,14 @@ impl PumpRaydiumGraph {
         };
         base_node.edges_out.push(edge_base_to_quote.clone());
         quote_node.edges_in.push(edge_base_to_quote);
-        
+
         // quote -> base edge
         let quote_to_base_rate = if base_reserve > 0 && quote_reserve > 0 {
             (base_reserve << 64) / quote_reserve
         } else {
             0
         };
-        
+
         let edge_quote_to_base = SwapEdge {
             from: quote_mint,
             to: base_mint,
@@ -317,11 +317,11 @@ impl PumpRaydiumGraph {
         } else {
             (pool.virtual_token_reserves, pool.virtual_sol_reserves)
         };
-        
+
         if x == 0 || y == 0 {
             return 0;
         }
-        
+
         // Rate = y / x in Q64.64
         (y as u128 * (1u128 << 64)) / x as u128
     }
@@ -329,19 +329,19 @@ impl PumpRaydiumGraph {
     /// Find all 2-hop arbitrage cycles (Pump.fun <-> Raydium).
     pub fn find_2hop_cycles(&self) -> Vec<ArbitrageCycle> {
         let mut cycles = Vec::new();
-        
+
         // Iterate through all Pump.fun tokens
         for (token_mint, pump_pool) in &self.pump_pools {
             // Find Raydium pools that trade this token
             for (pool_id, raydium_pool) in &self.raydium_pools {
                 let base = raydium_pool.base_mint();
                 let quote = raydium_pool.quote_mint();
-                
+
                 // Check if this Raydium pool trades the Pump.fun token
                 if base == *token_mint || quote == *token_mint {
                     // Determine the other token in the Raydium pool
                     let other_token = if base == *token_mint { quote } else { base };
-                    
+
                     // Check if the other token is SOL
                     if other_token == self.sol_mint {
                         // Found a 2-hop cycle: SOL <-> Token via Pump.fun and Raydium
@@ -367,44 +367,44 @@ impl PumpRaydiumGraph {
                 }
             }
         }
-        
+
         cycles
     }
 
     /// Find all 3-hop arbitrage cycles.
     pub fn find_3hop_cycles(&self) -> Vec<ArbitrageCycle> {
         let mut cycles = Vec::new();
-        
+
         // This is a simplified version - a full implementation would use
         // graph traversal to find all 3-hop cycles
-        
+
         for (token_mint, _pump_pool) in &self.pump_pools {
             // Find Raydium pools trading this token
             for (pool_id1, raydium_pool1) in &self.raydium_pools {
                 let base1 = raydium_pool1.base_mint();
                 let quote1 = raydium_pool1.quote_mint();
-                
+
                 if base1 != *token_mint && quote1 != *token_mint {
                     continue;
                 }
-                
+
                 let intermediate = if base1 == *token_mint { quote1 } else { base1 };
-                
+
                 // Find another Raydium pool that trades the intermediate token
                 for (pool_id2, raydium_pool2) in &self.raydium_pools {
                     if pool_id1 == pool_id2 {
                         continue;
                     }
-                    
+
                     let base2 = raydium_pool2.base_mint();
                     let quote2 = raydium_pool2.quote_mint();
-                    
+
                     if base2 != intermediate && quote2 != intermediate {
                         continue;
                     }
-                    
+
                     let final_token = if base2 == intermediate { quote2 } else { base2 };
-                    
+
                     // Check if we can close the cycle back to SOL
                     if final_token == self.sol_mint {
                         let cycle = ArbitrageCycle {
@@ -435,7 +435,7 @@ impl PumpRaydiumGraph {
                 }
             }
         }
-        
+
         cycles
     }
 
@@ -541,31 +541,31 @@ impl PumpRaydiumGraph {
     pub fn bellman_ford(&self, source: MintId) -> BellmanFordResult {
         let mut distances: HashMap<MintId, i128> = HashMap::new();
         let mut predecessors: HashMap<MintId, (MintId, PoolId)> = HashMap::new();
-        
+
         // Initialize distances
         for (mint, _) in &self.nodes {
             distances.insert(*mint, if *mint == source { 0 } else { i128::MAX });
         }
-        
+
         // Relax edges repeatedly
         let num_nodes = self.nodes.len();
         for _ in 0..num_nodes {
             let mut updated = false;
-            
+
             for (mint, node) in &self.nodes {
                 let current_dist = distances.get(mint).copied().unwrap_or(i128::MAX);
-                
+
                 for edge in &node.edges_out {
                     // Edge weight = -log(rate) in Q64.64
                     // For simplicity, we use: weight = -(rate as i128)
                     // This is an approximation that preserves the sign
                     let weight = -(edge.rate_q64 as i128);
-                    
+
                     let new_dist = current_dist.checked_add(weight);
-                    
+
                     if let Some(new_dist) = new_dist {
                         let edge_to_dist = distances.get(&edge.to).copied().unwrap_or(i128::MAX);
-                        
+
                         if new_dist < edge_to_dist {
                             distances.insert(edge.to, new_dist);
                             predecessors.insert(edge.to, (*mint, edge.pool_id));
@@ -574,30 +574,30 @@ impl PumpRaydiumGraph {
                     }
                 }
             }
-            
+
             if !updated {
                 break;
             }
         }
-        
+
         // Check for negative cycles
         let mut has_negative_cycle = false;
         let mut negative_cycle: Option<ArbitrageCycle> = None;
-        
+
         for (mint, node) in &self.nodes {
             let current_dist = distances.get(mint).copied().unwrap_or(i128::MAX);
-            
+
             for edge in &node.edges_out {
                 let weight = -(edge.rate_q64 as i128);
                 let new_dist = current_dist.checked_add(weight);
-                
+
                 if let Some(new_dist) = new_dist {
                     let edge_to_dist = distances.get(&edge.to).copied().unwrap_or(i128::MAX);
-                    
+
                     if new_dist < edge_to_dist {
                         // Negative cycle detected
                         has_negative_cycle = true;
-                        
+
                         // Reconstruct the cycle
                         // This is a simplified version - full reconstruction would
                         // trace back through predecessors
@@ -617,12 +617,12 @@ impl PumpRaydiumGraph {
                     }
                 }
             }
-            
+
             if has_negative_cycle {
                 break;
             }
         }
-        
+
         BellmanFordResult {
             has_negative_cycle,
             negative_cycle,
@@ -645,7 +645,7 @@ mod tests {
     fn test_graph_creation() {
         let sol_mint = MintId(Pubkey::new_unique());
         let graph = PumpRaydiumGraph::new(sol_mint);
-        
+
         assert_eq!(graph.nodes().len(), 1);
         assert!(graph.nodes().contains_key(&sol_mint));
     }
@@ -654,25 +654,25 @@ mod tests {
     fn test_add_pump_pool() {
         let sol_mint = MintId(Pubkey::new_unique());
         let token_mint = MintId(Pubkey::new_unique());
-        
+
         let mut graph = PumpRaydiumGraph::new(sol_mint);
-        
+
         let pump_pool = PumpFunBondingCurve::new(
             PoolId(Pubkey::new_unique()),
             sol_mint,
             token_mint,
         );
-        
+
         graph.add_pump_pool(pump_pool);
-        
+
         assert_eq!(graph.nodes().len(), 2);
         assert!(graph.nodes().contains_key(&sol_mint));
         assert!(graph.nodes().contains_key(&token_mint));
-        
+
         // Check edges
         let sol_node = graph.nodes().get(&sol_mint).unwrap();
         let token_node = graph.nodes().get(&token_mint).unwrap();
-        
+
         assert_eq!(sol_node.edges_out.len(), 1); // SOL -> Token
         assert_eq!(token_node.edges_in.len(), 1); // SOL -> Token
         assert_eq!(token_node.edges_out.len(), 1); // Token -> SOL
@@ -683,9 +683,9 @@ mod tests {
     fn test_find_2hop_cycles() {
         let sol_mint = MintId(Pubkey::new_unique());
         let token_mint = MintId(Pubkey::new_unique());
-        
+
         let mut graph = PumpRaydiumGraph::new(sol_mint);
-        
+
         // Add Pump.fun pool
         let pump_pool = PumpFunBondingCurve::new(
             PoolId(Pubkey::new_unique()),
@@ -693,7 +693,7 @@ mod tests {
             token_mint,
         );
         graph.add_pump_pool(pump_pool);
-        
+
         // Add Raydium pool
         let raydium_pool = RaydiumPool::CPMM(RaydiumCpmmPool::new(
             PoolId(Pubkey::new_unique()),
@@ -704,13 +704,13 @@ mod tests {
             Pubkey::new_unique(),
         ));
         graph.add_raydium_pool(raydium_pool);
-        
+
         // Find cycles
         let cycles = graph.find_2hop_cycles();
-        
+
         // Should find at least one cycle
         assert!(!cycles.is_empty());
-        
+
         for cycle in cycles {
             assert!(cycle.is_valid());
             assert_eq!(cycle.num_hops(), 2);
@@ -721,7 +721,7 @@ mod tests {
     fn test_cycle_validation() {
         let sol_mint = MintId(Pubkey::new_unique());
         let token_mint = MintId(Pubkey::new_unique());
-        
+
         let cycle = ArbitrageCycle {
             hops: vec![
                 Hop {
@@ -739,10 +739,11 @@ mod tests {
             ],
             cycle_type: CycleType::PumpRaydium2Hop,
         };
-        
+
         assert!(cycle.is_valid());
         assert_eq!(cycle.start_token(), sol_mint);
         assert_eq!(cycle.end_token(), sol_mint);
         assert_eq!(cycle.num_hops(), 2);
     }
 }
+

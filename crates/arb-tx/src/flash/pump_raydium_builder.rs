@@ -195,9 +195,9 @@ impl PumpRaydiumV1Builder {
         // In Transaction V1, instructions are serialized as:
         // [program_id_index: u8, account_indices: Vec<u8>, data: Vec<u8>]
         // For now, we'll use a simplified format
-        
+
         let mut instruction = Vec::new();
-        
+
         // Find or add program_id to accounts
         let program_index = self
             .account_metas
@@ -207,13 +207,13 @@ impl PumpRaydiumV1Builder {
                 // This shouldn't happen - program_id should be added first
                 0
             });
-        
+
         instruction.push(program_index as u8);
-        
+
         // Add account indices (simplified - in reality this is more complex)
         // For now, we'll just include the data
         instruction.extend(data);
-        
+
         instruction
     }
 
@@ -229,7 +229,7 @@ impl PumpRaydiumV1Builder {
 
         // Create MessageV1
         let message = self.build_message_v1(payer, recent_blockhash)?;
-        
+
         Ok(VersionedTransaction::V1(message))
     }
 
@@ -244,11 +244,11 @@ impl PumpRaydiumV1Builder {
 
         // Build account metas for MessageV1
         let mut account_metas = Vec::new();
-        
+
         for meta in &self.account_metas {
             let is_signer = meta.is_signer;
             let is_writable = meta.is_writable;
-            
+
             // In Solana MessageV1, account metas are represented as:
             // - is_signer: bool
             // - is_writable: bool
@@ -269,15 +269,15 @@ impl PumpRaydiumV1Builder {
 
         // Build instructions
         let mut compiled_instructions = Vec::new();
-        
+
         for instruction in &self.instructions {
             // Parse the instruction
             // This is a placeholder - actual implementation would properly deserialize
             let program_id_index = instruction[0] as usize;
             let data = &instruction[1..];
-            
+
             let program_id = self.account_metas[program_id_index].pubkey;
-            
+
             compiled_instructions.push(solana_instruction::Instruction {
                 program_id,
                 accounts: Vec::new(), // Will be populated properly
@@ -330,12 +330,12 @@ impl PumpRaydiumV1Builder {
     /// Add all required accounts for the arbitrage transaction.
     fn add_required_accounts(&mut self, opportunity: &PumpRaydiumOpportunity) -> Result<()> {
         // Add payer (will be added by build())
-        
+
         // Add Pump.fun accounts
         self.add_writable(opportunity.pump_pool.pool_id.0);
         self.add_writable(opportunity.pump_pool.base_mint);
         self.add_writable(opportunity.pump_pool.quote_mint);
-        
+
         // Add Raydium accounts
         match &opportunity.raydium_pool {
             RaydiumPool::AMMv4(p) => {
@@ -368,7 +368,7 @@ impl PumpRaydiumV1Builder {
         if self.config.use_kamino_flash {
             self.add_readonly(Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap());
             self.add_writable(Pubkey::from_str(KAMINO_MAIN_MARKET).unwrap());
-            
+
             // Add reserve accounts based on token
             let token_mint = opportunity.pump_pool.quote_mint;
             if token_mint == MintId(Pubkey::from_str(arb_constants::WSOL_MINT).unwrap()) {
@@ -380,10 +380,10 @@ impl PumpRaydiumV1Builder {
 
         // Add token program
         self.add_readonly(Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap());
-        
+
         // Add Pump.fun program
         self.add_readonly(Pubkey::from_str(PUMP_FUN_PROGRAM_ID).unwrap());
-        
+
         // Add Raydium program
         let raydium_program = match opportunity.raydium_pool.pool_type() {
             arb_engine::pump_raydium_arb::RaydiumPoolType::AMMv4 => {
@@ -409,20 +409,20 @@ impl PumpRaydiumV1Builder {
 
         let amount = opportunity.optimal_input_lamports;
         let token_mint = opportunity.pump_pool.quote_mint.0;
-        
+
         // Kamino flash loan borrow instruction
         // This is a placeholder - actual implementation would use Kamino SDK
         let mut data = Vec::new();
-        
+
         // Instruction discriminator for Kamino flash borrow
         data.push(0x01); // Borrow discriminator
-        
+
         // Amount to borrow (8 bytes, little-endian)
         data.extend_from_slice(&amount.to_le_bytes());
-        
+
         // Token mint (32 bytes)
         data.extend_from_slice(token_mint.as_ref());
-        
+
         self.add_instruction(
             Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap(),
             data,
@@ -434,7 +434,7 @@ impl PumpRaydiumV1Builder {
     /// Add Pump.fun swap instruction.
     fn add_pump_swap(&mut self, opportunity: &PumpRaydiumOpportunity) -> Result<()> {
         let amount = opportunity.optimal_input_lamports;
-        
+
         let (is_buy, input_mint, output_mint) = match opportunity.direction {
             ArbitrageDirection::PumpBuyRaydiumSell => {
                 // Buy on Pump: SOL -> Token
@@ -448,7 +448,7 @@ impl PumpRaydiumV1Builder {
 
         // Pump.fun swap instruction
         let mut data = Vec::new();
-        
+
         if is_buy {
             // Buy instruction
             data.extend_from_slice(&arb_constants::PUMP_FUN_BUY_DISCRIMINATOR);
@@ -500,12 +500,12 @@ impl PumpRaydiumV1Builder {
 
         // Raydium swap instruction (placeholder)
         let mut data = Vec::new();
-        
+
         // For now, just add a dummy instruction
         // Actual implementation would use the specific Raydium swap instruction
         data.push(0x02); // Swap discriminator
         data.extend_from_slice(&amount.to_le_bytes());
-        
+
         self.add_instruction(raydium_program, data);
 
         Ok(())
@@ -519,19 +519,19 @@ impl PumpRaydiumV1Builder {
 
         let amount = opportunity.optimal_input_lamports;
         let token_mint = opportunity.pump_pool.quote_mint.0;
-        
+
         // Kamino flash loan repay instruction
         let mut data = Vec::new();
-        
+
         // Instruction discriminator for Kamino flash repay
         data.push(0x03); // Repay discriminator
-        
+
         // Amount to repay (8 bytes, little-endian)
         data.extend_from_slice(&amount.to_le_bytes());
-        
+
         // Token mint (32 bytes)
         data.extend_from_slice(token_mint.as_ref());
-        
+
         self.add_instruction(
             Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap(),
             data,
@@ -545,17 +545,17 @@ impl PumpRaydiumV1Builder {
         // Use the payer as the profit account for now
         // In reality, this would be a dedicated profit account
         let profit_account = Pubkey::default(); // Placeholder
-        
+
         let pre_balance = 0; // Will be set at execution time
         let min_profit = opportunity.net_profit_lamports as u64;
-        
+
         let guard = AssertMinimumProfit::new(profit_account, pre_balance, min_profit);
         let data = guard.serialize();
-        
+
         // Add the arb-executor program (placeholder)
         // In reality, this would be the actual program ID
         let arb_executor_program = Pubkey::new_unique();
-        
+
         self.add_instruction(arb_executor_program, data);
 
         Ok(())
@@ -610,10 +610,10 @@ mod tests {
         let mut builder = PumpRaydiumV1Builder::new();
         let pubkey1 = Pubkey::new_unique();
         let pubkey2 = Pubkey::new_unique();
-        
+
         builder.add_signer(pubkey1);
         builder.add_writable(pubkey2);
-        
+
         assert_eq!(builder.accounts.len(), 2);
         assert_eq!(builder.account_metas.len(), 2);
     }
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn test_estimate_cu() {
         use arb_engine::pump_raydium_arb::RaydiumPoolType;
-        
+
         assert_eq!(estimate_arbitrage_cu(RaydiumPoolType::AMMv4), 45_000);
         assert_eq!(estimate_arbitrage_cu(RaydiumPoolType::CPMM), 40_000);
         assert_eq!(estimate_arbitrage_cu(RaydiumPoolType::CLMM), 55_000);
@@ -630,8 +630,9 @@ mod tests {
     #[test]
     fn test_message_config_creation() {
         let config = create_arbitrage_message_config(200_000, 1_000_000);
-        
+
         assert_eq!(config.compute_unit_limit, 200_000);
         assert_eq!(config.priority_fee_lamports, 1_000_000);
     }
 }
+
