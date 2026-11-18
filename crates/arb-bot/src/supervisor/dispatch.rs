@@ -778,6 +778,7 @@ impl Supervisor {
                             .collect::<Vec<_>>()
                             .join(" ➔ ");
                         let rtt_ms = rtt.as_secs_f64() * 1000.0;
+                        arb_metrics::observe_submit_rtt_ms(rtt_ms);
                         let land_start = std::time::Instant::now();
                         let recent_landed_task = self.recent_landed.clone();
                         let recent_landed_cu_task = self.recent_landed_cu.clone();
@@ -936,6 +937,7 @@ impl Supervisor {
                                         })
                                         .unwrap_or(profit_sol_val);
                                     let landing_ms = land_start.elapsed().as_secs_f64() * 1000.0;
+                                    arb_metrics::observe_landing_latency_ms(landing_ms);
                                     let total_e2e_ms = (t_ingest_to_quote_us
                                         + t_risk_us
                                         + t_assembly_us
@@ -944,6 +946,7 @@ impl Supervisor {
                                         / 1000.0
                                         + rtt_ms
                                         + landing_ms;
+                                    arb_metrics::observe_e2e_latency_ms(total_e2e_ms);
 
                                     let timings_str = format!(
                                         "• Ingest ➔ Quote: <code>{} µs</code>\n\
