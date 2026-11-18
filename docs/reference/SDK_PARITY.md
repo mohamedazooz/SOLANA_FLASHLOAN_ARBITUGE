@@ -43,3 +43,12 @@ surface. Jito is an execution/landing component, not a quote-math reference.
 They are therefore not installed or represented as supported protocols by this
 parity pass. Adding them requires a separate protocol-scope decision and their
 own differential, dependency, and execution acceptance evidence.
+
+This is enforced fail-closed, not merely left out: `DexProtocol` carries no
+Phoenix/Jupiter variant (`arb-types/src/dex.rs`), and DexScreener pair
+classification drops unknown `dexId`s including `phoenix`
+(`arb-ingest::dexscreener::classify_pair_protocol`, pinned by
+`test_raydium_meteora_label_classification_fails_closed`). The official
+fixed-order-book compose program (Ellipsis Labs) is a different market model
+(limit order book, not an AMM invariant); it needs its own state ingest and
+quote adapter before any routing consideration.
