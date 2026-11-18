@@ -1405,6 +1405,34 @@ mod tests {
         assert_eq!(resolve_fee_bps(DexProtocol::RaydiumCpmm, &data), None);
     }
 
+    /// (DATA-05 regression) DAMM v2 / DBC / DLMM-Pro must stay explicitly
+    /// excluded from the decode path: with generous synthetic buffers they
+    /// still fail closed (None) and can never produce a hydrated `PoolState`
+    /// — the exclusion is a named arm, not an accident of buffer length.
+    #[test]
+    fn test_unsupported_meteora_venues_fail_closed() {
+        for protocol in [
+            DexProtocol::MeteoraDammV2,
+            DexProtocol::MeteoraDbc,
+            DexProtocol::MeteoraDlmmPro,
+        ] {
+            let data = vec![0x11u8; 4_096];
+            assert_eq!(
+                resolve_fee_bps(protocol, &data),
+                None,
+                "{protocol:?} fee resolve must fail closed"
+            );
+            assert!(
+                decode_pool_info(protocol, &data).is_none(),
+                "{protocol:?} pool decode must fail closed"
+            );
+            assert!(
+                clmm_onchain_mints(protocol, &data).is_none(),
+                "{protocol:?} clmm mint probe must fail closed"
+            );
+        }
+    }
+
     // ---- compute_dlmm_reserves fail-closed forensics (soak10/11 phantom ROI) ----
 
     fn dlmm_probe_state(active_id: i32, mut bins: Vec<arb_types::DlmmBin>) -> arb_types::DlmmState {
