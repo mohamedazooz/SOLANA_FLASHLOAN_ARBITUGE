@@ -1535,11 +1535,11 @@ impl RpcPool {
             }
         ]);
         let res = self.call("getPriorityFeeEstimate", req_params).await?;
-        let fee = res
-            .get("priorityFeeEstimate")
+        // DATA-11: never fabricate a fee. A missing or non-numeric estimate is
+        // an error — the caller applies its own configured fallback.
+        res.get("priorityFeeEstimate")
             .and_then(|v| v.as_f64().map(|f| f as u64).or_else(|| v.as_u64()))
-            .unwrap_or(10_000);
-        Ok(fee)
+            .context("priorityFeeEstimate missing or non-numeric in RPC response")
     }
 }
 
@@ -1846,6 +1846,99 @@ mod tests {
         assert!(accounts.iter().all(|v| v.is_none()));
         assert!(slots[..100].iter().all(|&s| s == 1000));
         assert!(slots[100..].iter().all(|&s| s == 2000));
+        server.join().unwrap();
+    }
+
+    // DATA-11 regression: get_priority_fee_estimate must surface the RPC's
+    // estimate verbatim and must never fabricate a default (10,000 or else)
+    // when the response lacks a numeric priorityFeeEstimate.
+    fn priority_estimate_server(
+        bodies: Vec<String>,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(bodies));
+        let to_serve = bodies.lock().unwrap().len();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..to_serve {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut raw = Vec::new();
+                loop {
+                    let mut buf = [0u8; 4096];
+                    match stream.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => raw.extend_from_slice(&buf[..n]),
+                    }
+                    if let Some(h) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&raw[..h]);
+                        let clen = headers
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        if raw.len() >= h + 4 + clen {
+                            break;
+                        }
+                    }
+                }
+                let body = {
+                    let mut b = bodies.lock().unwrap();
+                    if b.is_empty() {
+                        break;
+                    }
+                    b.remove(0)
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn priority_fee_estimate_returns_numeric_value() {
+        let (addr, server) = priority_estimate_server(vec![
+            json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "priorityFeeEstimate": 23_456 }
+            })
+            .to_string(),
+        ]);
+        let pool = RpcPool::new(vec![format!("http://{addr}")]);
+        let fee = pool
+            .get_priority_fee_estimate(&["SomeAccount".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(fee, 23_456);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn priority_fee_estimate_fails_closed_without_fabricated_default() {
+        let (addr, server) = priority_estimate_server(vec![
+            json!({
+                "jsonrpc": "2.0", "id": 1,
+                "result": { "context": { "slot": 1 } }
+            })
+            .to_string(),
+        ]);
+        let pool = RpcPool::new(vec![format!("http://{addr}")]);
+        let err = pool
+            .get_priority_fee_estimate(&["SomeAccount".to_string()])
+            .await
+            .expect_err("missing estimate must error, not fabricate 10,000");
+        assert!(err.to_string().contains("priorityFeeEstimate"));
         server.join().unwrap();
     }
 }
