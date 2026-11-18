@@ -451,7 +451,7 @@ impl Supervisor {
 
             pump_discovery.find_boost_migration_targets(
                 &pump_coins,
-                verified.flash_loan_fee_sf.value >> 32, // Bps approximation
+                verified.flash_loan_fee_sf.value, // raw U68F60 sf — canonical fee path (MATH-03)
                 verified.tip_lamports.value.0,
                 self.config.strategy.min_net_profit_abs,
             )

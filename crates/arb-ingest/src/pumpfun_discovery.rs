@@ -234,7 +234,7 @@ impl PumpFunDiscoveryClient {
     pub fn find_boost_migration_targets(
         &self,
         coins: &[PumpFunCoin],
-        flash_loan_fee_bps: u64,
+        flash_loan_fee_sf: u64,
         execution_tip_lamports: u64,
         min_net_profit_lamports: u64,
     ) -> Vec<PumpBoostTarget> {
@@ -290,13 +290,16 @@ impl PumpFunDiscoveryClient {
                 real_sol_reserves,
                 vsol,
                 vtok,
-                flash_loan_fee_bps,
+                flash_loan_fee_sf,
                 execution_tip_lamports,
                 6_500, // 65% immediate execution efficiency
                 min_net_profit_lamports,
             );
 
             // 2. Evaluate Working Capital mode (patient TWAP absorption: 90% capture efficiency)
+            // sf = 0: wallet balance funds this mode, not a flash loan. The
+            // canonical formula still applies its 1-lamport floor — a
+            // conservative (overstated) cost, fail-closed direction.
             let working_capital_eval = arb_math::pump_boost_arb::evaluate_pump_boost_arb(
                 real_sol_reserves,
                 vsol,
@@ -407,9 +410,9 @@ mod tests {
 
         let targets = client.find_boost_migration_targets(
             &[coin],
-            30,          // 30 bps flash loan fee
-            100_000_000, // 0.10 SOL Jito tip
-            0,           // min profit 0 for testing
+            3_458_764_513_820_540, // 30 bps as raw U68F60 sf (30 * 2^60/10000, truncated)
+            100_000_000,           // 0.10 SOL Jito tip
+            0,                     // min profit 0 for testing
         );
 
         assert_eq!(targets.len(), 1);
