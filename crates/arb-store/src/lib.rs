@@ -229,8 +229,11 @@ impl Store for SqliteStore {
             .conn
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        // PIPE-11: plain INSERT — an id collision must fail loudly here so
+        // the caller refuses to dispatch, not silently REPLACE durable
+        // evidence of a previous attempt (outcomes/fills keep referencing it).
         conn.execute(
-            "INSERT OR REPLACE INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision)
+            "INSERT INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 record.id,
@@ -810,6 +813,30 @@ mod tests {
         assert_eq!(pnl.simulated_net, 15_000);
         assert_eq!(pnl.attempts, 4);
         assert_eq!(pnl.successful, 2);
+    }
+
+    /// PIPE-11 regression: an attempt-id collision must fail loudly — the
+    /// second `record_attempt` returns Err and the first attempt's durable
+    /// row (its evidence anchor for outcomes/fills/intents) is left intact,
+    /// never silently replaced.
+    #[test]
+    fn attempt_id_collision_fails_loudly_and_preserves_original() {
+        let store = SqliteStore::open_in_memory().expect("invariant");
+        let mk = |expected: u64| AttemptRecord {
+            id: 700_000_001,
+            slot: 700,
+            route_id: "route-A".into(),
+            expected_net: Lamports(expected),
+            tip_lamports: None,
+            decision: "sent".into(),
+        };
+        store.record_attempt(&mk(111)).expect("first write ok");
+        assert!(
+            store.record_attempt(&mk(222)).is_err(),
+            "duplicate id must be rejected, not REPLACE the original row"
+        );
+        let preserved = store.get_attempt(700_000_001).unwrap().expect("row");
+        assert_eq!(preserved.expected_net, Lamports(111));
     }
 
     /// Schema evolution: a database created before the provenance column

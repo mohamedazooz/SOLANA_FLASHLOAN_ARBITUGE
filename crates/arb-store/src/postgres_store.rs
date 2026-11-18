@@ -168,12 +168,11 @@ impl Store for PostgresStore {
         self.block_on(async move {
             client
                 .execute(
+                    // PIPE-11: plain INSERT — an id collision must fail loudly
+                    // (caller refuses to dispatch) instead of overwriting a
+                    // previous attempt's durable evidence.
                     "INSERT INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision)
-                     VALUES ($1, $2, $3, $4, $5, $6)
-                     ON CONFLICT (id) DO UPDATE SET
-                        expected_net = $4,
-                        tip_lamports = $5,
-                        decision = $6",
+                     VALUES ($1, $2, $3, $4, $5, $6)",
                     &[&id, &slot, &route_id, &exp_net, &tip, &decision],
                 )
                 .await
