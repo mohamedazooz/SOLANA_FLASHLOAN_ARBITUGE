@@ -117,6 +117,18 @@ pub struct KillSwitch {
     file_path: Mutex<Option<String>>,
 }
 
+/// True when the mainnet master switch `ARB_LIVE` is enabled. While false,
+/// debug-only env bypasses (e.g. `KILL_SWITCH_DISABLED`) are permitted; while
+/// true, safety gates may never be dismissed from the environment.
+fn live_master_switch_enabled() -> bool {
+    std::env::var("ARB_LIVE").ok().is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 impl KillSwitch {
     pub fn new() -> Self {
         Self {
@@ -127,7 +139,8 @@ impl KillSwitch {
 
     /// Durable kill switch: the marker file is the source of truth across
     /// restarts. Starts UNBLOCKED by default; operator must explicitly pause
-    /// via `/pause` endpoint or `KILL_SWITCH_DISABLED=1` to bypass entirely.
+    /// via `/pause` endpoint. The `KILL_SWITCH_DISABLED=1` env bypass applies
+    /// in non-live modes only (see [`live_master_switch_enabled`]).
     pub fn with_file(path: impl Into<String>) -> Self {
         let path = path.into();
         // Start unblocked regardless of marker file presence.
@@ -178,8 +191,19 @@ impl KillSwitch {
     }
 
     pub fn is_blocked(&self) -> bool {
-        // Env override: KILL_SWITCH_DISABLED=1 bypasses kill switch entirely.
-        if std::env::var("KILL_SWITCH_DISABLED").ok().as_deref() == Some("1") {
+        // Env override: KILL_SWITCH_DISABLED=1 bypasses the kill switch, but
+        // ONLY while the mainnet master switch ARB_LIVE is not enabled. In
+        // live mode the kill switch is non-dismissible from the environment —
+        // an explicit operator action (/resume) is the only way to unblock.
+        static BYPASS_LOG: std::sync::Once = std::sync::Once::new();
+        if !live_master_switch_enabled()
+            && std::env::var("KILL_SWITCH_DISABLED")
+                .ok()
+                .is_some_and(|v| v.trim() == "1")
+        {
+            BYPASS_LOG.call_once(|| {
+                warn!("KILL_SWITCH_DISABLED=1 active: kill switch bypassed (non-live mode only)");
+            });
             return false;
         }
         if self
@@ -769,6 +793,7 @@ mod tests {
     }
     #[test]
     fn kill_switch_blocks() {
+        let _env_lock = ENV_LOCK.lock();
         let ks = KillSwitch::new();
         assert!(!ks.is_blocked());
         ks.activate();
@@ -776,8 +801,51 @@ mod tests {
         ks.deactivate();
         assert!(!ks.is_blocked());
     }
+    // Env-touching tests serialize behind ENV_LOCK because env::set_var is
+    // process-global and racy under cargo's parallel threads (edition 2024
+    // makes it unsafe; is_blocked reads KILL_SWITCH_DISABLED per call).
+    static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    #[test]
+    fn kill_switch_env_bypass_is_live_gated() {
+        let _env_lock = ENV_LOCK.lock();
+        // SAFETY: guarded by ENV_LOCK; no other activity in this binary can
+        // read or write these vars while held.
+        unsafe { std::env::remove_var("KILL_SWITCH_DISABLED") };
+        let ks = KillSwitch::new();
+        ks.activate();
+
+        // Bypass honored while ARB_LIVE is not enabled.
+        unsafe { std::env::set_var("KILL_SWITCH_DISABLED", "1") };
+        assert!(!ks.is_blocked(), "bypass must apply while not live");
+
+        // ARB_LIVE=1 makes the kill switch non-dismissible.
+        unsafe { std::env::set_var("ARB_LIVE", "1") };
+        assert!(ks.is_blocked(), "live mode must enforce the kill switch");
+        unsafe { std::env::set_var("ARB_LIVE", "true") };
+        assert!(ks.is_blocked());
+        unsafe { std::env::set_var("ARB_LIVE", "0") };
+        assert!(
+            !ks.is_blocked(),
+            "bypass applies again once ARB_LIVE is off"
+        );
+
+        // Non-"1" values of KILL_SWITCH_DISABLED never bypass.
+        unsafe { std::env::set_var("KILL_SWITCH_DISABLED", "true") };
+        assert!(ks.is_blocked(), "exact '1' is required");
+        unsafe { std::env::set_var("KILL_SWITCH_DISABLED", " 1 ") };
+        assert!(!ks.is_blocked(), "value is trimmed");
+
+        unsafe {
+            std::env::remove_var("KILL_SWITCH_DISABLED");
+            std::env::remove_var("ARB_LIVE");
+        }
+        assert!(ks.is_blocked(), "without the bypass the switch enforces");
+        ks.deactivate();
+        assert!(!ks.is_blocked());
+    }
     #[test]
     fn kill_switch_marker_survives_restart() {
+        let _env_lock = ENV_LOCK.lock();
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
@@ -878,6 +946,7 @@ mod tests {
     }
     #[test]
     fn kill_switch_under_second() {
+        let _env_lock = ENV_LOCK.lock();
         let ks = KillSwitch::new();
         let start = std::time::Instant::now();
         ks.activate();
