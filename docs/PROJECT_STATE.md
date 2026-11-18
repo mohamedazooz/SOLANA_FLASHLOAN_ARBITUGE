@@ -55,7 +55,24 @@ pools; fail-closed `TxError::MissingExecutionAccounts`. See
   - Continuous tick CLMM ($P = 1.0001^{\text{tick}}$) with resting limit-order taker matching.
   - Dedicated `MeteoraDlmmProPool` and transaction builder.
 
-## Verification status (last full campaign: 2026-11-13, branch `vibe/store-fail-closed-9d81d9`, PR #11)
+## Verification status (last full campaign: 2026-11-18, branch `vibe/bug-notes-meta-verification-bc7be4`)
+
+Full clean re-verification on `main` after the `vibe/audit-final` merge (4dd9507):
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
+- `cargo test --workspace --all-targets`: **1,258 passed, 0 failed** (96 result lines;
+  live-network suites are environment-gated skips by design).
+- `BUG_NOTES.md` items re-verified against `main` with evidence and dated appendix:
+  BUG-001/002/003 resolved (adaptive V0/V1 compiler + 3-layer profit guard), BUG-005 corrected
+  (component-ladder misunderstanding), BUG-006 confirmed fixed, BUG-007 open (operator action).
+- Meteora Phases 1–4 artifacts re-confirmed present and wired (engine adapters, swap_hop
+  builders, pair discovery; no TODOs in phase files).
+- Side-effect note: the two differential-test suites regenerate their `generated_at_utc`
+  timestamps in `reports/phase15_2/sdk_differential_manifest.json` and
+  `reports/phase15_5/V1_SIZE_LADDER.json` on every run — content otherwise bit-identical.
+
+Previous campaign: 2026-11-13, branch `vibe/store-fail-closed-9d81d9`, PR #11.
 
 - `cargo fmt --all -- --check`: clean.
 - `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings.
