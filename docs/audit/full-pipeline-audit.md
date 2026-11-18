@@ -32,12 +32,12 @@ file:line locations read first-hand.
 |---|---|---|---|---|
 | DATA-01 | P1 | `get_multiple_accounts_with_slot` fallback mixes per-chunk slots and silently drops failed chunks | `arb-ingest/src/rpc_pool.rs:1112-1201` | fixed @ 9c66cbd |
 | DATA-03 | P2 | Meteora CPMM `fee_numerator` cast to `u16` → 2,500 ppm reads as 2,500 bps (×100 fee on discovery only) | `meteora_pair_discovery.rs:240-241, :389-390` | fixed @ 912e22d |
-| DATA-02 | P2 | DexScreener unlabeled raydium pools default to AMMv4 decoder | dexscreener fetcher | open |
-| DATA-05 | P2 | DAMM v2 / DBC / DLMM-Pro discoverable but unpriceable (no decode branch) — safe only because never routed; requires explicit exclusion | arb-dex | open |
+| DATA-02 | P2 | DexScreener unlabeled raydium pools default to AMMv4 decoder | `arb-ingest/src/dexscreener.rs` | fixed @ e6dfda6 |
+| DATA-05 | P2 | DAMM v2 / DBC / DLMM-Pro discoverable but unpriceable (no decode branch) — safe only because never routed; requires explicit exclusion | `arb-ingest/src/decoders.rs` (+ e6dfda6 label gate) | fixed @ e58bce9 |
 | DATA-04 | P2 | Full tick-array/bin-array clone per quote (perf) | `adapters.rs:673, 687-705, 752-754` | fixed @ a12296d |
-| DATA-06 | P2 | Unofficial pump.fun endpoints; mock-tolerant fallbacks | pump facade | open |
-| DATA-07 | P2 | Phoenix unsupported (no variant) — documented limitation | arb-dex | open |
-| DATA-08 | P2 | Yellowstone gRPC account stream does not feed pool registration (identity placeholder) | arb-ingest gRPC path | open |
+| DATA-06 | P2 | Unofficial pump.fun endpoints; mock-tolerant fallbacks | `arb-ingest/src/pumpfun_discovery.rs` | fixed @ b3a2cca |
+| DATA-07 | P2 | Phoenix unsupported (no variant) — documented limitation | `docs/reference/SDK_PARITY.md` | fixed @ 4dc8e74 |
+| DATA-08 | P2 | Yellowstone gRPC account stream does not feed pool registration (identity placeholder) — dead placeholder removed, scope documented | `arb-ingest/src/yellowstone_grpc.rs` | fixed @ 4dc8e74 |
 | DATA-09 | P2 | `slot_integrity` mutex acquired 3× per update | arb-ingest | fixed @ 04f0112 |
 | DATA-10 | P2 | `PacedAccountFetcher::from_env` per-call construction → TLS handshake churn | arb-ingest | fixed @ da2fa07 |
 | DATA-11 | P2 | Priority-fee estimate fabricates 10,000 lamports/CU on parse failure instead of surfacing | `rpc_pool.rs` get_priority_fee_estimate | fixed @ a7ae487 |
