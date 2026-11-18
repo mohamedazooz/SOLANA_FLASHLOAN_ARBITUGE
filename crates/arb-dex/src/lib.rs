@@ -6,6 +6,7 @@ pub mod meteora_dbc;
 pub mod meteora_dlmm;
 pub mod meteora_dlmm_pro;
 pub mod orca_whirlpool;
+pub mod programs;
 pub mod pump_fun;
 pub mod pump_swap;
 pub mod raydium_clmm;
@@ -21,6 +22,7 @@ pub use dlmm_validation::{
     validate_lb_pair_account, validate_pool_pair_compatibility,
 };
 pub use meteora_damm_v2::MeteoraDammV2Pool;
+pub use programs::{Network, ProgramInfo, ProgramRegistry, program_registry};
 pub use meteora_dbc::MeteoraDbcPool;
 pub use meteora_dlmm::MeteoraDlmmPool;
 pub use meteora_dlmm_pro::MeteoraDlmmProPool;
