@@ -34,7 +34,7 @@ file:line locations read first-hand.
 | DATA-03 | P2 | Meteora CPMM `fee_numerator` cast to `u16` → 2,500 ppm reads as 2,500 bps (×100 fee on discovery only) | `meteora_pair_discovery.rs:240-241, :389-390` | fixed @ 912e22d |
 | DATA-02 | P2 | DexScreener unlabeled raydium pools default to AMMv4 decoder | dexscreener fetcher | open |
 | DATA-05 | P2 | DAMM v2 / DBC / DLMM-Pro discoverable but unpriceable (no decode branch) — safe only because never routed; requires explicit exclusion | arb-dex | open |
-| DATA-04 | P2 | Full tick-array/bin-array clone per quote (perf) | `adapters.rs:673, 687-705, 752-754` | fixed @ <d04> |
+| DATA-04 | P2 | Full tick-array/bin-array clone per quote (perf) | `adapters.rs:673, 687-705, 752-754` | fixed @ a12296d |
 | DATA-06 | P2 | Unofficial pump.fun endpoints; mock-tolerant fallbacks | pump facade | open |
 | DATA-07 | P2 | Phoenix unsupported (no variant) — documented limitation | arb-dex | open |
 | DATA-08 | P2 | Yellowstone gRPC account stream does not feed pool registration (identity placeholder) | arb-ingest gRPC path | open |
