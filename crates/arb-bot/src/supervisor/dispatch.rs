@@ -1,7 +1,7 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
 use arb_store::NetProvenance;
-use arb_types::InflightStatus;
+use arb_types::{InflightStatus, SignedLamports};
 use base64::prelude::*;
 
 pub(super) struct DispatchContext<'a> {
@@ -155,7 +155,9 @@ impl Supervisor {
                 let _ = self.store.record_outcome(
                     record.id,
                     "canary",
-                    Some(signed_lamports(real_net_profit.as_u64())),
+                    Some(SignedLamports::new(signed_lamports(
+                        real_net_profit.as_u64(),
+                    ))),
                     arb_store::NetProvenance::Estimated,
                 );
                 self.telegram
@@ -181,7 +183,9 @@ impl Supervisor {
                 let _ = self.store.record_outcome(
                     record.id,
                     "simulated",
-                    Some(signed_lamports(real_net_profit.as_u64())),
+                    Some(SignedLamports::new(signed_lamports(
+                        real_net_profit.as_u64(),
+                    ))),
                     arb_store::NetProvenance::Estimated,
                 );
                 if real_net_profit.as_u64() >= self.config.strategy.min_net_profit_abs {
@@ -783,7 +787,7 @@ impl Supervisor {
                         let payer_pubkey_task = payer.to_string();
                         let tx_size_val = tx_bytes.len() as u64;
                         let preflight_cu_task = preflight_cu;
-                        let mut actual_realized_net: Option<i64> = None;
+                        let mut actual_realized_net: Option<SignedLamports> = None;
                         let last_valid_height_task =
                             last_valid_block_height.unwrap_or(0).max(0) as u64;
 
@@ -902,7 +906,8 @@ impl Supervisor {
                                                 );
                                                 match i64::try_from(actual) {
                                                     Ok(signed) => {
-                                                        actual_realized_net = Some(signed);
+                                                        actual_realized_net =
+                                                            Some(SignedLamports::new(signed));
                                                         if signed < 0 {
                                                             warn!(
                                                                 "Landed transaction realized a NET LOSS of {signed} raw WSOL lamports (estimated +{}); signed loss persisted with actual provenance",
@@ -925,7 +930,10 @@ impl Supervisor {
                                     // `estimated` so aggregation can never merge
                                     // it into realized PnL (MATH-01/PIPE-01/03).
                                     let realized_reported_sol = actual_realized_net
-                                        .map(|n| n as f64 / 1e9)
+                                        .map(|n| match n {
+                                            SignedLamports(v) if v >= 0 => v as f64 / 1e9,
+                                            SignedLamports(v) => -(v.unsigned_abs() as f64) / 1e9,
+                                        })
                                         .unwrap_or(profit_sol_val);
                                     let landing_ms = land_start.elapsed().as_secs_f64() * 1000.0;
                                     let total_e2e_ms = (t_ingest_to_quote_us
@@ -954,12 +962,24 @@ impl Supervisor {
                                         total_e2e_ms
                                     );
 
+                                    // Use actual realized net if available, otherwise fall back to expected
+                                    let realized_sol_val =
+                                        if let Some(realized) = actual_realized_net {
+                                            realized.as_i64() as f64 / 1e9
+                                        } else {
+                                            profit_sol_val
+                                        };
+                                    let realized_usd_val = realized_sol_val * live_sol_price;
+                                    let profit_sign =
+                                        if realized_sol_val >= 0.0 { "+" } else { "" };
+
                                     info!(
-                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: {:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
+                                        "🎯 Execution finalized/landed: {} (slot {})\n• Net Profit: {}{:.6} SOL (~${:.2})\n• Loan: {:.4} SOL\n• Tokens: {}\n• Venues: {}\n{}",
                                         b_id,
                                         effective_slot,
-                                        realized_reported_sol,
-                                        realized_reported_sol * sol_price_val,
+                                        profit_sign,
+                                        realized_sol_val,
+                                        realized_usd_val,
                                         loan_size_sol_val,
                                         tokens_str_val,
                                         venues_str_val,
@@ -973,7 +993,9 @@ impl Supervisor {
                                         match actual_realized_net {
                                             Some(v) => (Some(v), arb_store::NetProvenance::Actual),
                                             None => (
-                                                i64::try_from(net_profit_val.as_u64()).ok(),
+                                                i64::try_from(net_profit_val.as_u64())
+                                                    .ok()
+                                                    .map(SignedLamports::new),
                                                 arb_store::NetProvenance::Estimated,
                                             ),
                                         };

@@ -11,7 +11,7 @@ use crate::{
     AttemptRecord, DispatchIntentRecord, FillRecord, NetProvenance, POSTGRES_INIT_SQL, PnlDaily,
     Store,
 };
-use arb_types::{ArbError, Lamports, Result, TokenAmount};
+use arb_types::{ArbError, Lamports, Result, SignedLamports, TokenAmount};
 use std::sync::{Arc, Mutex};
 use tokio_postgres::Row;
 use tracing::info;
@@ -185,18 +185,19 @@ impl Store for PostgresStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<i64>,
+        realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
     ) -> Result<()> {
         let client = self.client.clone();
         let status = status.to_string();
         let provenance = provenance.as_str().to_string();
+        let net: Option<i64> = realized_net.map(|n| n.as_i64());
 
         self.block_on(async move {
             client
                 .execute(
                     "INSERT INTO outcomes (attempt_id, status, realized_net, provenance) VALUES ($1, $2, $3, $4)",
-                    &[&attempt_id, &status, &realized_net, &provenance],
+                    &[&attempt_id, &status, &net, &provenance],
                 )
                 .await
                 .map_err(|e| ArbError::Internal(format!("Failed to insert PG outcome: {e}")))?;
@@ -295,8 +296,8 @@ impl Store for PostgresStore {
             Ok(PnlDaily {
                 attempts: total_attempts.max(0) as u64,
                 successful: successful.max(0) as u64,
-                realized_net: total_realized,
-                simulated_net: total_simulated,
+                realized_net: SignedLamports::new(total_realized),
+                simulated_net: SignedLamports::new(total_simulated),
             })
         })
     }

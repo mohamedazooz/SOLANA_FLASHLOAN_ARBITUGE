@@ -5,9 +5,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-arb-types = { path = "../arb-types" }
-arb-math = { path = "../arb-math" }
 arb-constants = { path = "../arb-constants" }
+arb-math = { path = "../arb-math" }
+arb-types = { path = "../arb-types" }
 ruint = { workspace = true }
 solana-pubkey = { workspace = true, features = ["curve25519"] }
 

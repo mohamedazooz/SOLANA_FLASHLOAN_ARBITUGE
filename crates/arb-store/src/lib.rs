@@ -1,6 +1,6 @@
 //! Persistent Storage Layer (SQLite with WAL Pragmas) & Accounting.
 
-use arb_types::{ArbError, Lamports, Result, TokenAmount};
+use arb_types::{ArbError, Lamports, Result, SignedLamports, TokenAmount};
 use rusqlite::{Connection, params};
 use std::sync::Mutex;
 use tracing::{debug, info};
@@ -36,10 +36,10 @@ pub struct FillRecord {
 pub struct PnlDaily {
     /// Signed realized net from outcomes with on-chain evidence only
     /// (`status = 'landed'` AND provenance `actual`). Losses are negative.
-    pub realized_net: i64,
+    pub realized_net: SignedLamports,
     /// Simulated/canary net (provenance `estimated`) kept in a separate
     /// bucket. NEVER merged into `realized_net`.
-    pub simulated_net: i64,
+    pub simulated_net: SignedLamports,
     pub attempts: u64,
     pub successful: u64,
 }
@@ -92,7 +92,7 @@ pub trait Store: Send + Sync {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<i64>,
+        realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
     ) -> Result<()>;
     fn get_attempt(&self, id: i64) -> Result<Option<AttemptRecord>>;
@@ -252,7 +252,7 @@ impl Store for SqliteStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<i64>,
+        realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
     ) -> Result<()> {
         let conn = self
@@ -261,7 +261,7 @@ impl Store for SqliteStore {
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         conn.execute(
             "INSERT INTO outcomes (attempt_id, status, realized_net, provenance) VALUES (?1, ?2, ?3, ?4)",
-            params![attempt_id, status, realized_net, provenance.as_str()],
+            params![attempt_id, status, realized_net.map(|n| n.as_i64()), provenance.as_str()],
         )
         .map_err(|e| ArbError::Internal(format!("Failed to insert outcome: {e}")))?;
         Ok(())
@@ -389,8 +389,8 @@ impl Store for SqliteStore {
             Ok(PnlDaily {
                 attempts: total_attempts.max(0) as u64,
                 successful: successful.max(0) as u64,
-                realized_net: total_realized,
-                simulated_net: total_simulated,
+                realized_net: SignedLamports::new(total_realized),
+                simulated_net: SignedLamports::new(total_simulated),
             })
         });
 
@@ -503,7 +503,7 @@ impl Store for SqliteStore {
     }
 }
 /// One durable outcome row: (attempt_id, status, realized_net, provenance).
-type OutcomeRow = (i64, String, Option<i64>, NetProvenance);
+type OutcomeRow = (i64, String, Option<SignedLamports>, NetProvenance);
 
 #[derive(Debug, Default)]
 pub struct MemoryStore {
@@ -534,7 +534,7 @@ impl Store for MemoryStore {
         &self,
         attempt_id: i64,
         status: &str,
-        realized_net: Option<i64>,
+        realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
     ) -> Result<()> {
         let mut o = self
@@ -595,20 +595,20 @@ impl Store for MemoryStore {
             match (status.as_str(), prov) {
                 ("landed", NetProvenance::Actual) => {
                     if let Some(v) = rn {
-                        realized = realized.saturating_add(*v);
+                        realized = realized.saturating_add(v.as_i64());
                     }
                 }
                 ("canary", _) | ("simulated", _) => {
                     if let Some(v) = rn {
-                        simulated = simulated.saturating_add(*v);
+                        simulated = simulated.saturating_add(v.as_i64());
                     }
                 }
                 _ => {}
             }
         }
         Ok(PnlDaily {
-            realized_net: realized,
-            simulated_net: simulated,
+            realized_net: SignedLamports::new(realized),
+            simulated_net: SignedLamports::new(simulated),
             attempts: n,
             successful,
         })
@@ -736,12 +736,17 @@ mod tests {
         assert_eq!(fetched.expected_net.as_u64(), 50_000);
 
         store
-            .record_outcome(101, "landed", Some(45_000), NetProvenance::Actual)
+            .record_outcome(
+                101,
+                "landed",
+                Some(SignedLamports::new(45_000)),
+                NetProvenance::Actual,
+            )
             .expect("invariant");
         let pnl = store.pnl_daily("today").expect("invariant");
         assert_eq!(pnl.attempts, 1);
         assert_eq!(pnl.successful, 1);
-        assert_eq!(pnl.realized_net, 45_000);
+        assert_eq!(pnl.realized_net.as_i64(), 45_000);
 
         let recent = store.get_recent_attempts(10).expect("invariant");
         assert_eq!(recent.len(), 1);
@@ -765,11 +770,17 @@ mod tests {
             })
             .unwrap();
         store
-            .record_outcome(1, "landed", Some(-12_345), NetProvenance::Actual)
+            .record_outcome(
+                1,
+                "landed",
+                Some(SignedLamports::new(-12_345)),
+                NetProvenance::Actual,
+            )
             .unwrap();
         let pnl = store.pnl_daily("today").unwrap();
         assert_eq!(
-            pnl.realized_net, -12_345,
+            pnl.realized_net.as_i64(),
+            -12_345,
             "loss must persist as a negative signed integer"
         );
         assert_eq!(pnl.successful, 1);
@@ -794,23 +805,44 @@ mod tests {
                 .unwrap();
         }
         store
-            .record_outcome(1, "landed", Some(45_000), NetProvenance::Actual)
+            .record_outcome(
+                1,
+                "landed",
+                Some(SignedLamports::new(45_000)),
+                NetProvenance::Actual,
+            )
             .unwrap();
         store
-            .record_outcome(2, "landed", Some(9_999), NetProvenance::Estimated)
+            .record_outcome(
+                2,
+                "landed",
+                Some(SignedLamports::new(9_999)),
+                NetProvenance::Estimated,
+            )
             .unwrap();
         store
-            .record_outcome(3, "simulated", Some(12_000), NetProvenance::Estimated)
+            .record_outcome(
+                3,
+                "simulated",
+                Some(SignedLamports::new(12_000)),
+                NetProvenance::Estimated,
+            )
             .unwrap();
         store
-            .record_outcome(4, "canary", Some(3_000), NetProvenance::Estimated)
+            .record_outcome(
+                4,
+                "canary",
+                Some(SignedLamports::new(3_000)),
+                NetProvenance::Estimated,
+            )
             .unwrap();
         let pnl = store.pnl_daily("today").unwrap();
         assert_eq!(
-            pnl.realized_net, 45_000,
+            pnl.realized_net.as_i64(),
+            45_000,
             "estimate-backed landed row must not contaminate realized PnL"
         );
-        assert_eq!(pnl.simulated_net, 15_000);
+        assert_eq!(pnl.simulated_net.as_i64(), 15_000);
         assert_eq!(pnl.attempts, 4);
         assert_eq!(pnl.successful, 2);
     }
@@ -925,7 +957,12 @@ mod tests {
                 })
                 .unwrap();
             store
-                .record_outcome(id, "landed", Some(1), NetProvenance::Actual)
+                .record_outcome(
+                    id,
+                    "landed",
+                    Some(SignedLamports::new(1)),
+                    NetProvenance::Actual,
+                )
                 .unwrap();
             store
                 .record_fill(&FillRecord {
