@@ -415,6 +415,45 @@ impl Supervisor {
         // before dispatching anything new.
         self.reconcile_pending_dispatches().await;
 
+        // PIPE-04: verify the hardcoded tip constants against the live
+        // `getTipAccounts` set before any tip-bearing dispatch. In Live mode
+        // a mismatch (or unreachable engine) is fail-closed: a tip sent to an
+        // account the block engine no longer rewards is silently wasted value.
+        {
+            const TIP_VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
+            let lander = self.jito_lander.clone();
+            let expected: Vec<&str> = arb_constants::JITO_TIP_ACCOUNTS.to_vec();
+            match tokio::time::timeout(TIP_VERIFY_TIMEOUT, lander.verify_tip_accounts(&expected))
+                .await
+            {
+                Ok(Ok(())) => info!(
+                    "✅ Jito getTipAccounts matches the hardcoded tip constants ({} accounts)",
+                    expected.len()
+                ),
+                Ok(Err(e)) if matches!(self.mode(), BotMode::Live) => {
+                    error!("tip account verification failed (live fail-closed): {e}");
+                    return Err(anyhow::anyhow!("jito tip account verification failed: {e}"));
+                }
+                Ok(Err(e)) => {
+                    warn!("tip account verification failed (non-live, continuing): {e}");
+                }
+                Err(_) if matches!(self.mode(), BotMode::Live) => {
+                    error!("tip account verification timed out (live fail-closed)");
+                    return Err(anyhow::anyhow!(
+                        "jito tip account verification timed out after 5s"
+                    ));
+                }
+                Err(_) => {
+                    warn!("tip account verification timed out (non-live, continuing)");
+                }
+            }
+            if !lander.has_auth() {
+                warn!(
+                    "JITO_AUTH_UUID not configured: block-engine requests fall back to the default unauthenticated rate limit (1 rps/IP/region)"
+                );
+            }
+        }
+
         // Publish process identity immediately, before the first tick, so an
         // external verifier can always find the PID/binary it is watching.
         self.heartbeat.observe_tick(0);

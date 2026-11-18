@@ -196,7 +196,57 @@ pub struct JitoLander {
     /// Explicit block-engine target from `JITO_BLOCK_ENGINE_URL`, resolved
     /// once at construction (see [`JitoLander::resolved_override_url`]).
     override_url: Option<String>,
+    /// Jito auth credential from `JITO_AUTH_UUID`, attached as `x-jito-auth`
+    /// on every block-engine request. Without it the documented default limit
+    /// is 1 request/second per IP per region (HTTP 429 above that) —
+    /// production multi-region fan-out needs the credential.
+    auth_uuid: Option<String>,
     client: reqwest::Client,
+}
+
+/// Env read of `JITO_AUTH_UUID`: delegates to [`validate_auth_uuid`].
+fn resolve_auth_uuid() -> Option<String> {
+    std::env::var("JITO_AUTH_UUID")
+        .ok()
+        .and_then(|raw| validate_auth_uuid(&raw))
+}
+
+/// Validate a raw `JITO_AUTH_UUID` value: strips whitespace, rejects empty
+/// values and `REPLACE_ME` placeholders, and validates the documented UUID
+/// shape (36 chars, hex groups separated by dashes). An invalid value is
+/// dropped as `None` instead of attaching a broken header.
+fn validate_auth_uuid(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let valid_shape = |s: &str| -> bool {
+        let bytes = s.as_bytes();
+        if bytes.len() != 36 {
+            return false;
+        }
+        for (i, b) in bytes.iter().enumerate() {
+            match i == 8 || i == 13 || i == 18 || i == 23 {
+                true => {
+                    if *b != b'-' {
+                        return false;
+                    }
+                }
+                false => {
+                    if !b.is_ascii_hexdigit() {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    };
+    if trimmed.is_empty() || trimmed.contains("REPLACE_ME") || !valid_shape(trimmed) {
+        if !trimmed.is_empty() {
+            tracing::warn!(
+                "JITO_AUTH_UUID is set but not a valid UUID-36; ignoring (rate limit falls back to 1 rps/IP/region)"
+            );
+        }
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 impl JitoLander {
@@ -210,8 +260,92 @@ impl JitoLander {
         Self {
             regions,
             override_url: Self::resolved_override_url(),
+            auth_uuid: resolve_auth_uuid(),
             client,
         }
+    }
+
+    /// Attach the `x-jito-auth` header when a credential is configured.
+    fn apply_auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.auth_uuid {
+            Some(u) => rb.header("x-jito-auth", u),
+            None => rb,
+        }
+    }
+
+    /// The configured auth credential (redacted logging must never print it).
+    pub fn has_auth(&self) -> bool {
+        self.auth_uuid.is_some()
+    }
+
+    /// Fetch the current official tip-account set from the block engine
+    /// (`getTipAccounts`). Used at startup to verify the hardcoded
+    /// `JITO_TIP_ACCOUNTS` constants against the live service before any
+    /// tip-bearing transaction is built.
+    pub async fn get_tip_accounts(&self) -> ArbResult<Vec<String>> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTipAccounts",
+            "params": []
+        });
+        let url = self.primary_endpoint();
+        let r = self
+            .apply_auth(self.client.post(&url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ArbError::Internal(format!("getTipAccounts request failed: {e}")))?;
+        let status = r.status();
+        let text = r
+            .text()
+            .await
+            .map_err(|e| ArbError::Internal(format!("getTipAccounts body: {e}")))?;
+        if !status.is_success() {
+            return Err(ArbError::Internal(format!(
+                "getTipAccounts HTTP {status}: {text}"
+            )));
+        }
+        let v: Value = serde_json::from_str(&text)
+            .map_err(|e| ArbError::DeserializationError(format!("getTipAccounts: {e}")))?;
+        if let Some(err) = v.get("error") {
+            return Err(ArbError::Internal(format!("getTipAccounts error: {err}")));
+        }
+        let accounts: Vec<String> = v
+            .get("result")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if accounts.is_empty() {
+            return Err(ArbError::Internal(
+                "getTipAccounts returned an empty account list".into(),
+            ));
+        }
+        Ok(accounts)
+    }
+
+    /// Runtime verification: the hardcoded tip constants must match the live
+    /// `getTipAccounts` set. Returns `Err` on any difference so the caller can
+    /// fail closed (live mode) before dispatching a tip that lands in a stale
+    /// account the block engine no longer rewards.
+    pub async fn verify_tip_accounts(&self, expected: &[&str]) -> ArbResult<()> {
+        let live = self.get_tip_accounts().await?;
+        let live_set: std::collections::BTreeSet<&str> = live.iter().map(|s| s.as_str()).collect();
+        let expected_set: std::collections::BTreeSet<&str> = expected.iter().copied().collect();
+        let mut missing: Vec<&str> = expected_set.difference(&live_set).copied().collect();
+        let mut extra: Vec<&str> = live_set.difference(&expected_set).copied().collect();
+        missing.sort_unstable();
+        extra.sort_unstable();
+        if !missing.is_empty() || !extra.is_empty() {
+            return Err(ArbError::Internal(format!(
+                "tip account drift: missing-from-live={missing:?} live-only={extra:?}"
+            )));
+        }
+        Ok(())
     }
 
     /// Reads `JITO_BLOCK_ENGINE_URL` (documented in `.env.example`) as an
@@ -287,15 +421,23 @@ impl JitoLander {
         });
 
         // Concurrent dispatch over every resolved block-engine target: the
-        // `JITO_BLOCK_ENGINE_URL` override first, then each region.
+        // `JITO_BLOCK_ENGINE_URL` override first, then each region. The
+        // `x-jito-auth` credential rides every request (rate-limit/priority).
+        let auth = self.auth_uuid.clone();
         let futures: Vec<_> = self
             .endpoints()
             .into_iter()
             .map(|url| {
                 let client = self.client.clone();
                 let body = body.clone();
+                let auth = auth.clone();
                 async move {
-                    let resp = client.post(&url).json(&body).send().await;
+                    let rb = client.post(&url);
+                    let rb = match &auth {
+                        Some(u) => rb.header("x-jito-auth", u),
+                        None => rb,
+                    };
+                    let resp = rb.json(&body).send().await;
                     match resp {
                         Ok(r) => {
                             let status = r.status();
@@ -343,7 +485,7 @@ impl JitoLander {
         } else {
             regions
         };
-        send_bundle_multi_region(txs, target_regions).await
+        send_bundle_multi_region_authed(txs, target_regions, self.auth_uuid.as_deref()).await
     }
 
     pub async fn simulate_bundle(&self, txs: &[Vec<u8>]) -> ArbResult<Value> {
@@ -360,8 +502,7 @@ impl JitoLander {
         // Honor the `JITO_BLOCK_ENGINE_URL` override here as well.
         let url = self.primary_endpoint();
         let r = self
-            .client
-            .post(&url)
+            .apply_auth(self.client.post(&url))
             .json(&body)
             .send()
             .await
@@ -386,8 +527,7 @@ impl JitoLander {
         });
         let url = self.primary_endpoint();
         let r = self
-            .client
-            .post(&url)
+            .apply_auth(self.client.post(&url))
             .json(&body)
             .send()
             .await
@@ -504,8 +644,7 @@ impl JitoLander {
         let url = self.primary_endpoint();
 
         let response = self
-            .client
-            .post(&url)
+            .apply_auth(self.client.post(&url))
             .json(&body)
             .send()
             .await
@@ -531,6 +670,17 @@ impl JitoLander {
 
 /// Send a bundle to all regions concurrently, returning the first success.
 pub async fn send_bundle_multi_region(txs: &[Vec<u8>], regions: &[String]) -> ArbResult<String> {
+    send_bundle_multi_region_authed(txs, regions, None).await
+}
+
+/// Region fan-out dispatch with the explicit `x-jito-auth` credential
+/// (`None` = unauthenticated, subject to the documented 1 rps/IP/region
+/// default limit).
+pub async fn send_bundle_multi_region_authed(
+    txs: &[Vec<u8>],
+    regions: &[String],
+    auth_uuid: Option<&str>,
+) -> ArbResult<String> {
     if txs.is_empty() || txs.len() > 5 {
         return Err(ArbError::InvalidInput("bundle must have 1..=5 txs".into()));
     }
@@ -552,6 +702,7 @@ pub async fn send_bundle_multi_region(txs: &[Vec<u8>], regions: &[String]) -> Ar
     // send does NOT pay a fresh TLS/TCP handshake on the critical path. Creating
     // a client per call added tens of ms of avoidable latency per attempt.
     let client = shared_dispatch_client();
+    let auth = auth_uuid.map(|s| s.to_string());
     let futures: Vec<_> = regions_list
         .iter()
         .map(|region| {
@@ -559,8 +710,14 @@ pub async fn send_bundle_multi_region(txs: &[Vec<u8>], regions: &[String]) -> Ar
             let client = client.clone();
             let body = body.clone();
             let region = region.clone();
+            let auth = auth.clone();
             async move {
-                let resp = client.post(&url).json(&body).send().await;
+                let rb = client.post(&url);
+                let rb = match &auth {
+                    Some(u) => rb.header("x-jito-auth", u),
+                    None => rb,
+                };
+                let resp = rb.json(&body).send().await;
                 match resp {
                     Ok(r) => {
                         let status = r.status();
@@ -677,6 +834,68 @@ mod tests {
     fn lander_new() {
         let l = JitoLander::new(vec!["".to_string()]);
         assert_eq!(l.regions.len(), 1);
+    }
+
+    #[test]
+    fn auth_uuid_accepts_valid_shape() {
+        let u = "6d3f1e2a-90cd-4a1b-8f2d-3c5e7a9b1d0f";
+        assert_eq!(validate_auth_uuid(u).as_deref(), Some(u));
+        // surrounding whitespace tolerated
+        assert_eq!(
+            validate_auth_uuid("  6d3f1e2a-90cd-4a1b-8f2d-3c5e7a9b1d0f\n").as_deref(),
+            Some(u)
+        );
+    }
+
+    #[test]
+    fn auth_uuid_rejects_placeholders_and_empty() {
+        assert_eq!(validate_auth_uuid(""), None);
+        assert_eq!(validate_auth_uuid("   "), None);
+        assert_eq!(validate_auth_uuid("REPLACE_ME_JITO_AUTH_UUID"), None);
+        assert_eq!(
+            validate_auth_uuid("paste-your-jito-replace-me-here0000000x"),
+            None
+        );
+    }
+
+    #[test]
+    fn auth_uuid_rejects_malformed_shapes() {
+        // 35 chars (missing trailing digit)
+        assert_eq!(
+            validate_auth_uuid("6d3f1e2a-90cd-4a1b-8f2d-3c5e7a9b1d0"),
+            None
+        );
+        // dash in the wrong position
+        assert_eq!(
+            validate_auth_uuid("6d3f1e2a9-0cd-4a1b-8f2d-3c5e7a9b1d0f"),
+            None
+        );
+        // non-hex character
+        assert_eq!(
+            validate_auth_uuid("6d3f1e2g-90cd-4a1b-8f2d-3c5e7a9b1d0f"),
+            None
+        );
+        // no dashes at all
+        assert_eq!(
+            validate_auth_uuid("6d3f1e2a90cd4a1b8f2d3c5e7a9b1d0fxx"),
+            None
+        );
+        // 37 chars
+        assert_eq!(
+            validate_auth_uuid("6d3f1e2a-90cd-4a1b-8f2d-3c5e7a9b1d0ff"),
+            None
+        );
+    }
+
+    #[test]
+    fn lander_has_auth_reflects_credential_presence() {
+        let l = JitoLander::new(vec!["".to_string()]);
+        assert!(!l.has_auth());
+        let l_with = JitoLander {
+            auth_uuid: Some("6d3f1e2a-90cd-4a1b-8f2d-3c5e7a9b1d0f".into()),
+            ..l
+        };
+        assert!(l_with.has_auth());
     }
 
     #[test]
