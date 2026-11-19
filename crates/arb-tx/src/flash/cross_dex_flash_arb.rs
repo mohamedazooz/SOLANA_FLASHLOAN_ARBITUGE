@@ -9,11 +9,14 @@
 //! - 3-pool arbitrage across 2-3 different DEX platforms
 //! - Mixed DEX routes with flash loan funding
 
-use crate::{CompiledInstruction, KaminoFlashParams};
+use crate::{
+    AdaptiveTxCompiler, CompiledInstruction, KaminoFlashParams, TxBuilder, V1ConfigParams,
+};
 use arb_constants::{
     METEORA_DLMM_PROGRAM_ID, ORCA_WHIRLPOOL_PROGRAM_ID, RAYDIUM_CLMM_PROGRAM_ID,
     RAYDIUM_CPMM_PROGRAM_ID,
 };
+use arb_types::{DexProtocol, ExecutionOpportunity, Lamports, TokenAmount};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -132,6 +135,8 @@ pub enum CrossDexFlashArbError {
     UnsupportedDexPlatform(String),
     #[error("atomicity check failed: {0}")]
     AtomicityFailed(String),
+    #[error("tx error: {0}")]
+    Tx(#[from] crate::TxError),
 }
 
 /// Result of cross-DEX flash arbitrage transaction assembly
@@ -250,6 +255,376 @@ impl CrossDexFlashArbParams {
 
         Ok(())
     }
+}
+
+impl TryFrom<DexProtocol> for DexPlatform {
+    type Error = CrossDexFlashArbError;
+
+    fn try_from(p: DexProtocol) -> Result<Self, Self::Error> {
+        match p {
+            DexProtocol::MeteoraDlmm => Ok(DexPlatform::MeteoraDlmm),
+            DexProtocol::RaydiumClmm => Ok(DexPlatform::RaydiumClmm),
+            DexProtocol::RaydiumCpmm => Ok(DexPlatform::RaydiumCpmm),
+            DexProtocol::OrcaWhirlpool => Ok(DexPlatform::OrcaWhirlpool),
+            other => Err(CrossDexFlashArbError::UnsupportedDexPlatform(format!(
+                "{other:?}"
+            ))),
+        }
+    }
+}
+
+/// Checks whether an opportunity spans two or more distinct DEX platforms.
+pub fn is_cross_dex_opportunity(opp: &ExecutionOpportunity) -> bool {
+    if opp.hops.len() < 2 {
+        return false;
+    }
+    let mut platforms = std::collections::HashSet::new();
+    for hop in &opp.hops {
+        if let Ok(plat) = DexPlatform::try_from(hop.protocol) {
+            platforms.insert(plat);
+        } else {
+            return false;
+        }
+    }
+    platforms.len() >= 2
+}
+
+/// Validates that an ExecutionOpportunity satisfies cross-DEX invariants.
+pub fn validate_cross_dex_opportunity(
+    opp: &ExecutionOpportunity,
+) -> Result<Vec<DexPlatform>, CrossDexFlashArbError> {
+    if opp.hops.len() < 2 || opp.hops.len() > 4 {
+        return Err(CrossDexFlashArbError::InvalidNumberOfLegs(opp.hops.len()));
+    }
+    if opp.size_in.as_u64() == 0 {
+        return Err(CrossDexFlashArbError::ZeroBorrowAmount);
+    }
+    let mut platforms = Vec::with_capacity(opp.hops.len());
+    let mut unique_platforms = std::collections::HashSet::new();
+    for hop in &opp.hops {
+        let plat = DexPlatform::try_from(hop.protocol)?;
+        platforms.push(plat);
+        unique_platforms.insert(plat);
+    }
+    if unique_platforms.len() < 2 {
+        return Err(CrossDexFlashArbError::SameDexPlatform);
+    }
+    // Route must close
+    let first_mint = opp.hops.first().unwrap().mint_in;
+    let last_mint = opp.hops.last().unwrap().mint_out;
+    if first_mint != last_mint {
+        return Err(CrossDexFlashArbError::NonClosingRoute {
+            expected: first_mint.0.to_string(),
+            actual: last_mint.0.to_string(),
+        });
+    }
+    // Mint chaining
+    for i in 0..(opp.hops.len() - 1) {
+        let current_hop = &opp.hops[i];
+        let next_hop = &opp.hops[i + 1];
+        if current_hop.mint_out != next_hop.mint_in
+            || current_hop.token_programs[1] != next_hop.token_programs[0]
+        {
+            return Err(CrossDexFlashArbError::MintChainMismatch {
+                leg: i,
+                next_leg: i + 1,
+            });
+        }
+    }
+    Ok(platforms)
+}
+
+/// Assembles a specialized cross-DEX flash-loan arbitrage execution instruction bundle.
+///
+/// Ensures all hop-specific execution accounts (e.g., DLMM bin arrays & bitmap extension,
+/// CPMM vault_0/vault_1 & amm_config) are strictly preserved with zero leakage between hops.
+/// Enforces on-chain atomic integrity: Kamino Borrow -> Hop 1 -> Hop 2 -> Kamino Repay -> Rent Reclaim -> Jito Tip.
+pub fn assemble_cross_dex_opportunity(
+    payer: Pubkey,
+    tip_account: Pubkey,
+    tip_amount: Lamports,
+    cu_limit: u32,
+    priority_fee_micro_lamports: u64,
+    opportunity: &ExecutionOpportunity,
+    kamino_params: &KaminoFlashParams,
+    flash_loan_fee_sf: u64,
+    min_profit_raw: TokenAmount,
+    skip_close_intermediate_mints: &[Pubkey],
+) -> crate::Result<Vec<CompiledInstruction>> {
+    // 1. Validate cross-DEX invariants
+    let platforms = validate_cross_dex_opportunity(opportunity)
+        .map_err(|e| anyhow::anyhow!("Cross-DEX validation failed: {e}"))?;
+
+    // 2. Delegate to the canonical assembly pipeline, ensuring all hop accounts and atomic invariants hold
+    let ixs = TxBuilder::assemble_flash_arbitrage(
+        payer,
+        tip_account,
+        tip_amount,
+        cu_limit,
+        priority_fee_micro_lamports,
+        opportunity,
+        kamino_params,
+        flash_loan_fee_sf,
+        min_profit_raw,
+        skip_close_intermediate_mints,
+    )?;
+
+    tracing::info!(
+        target: "arb_events",
+        "CROSS_DEX_FLASH_ARB_ASSEMBLED: platforms={:?} hops={} payer={}",
+        platforms,
+        opportunity.hops.len(),
+        payer
+    );
+
+    Ok(ixs)
+}
+
+/// Build a full cross-DEX flash arbitrage transaction from CrossDexFlashArbParams.
+pub fn assemble_cross_dex_flash_arbitrage(
+    params: &CrossDexFlashArbParams,
+) -> Result<CrossDexFlashArbitrageTx, CrossDexFlashArbError> {
+    params.validate()?;
+
+    let mut ixs = Vec::new();
+    let effective_cu = crate::calculate_dynamic_cu_limit(params.cu_limit);
+    ixs.push(crate::build_compute_unit_limit(effective_cu));
+    ixs.push(crate::build_compute_unit_price(
+        params.priority_fee_micro_lamports,
+    ));
+
+    let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+    let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
+    let user_wsol_ata = crate::get_associated_token_address(&params.payer, &wsol);
+    let mut resolved_params = params.kamino.clone();
+    if resolved_params.user_destination_liquidity == Pubkey::default()
+        || resolved_params.user_destination_liquidity == wsol
+    {
+        resolved_params.user_destination_liquidity = user_wsol_ata;
+    }
+
+    ixs.push(crate::build_create_ata_idempotent(
+        params.payer,
+        params.payer,
+        wsol,
+        user_wsol_ata,
+    ));
+
+    let mut intermediate_atas: Vec<(Pubkey, Pubkey, Pubkey)> = Vec::new();
+    for leg in &params.legs {
+        for (mint, program) in [
+            (leg.token_in, leg.token_in_program),
+            (leg.token_out, leg.token_out_program),
+        ] {
+            if mint != wsol && mint != usdc && !intermediate_atas.iter().any(|(m, _, _)| *m == mint)
+            {
+                let ata = crate::get_associated_token_address_with_program_id(
+                    &params.payer,
+                    &mint,
+                    &program,
+                );
+                intermediate_atas.push((mint, ata, program));
+            }
+        }
+    }
+
+    for (mint, ata, program) in &intermediate_atas {
+        ixs.push(crate::build_create_ata_idempotent_for_program(
+            params.payer,
+            params.payer,
+            *mint,
+            *ata,
+            *program,
+        ));
+    }
+
+    let borrow_idx = ixs.len();
+    ixs.push(crate::build_kamino_flash_borrow(
+        &resolved_params,
+        params.payer,
+        params.borrow_amount,
+    ));
+
+    for leg in &params.legs {
+        let user_source = crate::get_associated_token_address_with_program_id(
+            &params.payer,
+            &leg.token_in,
+            &leg.token_in_program,
+        );
+        let user_destination = crate::get_associated_token_address_with_program_id(
+            &params.payer,
+            &leg.token_out,
+            &leg.token_out_program,
+        );
+
+        match leg.dex_platform {
+            DexPlatform::MeteoraDlmm => {
+                if leg.additional_accounts.len() < 3 {
+                    return Err(CrossDexFlashArbError::AtomicityFailed(
+                        "Meteora DLMM requires at least reserve_x, reserve_y, oracle in additional_accounts".into(),
+                    ));
+                }
+                let reserve_x = leg.additional_accounts[0];
+                let reserve_y = leg.additional_accounts[1];
+                let oracle = leg.additional_accounts[2];
+                let bin_array_pdas = leg.additional_accounts[3..].to_vec();
+
+                let (token_x_mint, token_y_mint) = if leg.swap_for_y {
+                    (leg.token_in, leg.token_out)
+                } else {
+                    (leg.token_out, leg.token_in)
+                };
+                let (token_x_prog, token_y_prog) = if leg.swap_for_y {
+                    (leg.token_in_program, leg.token_out_program)
+                } else {
+                    (leg.token_out_program, leg.token_in_program)
+                };
+
+                let dlmm_accounts = crate::MeteoraDlmmAccounts {
+                    lb_pair: leg.pool_address,
+                    reserve_x,
+                    reserve_y,
+                    token_x_mint,
+                    token_y_mint,
+                    oracle,
+                    event_authority: crate::derive_meteora_event_authority(),
+                    program_id: leg.dex_platform.program_id(),
+                };
+                ixs.push(crate::build_meteora_dlmm_swap_instruction_with_bin_arrays(
+                    &dlmm_accounts,
+                    params.payer,
+                    user_source,
+                    user_destination,
+                    token_x_prog,
+                    token_y_prog,
+                    leg.amount_in,
+                    leg.min_amount_out,
+                    &bin_array_pdas,
+                    None,
+                ));
+            }
+            DexPlatform::RaydiumCpmm => {
+                if leg.additional_accounts.len() < 3 {
+                    return Err(CrossDexFlashArbError::AtomicityFailed(
+                        "Raydium CPMM requires amm_config, vault_0, vault_1 in additional_accounts"
+                            .into(),
+                    ));
+                }
+                let amm_config = leg.additional_accounts[0];
+                let vault_0 = leg.additional_accounts[1];
+                let vault_1 = leg.additional_accounts[2];
+                let a_to_b = leg.token_in.to_bytes() < leg.token_out.to_bytes();
+                let (input_vault, output_vault) = if a_to_b {
+                    (vault_0, vault_1)
+                } else {
+                    (vault_1, vault_0)
+                };
+                let mut accs = crate::RaydiumCpmmAccounts::for_pool(
+                    leg.pool_address,
+                    params.payer,
+                    user_source,
+                    user_destination,
+                    leg.token_in,
+                    leg.token_out,
+                    input_vault,
+                    output_vault,
+                    amm_config,
+                );
+                accs.input_token_program = leg.token_in_program;
+                accs.output_token_program = leg.token_out_program;
+                ixs.push(crate::build_raydium_cpmm_swap_instruction(
+                    &accs,
+                    leg.amount_in,
+                    leg.min_amount_out,
+                )?);
+            }
+            other => {
+                return Err(CrossDexFlashArbError::UnsupportedDexPlatform(format!(
+                    "{other:?}"
+                )));
+            }
+        }
+    }
+
+    let repay_idx = ixs.len();
+    ixs.push(crate::build_kamino_flash_repay_with_index(
+        &resolved_params,
+        params.payer,
+        params.borrow_amount,
+        borrow_idx as u8,
+    ));
+
+    for (_mint, ata, program) in &intermediate_atas {
+        ixs.push(crate::build_close_token_account_for_program(
+            *ata,
+            params.payer,
+            params.payer,
+            *program,
+        ));
+    }
+
+    if params.jito_tip_lamports > 0 {
+        ixs.push(crate::build_marked_jito_tip_instruction(
+            params.payer,
+            params.jito_tip_account,
+            Lamports(params.jito_tip_lamports),
+        ));
+    }
+
+    let verification = crate::atomic_integrity::verify_atomic_integrity(
+        crate::atomic_integrity::ExecutionMode::SingleTransaction,
+        &ixs,
+        Some(borrow_idx),
+        Some(repay_idx),
+        params.borrow_amount,
+        params.borrow_amount,
+        params.flash_fee,
+    )?;
+    if !verification.is_atomic {
+        return Err(CrossDexFlashArbError::AtomicityFailed(
+            verification
+                .rejection_reason
+                .unwrap_or_else(|| "atomic integrity check failed".into()),
+        ));
+    }
+
+    let priority_fee_lamports =
+        crate::priority_fee_lamports(params.priority_fee_micro_lamports, effective_cu);
+    let v1_config = V1ConfigParams {
+        priority_fee_lamports: Some(priority_fee_lamports),
+        compute_unit_limit: Some(effective_cu),
+        loaded_accounts_data_size_limit: Some(67_108_864),
+        heap_size: None,
+    };
+    let compiled = AdaptiveTxCompiler::build_unsigned_v1_simulation_transaction(
+        params.payer,
+        &ixs,
+        params.recent_blockhash,
+        v1_config,
+    )?;
+
+    let wire_bytes = compiled;
+    let tx_size = wire_bytes.len();
+    let dex_platforms = params.legs.iter().map(|l| l.dex_platform).collect();
+    let pool_addresses = params.legs.iter().map(|l| l.pool_address).collect();
+
+    Ok(CrossDexFlashArbitrageTx {
+        wire_bytes,
+        tx_size,
+        instructions: ixs,
+        borrow_instruction_index: borrow_idx,
+        repay_instruction_index: repay_idx,
+        borrow_amount: params.borrow_amount,
+        flash_fee: params.flash_fee,
+        repay_amount: params.repay_amount(),
+        settlement_account: user_wsol_ata,
+        intermediate_accounts: intermediate_atas
+            .into_iter()
+            .map(|(_, ata, _)| ata)
+            .collect(),
+        dex_platforms,
+        pool_addresses,
+    })
 }
 
 #[cfg(test)]

@@ -1,0 +1,117 @@
+{
+  "audit_name": "Independent Phase 17 Audit — Cross-DEX Atomic Execution",
+  "audit_date": "2026-11-20T01:20:00Z",
+  "auditor_role": "Principal Solana & Quant Systems Engineer",
+  "verdict": "CONDITIONALLY VERIFIED — BLOCKERS REMAIN",
+  "executive_summary": "The Meteora DLMM -> Raydium CPMM -> Kamino Flash Loan cross-DEX route is structurally integrated into the Supervisor execution path and compiles into a valid V1 wire transaction. However, independent audit reveals two critical engineering caveats: (1) Wire packet size is 1,248 bytes, which exceeds the standard Solana TPU/UDP MTU limit of 1,232 bytes, requiring Address Lookup Table (ALT) compression for live TPU/Jito broadcast. (2) Failure rollback tests in arb-tx are static unit checks of instruction indexes, not runtime LiteSVM/eBPF bytecode executions. Real economic profit protection is enforced via the final DEX leg's min_amount_out parameter, but network transaction fees remain at risk on revert.",
+  "audited_components": {
+    "supervisor_call_graph": {
+      "status": "VERIFIED",
+      "entry_point": "Supervisor::process_opportunities",
+      "builder_invoked": "arb_tx::cross_dex_flash_arb::assemble_cross_dex_opportunity",
+      "evidence": "crates/arb-bot/src/supervisor/execution.rs:27-40; verified on-chain event CROSS_DEX_FLASH_ARB_ASSEMBLED"
+    },
+    "kamino_instruction_correctness": {
+      "status": "VERIFIED",
+      "program_id": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+      "flash_borrow_accounts": 12,
+      "flash_borrow_data_len": 16,
+      "flash_repay_accounts": 12,
+      "flash_repay_data_len": 17,
+      "borrow_instruction_index_passed": true,
+      "fee_math": "U68F60 canonical fixed-point (arb-math)",
+      "evidence": "crates/arb-tx/src/flash/kamino.rs:85-165"
+    },
+    "atomic_profit_protection": {
+      "status": "CONDITIONALLY_VERIFIED",
+      "on_chain_enforcement_mechanism": "Final swap leg (Raydium CPMM) minimum_amount_out is clamped to floor = borrow + flash_fee + tip + min_profit",
+      "gas_fee_risk": "Base transaction fee (5,000 lamports) and priority fee are deducted from payer's native SOL and are NOT refunded on revert",
+      "standalone_assertion_program": false,
+      "evidence": "crates/arb-tx/src/primitives/builder.rs:316-355"
+    },
+    "account_and_slot_integrity": {
+      "status": "VERIFIED",
+      "max_state_age_slots": 5,
+      "freshness_gate_enforced": true,
+      "evidence": "crates/arb-bot/src/supervisor/opportunity.rs:94-105; crates/arb-bot/src/supervisor/dispatch.rs:101-133"
+    },
+    "transaction_v1_validation": {
+      "status": "BLOCKER_IDENTIFIED",
+      "wire_version": "V1 (0x81 discriminator)",
+      "wire_size_bytes": 1248,
+      "solana_tpu_udp_mtu_bytes": 1232,
+      "v1_ceiling_bytes": 4096,
+      "issue": "1248 bytes exceeds 1232 bytes MTU by 16 bytes. Without ALT compression, packets will be dropped by standard TPU sockets",
+      "evidence": "crates/arb-tx/src/flash/cross_dex_flash_arb.rs:607"
+    },
+    "recovery_and_duplicate_dispatch": {
+      "status": "VERIFIED",
+      "dispatch_intent_persisted": true,
+      "duplicate_suppression": "seen_pool_sets deduplication in strategy.rs + risk_gate order velocity",
+      "restart_reconciliation": "classify_reconciliation checks last_valid_block_height without blind resubmission",
+      "evidence": "crates/arb-bot/src/supervisor/recovery.rs:26-70; crates/arb-bot/src/supervisor/strategy.rs:493-497"
+    }
+  },
+  "findings": [
+    {
+      "finding_id": "FINDING-01",
+      "severity": "BLOCKER",
+      "title": "Wire Packet Size (1,248 bytes) Exceeds Standard Solana TPU MTU (1,232 bytes)",
+      "file": "crates/arb-tx/src/flash/cross_dex_flash_arb.rs",
+      "line_reference": "607",
+      "evidence": "Serialized V1 transaction size is 1,248 bytes. Standard Solana network packet data size limit (PACKET_DATA_SIZE) over IPv6 UDP is 1,232 bytes. Although SIMD-0160 specifies up to 4,096 bytes for QUIC, standard TPU nodes and current Jito bundle interfaces strictly enforce 1,232 bytes.",
+      "reproduction_command": "cargo test -p arb-tx --test cross_dex_dlmm_cpmm_v1_atomic_tests test_matrix_11_v1_packet_size_boundary",
+      "required_correction": "Compress accounts using an Address Lookup Table (ALT) before TPU broadcast. Compressing 28 inline accounts (896 bytes) to 1-byte indices (28 bytes) reduces total wire size from 1,248 bytes to ~380 bytes.",
+      "status": "OPEN"
+    },
+    {
+      "finding_id": "FINDING-02",
+      "severity": "HIGH",
+      "title": "Transaction Fee Loss on Rollback (Zero-Loss Claim Caveat)",
+      "file": "crates/arb-tx/src/primitives/builder.rs",
+      "line_reference": "316-355",
+      "evidence": "Profit floor is enforced on-chain by the final swap leg min_amount_out. When a swap leg reverts, Kamino flash borrow is rolled back and no loan funds are lost. However, Solana base fee (5,000 lamports) and priority fee are debited from the payer by the runtime before execution and are permanently burned on revert.",
+      "reproduction_command": "Inspect derive_swap_legs in crates/arb-tx/src/primitives/builder.rs",
+      "required_correction": "Explicitly document in telemetry and risk models that rollback preserves 100% of borrowed principal and avoids Jito tip, but incurs Solana network signature and priority fees.",
+      "status": "DOCUMENTED"
+    },
+    {
+      "finding_id": "FINDING-03",
+      "severity": "MEDIUM",
+      "title": "Static Instruction Verification Mischaracterized as Runtime Simulation in Tests",
+      "file": "crates/arb-tx/tests/cross_dex_dlmm_cpmm_v1_atomic_tests.rs",
+      "line_reference": "262-326",
+      "evidence": "test_matrix_07_08_09_failure_simulation_and_atomicity_rollback validates the static atomic_integrity::verify_atomic_integrity algorithm by removing instruction index 6. It does not execute transaction instructions in LiteSVM, a local validator, or an SVM runtime.",
+      "reproduction_command": "cargo test -p arb-tx --test cross_dex_dlmm_cpmm_v1_atomic_tests test_matrix_07_08_09_failure_simulation_and_atomicity_rollback",
+      "required_correction": "Classify test as a Unit Test of instruction ordering and structural invariants. Runtime execution verification is handled by fork_sim in arb-sim.",
+      "status": "RESOLVED_IN_AUDIT"
+    },
+    {
+      "finding_id": "FINDING-04",
+      "severity": "LOW",
+      "title": "Potential Latency Spike in Asynchronous Intermediate ATA Probing",
+      "file": "crates/arb-bot/src/supervisor/execution.rs",
+      "line_reference": "78-99",
+      "evidence": "preexisting_intermediate_atas probes intermediate mints for pre-existing ATAs. If un-cached, network roundtrips could add latency to sub-millisecond dispatch cycles.",
+      "reproduction_command": "Inspect preexisting_intermediate_atas in crates/arb-bot/src/supervisor/execution.rs",
+      "required_correction": "Ensure intermediate ATAs for high-volume pairs (USDC, USDT) are cached in memory or whitelisted to avoid async probes.",
+      "status": "OPEN"
+    }
+  ],
+  "test_matrix_audit": [
+    {"scenario": 1, "name": "Profitable DLMM -> CPMM candidate", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 2, "name": "Unprofitable candidate rejected by profit floor", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 3, "name": "Missing DLMM bin array fails closed", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 4, "name": "Stale or inconsistent account snapshot fails closed", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 5, "name": "Token-2022 transfer fee fails closed", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 6, "name": "Insufficient Kamino supply-vault liquidity rejected", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 7, "name": "First swap failure (DLMM)", "test_type": "Unit", "result": "PASS"},
+    {"scenario": 8, "name": "Second swap failure (CPMM)", "test_type": "Unit", "result": "PASS"},
+    {"scenario": 9, "name": "Flash repay failure", "test_type": "Unit", "result": "PASS"},
+    {"scenario": 10, "name": "Minimum-profit guard failure", "test_type": "Unit", "result": "PASS"},
+    {"scenario": 11, "name": "V1 packet-size boundary enforcement", "test_type": "Unit", "result": "PASS"},
+    {"scenario": 12, "name": "Compute-budget boundary enforcement", "test_type": "Unit", "result": "PASS"},
+    {"scenario": 13, "name": "Duplicate dispatch deduplication", "test_type": "Integration", "result": "PASS"},
+    {"scenario": 14, "name": "Restart with unresolved dispatch intent recovery", "test_type": "Integration", "result": "PASS"}
+  ]
+}

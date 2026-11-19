@@ -5,7 +5,7 @@
 use super::*;
 
 /// Everything a per-tick opportunity pass needs from the enclosing cycle.
-pub(super) struct OpportunityPass<'a> {
+pub struct OpportunityPass<'a> {
     pub current_slot: Slot,
     pub expected_stream_generation: u64,
     pub verified: VerifiedQuoteInputs,
@@ -27,7 +27,7 @@ fn preflight_simulation_enabled() -> bool {
 }
 
 impl Supervisor {
-    pub(super) async fn process_opportunities(
+    pub async fn process_opportunities(
         &self,
         opportunities: &[ExecutionOpportunity],
         pass: OpportunityPass<'_>,
@@ -1630,7 +1630,7 @@ impl Supervisor {
     /// vault balances) must exist in the snapshot store with the expected
     /// owner, a non-startup provenance from the current stream generation,
     /// and slot-coherent, non-dead state before the candidate may proceed.
-    fn validate_route_account_dependencies(
+    pub fn validate_route_account_dependencies(
         &self,
         opp: &ExecutionOpportunity,
         current_slot: Slot,

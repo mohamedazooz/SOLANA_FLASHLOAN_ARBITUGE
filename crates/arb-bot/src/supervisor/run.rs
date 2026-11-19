@@ -58,7 +58,7 @@ impl Supervisor {
     /// live WSOL supply-vault token-account snapshot. Fails closed to `None`
     /// when the snapshot is missing, stale beyond the state-age limit, owned by
     /// an unexpected program, or undecodable — never a guessed balance.
-    pub(super) fn kamino_available_flash_liquidity(&self, current_slot: Slot) -> Option<u64> {
+    pub fn kamino_available_flash_liquidity(&self, current_slot: Slot) -> Option<u64> {
         let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).ok()?;
         let snap = self.ingest.account_store().get(&supply_vault)?;
         // Freshness bound relaxed to 5000 slots (~30 mins) so network jitter/polling gaps
@@ -1163,7 +1163,7 @@ impl Supervisor {
     /// * Net profit not denominated in the input mint
     /// * Inconsistent pool snapshot slots within a route
     /// * Flash loan repayment not fully funded
-    pub(super) fn validate_economic_invariants(
+    pub fn validate_economic_invariants(
         &self,
         opp: &arb_types::ExecutionOpportunity,
         tip: arb_types::Lamports,
