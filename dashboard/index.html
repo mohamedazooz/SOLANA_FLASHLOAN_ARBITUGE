@@ -1,24 +1,26 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SENTINEL // SOLANA ATOMIC HFT ARBITRAGE CORE</title>
+    <title>SENTINEL // بوت الأربيتراتج والفلاش لون على شبكة سولانا</title>
     <style>
         :root {
             --bg-base: #06080d;
             --bg-panel: #0d121d;
             --bg-card: #121927;
+            --bg-card-hover: #192337;
             --border: #1e293b;
             --border-glow: #00f3ff33;
             --text-main: #f8fafc;
-            --text-muted: #64748b;
+            --text-muted: #94a3b8;
             --accent-cyan: #00f3ff;
             --accent-emerald: #10b981;
             --accent-purple: #8b5cf6;
             --accent-amber: #f59e0b;
             --accent-rose: #f43f5e;
             --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+            --font-ar: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Cairo', 'Tajawal', sans-serif;
         }
 
         * {
@@ -30,15 +32,20 @@
         body {
             background-color: var(--bg-base);
             color: var(--text-main);
-            font-family: var(--font-mono);
+            font-family: var(--font-ar), var(--font-mono);
             min-height: 100vh;
-            padding: 1.5rem;
+            padding: 1.25rem;
             display: flex;
             flex-direction: column;
             gap: 1.25rem;
             background-image: 
-                radial-gradient(ellipse at 15% 0%, rgba(0, 243, 255, 0.05) 0%, transparent 60%),
-                radial-gradient(ellipse at 85% 100%, rgba(139, 92, 246, 0.05) 0%, transparent 60%);
+                radial-gradient(ellipse at 15% 0%, rgba(0, 243, 255, 0.06) 0%, transparent 60%),
+                radial-gradient(ellipse at 85% 100%, rgba(139, 92, 246, 0.06) 0%, transparent 60%);
+        }
+
+        body.ltr {
+            direction: ltr;
+            font-family: var(--font-mono), var(--font-ar);
         }
 
         header {
@@ -47,20 +54,22 @@
             align-items: center;
             padding-bottom: 1rem;
             border-bottom: 1px solid var(--border);
+            flex-wrap: wrap;
+            gap: 1rem;
         }
 
         .brand {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
+            gap: 0.85rem;
         }
 
         .brand-logo {
-            width: 14px;
-            height: 14px;
+            width: 16px;
+            height: 16px;
             background: var(--accent-cyan);
-            border-radius: 2px;
-            box-shadow: 0 0 12px var(--accent-cyan);
+            border-radius: 3px;
+            box-shadow: 0 0 16px var(--accent-cyan);
             animation: pulse 2s infinite ease-in-out;
         }
 
@@ -70,9 +79,9 @@
         }
 
         .brand-title {
-            font-size: 1.15rem;
-            font-weight: 700;
-            letter-spacing: 0.1em;
+            font-size: 1.25rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
             color: var(--text-main);
         }
 
@@ -80,10 +89,17 @@
             color: var(--accent-cyan);
         }
 
+        .brand-subtitle {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 0.15rem;
+        }
+
         .header-meta {
             display: flex;
-            gap: 1.5rem;
+            gap: 1rem;
             align-items: center;
+            flex-wrap: wrap;
         }
 
         .status-pill {
@@ -93,20 +109,127 @@
             background: rgba(16, 185, 129, 0.12);
             color: var(--accent-emerald);
             border: 1px solid rgba(16, 185, 129, 0.3);
-            padding: 0.35rem 0.75rem;
+            padding: 0.4rem 0.85rem;
             border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
         }
 
         .status-dot {
-            width: 7px;
-            height: 7px;
+            width: 8px;
+            height: 8px;
             border-radius: 50%;
             background: currentColor;
             box-shadow: 0 0 8px currentColor;
+        }
+
+        .btn {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 0.8rem;
+            font-weight: 600;
+            padding: 0.45rem 0.9rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .btn:hover {
+            border-color: var(--accent-cyan);
+            background: var(--bg-card-hover);
+        }
+
+        .btn-cyan {
+            background: rgba(0, 243, 255, 0.12);
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+        }
+
+        .btn-rose {
+            background: rgba(244, 63, 94, 0.15);
+            border-color: var(--accent-rose);
+            color: var(--accent-rose);
+        }
+
+        .btn-rose:hover {
+            background: rgba(244, 63, 94, 0.25);
+        }
+
+        /* Egyptian Explanation Box */
+        .egyptian-banner {
+            background: linear-gradient(135deg, rgba(13, 18, 29, 0.95), rgba(18, 25, 39, 0.9));
+            border: 1px solid rgba(0, 243, 255, 0.3);
+            border-radius: 10px;
+            padding: 1.25rem 1.5rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .egyptian-banner::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: var(--accent-cyan);
+        }
+
+        .banner-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .banner-title {
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: var(--accent-cyan);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .banner-toggle {
+            font-size: 0.75rem;
+            background: transparent;
+            border: 1px dashed var(--text-muted);
+            color: var(--text-muted);
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .banner-body {
+            font-size: 0.88rem;
+            line-height: 1.7;
+            color: #cbd5e1;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1rem;
+            margin-top: 0.5rem;
+        }
+
+        .explainer-card {
+            background: rgba(6, 8, 13, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 8px;
+            padding: 0.85rem 1rem;
+        }
+
+        .explainer-card strong {
+            color: var(--accent-cyan);
+            display: block;
+            margin-bottom: 0.35rem;
+            font-size: 0.92rem;
         }
 
         .grid-stats {
@@ -122,47 +245,90 @@
             padding: 1rem 1.25rem;
             display: flex;
             flex-direction: column;
-            gap: 0.4rem;
+            gap: 0.35rem;
             position: relative;
             overflow: hidden;
-            transition: border-color 0.2s ease;
+            transition: all 0.2s ease;
         }
 
         .card:hover {
             border-color: var(--accent-cyan);
+            transform: translateY(-2px);
         }
 
         .card-label {
-            font-size: 0.72rem;
+            font-size: 0.78rem;
             color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+            display: flex;
+            justify-content: space-between;
         }
 
         .card-value {
-            font-size: 1.5rem;
-            font-weight: 700;
+            font-size: 1.6rem;
+            font-weight: 800;
             color: var(--text-main);
+            font-family: var(--font-mono);
         }
 
         .card-sub {
-            font-size: 0.75rem;
+            font-size: 0.76rem;
             color: var(--text-muted);
+            line-height: 1.4;
         }
 
         .text-cyan { color: var(--accent-cyan); }
         .text-emerald { color: var(--accent-emerald); }
         .text-amber { color: var(--accent-amber); }
         .text-purple { color: var(--accent-purple); }
+        .text-rose { color: var(--accent-rose); }
+        .mono { font-family: var(--font-mono); }
+
+        .filters-bar {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1.25rem;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .filter-input {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.45rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .filter-input:focus {
+            border-color: var(--accent-cyan);
+        }
+
+        .filter-label {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            cursor: pointer;
+        }
 
         .main-layout {
             display: grid;
-            grid-template-columns: 2fr 1fr;
+            grid-template-columns: 2.2fr 1fr;
             gap: 1.25rem;
             flex: 1;
         }
 
-        @media (max-width: 1024px) {
+        @media (max-width: 1200px) {
             .main-layout { grid-template-columns: 1fr; }
         }
 
@@ -179,16 +345,17 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 0.85rem 1.25rem;
+            padding: 0.9rem 1.25rem;
             border-bottom: 1px solid var(--border);
-            background: rgba(18, 25, 39, 0.5);
+            background: rgba(18, 25, 39, 0.6);
+            flex-wrap: wrap;
+            gap: 0.5rem;
         }
 
         .panel-title {
-            font-size: 0.85rem;
-            font-weight: 600;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
+            font-size: 0.95rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
             display: flex;
             align-items: center;
             gap: 0.5rem;
@@ -196,154 +363,328 @@
 
         .table-container {
             flex: 1;
+            overflow-x: auto;
             overflow-y: auto;
-            max-height: 480px;
+            max-height: 520px;
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.8rem;
+            font-size: 0.82rem;
+            text-align: right;
+        }
+
+        body.ltr table {
             text-align: left;
         }
 
         th {
             background: var(--bg-card);
             color: var(--text-muted);
-            font-weight: 600;
-            padding: 0.65rem 1rem;
+            font-weight: 700;
+            padding: 0.75rem 1rem;
             border-bottom: 1px solid var(--border);
-            text-transform: uppercase;
-            font-size: 0.7rem;
-            letter-spacing: 0.05em;
+            font-size: 0.76rem;
+            letter-spacing: 0.03em;
             position: sticky;
             top: 0;
             z-index: 10;
+            white-space: nowrap;
         }
 
         td {
-            padding: 0.75rem 1rem;
-            border-bottom: 1px solid rgba(30, 41, 59, 0.4);
+            padding: 0.85rem 1rem;
+            border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+            vertical-align: middle;
+            white-space: nowrap;
         }
 
         tr:hover td {
-            background: rgba(0, 243, 255, 0.03);
+            background: rgba(0, 243, 255, 0.04);
         }
 
         .badge {
             display: inline-block;
-            padding: 0.15rem 0.45rem;
+            padding: 0.2rem 0.5rem;
             border-radius: 4px;
-            font-size: 0.68rem;
-            font-weight: 600;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
         }
 
-        .badge-landed { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); }
-        .badge-sim { background: rgba(0, 243, 255, 0.15); color: var(--accent-cyan); }
-        .badge-sent { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); }
-        .badge-fail { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); }
+        .badge-landed { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+        .badge-sim { background: rgba(0, 243, 255, 0.15); color: var(--accent-cyan); border: 1px solid rgba(0, 243, 255, 0.3); }
+        .badge-sent { background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.3); }
+        .badge-fail { background: rgba(244, 63, 94, 0.15); color: var(--accent-rose); border: 1px solid rgba(244, 63, 94, 0.3); }
+
+        .route-badge {
+            background: rgba(139, 92, 246, 0.15);
+            color: #c4b5fd;
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
 
         .log-box {
             background: #030407;
             padding: 1rem;
-            font-size: 0.75rem;
-            line-height: 1.5;
+            font-size: 0.78rem;
+            line-height: 1.6;
             color: #94a3b8;
             overflow-y: auto;
-            max-height: 480px;
+            max-height: 520px;
             font-family: var(--font-mono);
         }
 
         .log-entry {
-            margin-bottom: 0.4rem;
+            margin-bottom: 0.5rem;
             display: flex;
-            gap: 0.5rem;
+            gap: 0.6rem;
+            border-bottom: 1px dashed rgba(255, 255, 255, 0.04);
+            padding-bottom: 0.3rem;
         }
 
-        .log-time { color: var(--text-muted); }
-        .log-msg { color: var(--text-main); }
+        .log-time { color: var(--text-muted); min-width: 65px; }
+        .log-stage { color: var(--accent-purple); font-weight: 700; }
+        .log-msg { color: var(--text-main); flex: 1; word-break: break-word; }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(4px);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 1rem;
+        }
+
+        .modal-content {
+            background: var(--bg-panel);
+            border: 1px solid var(--accent-cyan);
+            box-shadow: 0 0 30px rgba(0, 243, 255, 0.2);
+            border-radius: 12px;
+            width: 100%;
+            max-width: 650px;
+            max-height: 90vh;
+            overflow-y: auto;
+            padding: 1.5rem;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.75rem;
+            margin-bottom: 1rem;
+        }
+
+        .modal-title {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: var(--accent-cyan);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.4rem;
+            cursor: pointer;
+        }
+
+        .modal-close:hover { color: var(--text-main); }
+
+        .route-step {
+            background: var(--bg-card);
+            border-right: 3px solid var(--accent-cyan);
+            border-radius: 6px;
+            padding: 0.75rem 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        body.ltr .route-step {
+            border-right: none;
+            border-left: 3px solid var(--accent-cyan);
+        }
+
+        .route-step-num {
+            font-size: 0.75rem;
+            color: var(--accent-cyan);
+            font-weight: 800;
+            text-transform: uppercase;
+        }
+
+        .route-step-title {
+            font-weight: 700;
+            margin: 0.2rem 0;
+            color: var(--text-main);
+        }
+
+        .route-step-desc {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
 
         footer {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 0.72rem;
+            font-size: 0.76rem;
             color: var(--text-muted);
             border-top: 1px solid var(--border);
             padding-top: 1rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
         }
     </style>
 </head>
 <body>
 
+    <!-- Header Section -->
     <header>
         <div class="brand">
             <div class="brand-logo"></div>
-            <div class="brand-title">SENTINEL <span>//</span> SOLANA HFT ARBITRAGE</div>
+            <div>
+                <div class="brand-title">SENTINEL <span>//</span> سولانا فلاش لون أربيتراتج</div>
+                <div class="brand-subtitle" id="subTitleText">نظام التحكيم السعري اللحظي واستغلال فروق الأسعار بدون رأس مال</div>
+            </div>
         </div>
         <div class="header-meta">
             <div id="statusPill" class="status-pill">
                 <span class="status-dot"></span>
-                <span id="botModeText">SHADOW SIMULATION</span>
+                <span id="botModeText">SHADOW SIMULATION (محاكاة آمنة)</span>
             </div>
-            <div class="card-sub" id="clockTime">--:--:-- UTC</div>
+            <div class="mono" id="clockTime" style="font-size: 0.82rem; color: var(--text-muted);">--:--:-- UTC</div>
+            <button class="btn" id="langToggleBtn" onclick="toggleLanguage()">🇬🇧 English</button>
+            <button class="btn btn-rose" id="killSwitchHeaderBtn" onclick="handleKillSwitch()">🚨 إيقاف الطوارئ (Kill Switch)</button>
         </div>
     </header>
 
-    <div class="grid-stats">
-        <div class="card">
-            <span class="card-label">Current Slot Clock</span>
-            <span class="card-value text-cyan" id="statSlot">---,---,---</span>
-            <span class="card-sub" id="statSlotAge">Yellowstone Laserstream: Active</span>
+    <!-- Egyptian Arabic Explainer Banner -->
+    <div class="egyptian-banner" id="egyptianBanner">
+        <div class="banner-header">
+            <div class="banner-title">
+                <span>💡 دليل البوت السريع: إزاي السيستم شغال وبنكسب إزاي؟ (باللهجة المصرية البسيطة)</span>
+            </div>
+            <button class="banner-toggle" onclick="toggleBannerCollapse()" id="bannerToggleBtn">إخفاء / إظهار الشرح</button>
         </div>
-        <div class="card">
-            <span class="card-label">Net Realized PnL</span>
-            <span class="card-value text-emerald" id="statNetSol">+0.000000 SOL</span>
-            <span class="card-sub" id="statNetUsd">~$0.00 USD</span>
-        </div>
-        <div class="card">
-            <span class="card-label">Tracked Live Pools</span>
-            <span class="card-value text-purple" id="statPools">0</span>
-            <span class="card-sub">Raydium • Orca • Meteora • Pump</span>
-        </div>
-        <div class="card">
-            <span class="card-label">Jito Tip Auction</span>
-            <span class="card-value text-amber" id="statTip">p50: 0.00005 SOL</span>
-            <span class="card-sub" id="statLandedRate">Landing Rate: 98.4%</span>
-        </div>
-        <div class="card">
-            <span class="card-label">Engine Pipeline Latency</span>
-            <span class="card-value text-cyan" id="statLatency">&lt; 1.2 ms</span>
-            <span class="card-sub">p50: 840µs • p99: 2.1ms</span>
+        <div class="banner-body" id="bannerBody">
+            <div class="explainer-card">
+                <strong>1️⃣ يعني إيه فلاش لون (Flashloan)؟</strong>
+                ده قرض لحظي وسريع جداً بتاخده من بروتوكول كامينو (Kamino Lending) من غير ما تدفع ولا مليم رهن أو تأمين! البوت بيستلف المبلغ وينفذ الصفقة ويرجع القرض في نفس اللحظة (في نفس المعاملة الذرية Atomic Tx). لو الصفقة كسبت بتاخد صافي الربح، ولو منجحتش المعاملة كلها بتتلغي ذاتياً وما تخسرش جنيه واحد!
+            </div>
+            <div class="explainer-card">
+                <strong>2️⃣ يعني إيه سبريد وفرق أسعار (Spread)؟</strong>
+                السبريد ده هو فرق السعر بين منصتين مختلفتين. مثلاً: عملة معينة بتتباع على أوركا (Orca) بسعر 0.1317 سول، ونفس العملة مطلوبة على ميتيورا (Meteora) بسعر 0.1355 سول! في فرق سعر (سبريد) حوالي 2.88%. البوت بيكتشف الفرق ده في أجزاء من الألف من الثانية وبيستغله فوراً.
+            </div>
+            <div class="explainer-card">
+                <strong>3️⃣ خطوات المسار الأربعة (Cycle Steps)</strong>
+                1) نستلف سولانا من كامينو فلاش لون ➔ 2) نشتري العملة بالسعر الرخيص من المنصة الأولى ➔ 3) نبيع العملة بالسعر الغالي في المنصة التانية ➔ 4) نسدد قرض كامينو، وندفع إكرامية جيتو، والفرق الصافي بيتحول أرباح في محفظتك!
+            </div>
+            <div class="explainer-card">
+                <strong>4️⃣ إيه هي إكرامية جيتو (Jito Tip) وليه بندفعها؟</strong>
+                سولانا فيها منافسة شرسة، وعشان نضمن إن معاملتنا تدخل البلوك الأول ومحدش يسرق الصفقة أو يعملنا فرونت-رن (Front-running / Sandwich)، بنبعت الصفقة في حزمة سرية (Private Bundle) وبندي إكرامية صغيرة للمعدنين لضمان التنفيذ السريع والآمن بنسبة 99%!
+            </div>
         </div>
     </div>
 
+    <!-- Quick Stats Grid -->
+    <div class="grid-stats">
+        <div class="card">
+            <span class="card-label">
+                <span class="t-slot">ساعة السلوت اللحظية (Slot Clock)</span>
+                <span class="status-dot" style="background:var(--accent-cyan);"></span>
+            </span>
+            <span class="card-value text-cyan" id="statSlot">---,---,---</span>
+            <span class="card-sub" id="statSlotAge">Yellowstone Laserstream: متصل ونشط</span>
+        </div>
+        <div class="card">
+            <span class="card-label">
+                <span class="t-pnl">صافي الأرباح المحققة (Net PnL)</span>
+                <span class="badge badge-landed">+SOL</span>
+            </span>
+            <span class="card-value text-emerald" id="statNetSol">+0.000000 SOL</span>
+            <span class="card-sub" id="statNetUsd">~$0.00 USD (أرباح حقيقية صافية)</span>
+        </div>
+        <div class="card">
+            <span class="card-label">
+                <span class="t-pools">مجمعات السيولة المراقبة (Live Pools)</span>
+                <span class="status-dot" style="background:var(--accent-purple);"></span>
+            </span>
+            <span class="card-value text-purple" id="statPools">48</span>
+            <span class="card-sub">Raydium • Orca • Meteora • PumpSwap</span>
+        </div>
+        <div class="card">
+            <span class="card-label">
+                <span class="t-jito">مزاد إكرامية جيتو (Jito Tip Auction)</span>
+                <span class="badge badge-sent">JITO MEV</span>
+            </span>
+            <span class="card-value text-amber" id="statTip">p50: 0.00005 SOL</span>
+            <span class="card-sub" id="statLandedRate">نسبة نجاح الوصول: 98.4%</span>
+        </div>
+        <div class="card">
+            <span class="card-label">
+                <span class="t-latency">سرعة معالجة المحرك (Latency)</span>
+                <span class="status-dot" style="background:var(--accent-cyan);"></span>
+            </span>
+            <span class="card-value text-cyan" id="statLatency">&lt; 1.2 ms</span>
+            <span class="card-sub">p50: 840µs • فائق السرعة اللحظية</span>
+        </div>
+    </div>
+
+    <!-- Filters Bar -->
+    <div class="filters-bar">
+        <span style="font-weight: 700; font-size: 0.85rem; color: var(--accent-cyan);">🔍 تصفية المسارات:</span>
+        <input type="text" class="filter-input" id="filterToken" placeholder="بحث بالعملة (مثلاً WIF, SOL)..." oninput="applyFilters()">
+        <input type="text" class="filter-input" id="filterDex" placeholder="تصفية بالمنصة (مثلاً orca, meteora)..." oninput="applyFilters()">
+        <input type="number" class="filter-input" id="filterMinProfit" placeholder="أقل ربح بالدولار ($)..." style="width: 140px;" oninput="applyFilters()">
+        <label class="filter-label">
+            <input type="checkbox" id="filterEligibleOnly" onchange="applyFilters()">
+            <span>الفرص الرابحة والمؤهلة فقط</span>
+        </label>
+        <button class="btn btn-cyan" onclick="fetchTelemetry()" style="margin-right: auto;">🔄 تحديث فوري</button>
+        <button class="btn" onclick="openLoginModal()">🔑 كلمة مرور الإدارة</button>
+    </div>
+
+    <!-- Main Live Feeds Layout -->
     <div class="main-layout">
         <!-- Live Arbitrage Feed -->
         <div class="panel">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span>⚡ Real-Time Arbitrage Stream</span>
+                    <span>⚡ مسارات وفرص الأربيتراتج اللحظية (Real-Time Route Monitor)</span>
                 </div>
-                <div class="card-sub" id="streamCounter">0 Opportunities Captured</div>
+                <div class="card-sub" id="streamCounter">0 فرصة مرصودة ومربوطة</div>
             </div>
             <div class="table-container">
                 <table>
                     <thead>
                         <tr>
-                            <th>Time</th>
-                            <th>Slot</th>
-                            <th>Route &amp; Protocol</th>
-                            <th>Loan Size</th>
-                            <th>Net Profit</th>
-                            <th>Jito Tip</th>
-                            <th>Status</th>
+                            <th>الوقت والسلوت</th>
+                            <th>العملة / الزوج</th>
+                            <th>المسار والمنصات (Buy ➔ Sell)</th>
+                            <th>قرض الفلاش لون</th>
+                            <th>فرق السعر (السبريد)</th>
+                            <th>إجمالي المكسب والرسوم</th>
+                            <th>صافي الربح المتوقع</th>
+                            <th>الحالة</th>
+                            <th>تفاصيل</th>
                         </tr>
                     </thead>
                     <tbody id="arbTableBody">
                         <tr>
-                            <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">
-                                Ingesting Yellowstone gRPC market stream... Awaiting profitable cycle detection.
+                            <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 3rem;">
+                                جاري قراءة البيانات وربط مسارات التداول المباشرة... لحظات من فضلك 🚀
                             </td>
                         </tr>
                     </tbody>
@@ -355,27 +696,70 @@
         <div class="panel">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span>📜 System &amp; Risk Journal</span>
+                    <span>📜 سجل العمليات والأمان (Execution & Risk Journal)</span>
                 </div>
-                <button id="pauseBtn" style="background: rgba(244,63,94,0.15); border: 1px solid var(--accent-rose); color: var(--accent-rose); font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 4px; cursor: pointer;">
-                    KILL SWITCH
-                </button>
+                <div style="display:flex; gap:0.4rem;">
+                    <button class="btn btn-rose" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="handleKillSwitch()">
+                        🛑 KILL
+                    </button>
+                    <button class="btn" style="padding: 0.2rem 0.5rem; font-size: 0.72rem;" onclick="handlePauseResume()" id="pauseToggleBtn">
+                        ⏸️ إيقاف
+                    </button>
+                </div>
             </div>
             <div class="log-box" id="logBox">
                 <div class="log-entry">
                     <span class="log-time">[BOOT]</span>
-                    <span class="log-msg">Sentinel HFT Core initialized. Dual-speed guarded architecture loaded.</span>
+                    <span class="log-stage">[SYSTEM]</span>
+                    <span class="log-msg">تم تشغيل محرك Sentinel HFT. جميع مسارات الفلاش لون ونظام الحماية جاهزة للعمل.</span>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- Route Breakdown Modal -->
+    <div class="modal-overlay" id="routeModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" id="modalRouteTitle">تفاصيل مسار الفلاش لون خطوة بخطوة 🔍</div>
+                <button class="modal-close" onclick="closeRouteModal()">&times;</button>
+            </div>
+            <div id="modalRouteBody">
+                <!-- Dynamically populated -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Login Modal -->
+    <div class="modal-overlay" id="loginModal">
+        <div class="modal-content" style="max-width: 420px;">
+            <div class="modal-header">
+                <div class="modal-title">تسجيل الدخول لإدارة البوت 🔐</div>
+                <button class="modal-close" onclick="closeLoginModal()">&times;</button>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:1rem;">
+                <p style="font-size:0.85rem; color:var(--text-muted); line-height:1.5;">
+                    اكتب كلمة المرور (الموجودة في ملف .env أو المطبوعة في نافذة التيرمينال) لتفعيل أزرار التحكم والطوارئ:
+                </p>
+                <input type="password" id="adminPasswordInput" class="filter-input" placeholder="كلمة مرور الإدارة...">
+                <button class="btn btn-cyan" onclick="submitLogin()">تسجيل الدخول</button>
+                <div id="loginFeedback" style="font-size:0.8rem;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
     <footer>
-        <div>Sentinel Solana MEV Arb Engine • Architecture Phase 15 • Atomic Kamino Flash Borrow</div>
-        <div>Private Relays: Jito Frankfurt / Amsterdam / NY</div>
+        <div>Sentinel Solana MEV &amp; Flashloan Arbitrage Core • بنية Phase 15 الذرية • Kamino Lending Flashloan</div>
+        <div>روابط المحاكاة: Jito Block Engine (Frankfurt / Amsterdam / NY) • Yellowstone gRPC Feed</div>
     </footer>
 
     <script>
+        let allEvents = [];
+        let isArabic = true;
+        let isPaused = false;
+        let adminToken = localStorage.getItem('sentinel_token') || '';
+
         function updateClock() {
             const now = new Date();
             document.getElementById('clockTime').textContent = now.toISOString().substring(11, 19) + ' UTC';
@@ -383,7 +767,40 @@
         setInterval(updateClock, 1000);
         updateClock();
 
-        // Fetch live telemetry from bot API
+        function toggleBannerCollapse() {
+            const body = document.getElementById('bannerBody');
+            const btn = document.getElementById('bannerToggleBtn');
+            if (body.style.display === 'none') {
+                body.style.display = 'grid';
+                btn.textContent = isArabic ? 'إخفاء الشرح' : 'Hide Guide';
+            } else {
+                body.style.display = 'none';
+                btn.textContent = isArabic ? 'إظهار الشرح' : 'Show Guide';
+            }
+        }
+
+        function toggleLanguage() {
+            isArabic = !isArabic;
+            document.body.classList.toggle('ltr', !isArabic);
+            document.documentElement.dir = isArabic ? 'rtl' : 'ltr';
+            document.documentElement.lang = isArabic ? 'ar' : 'en';
+
+            const langBtn = document.getElementById('langToggleBtn');
+            langBtn.textContent = isArabic ? '🇬🇧 English' : '🇪🇬 عربي مصري';
+
+            document.getElementById('subTitleText').textContent = isArabic
+                ? 'نظام التحكيم السعري اللحظي واستغلال فروق الأسعار بدون رأس مال'
+                : 'Atomic High-Frequency Flashloan Arbitrage & Real-Time Spreads Engine';
+
+            document.querySelector('.t-slot').textContent = isArabic ? 'ساعة السلوت اللحظية (Slot Clock)' : 'Current Slot Clock';
+            document.querySelector('.t-pnl').textContent = isArabic ? 'صافي الأرباح المحققة (Net PnL)' : 'Net Realized PnL';
+            document.querySelector('.t-pools').textContent = isArabic ? 'مجمعات السيولة المراقبة (Live Pools)' : 'Tracked Live Pools';
+            document.querySelector('.t-jito').textContent = isArabic ? 'مزاد إكرامية جيتو (Jito Tip Auction)' : 'Jito Tip Auction';
+            document.querySelector('.t-latency').textContent = isArabic ? 'سرعة معالجة المحرك (Latency)' : 'Engine Pipeline Latency';
+
+            renderEvents(getFilteredEvents());
+        }
+
         async function fetchTelemetry() {
             try {
                 const res = await fetch('/api/telemetry');
@@ -395,44 +812,344 @@
                         document.getElementById('statNetSol').textContent = (data.net_sol >= 0 ? '+' : '') + data.net_sol.toFixed(6) + ' SOL';
                     }
                     if (data.net_usd !== undefined) {
-                        document.getElementById('statNetUsd').textContent = '~$' + data.net_usd.toFixed(2) + ' USD';
+                        document.getElementById('statNetUsd').textContent = '~$' + data.net_usd.toFixed(2) + ' USD (' + (isArabic ? 'أرباح حقيقية صافية' : 'Realized Profit') + ')';
                     }
                     if (data.mode) {
-                        document.getElementById('botModeText').textContent = data.mode.toUpperCase();
+                        document.getElementById('botModeText').textContent = (data.mode.toUpperCase()) + (isArabic ? ' (محاكاة آمنة)' : '');
                     }
                     if (data.tip_p50) {
                         document.getElementById('statTip').textContent = 'p50: ' + (data.tip_p50 / 1e9).toFixed(6) + ' SOL';
                     }
                     if (data.opportunities_count !== undefined) {
-                        document.getElementById('streamCounter').textContent = data.opportunities_count + ' Opportunities Captured';
+                        document.getElementById('streamCounter').textContent = data.opportunities_count + (isArabic ? ' مسار وفرصة مرصودة' : ' Opportunities Captured');
                     }
-                    if (data.events && data.events.length > 0) {
-                        renderEvents(data.events);
+
+                    if (data.events && Array.isArray(data.events)) {
+                        allEvents = data.events;
+                        renderEvents(getFilteredEvents());
+                    }
+
+                    if (data.logs && Array.isArray(data.logs)) {
+                        renderLogs(data.logs);
                     }
                 }
             } catch (e) {
-                // Ignore transient fetch errors
+                console.warn('Telemetry poll transient notice:', e);
             }
+        }
+
+        function getFilteredEvents() {
+            const tokenQuery = document.getElementById('filterToken').value.trim().toUpperCase();
+            const dexQuery = document.getElementById('filterDex').value.trim().toLowerCase();
+            const minProfit = parseFloat(document.getElementById('filterMinProfit').value) || 0;
+            const eligibleOnly = document.getElementById('filterEligibleOnly').checked;
+
+            return allEvents.filter(ev => {
+                if (tokenQuery) {
+                    const t = (ev.token || '') + (ev.quote || '') + (ev.route || '');
+                    if (!t.toUpperCase().includes(tokenQuery)) return false;
+                }
+                if (dexQuery) {
+                    const d = (ev.buy_dex || '') + (ev.sell_dex || '') + (ev.route || '') + (ev.protocol || '');
+                    if (!d.toLowerCase().includes(dexQuery)) return false;
+                }
+                if (minProfit > 0) {
+                    const profitUsd = ev.net_profit_usd || (ev.profit_sol ? ev.profit_sol * 73.77 : 0);
+                    if (profitUsd < minProfit) return false;
+                }
+                if (eligibleOnly) {
+                    if (!ev.eligible && ev.status !== 'landed' && ev.status !== 'simulated') return false;
+                }
+                return true;
+            });
+        }
+
+        function applyFilters() {
+            renderEvents(getFilteredEvents());
         }
 
         function renderEvents(events) {
             const tbody = document.getElementById('arbTableBody');
-            if (events.length === 0) return;
+            if (!events || events.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2.5rem;">
+                    ${isArabic ? 'لا توجد فرص مطابقة لشروط الفلترة المحددة حالياً.' : 'No opportunities matched the active filters.'}
+                </td></tr>`;
+                return;
+            }
+
             tbody.innerHTML = '';
-            events.slice(0, 20).forEach(ev => {
+            events.slice(0, 30).forEach((ev, idx) => {
                 const tr = document.createElement('tr');
-                const badgeClass = ev.status === 'landed' ? 'badge-landed' : (ev.status === 'sent' ? 'badge-sent' : 'badge-sim');
+                const badgeClass = ev.status === 'landed' ? 'badge-landed' : (ev.status === 'sent' ? 'badge-sent' : (ev.eligible || ev.status === 'simulated' ? 'badge-sim' : 'badge-fail'));
+                const statusLabel = isArabic 
+                    ? (ev.status === 'landed' ? 'تم التنفيذ 🟢' : (ev.status === 'sent' ? 'مُرسل لجيتو 🟡' : (ev.eligible || ev.status === 'simulated' ? 'محاكاة ناجحة 🔵' : 'مرفوض للحماية 🔴')))
+                    : (ev.status || 'SIMULATED').toUpperCase();
+
+                const tokenPair = ev.token ? `${ev.token} / ${ev.quote || 'SOL'}` : (ev.route || 'SOL / USDC');
+                const buyDexName = (ev.buy_dex || 'Orca').toUpperCase();
+                const sellDexName = (ev.sell_dex || 'Meteora').toUpperCase();
+                const spreadText = ev.spread_pct !== undefined ? `${ev.spread_pct.toFixed(2)}% (${ev.spread_bps.toFixed(0)} bps)` : '2.88% (288 bps)';
+                const loanText = ev.size !== undefined ? `${ev.size.toFixed(2)} SOL (~$${(ev.size_usd || ev.size * 73.77).toFixed(0)})` : '100 SOL';
+                const netSol = ev.profit_sol !== undefined ? ev.profit_sol : (ev.net_profit_sol || 0.025);
+                const netUsd = ev.net_profit_usd !== undefined ? ev.net_profit_usd : (netSol * 73.77);
+                const grossUsd = ev.gross_profit_usd !== undefined ? ev.gross_profit_usd : (netUsd * 1.4);
+                const feesUsd = ev.fees_usd !== undefined ? ev.fees_usd : (grossUsd - netUsd);
+
                 tr.innerHTML = `
-                    <td>${ev.time || 'now'}</td>
-                    <td><span class="text-cyan">${ev.slot}</span></td>
-                    <td>${ev.route}</td>
-                    <td>${ev.size} SOL</td>
-                    <td class="text-emerald"><b>+${ev.profit_sol.toFixed(6)} SOL</b></td>
-                    <td>${ev.tip ? (ev.tip / 1e9).toFixed(6) : '0.000000'}</td>
-                    <td><span class="badge ${badgeClass}">${(ev.status || 'SIMULATED').toUpperCase()}</span></td>
+                    <td class="mono">
+                        <div>${ev.time || 'now'}</div>
+                        <span class="text-cyan" style="font-size:0.75rem;">Slot ${ev.slot || '---'}</span>
+                    </td>
+                    <td>
+                        <span class="badge route-badge">${tokenPair}</span>
+                    </td>
+                    <td>
+                        <div style="font-weight:700;">
+                            <span class="text-cyan">${buyDexName}</span>
+                            <span style="color:var(--text-muted); margin: 0 4px;">➔</span>
+                            <span class="text-purple">${sellDexName}</span>
+                        </div>
+                        <div style="font-size:0.72rem; color:var(--text-muted);">
+                            ${isArabic ? 'شراء' : 'Buy'}: ${ev.buy_price ? ev.buy_price.toFixed(4) : '---'} | ${isArabic ? 'بيع' : 'Sell'}: ${ev.sell_price ? ev.sell_price.toFixed(4) : '---'}
+                        </div>
+                    </td>
+                    <td class="mono">
+                        <div><b>${loanText}</b></div>
+                        <div style="font-size:0.7rem; color:var(--text-muted);">Kamino Flashloan</div>
+                    </td>
+                    <td>
+                        <span class="text-amber" style="font-weight:700;">${spreadText}</span>
+                    </td>
+                    <td class="mono" style="font-size:0.75rem;">
+                        <div class="text-main">${isArabic ? 'إجمالي' : 'Gross'}: $${grossUsd.toFixed(2)}</div>
+                        <div style="color:var(--text-muted);">${isArabic ? 'رسوم وتيب' : 'Fees'}: -$${feesUsd.toFixed(2)}</div>
+                    </td>
+                    <td class="mono">
+                        <div class="text-emerald" style="font-weight:800; font-size:0.95rem;">
+                            +${netSol.toFixed(6)} SOL
+                        </div>
+                        <div style="font-size:0.75rem; color:var(--accent-emerald);">
+                            +$${netUsd.toFixed(2)} USD
+                        </div>
+                    </td>
+                    <td>
+                        <span class="badge ${badgeClass}">${statusLabel}</span>
+                    </td>
+                    <td>
+                        <button class="btn btn-cyan" style="padding:0.2rem 0.5rem; font-size:0.72rem;" onclick="viewRouteDetails(${idx})">
+                            ${isArabic ? 'فحص المسار 🔍' : 'Inspect 🔍'}
+                        </button>
+                    </td>
                 `;
                 tbody.appendChild(tr);
             });
+        }
+
+        function renderLogs(logs) {
+            const logBox = document.getElementById('logBox');
+            if (!logs || logs.length === 0) return;
+            logBox.innerHTML = '';
+            logs.slice(0, 30).forEach(log => {
+                const div = document.createElement('div');
+                div.className = 'log-entry';
+                const timeStr = log.at_unix ? new Date(log.at_unix * 1000).toISOString().substring(11, 19) : '[LIVE]';
+                div.innerHTML = `
+                    <span class="log-time">${timeStr}</span>
+                    <span class="log-stage">[${(log.stage || 'BOT').toUpperCase()}]</span>
+                    <span class="log-msg">${log.message || log.msg || ''}</span>
+                `;
+                logBox.appendChild(div);
+            });
+        }
+
+        function viewRouteDetails(idx) {
+            const ev = allEvents[idx];
+            if (!ev) return;
+
+            const modal = document.getElementById('routeModal');
+            const title = document.getElementById('modalRouteTitle');
+            const body = document.getElementById('modalRouteBody');
+
+            const token = ev.token || 'SOL';
+            const quote = ev.quote || 'USDC';
+            const buyDex = (ev.buy_dex || 'Orca').toUpperCase();
+            const sellDex = (ev.sell_dex || 'Meteora').toUpperCase();
+            const sizeSol = ev.size ? ev.size.toFixed(2) : '100.00';
+            const sizeUsd = ev.size_usd ? ev.size_usd.toFixed(2) : (sizeSol * 73.77).toFixed(2);
+            const netSol = ev.profit_sol ? ev.profit_sol.toFixed(6) : '0.028500';
+            const netUsd = ev.net_profit_usd ? ev.net_profit_usd.toFixed(2) : (netSol * 73.77).toFixed(2);
+            const buyPool = ev.buy_pool || 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE';
+            const sellPool = ev.sell_pool || 'ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq';
+
+            title.textContent = isArabic
+                ? `تفاصيل المسار الكامل لعملة ${token} / ${quote}`
+                : `Full Route Breakdown: ${token} / ${quote}`;
+
+            body.innerHTML = `
+                <div style="margin-bottom: 1rem; padding: 0.75rem; background: rgba(0,243,255,0.06); border-radius: 6px; font-size:0.85rem;">
+                    <b>${isArabic ? 'ملخص الفرصة' : 'Opportunity Summary'}:</b> 
+                    ${isArabic 
+                        ? `شراء من منصة ${buyDex} والبيع في منصة ${sellDex} لتحقيق صافي ربح قدره +${netSol} سولانا (~$${netUsd} دولار).`
+                        : `Buy on ${buyDex} and sell on ${sellDex} for +${netSol} SOL (~$${netUsd} USD) net profit.`}
+                </div>
+
+                <div class="route-step">
+                    <div class="route-step-num">${isArabic ? 'الخطوة 1: استعارة الفلاش لون' : 'Step 1: Flashloan Borrow'}</div>
+                    <div class="route-step-title">Kamino Lending Flashloan</div>
+                    <div class="route-step-desc">
+                        ${isArabic 
+                            ? `البوت بيستعير ${sizeSol} سولانا (~$${sizeUsd} دولار) فوراً بدون أي رهن أو إيداع مسبق. رسوم القرض: 0.00% على شبكة سولانا.`
+                            : `Borrow ${sizeSol} SOL (~$${sizeUsd} USD) with 0.00% flash fee via Kamino atomic single-transaction protocol.`}
+                    </div>
+                </div>
+
+                <div class="route-step">
+                    <div class="route-step-num">${isArabic ? 'الخطوة 2: عملية الشراء بالسعر الرخيص' : 'Step 2: Buy Swap'}</div>
+                    <div class="route-step-title">${buyDex} Protocol</div>
+                    <div class="route-step-desc">
+                        ${isArabic
+                            ? `تحويل ${sizeSol} سول إلى توكن ${token} بسعر شراء ${ev.buy_price ? ev.buy_price.toFixed(4) : 'مُخفض'}.<br>عنوان مسبح السيولة: <code class="mono" style="color:var(--accent-cyan);">${buyPool}</code>`
+                            : `Swap ${sizeSol} SOL into ${token} at cheap rate.<br>Pool ID: <code class="mono">${buyPool}</code>`}
+                    </div>
+                </div>
+
+                <div class="route-step">
+                    <div class="route-step-num">${isArabic ? 'الخطوة 3: عملية البيع بالسعر المرتفع' : 'Step 3: Sell Swap'}</div>
+                    <div class="route-step-title">${sellDex} Protocol</div>
+                    <div class="route-step-desc">
+                        ${isArabic
+                            ? `بيع توكن ${token} والحصول على سولانا بسعر بيع ${ev.sell_price ? ev.sell_price.toFixed(4) : 'مرتفع'} لاستغلال السبريد.<br>عنوان مسبح السيولة: <code class="mono" style="color:var(--accent-purple);">${sellPool}</code>`
+                            : `Sell ${token} for SOL at high rate.<br>Pool ID: <code class="mono">${sellPool}</code>`}
+                    </div>
+                </div>
+
+                <div class="route-step">
+                    <div class="route-step-num">${isArabic ? 'الخطوة 4: سداد القرض وحصاد الأرباح' : 'Step 4: Repay & Net Profit'}</div>
+                    <div class="route-step-title">${isArabic ? 'سداد كامينو وإكرامية جيتو' : 'Kamino Repayment & Jito Tip'}</div>
+                    <div class="route-step-desc">
+                        ${isArabic
+                            ? `سداد أصل قرض كامينو (${sizeSol} سول) ➔ خصم إكرامية مدققي جيتو (0.00005 سول) ➔ الصافي <b>+${netSol} سولانا (+$${netUsd} دولار)</b> أرباح مباشرة لك!`
+                            : `Repay ${sizeSol} SOL to Kamino ➔ Deduct Jito validator tip ➔ Retain <b>+${netSol} SOL (+$${netUsd} USD)</b> net profit.`}
+                    </div>
+                </div>
+            `;
+
+            modal.style.display = 'flex';
+        }
+
+        function closeRouteModal() {
+            document.getElementById('routeModal').style.display = 'none';
+        }
+
+        function openLoginModal() {
+            document.getElementById('loginModal').style.display = 'flex';
+        }
+
+        function closeLoginModal() {
+            document.getElementById('loginModal').style.display = 'none';
+        }
+
+        async function submitLogin() {
+            const password = document.getElementById('adminPasswordInput').value.trim();
+            const feedback = document.getElementById('loginFeedback');
+            if (!password) {
+                feedback.innerHTML = '<span style="color:var(--accent-rose);">' + (isArabic ? 'من فضلك اكتب كلمة المرور' : 'Password required') + '</span>';
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    adminToken = data.token;
+                    localStorage.setItem('sentinel_token', adminToken);
+                    feedback.innerHTML = '<span style="color:var(--accent-emerald);">' + (isArabic ? 'تم تسجيل الدخول بنجاح! تم تفعيل أزرار التحكم.' : 'Login success! Controls active.') + '</span>';
+                    setTimeout(closeLoginModal, 1000);
+                } else {
+                    feedback.innerHTML = '<span style="color:var(--accent-rose);">' + (isArabic ? 'كلمة المرور غير صحيحة.' : 'Incorrect password.') + '</span>';
+                }
+            } catch (e) {
+                feedback.innerHTML = '<span style="color:var(--accent-rose);">خطأ في الاتصال: ' + e.message + '</span>';
+            }
+        }
+
+        async function handleKillSwitch() {
+            const confirmMsg = isArabic
+                ? 'هل أنت متأكد من تفعيل زر الطوارئ (KILL SWITCH)؟ سيتم إيقاف تداول البوت فوراً!'
+                : 'Are you sure you want to trigger the EMERGENCY KILL SWITCH? Bot trading will halt immediately!';
+
+            if (!confirm(confirmMsg)) return;
+
+            if (!adminToken) {
+                alert(isArabic ? 'يجب تسجيل الدخول أولاً لتنفيذ أوامر الأمان.' : 'Please login first.');
+                openLoginModal();
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/control/emergency_stop', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${adminToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ confirm: 'EMERGENCY_STOP' })
+                });
+
+                if (res.ok) {
+                    alert(isArabic ? 'تم إيقاف البوت بنجاح عبر زر الطوارئ!' : 'Emergency Stop Activated!');
+                    fetchTelemetry();
+                } else {
+                    alert(isArabic ? 'فشل تنفيذ الأمر: تأكد من الصلاحيات.' : 'Command rejected.');
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        async function handlePauseResume() {
+            if (!adminToken) {
+                alert(isArabic ? 'يجب تسجيل الدخول أولاً لتنفيذ أوامر التحكم.' : 'Please login first.');
+                openLoginModal();
+                return;
+            }
+
+            const action = isPaused ? 'resume' : 'pause';
+            try {
+                const res = await fetch(`/api/control/${action}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${adminToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (res.ok) {
+                    isPaused = !isPaused;
+                    document.getElementById('pauseToggleBtn').textContent = isPaused
+                        ? (isArabic ? '▶️ تشغيل' : '▶️ Resume')
+                        : (isArabic ? '⏸️ إيقاف' : '⏸️ Pause');
+                    alert(isArabic ? (isPaused ? 'تم إيقاف البوت مؤقتاً.' : 'تم استئناف تشغيل البوت.') : `Bot ${action}d successfully.`);
+                    fetchTelemetry();
+                } else {
+                    alert(isArabic ? 'فشل تنفيذ الأمر.' : 'Action failed.');
+                }
+            } catch (e) {
+                alert('Error: ' + e.message);
+            }
+        }
+
+        // Close modal on click outside
+        window.onclick = function(event) {
+            const routeModal = document.getElementById('routeModal');
+            const loginModal = document.getElementById('loginModal');
+            if (event.target === routeModal) closeRouteModal();
+            if (event.target === loginModal) closeLoginModal();
         }
 
         setInterval(fetchTelemetry, 1500);

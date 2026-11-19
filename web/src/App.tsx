@@ -13,6 +13,7 @@ import RouteMonitor from "./components/RouteMonitor";
 import RiskControl from "./components/RiskControl";
 import Logs from "./components/Logs";
 import TelegramPanel from "./components/TelegramPanel";
+import EgyptianGuide from "./components/EgyptianGuide";
 import type { StatusSnapshot } from "./api";
 
 const SECTIONS: { id: string; label: string; el: (status: StatusSnapshot | null, reload: () => void) => ReactNode }[] = [
@@ -160,7 +161,10 @@ export default function App() {
           </button>
         ))}
       </nav>
-      <main>{active.el(status, reload)}</main>
+      <main>
+        <EgyptianGuide />
+        {active.el(status, reload)}
+      </main>
     </div>
   );
 }
