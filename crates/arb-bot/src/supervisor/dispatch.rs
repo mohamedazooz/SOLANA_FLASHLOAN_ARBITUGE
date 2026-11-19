@@ -140,6 +140,46 @@ impl Supervisor {
             .unwrap_or_else(|| "Unknown (Non-Jito / Stale Schedule)".to_string());
 
         match self.mode() {
+            BotMode::Observe => {
+                debug!("Observe mode active: skipping dispatch for {}", route_label);
+                return;
+            }
+            BotMode::Analyze => {
+                debug!("Analyze mode active: skipping dispatch for {}", route_label);
+                return;
+            }
+            BotMode::PaperTrade => {
+                info!(
+                    "Paper trade: simulated execution recorded for route {}",
+                    route_label
+                );
+                arb_metrics::add_simulated_net_profit(profit_sol);
+                let _ = self.store.record_outcome(
+                    record.id,
+                    "paper_trade",
+                    Some(SignedLamports::new(signed_lamports(
+                        real_net_profit.as_u64(),
+                    ))),
+                    arb_store::NetProvenance::Estimated,
+                );
+                self.telegram
+                    .alert_opportunity_with_telemetry(
+                        &format!("PaperTrade-{}", route_label),
+                        gross_rev_sol,
+                        profit_sol,
+                        profit_sol * live_sol_price,
+                        current_slot.0,
+                        blockhash_b58,
+                        &leader_str,
+                        cu_limit,
+                        cu_price,
+                        opp.price_impact_bps.0,
+                        &active_bins,
+                        pools_count,
+                        loan_size_sol,
+                    )
+                    .await;
+            }
             BotMode::Canary => {
                 info!(
                     "canary: simulated valid execution of {} bytes (not broadcast to Jito)",
@@ -179,6 +219,51 @@ impl Supervisor {
                     .await;
             }
             BotMode::Simulate => {
+                let b64 = BASE64_STANDARD.encode(tx_bytes.as_slice());
+                let max_version = arb_tx::rpc_max_supported_version_from_wire(tx_bytes)
+                    .ok()
+                    .flatten();
+                match self.tx_rpc.simulate_transaction(&b64, max_version).await {
+                    Ok(sim_val) => {
+                        let sim_err = sim_val.get("err").and_then(|ev| {
+                            if ev.is_null() {
+                                None
+                            } else {
+                                Some(ev.to_string())
+                            }
+                        });
+                        let units_consumed = sim_val
+                            .get("unitsConsumed")
+                            .and_then(|u| u.as_u64())
+                            .unwrap_or(0);
+                        if let Some(err) = sim_err {
+                            tracing::warn!(
+                                target: "arb_events",
+                                "SIMULATION_FAILED: error={}",
+                                err
+                            );
+                            warn!("Simulation failed: {err}");
+                        } else {
+                            tracing::info!(
+                                target: "arb_events",
+                                "SIMULATION_PASSED: cu_consumed={} fee_payer_delta=0",
+                                units_consumed
+                            );
+                            info!(
+                                "✅ Simulation passed via HTTP Transaction RPC adapter (CU={})",
+                                units_consumed
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "arb_events",
+                            "SIMULATION_FAILED: error={}",
+                            e
+                        );
+                        warn!("Simulation RPC call failed: {e}");
+                    }
+                }
                 arb_metrics::add_simulated_net_profit(profit_sol);
                 let _ = self.store.record_outcome(
                     record.id,
@@ -209,6 +294,21 @@ impl Supervisor {
                 }
             }
             BotMode::Live => {
+                if !crate::live_execution_enabled() {
+                    warn!("LIVE mode dispatch rejected: ARB_LIVE=1 or LIVE_TRADING=1 is not armed");
+                    return;
+                }
+                if !self.tx_rpc.is_configured() {
+                    warn!(
+                        "LIVE mode dispatch rejected: HTTP Transaction RPC adapter has no configured endpoint (cannot execute)"
+                    );
+                    tracing::warn!(
+                        target: "arb_events",
+                        "OPPORTUNITY_REJECTED: route={} stage=LiveExecution reason=Missing HTTP Transaction RPC endpoint",
+                        route_label
+                    );
+                    return;
+                }
                 // Safety Floor Check: Enforce minimum reserve only if configured > 0.
                 // When MIN_SOL_RESERVE_LAMPORTS=0 (fast-path flash loan default), skip the blocking RPC getBalance check completely.
                 let min_reserve_lamports = std::env::var("MIN_SOL_RESERVE_LAMPORTS")
@@ -216,7 +316,7 @@ impl Supervisor {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(self.config.wallet.min_sol_balance_lamports);
                 if min_reserve_lamports > 0
-                    && let Ok(current_balance) = self.rpc_pool.get_balance(&payer).await
+                    && let Ok(current_balance) = self.tx_rpc.get_balance(&payer).await
                     && current_balance < min_reserve_lamports
                 {
                     warn!(

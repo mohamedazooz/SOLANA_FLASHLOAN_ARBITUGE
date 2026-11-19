@@ -23,20 +23,10 @@ use crate::{KeypairSigner, TxBuilder, validate_jito_bundle};
 pub const DEFAULT_PRIORITY_FEE_MICROLAMPORTS: u64 = 1_000;
 pub const PUMP_FUN_RAYDIUM_CU_LIMIT: u32 = 260_000;
 
-pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
-    "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
-    "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
-    "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
-    "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
-    "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
-    "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
-    "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
-    "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
-];
+pub use arb_constants::JITO_TIP_ACCOUNTS;
 
 pub fn get_jito_tip_pubkey(index: usize) -> Pubkey {
-    let key_str = JITO_TIP_ACCOUNTS[index % JITO_TIP_ACCOUNTS.len()];
-    Pubkey::from_str(key_str).unwrap_or_default()
+    arb_constants::jito_tip_account_at(index)
 }
 
 #[derive(Clone, Debug)]

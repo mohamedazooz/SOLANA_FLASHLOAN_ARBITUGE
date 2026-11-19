@@ -41,6 +41,14 @@ impl Supervisor {
             t_ingest_to_quote_us,
             pools,
         } = pass;
+
+        if self.mode() == BotMode::Observe {
+            debug!(
+                "Supervisor in OBSERVE mode: monitoring pools only; skipping opportunity processing"
+            );
+            return;
+        }
+
         let quote_ingest_time =
             std::time::Instant::now() - Duration::from_micros(t_ingest_to_quote_us);
         for opp in opportunities {
@@ -52,6 +60,11 @@ impl Supervisor {
                 {
                     Some(liq) => liq,
                     None => {
+                        tracing::info!(
+                            target: "arb_events",
+                            "OPPORTUNITY_REJECTED: route=unknown stage=KaminoLiquidity reason=liquidity unverifiable at slot {}",
+                            current_slot.0
+                        );
                         debug!(
                             "Opportunity rejected: Kamino supply-vault liquidity unverifiable at slot {}",
                             current_slot.0
@@ -60,6 +73,12 @@ impl Supervisor {
                     }
                 };
                 if opp.size_in.as_u64() > available_vault_liquidity {
+                    tracing::info!(
+                        target: "arb_events",
+                        "OPPORTUNITY_REJECTED: route=unknown stage=KaminoLiquidity reason=size_in {} exceeds available vault liquidity {}",
+                        opp.size_in.as_u64(),
+                        available_vault_liquidity
+                    );
                     debug!(
                         "Opportunity rejected: size_in ({}) exceeds available vault liquidity ({})",
                         opp.size_in.as_u64(),
@@ -73,6 +92,10 @@ impl Supervisor {
             // accounts must be live, correctly owned and slot-coherent in the
             // snapshot store before the candidate spends any further compute.
             if let Err(reason) = self.validate_route_account_dependencies(opp, current_slot) {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route=unknown stage=AccountDependencies reason={reason}"
+                );
                 debug!(
                     first_pool = ?opp.hops.first().map(|h| h.pool_id),
                     hops = opp.hops.len(),
@@ -169,6 +192,11 @@ impl Supervisor {
                 .and_then(|v| v.checked_sub(BASE_FEE_LAMPORTS))
                 .and_then(|v| v.checked_sub(priority_fee_lamports));
             let Some(net_before_tip) = net_before_tip else {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route={} stage=CostsExceedGross reason=Costs exceed gross",
+                    route_label
+                );
                 debug!("Opportunity rejected: costs exceed gross profit (fail-closed)");
                 continue;
             };
@@ -183,6 +211,11 @@ impl Supervisor {
                 .saturating_sub(contingency_buffer);
 
             if t_max < arb_land::MIN_JITO_TIP_LAMPORTS {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route={} stage=ProfitFloorProtection reason=t_max {} < MIN_JITO_TIP",
+                    route_label, t_max
+                );
                 debug!(
                     "Opportunity skipped: Surplus ceiling t_max ({t_max}) < MIN_JITO_TIP; cannot satisfy P_net floor"
                 );
@@ -266,6 +299,12 @@ impl Supervisor {
                         (final_tip, Some(rung), false)
                     }
                     _ => {
+                        tracing::info!(
+                            target: "arb_events",
+                            "OPPORTUNITY_REJECTED: route={} stage=JitoTipPlan reason={:?}",
+                            route_label,
+                            jito_plan.tip.decision
+                        );
                         debug!(
                             "Opportunity skipped: Jito plan refused ({:?})",
                             jito_plan.tip.decision
@@ -304,6 +343,11 @@ impl Supervisor {
                     }
                 },
                 ExecutionRoute::PlainRpc => {
+                    tracing::info!(
+                        target: "arb_events",
+                        "OPPORTUNITY_REJECTED: route={} stage=JitoLeaderGate reason=non-Jito leader",
+                        route_label
+                    );
                     debug!("Opportunity skipped: leader is not Jito-Solana (route=PlainRpc)");
                     if gross >= min_net_floor {
                         let reason =
@@ -377,6 +421,12 @@ impl Supervisor {
             .ok()
             .filter(|net| *net > 0);
             let Some(real_net_base_raw) = real_net_base_raw else {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route={} stage=NetProfitEconomics reason=net <= 0 with actual tip {}",
+                    route_label,
+                    tip
+                );
                 debug!("Opportunity rejected: net <= 0 with actual tip {tip}");
                 if gross > 0 {
                     let reason = format!(
@@ -425,6 +475,13 @@ impl Supervisor {
                 .and_then(|v| v.trim().parse::<u128>().ok())
                 .unwrap_or(self.config.risk.max_implausible_roi_bps as u128);
             if implied_roi_bps > max_implausible_roi_bps {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route={} stage=ImplausibleROI reason=ROI {} bps > max {} bps",
+                    route_label,
+                    implied_roi_bps,
+                    max_implausible_roi_bps
+                );
                 warn!(
                     "Opportunity rejected: implied ROI {implied_roi_bps} bps exceeds implausibility ceiling {max_implausible_roi_bps} bps (stale-quote artifact); route={route_label} size_in={} slot={}",
                     opp.size_in.as_u64(),
@@ -506,6 +563,13 @@ impl Supervisor {
             };
 
             if real_net_base_raw < min_net_base_raw {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route={} stage=NetProfitFloor reason=net {} base-raw < min {}",
+                    route_label,
+                    real_net_base_raw,
+                    min_net_base_raw
+                );
                 debug!(
                     "Opportunity rejected: net {real_net_base_raw} base-raw < min_profit {min_net_base_raw} base-raw"
                 );
@@ -582,6 +646,12 @@ impl Supervisor {
                 };
 
                 if let Err(reason) = self.risk_gate.evaluate_chronos_gate(chronos_input) {
+                    tracing::info!(
+                        target: "arb_events",
+                        "OPPORTUNITY_REJECTED: route={} stage=ChronosEVGate reason={}",
+                        route_label,
+                        reason
+                    );
                     debug!("Opportunity rejected by Chronos EV Gate: {reason}");
                     if gross > 0 {
                         let reason_msg = format!(
@@ -720,6 +790,12 @@ impl Supervisor {
             };
 
             if let Err(reason) = risk_check {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: route={} stage=RiskGate reason={}",
+                    route_label,
+                    reason
+                );
                 debug!("Opportunity rejected by RiskGate: {reason}");
                 if gross > 0 {
                     let reason_msg = format!("قيود RiskGate رفضت التنفيذ: {reason}");
@@ -752,6 +828,47 @@ impl Supervisor {
             }
 
             arb_metrics::inc_attempts();
+
+            let total_fees_raw = flash_fee_raw
+                .saturating_add(BASE_FEE_LAMPORTS)
+                .saturating_add(priority_fee_lamports)
+                .saturating_add(tip.as_u64());
+
+            tracing::info!(
+                target: "arb_events",
+                "OPPORTUNITY_FOUND: route={} borrow={} gross={} fees={} net={} roi_bps={}",
+                route_label,
+                opp.size_in.as_u64(),
+                gross,
+                total_fees_raw,
+                real_net_base_raw,
+                implied_roi_bps
+            );
+
+            if self.mode() == BotMode::Analyze {
+                info!(
+                    "🔍 ANALYZE mode: Opportunity evaluated — Route: {}, Size: {}, Net: {}, ROI: {} bps (skipping assembly & simulation)",
+                    route_label,
+                    opp.size_in.as_u64(),
+                    real_net_base_raw,
+                    implied_roi_bps
+                );
+                continue;
+            }
+
+            tracing::info!(
+                target: "arb_events",
+                "ROUTE_SELECTED: route={} borrow={} expected_net={}",
+                route_label,
+                opp.size_in.as_u64(),
+                real_net_base_raw
+            );
+            tracing::info!(
+                target: "arb_events",
+                "FLASHLOAN_VALIDATED: provider=Kamino borrow={} fee_raw={}",
+                opp.size_in.as_u64(),
+                flash_fee_raw
+            );
 
             // 4. Dynamic Compute Budget: use the per-tx CU limit and the
             //    adaptive priority fee computed above (same values that
@@ -1135,6 +1252,14 @@ impl Supervisor {
             let t_signing_us = t_signing_start.elapsed().as_micros() as u64;
             arb_metrics::observe_signing_latency_us(t_signing_us as f64);
 
+            tracing::info!(
+                target: "arb_events",
+                "TRANSACTION_BUILT: version=V1 size_bytes={} cu_limit={} priority_fee={}",
+                tx_bytes.len(),
+                cu_limit,
+                priority_fee_lamports
+            );
+
             // 5. No simulateTransaction on the hot path (latency).
             // Rejection is delegated to on-chain guards: Kamino flash-repay
             // fails if the balance is short, and each hop carries min_amount_out
@@ -1299,6 +1424,31 @@ impl Supervisor {
                     Ok(result) => result,
                     Err(e) => {
                         warn!("Non-broadcast simulation could not run ({e}) - failing closed");
+                        if let Some(ref intel) = self.intel_persistence {
+                            intel.try_record_simulation(arb_store::RouteSimulationRecord {
+                                simulation_id: format!("sim-{}-{}", current_slot.0, opp.route_id.0),
+                                route_id: format!("route-{}", opp.route_id.0),
+                                input_amount_raw: opp.size_in.as_u64().to_string(),
+                                output_amount_raw: opp.expected_out.as_u64().to_string(),
+                                principal_raw: opp.size_in.as_u64().to_string(),
+                                flash_loan_fee_raw: flash_fee_raw.to_string(),
+                                network_fee_raw: BASE_FEE_LAMPORTS.to_string(),
+                                priority_fee_raw: priority_fee_lamports.to_string(),
+                                tip_raw: tip.as_u64().to_string(),
+                                token_transfer_fees_raw: "0".to_string(),
+                                total_costs_raw: (flash_fee_raw
+                                    .saturating_add(BASE_FEE_LAMPORTS)
+                                    .saturating_add(priority_fee_lamports)
+                                    .saturating_add(tip.as_u64()))
+                                .to_string(),
+                                net_profit_raw: real_net_base_raw.to_string(),
+                                transaction_size_bytes: tx_bytes.len() as u32,
+                                compute_units_consumed: 0,
+                                simulation_slot: current_slot.0,
+                                simulation_result: "ERROR".to_string(),
+                                simulation_error: Some(e.to_string()),
+                            });
+                        }
                         if gross > 0 {
                             let net_in_sol =
                                 real_net_base_raw as f64 / 10f64.powi(i32::from(opp.base_decimals));
@@ -1318,7 +1468,42 @@ impl Supervisor {
                         continue;
                     }
                 };
+
+                if let Some(ref intel) = self.intel_persistence {
+                    intel.try_record_simulation(arb_store::RouteSimulationRecord {
+                        simulation_id: format!("sim-{}-{}", current_slot.0, opp.route_id.0),
+                        route_id: format!("route-{}", opp.route_id.0),
+                        input_amount_raw: opp.size_in.as_u64().to_string(),
+                        output_amount_raw: opp.expected_out.as_u64().to_string(),
+                        principal_raw: opp.size_in.as_u64().to_string(),
+                        flash_loan_fee_raw: flash_fee_raw.to_string(),
+                        network_fee_raw: BASE_FEE_LAMPORTS.to_string(),
+                        priority_fee_raw: priority_fee_lamports.to_string(),
+                        tip_raw: tip.as_u64().to_string(),
+                        token_transfer_fees_raw: "0".to_string(),
+                        total_costs_raw: (flash_fee_raw
+                            .saturating_add(BASE_FEE_LAMPORTS)
+                            .saturating_add(priority_fee_lamports)
+                            .saturating_add(tip.as_u64()))
+                        .to_string(),
+                        net_profit_raw: real_net_base_raw.to_string(),
+                        transaction_size_bytes: tx_bytes.len() as u32,
+                        compute_units_consumed: fork_result.units_consumed,
+                        simulation_slot: current_slot.0,
+                        simulation_result: if fork_result.success {
+                            "SUCCESS".to_string()
+                        } else {
+                            "FAILED".to_string()
+                        },
+                        simulation_error: fork_result.error.clone(),
+                    });
+                }
                 if !fork_result.success {
+                    tracing::warn!(
+                        target: "arb_events",
+                        "SIMULATION_FAILED: error={:?}",
+                        fork_result.error
+                    );
                     warn!(
                         "Non-broadcast simulation rejected the route: {:?}",
                         fork_result.error
@@ -1353,6 +1538,12 @@ impl Supervisor {
                     }
                     continue;
                 }
+                tracing::info!(
+                    target: "arb_events",
+                    "SIMULATION_PASSED: cu_consumed={} fee_payer_delta={}",
+                    fork_result.units_consumed,
+                    fork_result.fee_payer_lamport_delta
+                );
                 info!(
                     "Non-broadcast simulation OK: slot={:?} cu={} inner_ix={} fee_payer_delta={}",
                     fork_result.context_slot,

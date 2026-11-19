@@ -420,7 +420,7 @@ impl Supervisor {
         // a mismatch (or unreachable engine) is fail-closed: a tip sent to an
         // account the block engine no longer rewards is silently wasted value.
         {
-            const TIP_VERIFY_TIMEOUT: Duration = Duration::from_secs(5);
+            const TIP_VERIFY_TIMEOUT: Duration = Duration::from_secs(15);
             let lander = self.jito_lander.clone();
             let expected: Vec<&str> = arb_constants::JITO_TIP_ACCOUNTS.to_vec();
             match tokio::time::timeout(TIP_VERIFY_TIMEOUT, lander.verify_tip_accounts(&expected))
@@ -440,7 +440,7 @@ impl Supervisor {
                 Err(_) if matches!(self.mode(), BotMode::Live) => {
                     error!("tip account verification timed out (live fail-closed)");
                     return Err(anyhow::anyhow!(
-                        "jito tip account verification timed out after 5s"
+                        "jito tip account verification timed out after 15s"
                     ));
                 }
                 Err(_) => {
@@ -798,6 +798,7 @@ impl Supervisor {
         }
 
         // Emit startup & initial market snapshot AFTER discovery and seeding succeed
+        self.compute_and_publish_ticker(Slot(reported_seed_slot));
         self.telegram
             .alert_startup(
                 &self.mode().to_string(),

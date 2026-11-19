@@ -4,8 +4,7 @@ chcp 65001 >nul
 title SENTINEL // Solana Flashloan Arbitrage Master Controller
 
 cd /d "%~dp0"
-set "BASE_DIR=%~dp0SOLANA_FLASHLOAN_ARBITUGE"
-if not exist "%BASE_DIR%\Cargo.toml" set "BASE_DIR=%~dp0"
+set "BASE_DIR=%~dp0"
 if "%BASE_DIR:~-1%"=="\" set "BASE_DIR=%BASE_DIR:~0,-1%"
 
 echo ===============================================================================
@@ -63,7 +62,7 @@ if %errorlevel% equ 0 (
     echo   [OK] محرك Arb-Bot يعمل بالفعل على بورت 8080.
 ) else (
     echo   [+] جاري تشغيل محرك الأربيتراتج Arb Bot في نافذة تيرمينال منفصلة...
-    set "WEB_ADMIN_PASSWORD=sentinel_secret_key_2026_change_me"
+    set "WEB_ADMIN_PASSWORD=1234"
     if exist "%BASE_DIR%\target\release\arb-bot.exe" (
         start "[3] Sentinel Arb Bot (Port 8080)" /D "%BASE_DIR%" cmd /k "target\release\arb-bot.exe"
     ) else if exist "%BASE_DIR%\target\debug\arb-bot.exe" (
@@ -74,17 +73,8 @@ if %errorlevel% equ 0 (
     ping 127.0.0.1 -n 2 >nul
 )
 
-REM 4. Check Vite Frontend Port 5173
-echo [4/4] فحص واجهة المستخدم (Vite React Dashboard - Port 5173)...
-netstat -ano | findstr ":5173 " | findstr "LISTENING" >nul
-if %errorlevel% equ 0 (
-    echo   [OK] واجهة Vite Web Dashboard تعمل بالفعل على بورت 5173.
-) else (
-    if exist "%BASE_DIR%\web\package.json" (
-        echo   [+] جاري تشغيل سيرفر Vite في نافذة تيرمينال منفصلة...
-        start "[4] Vite Web Dashboard (Port 5173)" /D "%BASE_DIR%\web" cmd /k "npm.cmd run dev"
-    )
-)
+REM 4. Unified HFT Terminal Info
+echo [4/4] المنظومة موحدة على البورت 8080 (لا حاجة لأي داش بورد أخرى منفصلة).
 
 REM 5. Wait for arb-bot to respond
 echo.
@@ -105,14 +95,12 @@ echo ===========================================================================
 echo   مبروك يا باشا! كل السيرفرات اشتغلت وجميع التيرمينالات مفتوحة وتمام التمام!
 echo ===============================================================================
 echo.
-echo   [1] لوحة التحكم المباشرة (شرح مصري وتتبع حي للمسارات):
+echo   [★] محطة التداول الموحدة HFT Terminal (شاملة السايد بار وحلبة الأحواض):
 echo       http://127.0.0.1:8080/dashboard
+echo       http://127.0.0.1:8080/
 echo.
-echo   [2] واجهة المستخدم المتقدمة (React / Vite):
-echo       http://localhost:5173
-echo.
-echo   [★] الباسورد الإداري عند طلبه:
-echo       sentinel_secret_key_2026_change_me
+echo   [★] باسوورد الإدارة والتحكم الفوري:
+echo       1234
 echo.
 echo ===============================================================================
 

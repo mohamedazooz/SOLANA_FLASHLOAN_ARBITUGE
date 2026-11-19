@@ -20,7 +20,6 @@ use arb_types::{
     Slot, SwapHop, TipDecision, TokenAmount,
 };
 use solana_pubkey::Pubkey;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -77,6 +76,7 @@ pub struct Supervisor {
     recent_landed_cu: Arc<parking_lot::Mutex<Vec<u64>>>,
     simulator: Simulator,
     store: Arc<dyn Store>,
+    intel_persistence: Option<Arc<arb_store::AsyncIntelligencePersistence>>,
     telegram: TelegramNotifier,
     keypair: Option<KeypairSigner>,
     last_known_live_sol_price: parking_lot::RwLock<f64>,
@@ -115,6 +115,8 @@ pub struct Supervisor {
     kamino_fallback_store: arb_ingest::AccountSnapshotStore,
     /// Provider capability registry verifying transport methods and prerequisites (G1, G2).
     capability_registry: Arc<arb_ingest::ProviderCapabilityRegistry>,
+    /// Isolated HTTP Transaction RPC adapter for blockhash, simulate, send, and status.
+    tx_rpc: Arc<arb_ingest::TransactionRpcAdapter>,
     pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
     pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
     pub recent_rejected: Arc<parking_lot::Mutex<Vec<crate::telegram::RejectedTradeSummary>>>,
@@ -129,29 +131,48 @@ pub struct Supervisor {
 /// because dispatch-intent reconciliation (R12) requires durable persistence.
 /// Precedence: `store_url` postgres → `database_url` postgres → `database_url`
 /// sqlite → `store_url` sqlite/plain path.
-fn open_store(store_url: &str, database_url: Option<&str>) -> anyhow::Result<Arc<dyn Store>> {
+fn open_store_and_intel(
+    store_url: &str,
+    database_url: Option<&str>,
+) -> anyhow::Result<(
+    Arc<dyn Store>,
+    Option<Arc<arb_store::AsyncIntelligencePersistence>>,
+)> {
     if store_url.starts_with("postgres") {
-        return PostgresStore::open(store_url)
-            .map(|pg| Arc::new(pg) as Arc<dyn Store>)
-            .map_err(|e| anyhow::anyhow!("PostgreSQL store unavailable (fail-closed): {e}"));
+        let pg = Arc::new(
+            PostgresStore::open(store_url)
+                .map_err(|e| anyhow::anyhow!("PostgreSQL store unavailable (fail-closed): {e}"))?,
+        );
+        let intel_queue = Arc::new(arb_store::AsyncIntelligencePersistence::new(pg.clone()));
+        return Ok((pg, Some(intel_queue)));
     }
     if let Some(pg_url) = database_url.filter(|u| u.starts_with("postgres")) {
-        return PostgresStore::open(pg_url)
-            .map(|pg| Arc::new(pg) as Arc<dyn Store>)
-            .map_err(|e| {
-                anyhow::anyhow!("PostgreSQL store from DATABASE_URL unavailable (fail-closed): {e}")
-            });
+        let pg = Arc::new(PostgresStore::open(pg_url).map_err(|e| {
+            anyhow::anyhow!("PostgreSQL store from DATABASE_URL unavailable (fail-closed): {e}")
+        })?);
+        let intel_queue = Arc::new(arb_store::AsyncIntelligencePersistence::new(pg.clone()));
+        return Ok((pg, Some(intel_queue)));
     }
     if let Some(sqlite_url) = database_url.filter(|u| u.starts_with("sqlite://")) {
-        return SqliteStore::open(&sqlite_path_from_url(sqlite_url))
-            .map(|s| Arc::new(s) as Arc<dyn Store>)
-            .map_err(|e| {
+        let s = Arc::new(
+            SqliteStore::open(&sqlite_path_from_url(sqlite_url)).map_err(|e| {
                 anyhow::anyhow!("SQLite store from DATABASE_URL unavailable (fail-closed): {e}")
-            });
+            })?,
+        );
+        let intel_queue = Arc::new(arb_store::AsyncIntelligencePersistence::new(s.clone()));
+        return Ok((s, Some(intel_queue)));
     }
-    SqliteStore::open(&sqlite_path_from_url(store_url))
-        .map(|s| Arc::new(s) as Arc<dyn Store>)
-        .map_err(|e| anyhow::anyhow!("SQLite store unavailable (fail-closed): {e}"))
+    let s = Arc::new(
+        SqliteStore::open(&sqlite_path_from_url(store_url))
+            .map_err(|e| anyhow::anyhow!("SQLite store unavailable (fail-closed): {e}"))?,
+    );
+    let intel_queue = Arc::new(arb_store::AsyncIntelligencePersistence::new(s.clone()));
+    Ok((s, Some(intel_queue)))
+}
+
+#[allow(dead_code)]
+fn open_store(store_url: &str, database_url: Option<&str>) -> anyhow::Result<Arc<dyn Store>> {
+    open_store_and_intel(store_url, database_url).map(|(store, _)| store)
 }
 
 /// Convert a `sqlite://` URL to a filesystem path. `sqlite:///abs/path` yields
@@ -259,7 +280,7 @@ impl Supervisor {
         // unavailable store aborts startup. Silent degradation to in-memory
         // storage would break dispatch-intent durability (R12) and PnL
         // accounting while appearing healthy.
-        let store: Arc<dyn Store> = open_store(
+        let (store, intel_persistence) = open_store_and_intel(
             &config.store.url,
             std::env::var("DATABASE_URL").ok().as_deref(),
         )
@@ -401,6 +422,8 @@ impl Supervisor {
             heartbeat.path().display()
         );
 
+        let tx_rpc = Arc::new(arb_ingest::TransactionRpcAdapter::new(rpc_pool.clone()));
+
         Self {
             mode,
             config,
@@ -416,6 +439,7 @@ impl Supervisor {
             recent_landed_cu,
             simulator,
             store,
+            intel_persistence,
             telegram,
             keypair,
             last_known_live_sol_price: parking_lot::RwLock::new(0.0),
@@ -443,6 +467,7 @@ impl Supervisor {
                 reg.register(arb_ingest::ProviderCapabilities::solami_mirage());
                 reg
             }),
+            tx_rpc,
             recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_rejected: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -450,9 +475,19 @@ impl Supervisor {
         }
     }
 
+    /// Isolated HTTP Transaction RPC adapter.
+    pub fn tx_rpc(&self) -> &Arc<arb_ingest::TransactionRpcAdapter> {
+        &self.tx_rpc
+    }
+
     /// Access the underlying risk kill-switch for administrative controls.
     pub fn kill_switch(&self) -> Arc<arb_risk::KillSwitch> {
         self.risk_gate.kill_switch()
+    }
+
+    /// Access the asynchronous intelligence persistence queue for zero-hot-path-cost telemetry.
+    pub fn intel_persistence(&self) -> Option<Arc<arb_store::AsyncIntelligencePersistence>> {
+        self.intel_persistence.clone()
     }
 
     pub fn ingest(&self) -> Arc<IngestClient> {
@@ -497,6 +532,7 @@ impl Supervisor {
         let Some(control) = self.control() else {
             return;
         };
+        self.compute_and_publish_ticker(current_slot);
         control.refresh_deps(crate::control_service::ControlDeps {
             slot: current_slot.0,
             pools_tracked: self.ingest.snapshot().pool_count(),
@@ -516,6 +552,319 @@ impl Supervisor {
             },
             providers_health: serde_json::to_value(self.rpc_pool.health_snapshot()).ok(),
         });
+    }
+
+    /// Computes real-time token mid-prices across active on-chain pools in MarketStateCache
+    /// and feeds the live calculated ticker to ControlService.
+    pub(crate) fn compute_and_publish_ticker(
+        &self,
+        current_slot: Slot,
+    ) -> Option<serde_json::Value> {
+        let control = self.control()?;
+        let market_snap = self.ingest.snapshot();
+        let pools = market_snap.snapshot_pools();
+
+        const WSOL_MINT_STR: &str = arb_constants::WSOL_MINT;
+        const USDC_MINT_STR: &str = arb_constants::USDC_MINT;
+        const USDT_MINT_STR: &str = arb_constants::USDT_MINT;
+        const WIF_MINT_STR: &str = arb_constants::WIF_MINT;
+        const POPCAT_MINT_STR: &str = arb_constants::POPCAT_MINT;
+        const FARTCOIN_MINT_STR: &str = arb_constants::FARTCOIN_MINT;
+
+        let mut sol_prices = Vec::new();
+        let mut sol_venues = std::collections::HashSet::new();
+        let mut wif_prices = Vec::new();
+        let mut wif_venues = std::collections::HashSet::new();
+        let mut popcat_prices = Vec::new();
+        let mut popcat_venues = std::collections::HashSet::new();
+        let mut fartcoin_prices = Vec::new();
+        let mut fartcoin_venues = std::collections::HashSet::new();
+
+        for p in &pools {
+            if current_slot.0 > 0
+                && current_slot.0.saturating_sub(p.last_update_slot)
+                    > self.config.strategy.max_state_age_slots
+            {
+                continue;
+            }
+
+            // SOL/USD (WSOL <-> USDC or WSOL <-> USDT)
+            if let Some((price, venue)) =
+                strategy::extract_pool_mid_price(p, WSOL_MINT_STR, USDC_MINT_STR, 9, 6).or_else(
+                    || strategy::extract_pool_mid_price(p, WSOL_MINT_STR, USDT_MINT_STR, 9, 6),
+                )
+            {
+                sol_prices.push(price);
+                sol_venues.insert(venue);
+            }
+
+            // WIF/SOL (WIF <-> WSOL)
+            if let Some((price, venue)) =
+                strategy::extract_pool_mid_price(p, WIF_MINT_STR, WSOL_MINT_STR, 6, 9)
+            {
+                wif_prices.push(price);
+                wif_venues.insert(venue);
+            }
+
+            // POPCAT/SOL (POPCAT <-> WSOL)
+            if let Some((price, venue)) =
+                strategy::extract_pool_mid_price(p, POPCAT_MINT_STR, WSOL_MINT_STR, 9, 9)
+            {
+                popcat_prices.push(price);
+                popcat_venues.insert(venue);
+            }
+
+            // FARTCOIN/SOL (FARTCOIN <-> WSOL)
+            if let Some((price, venue)) =
+                strategy::extract_pool_mid_price(p, FARTCOIN_MINT_STR, WSOL_MINT_STR, 6, 9)
+            {
+                fartcoin_prices.push(price);
+                fartcoin_venues.insert(venue);
+            }
+        }
+
+        let onchain_sol = if !sol_prices.is_empty() {
+            Some(sol_prices.iter().sum::<f64>() / (sol_prices.len() as f64))
+        } else {
+            None
+        };
+
+        if let Some(price) = onchain_sol {
+            *self.last_known_live_sol_price.write() = price;
+            self.telegram.update_sol_price(price);
+        } else {
+            let mkt_price = self.telegram.sol_price();
+            if mkt_price > 0.0 && mkt_price.is_finite() {
+                *self.last_known_live_sol_price.write() = mkt_price;
+            }
+        }
+
+        let live_sol = *self.last_known_live_sol_price.read();
+        let (tg_sol, tg_wif_usd, tg_popcat_usd, tg_fartcoin_usd) =
+            self.telegram.live_market_prices();
+        let effective_sol = if live_sol > 0.0 { live_sol } else { tg_sol };
+
+        let wif_price_sol = if !wif_prices.is_empty() {
+            wif_prices.iter().sum::<f64>() / (wif_prices.len() as f64)
+        } else if tg_wif_usd > 0.0 && effective_sol > 0.0 {
+            tg_wif_usd / effective_sol
+        } else {
+            0.0
+        };
+
+        let popcat_price_sol = if !popcat_prices.is_empty() {
+            popcat_prices.iter().sum::<f64>() / (popcat_prices.len() as f64)
+        } else if tg_popcat_usd > 0.0 && effective_sol > 0.0 {
+            tg_popcat_usd / effective_sol
+        } else {
+            0.0
+        };
+
+        let fartcoin_price_sol = if !fartcoin_prices.is_empty() {
+            fartcoin_prices.iter().sum::<f64>() / (fartcoin_prices.len() as f64)
+        } else if tg_fartcoin_usd > 0.0 && effective_sol > 0.0 {
+            tg_fartcoin_usd / effective_sol
+        } else {
+            0.0
+        };
+
+        let sol_venues_str = if !sol_venues.is_empty() {
+            sol_venues.into_iter().collect::<Vec<_>>().join(" • ")
+        } else {
+            "Orca • Meteora • Raydium".to_string()
+        };
+        let wif_venues_str = if !wif_venues.is_empty() {
+            wif_venues.into_iter().collect::<Vec<_>>().join(" • ")
+        } else {
+            "Raydium • Orca • Meteora".to_string()
+        };
+        let popcat_venues_str = if !popcat_venues.is_empty() {
+            popcat_venues.into_iter().collect::<Vec<_>>().join(" • ")
+        } else {
+            "Raydium • Meteora".to_string()
+        };
+        let fartcoin_venues_str = if !fartcoin_venues.is_empty() {
+            fartcoin_venues.into_iter().collect::<Vec<_>>().join(" • ")
+        } else {
+            "PumpSwap • Raydium • Orca".to_string()
+        };
+
+        if effective_sol > 0.0 {
+            let live_ticker = serde_json::json!({
+                "sol_price_usd": effective_sol,
+                "at_unix": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                "tokens": {
+                    "SOL": { "symbol": "SOL/USD", "price": effective_sol, "venues": sol_venues_str, "change_24h": "+0.0%" },
+                    "WIF": { "symbol": "WIF/SOL", "price": wif_price_sol, "venues": wif_venues_str, "change_24h": "+0.0%" },
+                    "POPCAT": { "symbol": "POPCAT/SOL", "price": popcat_price_sol, "venues": popcat_venues_str, "change_24h": "+0.0%" },
+                    "FARTCOIN": { "symbol": "FARTCOIN/SOL", "price": fartcoin_price_sol, "venues": fartcoin_venues_str, "change_24h": "+0.0%" },
+                    "USDC": { "symbol": "USDC/USD", "price": 1.000, "venues": "Kamino • Orca", "change_24h": "0.0%" }
+                }
+            });
+            control.update_ticker(live_ticker.clone());
+            Some(live_ticker)
+        } else {
+            None
+        }
+    }
+
+    /// Evaluates cross-pool route spreads across all matching pools in MarketStateCache
+    /// and streams them into ControlService so the live opportunity matrix updates on every slot.
+    pub(crate) fn evaluate_and_record_cross_pool_routes(
+        &self,
+        current_slot: Slot,
+        pools: &[PoolState],
+        max_sizing: u64,
+    ) {
+        let Some(control) = self.control() else {
+            return;
+        };
+        let mut recorded_pairs = std::collections::HashSet::new();
+        let mut pairs_map: std::collections::HashMap<(Pubkey, Pubkey), Vec<&PoolState>> =
+            std::collections::HashMap::new();
+        for p in pools {
+            let m1 = p.base_mint.0;
+            let m2 = p.quote_mint.0;
+            let pair_key = if m1 < m2 { (m1, m2) } else { (m2, m1) };
+            pairs_map.entry(pair_key).or_default().push(p);
+        }
+
+        let test_size = if max_sizing > 0 {
+            max_sizing.clamp(1_000_000_000, 100_000_000_000)
+        } else {
+            10_000_000_000 // 10 SOL default sample evaluation notional
+        };
+
+        let mut eval_count = 0u64;
+        for ((m1, m2), pool_list) in pairs_map {
+            if pool_list.len() < 2 {
+                continue;
+            }
+            for i in 0..pool_list.len() {
+                for j in (i + 1)..pool_list.len() {
+                    eval_count += 2;
+                    let p1 = pool_list[i];
+                    let p2 = pool_list[j];
+                    if p1.pool_id == p2.pool_id {
+                        continue;
+                    }
+
+                    let pair_id = (p1.pool_id.0, p2.pool_id.0);
+                    if recorded_pairs.contains(&pair_id) {
+                        continue;
+                    }
+                    recorded_pairs.insert(pair_id);
+
+                    let (token_sym, quote_sym) = if m1.to_string() == arb_constants::WSOL_MINT {
+                        if m2.to_string() == arb_constants::USDC_MINT {
+                            ("SOL", "USDC")
+                        } else if m2.to_string() == arb_constants::WIF_MINT {
+                            ("WIF", "SOL")
+                        } else if m2.to_string() == arb_constants::POPCAT_MINT {
+                            ("POPCAT", "SOL")
+                        } else if m2.to_string() == arb_constants::FARTCOIN_MINT {
+                            ("FARTCOIN", "SOL")
+                        } else {
+                            ("TOKEN", "SOL")
+                        }
+                    } else if m2.to_string() == arb_constants::WSOL_MINT {
+                        if m1.to_string() == arb_constants::USDC_MINT {
+                            ("SOL", "USDC")
+                        } else if m1.to_string() == arb_constants::WIF_MINT {
+                            ("WIF", "SOL")
+                        } else if m1.to_string() == arb_constants::POPCAT_MINT {
+                            ("POPCAT", "SOL")
+                        } else if m1.to_string() == arb_constants::FARTCOIN_MINT {
+                            ("FARTCOIN", "SOL")
+                        } else {
+                            ("TOKEN", "SOL")
+                        }
+                    } else {
+                        ("TOKEN", "SOL")
+                    };
+
+                    let price_1 = strategy::extract_pool_mid_price(
+                        p1,
+                        &m1.to_string(),
+                        &m2.to_string(),
+                        p1.decimals_a,
+                        p1.decimals_b,
+                    )
+                    .map(|(p, _)| p)
+                    .unwrap_or(0.0);
+                    let price_2 = strategy::extract_pool_mid_price(
+                        p2,
+                        &m1.to_string(),
+                        &m2.to_string(),
+                        p2.decimals_a,
+                        p2.decimals_b,
+                    )
+                    .map(|(p, _)| p)
+                    .unwrap_or(0.0);
+
+                    if price_1 > 0.0 && price_2 > 0.0 {
+                        let spread_pct = ((price_1 - price_2).abs() / price_1.min(price_2)) * 100.0;
+                        let gross_diff = ((spread_pct / 100.0) * (test_size as f64)) as i64;
+                        let out_lamports = test_size.saturating_add(gross_diff.max(0) as u64);
+                        let net_diff = gross_diff.saturating_sub(5000);
+                        let min_net = self.config.strategy.min_net_profit_abs as i64;
+                        let is_eligible = net_diff >= min_net && net_diff > 0;
+
+                        let (buy_pool, sell_pool) = if price_1 <= price_2 {
+                            (p1, p2)
+                        } else {
+                            (p2, p1)
+                        };
+
+                        control.record_opportunity(crate::control_service::OpportunityRecord {
+                            captured_at_unix: 0,
+                            slot: current_slot.0,
+                            route: format!(
+                                "{} \u{2192} {} [{}/{}]",
+                                buy_pool.protocol.as_str(),
+                                sell_pool.protocol.as_str(),
+                                token_sym,
+                                quote_sym
+                            ),
+                            protocol: format!(
+                                "{}-to-{}",
+                                buy_pool.protocol.as_str(),
+                                sell_pool.protocol.as_str()
+                            )
+                            .to_lowercase(),
+                            borrow_lamports: test_size,
+                            expected_output_lamports: out_lamports,
+                            gross_profit_lamports: gross_diff,
+                            net_profit_lamports: net_diff,
+                            eligible: is_eligible,
+                            hop_quotes: vec![
+                                crate::control_service::HopQuoteRecord {
+                                    protocol: buy_pool.protocol.as_str().to_string(),
+                                    pool: buy_pool.pool_id.0.to_string(),
+                                    amount_in: test_size,
+                                    amount_out: test_size,
+                                },
+                                crate::control_service::HopQuoteRecord {
+                                    protocol: sell_pool.protocol.as_str().to_string(),
+                                    pool: sell_pool.pool_id.0.to_string(),
+                                    amount_in: test_size,
+                                    amount_out: out_lamports,
+                                },
+                            ],
+                            reject_reason: if is_eligible {
+                                None
+                            } else {
+                                Some("BELOW_MIN_PROFIT_HURDLE".to_string())
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        control.record_evaluations(eval_count.max(1));
     }
 
     /// Per-protocol route coverage for the route monitor: one cheap pass over
@@ -765,14 +1114,36 @@ impl Supervisor {
             arb_metrics::get_opportunities_total(),
             arb_metrics::get_stream_slot_gaps_total(),
         );
-        let _ = std::fs::create_dir_all("data");
-        let path = format!("data/daily_report_{date}.json");
+        let reports_dir = std::path::Path::new("data/reports");
+        let _ = std::fs::create_dir_all(reports_dir);
+        let path = reports_dir.join(format!("daily_report_{date}.json"));
         match std::fs::write(
             &path,
             serde_json::to_string_pretty(&report).unwrap_or_default(),
         ) {
-            Ok(_) => info!("daily report written to {}", path),
-            Err(e) => warn!("daily report write failed ({}): {}", path, e),
+            Ok(_) => info!("daily report written to {}", path.display()),
+            Err(e) => warn!("daily report write failed ({}): {}", path.display(), e),
+        }
+
+        // 30-day retention pruning for daily report files
+        let retention_days: u64 = std::env::var("DATA_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|d| *d > 0)
+            .unwrap_or(30);
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(Duration::from_secs(retention_days * 86_400))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if let Ok(entries) = std::fs::read_dir(reports_dir) {
+            for entry in entries.flatten() {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(modified) = meta.modified() {
+                        if modified < cutoff {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
         }
         self.telegram.send_message(&report.render_text()).await;
     }

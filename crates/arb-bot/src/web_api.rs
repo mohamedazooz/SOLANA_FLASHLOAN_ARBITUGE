@@ -260,90 +260,7 @@ async fn opportunities(State(state): State<WebState>, headers: HeaderMap) -> Res
     if let Err(resp) = authed(&state, &headers) {
         return resp;
     }
-    let opps = state.control.opportunities(128);
-    if !opps.is_empty() {
-        return Json(opps).into_response();
-    }
-
-    let mut fallback: Vec<crate::control_service::OpportunityRecord> = Vec::new();
-    for path in [
-        "live_pool_opportunities.json",
-        "SOLANA_FLASHLOAN_ARBITUGE/live_pool_opportunities.json",
-        "../live_pool_opportunities.json",
-    ] {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&content) {
-                let status = state.control.status();
-                for opp in parsed.into_iter().take(30) {
-                    let token = opp.get("token").and_then(|v| v.as_str()).unwrap_or("SOL");
-                    let quote = opp.get("quote").and_then(|v| v.as_str()).unwrap_or("USDC");
-                    let buy_dex = opp
-                        .get("buy_dex")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("orca");
-                    let sell_dex = opp
-                        .get("sell_dex")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("meteora");
-                    let buy_pool = opp.get("buy_pool").and_then(|v| v.as_str()).unwrap_or("");
-                    let sell_pool = opp.get("sell_pool").and_then(|v| v.as_str()).unwrap_or("");
-                    let size_usd = opp
-                        .get("safe_trade_size_usd")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(134.5);
-                    let borrow_lamports = ((size_usd / 73.77) * 1e9) as u64;
-                    let net_usd = opp
-                        .get("net_profit_usd")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(2.1);
-                    let net_lamports = ((net_usd / 73.77) * 1e9) as i64;
-                    let gross_usd = opp
-                        .get("gross_profit_usd")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(3.88);
-                    let gross_lamports = ((gross_usd / 73.77) * 1e9) as i64;
-                    let executable = opp
-                        .get("executable")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true);
-
-                    fallback.push(crate::control_service::OpportunityRecord {
-                        captured_at_unix: 1731980000,
-                        slot: status.slot,
-                        route: format!("{} -> {} [{}/{}]", buy_dex, sell_dex, token, quote),
-                        protocol: format!("{}/{}", buy_dex, sell_dex),
-                        borrow_lamports,
-                        expected_output_lamports: borrow_lamports + gross_lamports.max(0) as u64,
-                        gross_profit_lamports: gross_lamports,
-                        net_profit_lamports: net_lamports,
-                        eligible: executable,
-                        reject_reason: if executable {
-                            None
-                        } else {
-                            Some("Negative net spread after fees".into())
-                        },
-                        hop_quotes: vec![
-                            crate::control_service::HopQuoteRecord {
-                                protocol: buy_dex.to_string(),
-                                pool: buy_pool.to_string(),
-                                amount_in: borrow_lamports,
-                                amount_out: borrow_lamports + (gross_lamports.max(0) as u64) / 2,
-                            },
-                            crate::control_service::HopQuoteRecord {
-                                protocol: sell_dex.to_string(),
-                                pool: sell_pool.to_string(),
-                                amount_in: borrow_lamports + (gross_lamports.max(0) as u64) / 2,
-                                amount_out: borrow_lamports + gross_lamports.max(0) as u64,
-                            },
-                        ],
-                    });
-                }
-                break;
-            }
-        }
-    }
-
-    Json(fallback).into_response()
+    Json(state.control.opportunities(128)).into_response()
 }
 
 async fn executions(State(state): State<WebState>, headers: HeaderMap) -> Response {
@@ -540,6 +457,21 @@ async fn ws_loop(state: WebState, mut socket: WebSocket) {
     // Send an initial snapshot so the client renders immediately.
     let snapshot = serde_json::to_string(&state.control.status()).unwrap_or_default();
     let _ = socket.send(Message::Text(snapshot.into())).await;
+    // Send initial live ticker payload so ticker bar animates and updates immediately on connect.
+    let ticker_val = state.control.ticker();
+    if !ticker_val.is_null() {
+        let ticker_event = json!({
+            "kind": "ticker",
+            "at_unix": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            "payload": ticker_val
+        });
+        let _ = socket
+            .send(Message::Text(ticker_event.to_string().into()))
+            .await;
+    }
     loop {
         tokio::select! {
             event = rx.recv() => {
@@ -570,24 +502,11 @@ async fn ws_loop(state: WebState, mut socket: WebSocket) {
 }
 
 async fn index() -> Html<String> {
-    for candidate in [
-        "web/dist/index.html",
-        "SOLANA_FLASHLOAN_ARBITUGE/web/dist/index.html",
-        "dashboard/index.html",
-        "SOLANA_FLASHLOAN_ARBITUGE/dashboard/index.html",
-    ] {
-        if let Ok(html) = std::fs::read_to_string(candidate) {
-            return Html(html);
-        }
-    }
-    Html(include_str!("../../../dashboard/index.html").to_string())
+    dashboard_page().await
 }
 
 async fn dashboard_page() -> Html<String> {
-    for candidate in [
-        "dashboard/index.html",
-        "SOLANA_FLASHLOAN_ARBITUGE/dashboard/index.html",
-    ] {
+    for candidate in ["web/dist/index.html", "dashboard/index.html"] {
         if let Ok(html) = std::fs::read_to_string(candidate) {
             return Html(html);
         }
@@ -597,16 +516,16 @@ async fn dashboard_page() -> Html<String> {
 
 fn token_mint_address(symbol: &str) -> &'static str {
     match symbol.to_uppercase().as_str() {
-        "SOL" | "WSOL" => "So11111111111111111111111111111111111111112",
-        "USDC" => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        "USDT" => "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-        "WIF" => "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
-        "POPCAT" => "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
-        "BONK" => "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
-        "JUP" => "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
-        "RAY" => "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
-        "FARTCOIN" => "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
-        _ => "So11111111111111111111111111111111111111112",
+        "SOL" | "WSOL" => arb_constants::WSOL_MINT,
+        "USDC" => arb_constants::USDC_MINT,
+        "USDT" => arb_constants::USDT_MINT,
+        "WIF" => arb_constants::WIF_MINT,
+        "POPCAT" => arb_constants::POPCAT_MINT,
+        "BONK" => arb_constants::BONK_MINT,
+        "JUP" => arb_constants::JUP_MINT,
+        "RAY" => arb_constants::RAY_MINT,
+        "FARTCOIN" => arb_constants::FARTCOIN_MINT,
+        _ => arb_constants::WSOL_MINT,
     }
 }
 
@@ -696,15 +615,21 @@ fn parse_route_meta(
 
 async fn telemetry(State(state): State<WebState>) -> Response {
     let status = state.control.status();
+    let ticker_val = state.control.ticker();
+    let sol_price = ticker_val
+        .get("sol_price_usd")
+        .and_then(|v| v.as_f64())
+        .filter(|&v| v > 0.0)
+        .unwrap_or(0.0);
     let opps = state.control.opportunities(30);
-    let mut events: Vec<Value> = opps
+    let events: Vec<Value> = opps
         .iter()
         .map(|o| {
             let borrow_sol = (o.borrow_lamports as f64) / 1e9;
             let gross_sol = (o.gross_profit_lamports as f64) / 1e9;
             let net_sol = (o.net_profit_lamports as f64) / 1e9;
-            let gross_usd = gross_sol * 73.77;
-            let net_usd = net_sol * 73.77;
+            let gross_usd = gross_sol * sol_price;
+            let net_usd = net_sol * sol_price;
             let fees_usd = (gross_usd - net_usd).max(0.0);
             let spread_pct = if borrow_sol > 0.0 {
                 (gross_sol / borrow_sol) * 100.0
@@ -733,7 +658,7 @@ async fn telemetry(State(state): State<WebState>) -> Response {
                 "buy_price": buy_price,
                 "sell_price": sell_price,
                 "size": borrow_sol,
-                "size_usd": borrow_sol * 73.77,
+                "size_usd": borrow_sol * sol_price,
                 "borrow_lamports": o.borrow_lamports,
                 "expected_output_lamports": o.expected_output_lamports,
                 "gross_profit_sol": gross_sol,
@@ -755,132 +680,31 @@ async fn telemetry(State(state): State<WebState>) -> Response {
         })
         .collect();
 
-    if events.len() < 30 {
-        for path in [
-            "live_pool_opportunities.json",
-            "SOLANA_FLASHLOAN_ARBITUGE/live_pool_opportunities.json",
-            "../live_pool_opportunities.json",
-        ] {
-            if let Ok(content) = std::fs::read_to_string(path) {
-                if let Ok(parsed) = serde_json::from_str::<Vec<Value>>(&content) {
-                    let needed = 30 - events.len();
-                    for opp in parsed.into_iter().take(needed) {
-                        let token = opp.get("token").and_then(|v| v.as_str()).unwrap_or("SOL");
-                        let quote = opp.get("quote").and_then(|v| v.as_str()).unwrap_or("USDC");
-                        let buy_dex = opp
-                            .get("buy_dex")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("orca");
-                        let sell_dex = opp
-                            .get("sell_dex")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("meteora");
-                        let buy_pool = opp.get("buy_pool").and_then(|v| v.as_str()).unwrap_or("");
-                        let sell_pool = opp.get("sell_pool").and_then(|v| v.as_str()).unwrap_or("");
-                        let buy_price =
-                            opp.get("buy_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let sell_price = opp
-                            .get("sell_price")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        let spread_bps = opp
-                            .get("spread_bps")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        let spread_pct = opp
-                            .get("spread_pct")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0);
-                        let size_usd = opp
-                            .get("safe_trade_size_usd")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(134.5);
-                        let size_sol = size_usd / 73.77;
-                        let gross_usd = opp
-                            .get("gross_profit_usd")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(3.88);
-                        let net_usd = opp
-                            .get("net_profit_usd")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(2.1);
-                        let fees_usd = opp
-                            .get("est_fees_usd")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(1.78);
-                        let executable = opp
-                            .get("executable")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(true);
-                        let token_mint = token_mint_address(token);
-                        let quote_mint = token_mint_address(quote);
+    let opp_count = status
+        .opportunities_evaluated_total
+        .max(status.opportunities_total);
 
-                        events.push(json!({
-                            "time": "live",
-                            "slot": status.slot,
-                            "route": format!("{} -> {} [{}/{}]", buy_dex, sell_dex, token, quote),
-                            "token": token,
-                            "quote": quote,
-                            "token_mint": token_mint,
-                            "quote_mint": quote_mint,
-                            "buy_dex": buy_dex,
-                            "sell_dex": sell_dex,
-                            "buy_pool": buy_pool,
-                            "sell_pool": sell_pool,
-                            "buy_price": buy_price,
-                            "sell_price": sell_price,
-                            "spread_bps": spread_bps,
-                            "spread_pct": spread_pct,
-                            "size": size_sol,
-                            "size_usd": size_usd,
-                            "gross_profit_sol": gross_usd / 73.77,
-                            "gross_profit_usd": gross_usd,
-                            "fees_usd": fees_usd,
-                            "profit_sol": net_usd / 73.77,
-                            "net_profit_sol": net_usd / 73.77,
-                            "net_profit_usd": net_usd,
-                            "tip": 5000,
-                            "tip_sol": 0.000005,
-                            "status": if executable { "simulated" } else { "rejected" },
-                            "eligible": executable,
-                            "flashloan_provider": "Kamino Flashloan (Atomic 0% fee)",
-                        }));
-                    }
-                    if !events.is_empty() {
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    let opp_count = if status.opportunities_total > 0 {
-        status.opportunities_total
-    } else {
-        events.len() as u64
-    };
-
-    let pools_count = if status.pools_tracked > 0 {
-        status.pools_tracked
-    } else {
-        48
-    };
+    let pools_count = status.pools_tracked;
 
     Json(json!({
         "slot": status.slot,
         "pools": pools_count,
         "net_sol": status.net_pnl_sol,
-        "net_usd": status.net_pnl_sol * 73.77,
+        "net_usd": status.net_pnl_sol * sol_price,
         "mode": status.mode,
         "tip_p50": 5000,
         "opportunities_count": opp_count,
+        "opportunities_total": opp_count,
+        "opportunities_evaluated_total": opp_count,
+        "routes_per_second": status.routes_per_second,
         "events": events,
         "routes": state.control.route_coverage(),
         "logs": state.control.logs(25),
         "executions": state.control.executions(20),
         "rejections": state.control.rejections(20),
         "pnl": state.control.pnl(),
-        "sol_price_usd": 73.77
+        "sol_price_usd": sol_price,
+        "ticker": ticker_val
     }))
     .into_response()
 }
@@ -910,7 +734,7 @@ async fn assets(Path(path): Path<String>) -> Response {
     if path.contains("..") || path.contains('\\') || asset_content_type(&path).is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let dist_roots = ["web/dist", "SOLANA_FLASHLOAN_ARBITUGE/web/dist"];
+    let dist_roots = ["web/dist"];
     for root in dist_roots {
         let Ok(dist_canonical) = std::path::Path::new(root).canonicalize() else {
             continue;
@@ -944,6 +768,10 @@ async fn health() -> &'static str {
     "OK\n"
 }
 
+async fn ticker_get(State(state): State<WebState>) -> Response {
+    Json(state.control.ticker()).into_response()
+}
+
 /// Builds the authenticated web router. `bind_addr` must be a loopback or
 /// private interface in production; public exposure is the reverse proxy's job.
 pub fn router(control: ControlService) -> anyhow::Result<Router> {
@@ -953,6 +781,7 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/logout", post(logout))
         .route("/api/status", get(status))
         .route("/api/telemetry", get(telemetry))
+        .route("/api/ticker", get(ticker_get))
         .route("/api/opportunities", get(opportunities))
         .route("/api/executions", get(executions))
         .route("/api/rejections", get(rejections))
@@ -990,6 +819,83 @@ async fn security_headers(req: axum::extract::Request, next: middleware::Next) -
 
 /// Spawns the web server bound to `bind_addr` (default `127.0.0.1:8080`).
 pub async fn serve(control: ControlService, bind_addr: &str) -> anyhow::Result<()> {
+    // Background task: stream live ticker ticks to connected WebSocket clients every 2 seconds
+    let ticker_control = control.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+        let binance_base = std::env::var("BINANCE_API_URL")
+            .unwrap_or_else(|_| "https://api.binance.com".to_string());
+        let coinbase_base = std::env::var("COINBASE_API_URL")
+            .unwrap_or_else(|_| "https://api.coinbase.com".to_string());
+        let binance_sol_url = format!("{}/api/v3/ticker/price?symbol=SOLUSDT", binance_base);
+        let coinbase_sol_url = format!("{}/v2/prices/SOL-USD/spot", coinbase_base);
+
+        loop {
+            interval.tick().await;
+            let mut sol_price = None;
+            if let Ok(resp) = client.get(&binance_sol_url).send().await {
+                if resp.status().is_success() {
+                    if let Ok(v) = resp.json::<serde_json::Value>().await {
+                        if let Some(p_str) = v.get("price").and_then(|p| p.as_str()) {
+                            if let Ok(p) = p_str.parse::<f64>() {
+                                if p > 0.0 && p.is_finite() {
+                                    sol_price = Some(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if sol_price.is_none() {
+                if let Ok(resp) = client.get(&coinbase_sol_url).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(v) = resp.json::<serde_json::Value>().await {
+                            if let Some(p_str) = v.pointer("/data/amount").and_then(|p| p.as_str())
+                            {
+                                if let Ok(p) = p_str.parse::<f64>() {
+                                    if p > 0.0 && p.is_finite() {
+                                        sol_price = Some(p);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let current = ticker_control.ticker();
+            if let Some(p) = sol_price {
+                let mut updated = current.clone();
+                if let Some(obj) = updated.as_object_mut() {
+                    obj.insert("sol_price_usd".to_string(), json!(p));
+                    obj.insert(
+                        "at_unix".to_string(),
+                        json!(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0)
+                        ),
+                    );
+                    if let Some(tokens) = obj.get_mut("tokens").and_then(|t| t.as_object_mut()) {
+                        if let Some(sol_item) =
+                            tokens.get_mut("SOL").and_then(|s| s.as_object_mut())
+                        {
+                            sol_item.insert("price".to_string(), json!(p));
+                        }
+                    }
+                }
+                ticker_control.update_ticker(updated);
+            } else if !current.is_null() {
+                ticker_control.update_ticker(current);
+            }
+        }
+    });
+
     let app = router(control)?;
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
     axum::serve(
@@ -1122,7 +1028,9 @@ mod tests {
     static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     fn test_control() -> ControlService {
-        let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let mode = Arc::new(std::sync::atomic::AtomicU8::new(
+            crate::BotMode::Simulate as u8,
+        ));
         ControlService::new(
             mode,
             Arc::new(KillSwitch::new()),
@@ -1363,5 +1271,91 @@ mod tests {
             token_mint_address("FARTCOIN"),
             "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
         );
+    }
+
+    #[tokio::test]
+    async fn ticker_route_serves_json_and_payload() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let app = router(test_control()).unwrap();
+        let res = app
+            .oneshot(Request::get("/api/ticker").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: Value = serde_json::from_slice(&body).unwrap();
+        assert!(val.get("sol_price_usd").is_some());
+        assert!(val.pointer("/tokens/SOL").is_some());
+        unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
+    }
+
+    #[tokio::test]
+    async fn opportunities_route_returns_live_opportunities_not_static_fallback() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let control = test_control();
+        let state = WebState::new(control.clone()).unwrap();
+        let ip = std::net::IpAddr::from([127, 0, 0, 1]);
+        let (token, _expires) = state.login(ip, PASSWORD).expect("login");
+        let auth = format!("Bearer {token}");
+        let app = Router::new()
+            .route("/api/opportunities", get(opportunities))
+            .with_state(state);
+
+        // 1. Initially empty: should return empty array [], NOT static 73.77 or 134.5
+        let res = app
+            .clone()
+            .oneshot(
+                Request::get("/api/opportunities")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(val, serde_json::json!([]));
+
+        // 2. When live opportunity is recorded, it appears immediately
+        control.record_opportunity(crate::control_service::OpportunityRecord {
+            captured_at_unix: 0,
+            slot: 400100,
+            route: "Orca \u{2192} Meteora [WIF/SOL]".to_string(),
+            protocol: "orca-to-meteora".to_string(),
+            borrow_lamports: 10_000_000_000,
+            expected_output_lamports: 10_250_000_000,
+            gross_profit_lamports: 250_000_000,
+            net_profit_lamports: 245_000_000,
+            eligible: true,
+            hop_quotes: vec![],
+            reject_reason: None,
+        });
+
+        let res2 = app
+            .oneshot(
+                Request::get("/api/opportunities")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let body2 = axum::body::to_bytes(res2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val2: Value = serde_json::from_slice(&body2).unwrap();
+        assert_eq!(val2.as_array().unwrap().len(), 1);
+        assert_eq!(val2[0]["slot"], 400100);
+        assert_eq!(val2[0]["route"], "Orca \u{2192} Meteora [WIF/SOL]");
+
+        unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
     }
 }

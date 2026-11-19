@@ -1,6 +1,8 @@
 //! DEX State Deserialization, Binary Parsing, and Unified Quoting Engine.
 
+pub mod decoders;
 pub mod dlmm_validation;
+pub mod engines;
 pub mod meteora_damm_v2;
 pub mod meteora_dbc;
 pub mod meteora_dlmm;
@@ -9,11 +11,18 @@ pub mod orca_whirlpool;
 pub mod programs;
 pub mod pump_fun;
 pub mod pump_swap;
+pub mod quote_engine;
 pub mod raydium_clmm;
 pub mod raydium_cpmm;
 pub mod raydium_launchlab;
 pub mod raydium_v4;
+pub mod token2022;
 pub mod traits;
+
+pub use decoders::*;
+pub use engines::*;
+pub use quote_engine::*;
+pub use token2022::{DANGEROUS_EXTENSIONS, HopTransferFeeBreakdown, TokenSemantics};
 
 pub use dlmm_validation::{
     DlmmValidationError, DlmmValidationResult, ValidatedDlmmPool, canonical_mint_pair,

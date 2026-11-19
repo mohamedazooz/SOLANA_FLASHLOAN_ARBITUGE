@@ -57,6 +57,8 @@ pub use three_leg_meme_pipeline::{
     ThreeLegMemePipelineResult, ThreeLegMemeSizeSearchResult, build_three_leg_meme_pipeline,
     diagnose_missing_cycles, simulate_profitability_gate,
 };
+pub mod three_pool_router;
+pub use three_pool_router::*;
 
 use arb_math::{
     DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters, Leg,

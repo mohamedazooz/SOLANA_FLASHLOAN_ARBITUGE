@@ -188,6 +188,8 @@ pub struct JitoConfig {
 pub struct WalletConfig {
     pub keypair_path: String,
     pub cold_wallet_pubkey: Option<String>,
+    #[serde(default)]
+    pub profit_wallet: Option<String>,
     pub min_sol_balance_lamports: u64,
 }
 
@@ -487,6 +489,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
         wallet: WalletConfig {
             keypair_path: arb.wallet.keypair_path,
             cold_wallet_pubkey: arb.wallet.cold_wallet_pubkey,
+            profit_wallet: None,
             min_sol_balance_lamports: arb.wallet.min_sol_balance_lamports.0,
         },
         strategy: StrategyConfig {
@@ -558,13 +561,76 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
     let mut config: Config = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
 
-    // The deployment environment is the source of truth for the notional cap.
-    if let Ok(raw) = std::env::var("MAX_TRADE_SIZE_USD") {
-        let value: f64 = raw.parse().context("MAX_TRADE_SIZE_USD must be numeric")?;
-        if !value.is_finite() || value <= 0.0 {
-            anyhow::bail!("MAX_TRADE_SIZE_USD must be positive and finite");
+    // Profit wallet override from environment
+    if let Ok(raw) = std::env::var("PROFIT_WALLET").or_else(|_| std::env::var("COLD_WALLET")) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && !trimmed.contains("REPLACE_ME") {
+            config.wallet.profit_wallet = Some(trimmed.to_string());
+            config.wallet.cold_wallet_pubkey = Some(trimmed.to_string());
         }
-        config.risk.max_trade_size_usd = value;
+    }
+
+    // Trade sizing override (MAX_TRADE_SIZE or MAX_TRADE_SIZE_USD)
+    if let Ok(raw) =
+        std::env::var("MAX_TRADE_SIZE").or_else(|_| std::env::var("MAX_TRADE_SIZE_USD"))
+    {
+        if let Ok(value) = raw.trim().parse::<f64>() {
+            if value.is_finite() && value > 0.0 {
+                config.risk.max_trade_size_usd = value;
+            }
+        }
+    }
+
+    // Daily loss override
+    if let Ok(raw) =
+        std::env::var("MAX_DAILY_LOSS").or_else(|_| std::env::var("MAX_DAILY_LOSS_USD"))
+    {
+        if let Ok(value) = raw.trim().parse::<f64>() {
+            if value.is_finite() && value > 0.0 {
+                config.risk.max_daily_loss_usd = value;
+            }
+        }
+    }
+
+    // Concurrent trades / in-flight limit
+    if let Ok(raw) = std::env::var("MAX_CONCURRENT_TRADES") {
+        if let Ok(value) = raw.trim().parse::<u32>() {
+            if value > 0 {
+                config.risk.max_inflight_bundles = value;
+            }
+        }
+    }
+
+    // Min net profit override
+    if let Ok(raw) =
+        std::env::var("MIN_NET_PROFIT").or_else(|_| std::env::var("MIN_NET_PROFIT_LAMPORTS"))
+    {
+        if let Ok(value) = raw.trim().parse::<u64>() {
+            config.strategy.min_net_profit_abs = value;
+        }
+    }
+
+    // Slippage BPS override
+    if let Ok(raw) = std::env::var("MAX_SLIPPAGE_BPS") {
+        if let Ok(value) = raw.trim().parse::<u64>() {
+            config.strategy.hop_slippage_bps = value;
+        }
+    }
+
+    // Priority fee override
+    if let Ok(raw) = std::env::var("MAX_PRIORITY_FEE") {
+        if let Ok(value) = raw.trim().parse::<u64>() {
+            config.strategy.priority_fee_max_share_bps = value;
+        }
+    }
+
+    // Max transaction failures
+    if let Ok(raw) = std::env::var("MAX_TRANSACTION_FAILURES") {
+        if let Ok(value) = raw.trim().parse::<u64>() {
+            if value > 0 {
+                config.risk.max_consecutive_failures = value;
+            }
+        }
     }
     if let Ok(raw) = std::env::var("CHRONOS_DECAY_LAMBDA_PER_SEC") {
         let value: f64 = raw

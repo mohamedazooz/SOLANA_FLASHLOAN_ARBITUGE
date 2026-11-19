@@ -26,7 +26,7 @@ fn parse_args() -> Result<Args> {
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Solana Arbitrage Bot\n\nUsage: arb-bot [OPTIONS]\n\nOptions:\n  -c, --config <PATH>  Path to configuration TOML [default: auto-detected]\n  -h, --help           Print help\n\nMode is controlled by environment only:\n  ARB_MODE=simulate|live|canary  (default: simulate)\n  live additionally requires ARB_LIVE=1"
+                    "Solana Arbitrage Bot\n\nUsage: arb-bot [OPTIONS]\n\nOptions:\n  -c, --config <PATH>  Path to configuration TOML [default: auto-detected]\n  -h, --help           Print help\n\nMode is controlled by environment only:\n  ARB_MODE=observe|analyze|simulate|paper_trade|live  (default: observe)\n  live additionally requires ARB_LIVE=1"
                 );
                 std::process::exit(0);
             }
@@ -52,28 +52,25 @@ fn parse_args() -> Result<Args> {
     }
 
     // Mode is environment-controlled only. Precedence:
-    // 1. `shadow-only` cargo feature (Docker shadow image): simulate, always.
-    // 2. `ARB_MODE` (explicit simulate|live|canary)
-    // 3. Legacy arming flags: ARB_CANARY, ARB_LIVE/LIVE/EXECUTE_LIVE
-    // 4. Safe fallback: "simulate" (non-broadcast)
+    // 1. `shadow-only` cargo feature (Docker shadow image): observe, always.
+    // 2. `ARB_MODE` (explicit observe|analyze|simulate|paper_trade|live|canary)
+    // 3. Legacy arming flags: ARB_CANARY, ARB_LIVE/LIVE/EXECUTE_LIVE/LIVE_TRADING
+    // 4. Safe fallback: "observe" (monitoring only)
     let mode_str = if cfg!(feature = "shadow-only") {
-        eprintln!("shadow-only build: live/canary arming is compiled out; forcing simulate");
-        "simulate".to_string()
+        eprintln!("shadow-only build: live/canary arming is compiled out; forcing observe");
+        "observe".to_string()
     } else if let Ok(m) = std::env::var("ARB_MODE") {
         if !m.trim().is_empty() {
             m
         } else {
-            "simulate".to_string()
+            "observe".to_string()
         }
     } else if std::env::var("ARB_CANARY").is_ok() {
         "canary".to_string()
-    } else if std::env::var("ARB_LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        || std::env::var("LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        || std::env::var("EXECUTE_LIVE").is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-    {
+    } else if live_execution_enabled() {
         "live".to_string()
     } else {
-        "simulate".to_string()
+        "observe".to_string()
     };
 
     let mode: BotMode = mode_str.parse()?;

@@ -5,6 +5,115 @@
 //! statements became `return Ok(())`, which is behavior-preserving because the
 //! only code after the call site in `run()` is the loop bottom.
 use super::*;
+use std::collections::HashSet;
+
+pub(crate) fn extract_pool_mid_price(
+    p: &PoolState,
+    expected_base_mint: &str,
+    expected_quote_mint: &str,
+    base_decimals: u8,
+    quote_decimals: u8,
+) -> Option<(f64, &'static str)> {
+    let b_str = p.base_mint.0.to_string();
+    let q_str = p.quote_mint.0.to_string();
+
+    let is_direct = b_str == expected_base_mint && q_str == expected_quote_mint;
+    let is_inverted = b_str == expected_quote_mint && q_str == expected_base_mint;
+
+    if !is_direct && !is_inverted {
+        return None;
+    }
+
+    let venue = match p.protocol {
+        DexProtocol::OrcaWhirlpool => "Orca Whirlpool",
+        DexProtocol::MeteoraDlmm => "Meteora DLMM",
+        DexProtocol::RaydiumV4 | DexProtocol::RaydiumClmm | DexProtocol::RaydiumCpmm => "Raydium",
+        DexProtocol::PumpSwap => "PumpSwap",
+        DexProtocol::PumpFun => "Pump.fun",
+        _ => "DEX Pool",
+    };
+
+    // p.base_mint corresponds to pool token A (decimals_a)
+    // p.quote_mint corresponds to pool token B (decimals_b)
+    let pool_dec_a = if p.decimals_a > 0 {
+        p.decimals_a
+    } else if is_direct {
+        base_decimals
+    } else {
+        quote_decimals
+    };
+    let pool_dec_b = if p.decimals_b > 0 {
+        p.decimals_b
+    } else if is_direct {
+        quote_decimals
+    } else {
+        base_decimals
+    };
+
+    let dec_diff = (pool_dec_a as i32) - (pool_dec_b as i32);
+
+    // 1. CLMM (Orca Whirlpools, Raydium CLMM) via sqrt_price (Q64.64)
+    if let Some(clmm) = &p.clmm {
+        if clmm.sqrt_price > 0 {
+            let sqrt_p = (clmm.sqrt_price as f64) / 18446744073709551616.0;
+            let p_raw = sqrt_p * sqrt_p;
+            let human_b_per_a = p_raw * 10f64.powi(dec_diff);
+            if human_b_per_a > 0.0 && human_b_per_a.is_finite() {
+                let price = if is_direct {
+                    human_b_per_a
+                } else {
+                    1.0 / human_b_per_a
+                };
+                if price > 0.0 && price.is_finite() {
+                    return Some((price, venue));
+                }
+            }
+        }
+    }
+
+    // 2. Meteora DLMM via active_bin_id
+    if let Some(dlmm) = &p.dlmm {
+        if let Ok(price_q64) =
+            arb_math::dlmm::get_price_from_id(dlmm.active_bin_id, dlmm.bin_step_bps)
+        {
+            if price_q64 > 0 {
+                let p_raw = (price_q64 as f64) / 18446744073709551616.0;
+                let human_b_per_a = p_raw * 10f64.powi(dec_diff);
+                if human_b_per_a > 0.0 && human_b_per_a.is_finite() {
+                    let price = if is_direct {
+                        human_b_per_a
+                    } else {
+                        1.0 / human_b_per_a
+                    };
+                    if price > 0.0 && price.is_finite() {
+                        return Some((price, venue));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Constant Product / Standard reserves
+    if p.reserve_in > 0 && p.reserve_out > 0 {
+        let res_a = (p.reserve_in as f64) / 10f64.powi(pool_dec_a as i32);
+        let res_b = (p.reserve_out as f64) / 10f64.powi(pool_dec_b as i32);
+        if res_a > 0.0 && res_b > 0.0 {
+            let human_b_per_a = res_b / res_a;
+            if human_b_per_a > 0.0 && human_b_per_a.is_finite() {
+                let price = if is_direct {
+                    human_b_per_a
+                } else {
+                    1.0 / human_b_per_a
+                };
+                if price > 0.0 && price.is_finite() {
+                    return Some((price, venue));
+                }
+            }
+        }
+    }
+
+    None
+}
 
 impl Supervisor {
     pub(super) async fn strategy_cycle(
@@ -66,45 +175,9 @@ impl Supervisor {
         let market_snap = self.ingest.snapshot();
         let pools: Vec<PoolState> = market_snap.snapshot_pools();
         arb_metrics::observe_state_processing_latency_us(state_start.elapsed().as_micros() as f64);
-        // Track live SOL price from any active SOL-USDC pool (Raydium, Orca, Meteora).
-        // Using all three venues improves price freshness and cross-checks accuracy.
-        let wsol_str = arb_tx::WSOL_MINT;
-        let usdc_str = arb_tx::USDC_MINT;
-        let mut onchain_sol_price = None;
-        for p in &pools {
-            if current_slot.0.saturating_sub(p.last_update_slot)
-                > self.config.strategy.max_state_age_slots
-            {
-                continue;
-            }
-            let is_sol_usdc = (p.base_mint.0.to_string() == wsol_str
-                && p.quote_mint.0.to_string() == usdc_str)
-                || (p.base_mint.0.to_string() == usdc_str
-                    && p.quote_mint.0.to_string() == wsol_str);
-            if is_sol_usdc && p.reserve_in > 0 && p.reserve_out > 0 {
-                let (sol_res, usdc_res) = if p.base_mint.0.to_string() == wsol_str {
-                    (p.reserve_in as f64 / 1e9, p.reserve_out as f64 / 1e6)
-                } else {
-                    (p.reserve_out as f64 / 1e9, p.reserve_in as f64 / 1e6)
-                };
-                if sol_res > 0.0 {
-                    let price = usdc_res / sol_res;
-                    if price > 0.0 && price.is_finite() {
-                        onchain_sol_price = Some(price);
-                        *self.last_known_live_sol_price.write() = price;
-                        self.telegram.update_sol_price(price);
-                        break; // first live SOL/USDC price is sufficient
-                    }
-                }
-            }
-        }
-        if onchain_sol_price.is_none() {
-            // Fall back to live market price tracked by TelegramNotifier (Binance/Coinbase live feed)
-            let mkt_price = self.telegram.sol_price();
-            if mkt_price > 0.0 && mkt_price.is_finite() {
-                *self.last_known_live_sol_price.write() = mkt_price;
-            }
-        }
+        // Track live on-chain token prices from active pools (Raydium, Orca Whirlpool, Meteora DLMM).
+        // Using all venues extracts actual market mid-prices and cross-checks accuracy.
+        self.compute_and_publish_ticker(current_slot);
 
         let discovery_start = std::time::Instant::now();
 
@@ -145,6 +218,9 @@ impl Supervisor {
                 }
             }
         }
+
+        // Evaluate and record cross-pool candidate routes across all matching pools in MarketStateCache
+        self.evaluate_and_record_cross_pool_routes(current_slot, &pools, max_sizing);
 
         if max_sizing == 0 {
             debug!(
@@ -228,6 +304,9 @@ impl Supervisor {
             };
             let mut cross_opps = scan.opportunities;
             let cross_stats = scan.stats;
+            if let Some(control) = self.control() {
+                control.record_evaluations(cross_stats.directions_evaluated as u64);
+            }
             let cross_rejections = scan.rejections;
             {
                 use arb_engine::CrossPoolRejectionReason as RR;
@@ -547,7 +626,11 @@ impl Supervisor {
                     net_profit_lamports: o.net_profit.0 as i64,
                     eligible: o.net_profit.0 > 0,
                     hop_quotes,
-                    reject_reason: None,
+                    reject_reason: if o.net_profit.0 > 0 {
+                        None
+                    } else {
+                        Some("BELOW_MIN_PROFIT_HURDLE".to_string())
+                    },
                 });
             }
         }
@@ -690,5 +773,161 @@ mod rank_tests {
             .collect();
         assert_eq!(meme_group_ids[0], [9u8; 32]);
         assert_eq!(meme_group_ids[1], [8u8; 32]);
+    }
+
+    fn test_pool(
+        protocol: DexProtocol,
+        base_mint: Pubkey,
+        quote_mint: Pubkey,
+        decimals_a: u8,
+        decimals_b: u8,
+        reserve_in: u128,
+        reserve_out: u128,
+    ) -> PoolState {
+        PoolState {
+            pool_id: arb_types::PoolId::new([1u8; 32]),
+            protocol,
+            slot: Slot(100),
+            write_version: 1,
+            base_mint: MintId(base_mint),
+            quote_mint: MintId(quote_mint),
+            decimals_a,
+            decimals_b,
+            reserve_in,
+            reserve_out,
+            fee_numerator: 25,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: arb_types::PoolKind::Cpmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            last_update_slot: 100,
+            last_update_ms: 0,
+        }
+    }
+
+    #[test]
+    fn test_extract_pool_mid_price_direct_and_inverted() {
+        use arb_types::ClmmState;
+
+        let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
+
+        // 1. Direct CPMM pool: base = WSOL (9 dec), quote = USDC (6 dec)
+        // 100 SOL (100 * 10^9 atomic) and 20,000 USDC (20,000 * 10^6 atomic)
+        // Price should be 20,000 / 100 = 200.0 USD per SOL.
+        let mut pool_direct = test_pool(
+            DexProtocol::RaydiumV4,
+            wsol,
+            usdc,
+            9,
+            6,
+            100_000_000_000,
+            20_000_000_000,
+        );
+
+        let res = extract_pool_mid_price(
+            &pool_direct,
+            arb_constants::WSOL_MINT,
+            arb_constants::USDC_MINT,
+            9,
+            6,
+        );
+        assert!(res.is_some());
+        let (price, venue) = res.unwrap();
+        assert_eq!(venue, "Raydium");
+        assert!(
+            (price - 200.0).abs() < 1e-4,
+            "direct CPMM pool price expected ~200.0, got {price}"
+        );
+
+        // 2. Inverted CPMM pool: base = USDC (6 dec), quote = WSOL (9 dec)
+        // 20,000 USDC (20,000 * 10^6 atomic) and 100 SOL (100 * 10^9 atomic)
+        // Price of SOL in USDC must still be 200.0!
+        let mut pool_inverted = test_pool(
+            DexProtocol::RaydiumV4,
+            usdc,
+            wsol,
+            6,
+            9,
+            20_000_000_000,
+            100_000_000_000,
+        );
+
+        let res_inv = extract_pool_mid_price(
+            &pool_inverted,
+            arb_constants::WSOL_MINT,
+            arb_constants::USDC_MINT,
+            9,
+            6,
+        );
+        assert!(res_inv.is_some());
+        let (price_inv, _) = res_inv.unwrap();
+        assert!(
+            (price_inv - 200.0).abs() < 1e-4,
+            "inverted CPMM pool price expected ~200.0, got {price_inv}"
+        );
+
+        // 3. Direct CLMM pool (Orca Whirlpool): base = WSOL (9 dec), quote = USDC (6 dec)
+        // Raw price = 0.2 (200 * 10^-3). sqrt(0.2) * 2^64
+        let sqrt_0_2 = 0.4472135954999579_f64;
+        let clmm_direct_q64 = (sqrt_0_2 * 18446744073709551616.0) as u128;
+        pool_direct.protocol = DexProtocol::OrcaWhirlpool;
+        pool_direct.clmm = Some(ClmmState {
+            sqrt_price: clmm_direct_q64,
+            liquidity: 1_000_000,
+            tick_current: 0,
+            tick_spacing: 1,
+            fee_rate: 25,
+            tick_arrays: Vec::new(),
+        });
+
+        let res_clmm_dir = extract_pool_mid_price(
+            &pool_direct,
+            arb_constants::WSOL_MINT,
+            arb_constants::USDC_MINT,
+            9,
+            6,
+        );
+        assert!(res_clmm_dir.is_some());
+        let (p_clmm_dir, venue) = res_clmm_dir.unwrap();
+        assert_eq!(venue, "Orca Whirlpool");
+        assert!(
+            (p_clmm_dir - 200.0).abs() < 0.01,
+            "direct CLMM price expected ~200.0, got {p_clmm_dir}"
+        );
+
+        // 4. Inverted CLMM pool (Orca Whirlpool): base = USDC (6 dec), quote = WSOL (9 dec)
+        // Raw price = 5.0 (10^3 / 200). sqrt(5.0) * 2^64
+        let sqrt_5_0 = 2.23606797749979_f64;
+        let clmm_inv_q64 = (sqrt_5_0 * 18446744073709551616.0) as u128;
+        pool_inverted.protocol = DexProtocol::OrcaWhirlpool;
+        pool_inverted.clmm = Some(ClmmState {
+            sqrt_price: clmm_inv_q64,
+            liquidity: 1_000_000,
+            tick_current: 0,
+            tick_spacing: 1,
+            fee_rate: 25,
+            tick_arrays: Vec::new(),
+        });
+
+        let res_clmm_inv = extract_pool_mid_price(
+            &pool_inverted,
+            arb_constants::WSOL_MINT,
+            arb_constants::USDC_MINT,
+            9,
+            6,
+        );
+        assert!(res_clmm_inv.is_some());
+        let (p_clmm_inv, _) = res_clmm_inv.unwrap();
+        assert!(
+            (p_clmm_inv - 200.0).abs() < 0.01,
+            "inverted CLMM price expected ~200.0, got {p_clmm_inv}"
+        );
     }
 }
