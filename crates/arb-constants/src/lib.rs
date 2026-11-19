@@ -159,6 +159,25 @@ pub const RAYDIUM_CLMM_PROGRAM_ID: &str = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7gr
 pub const ORCA_WHIRLPOOL_PROGRAM_ID: &str = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc";
 /// Meteora DLMM (lb_clmm) Program ID.
 pub const METEORA_DLMM_PROGRAM_ID: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+
+// ============================================================================
+// CLMM sqrt-price official bounds (Q64.64)
+// ============================================================================
+
+/// Minimum `sqrt_price_x64` shared by Orca Whirlpools, Raydium CLMM, and Meteora
+/// DAMM v2 (`1.0001^(-443636/2)` in Q64.64).
+/// Source (verified 2026-11-19): orca-so/whirlpools `rust-sdk/core/src/constants/swap.rs`,
+/// raydium-io/raydium-clmm `programs/amm/src/libraries/tick_math.rs`,
+/// MeteoraAg/damm-v2 `programs/cp-amm/src/constants.rs` — identical in all three.
+pub const CLMM_MIN_SQRT_PRICE_X64: u128 = 4_295_048_016;
+/// Orca Whirlpools official `MAX_SQRT_PRICE` (orca_whirlpools_core 2.1.1, latest
+/// crates.io release at verification time).
+pub const ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64: u128 = 79_226_673_515_401_279_992_447_579_055;
+/// Raydium CLMM official `MAX_SQRT_PRICE_X64` (TickArray-based program source).
+pub const RAYDIUM_CLMM_MAX_SQRT_PRICE_X64: u128 = 79_226_673_521_066_979_257_578_248_091;
+/// Meteora DAMM v2 (cp-amm) official `MAX_SQRT_PRICE` — bit-identical to the
+/// Raydium CLMM bound (shared lineage constants).
+pub const METEORA_DAMM_V2_MAX_SQRT_PRICE_X64: u128 = 79_226_673_521_066_979_257_578_248_091;
 /// Pump.fun Bonding Curve Program ID.
 pub const PUMP_FUN_PROGRAM_ID: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 /// PumpSwap post-graduation AMM Program ID.
@@ -607,6 +626,23 @@ mod tests {
         assert_eq!(slot_tip_known, tip_a);
         let slot_tip_unknown = jito_tip_account_for_slot(12345, None);
         assert!(seen.contains(&slot_tip_unknown));
+    }
+
+    #[test]
+    fn test_clmm_sqrt_price_bounds_match_official_program_values() {
+        assert_eq!(CLMM_MIN_SQRT_PRICE_X64, 4_295_048_016);
+        assert_eq!(
+            ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64,
+            79_226_673_515_401_279_992_447_579_055
+        );
+        assert_eq!(
+            RAYDIUM_CLMM_MAX_SQRT_PRICE_X64,
+            79_226_673_521_066_979_257_578_248_091
+        );
+        assert_eq!(
+            METEORA_DAMM_V2_MAX_SQRT_PRICE_X64,
+            79_226_673_521_066_979_257_578_248_091
+        );
     }
 
     #[test]

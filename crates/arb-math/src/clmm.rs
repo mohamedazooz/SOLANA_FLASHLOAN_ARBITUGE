@@ -15,8 +15,17 @@ pub const MAX_TICK_INDEX: i32 = 443_636;
 pub const MIN_TICK: i32 = MIN_TICK_INDEX;
 pub const MAX_TICK: i32 = MAX_TICK_INDEX;
 
+/// Shared validation floor for all supported CLMM programs (identical in Orca,
+/// Raydium CLMM, and Meteora DAMM v2 sources). See
+/// `arb_constants::CLMM_MIN_SQRT_PRICE_X64`.
 pub const MIN_SQRT_PRICE_X64: u128 = 4_295_048_016;
-pub const MAX_SQRT_PRICE_X64: u128 = 79_226_673_515_401_499_993_453_864_427;
+/// Endpoint of this module's tick conversion
+/// (`tick_index_to_sqrt_price_x64(MAX_TICK)`) = official Orca 2.1.1
+/// `MAX_SQRT_PRICE` + 6 Q64.64 units (within the 16-unit parity tolerance).
+/// Per-program exact official upper bounds live in `arb-constants`; the Orca
+/// bound is the tightest, so this envelope never accepts a decoded sqrt price
+/// meaningfully above any supported program's official range.
+pub const MAX_SQRT_PRICE_X64: u128 = 79_226_673_515_401_279_992_447_579_061;
 pub const Q64: u128 = 1u128 << 64;
 
 pub const FEE_RATE_DENOMINATOR: u64 = 1_000_000;
@@ -216,6 +225,28 @@ pub fn sqrt_price_x64_to_tick_index(sqrt_price_x64: u128) -> Result<i32, ClmmMat
         }
     }
     Ok(low.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX))
+}
+
+/// Fail-closed pool-state validation against Orca Whirlpools' official
+/// `MIN/MAX_SQRT_PRICE` range. A decoded `sqrt_price_x64` of `0` (uninitialized
+/// pool) is intentionally not accepted here; quote paths already reject it.
+pub fn sqrt_price_x64_in_orca_whirlpool_bounds(sqrt_price_x64: u128) -> bool {
+    (arb_constants::CLMM_MIN_SQRT_PRICE_X64..=arb_constants::ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64)
+        .contains(&sqrt_price_x64)
+}
+
+/// Fail-closed pool-state validation against Raydium CLMM's official
+/// `MIN/MAX_SQRT_PRICE_X64` range (`tick_math.rs`).
+pub fn sqrt_price_x64_in_raydium_clmm_bounds(sqrt_price_x64: u128) -> bool {
+    (arb_constants::CLMM_MIN_SQRT_PRICE_X64..=arb_constants::RAYDIUM_CLMM_MAX_SQRT_PRICE_X64)
+        .contains(&sqrt_price_x64)
+}
+
+/// Fail-closed pool-state validation against Meteora DAMM v2's official
+/// `MIN/MAX_SQRT_PRICE` range (`constants.rs`).
+pub fn sqrt_price_x64_in_meteora_damm_v2_bounds(sqrt_price_x64: u128) -> bool {
+    (arb_constants::CLMM_MIN_SQRT_PRICE_X64..=arb_constants::METEORA_DAMM_V2_MAX_SQRT_PRICE_X64)
+        .contains(&sqrt_price_x64)
 }
 
 /// Compute input/output amount Delta A (Token X) between two sqrt prices with active liquidity L.

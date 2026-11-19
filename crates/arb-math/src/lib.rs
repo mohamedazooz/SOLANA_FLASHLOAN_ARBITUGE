@@ -55,8 +55,9 @@ pub use clmm::{
     find_next_tick_boundary, get_amount_delta_a, get_amount_delta_b, get_delta_x, get_delta_y,
     get_next_sqrt_price_from_a_input, get_next_sqrt_price_from_b_input, get_start_tick_index,
     is_token_a, is_token_a_pubkey, parse_tick_array_account, quote_clmm,
-    sqrt_price_x64_to_tick_index, tick_index_to_sqrt_price_x64, tick_to_sqrt_price_x64,
-    update_liquidity_on_cross,
+    sqrt_price_x64_in_meteora_damm_v2_bounds, sqrt_price_x64_in_orca_whirlpool_bounds,
+    sqrt_price_x64_in_raydium_clmm_bounds, sqrt_price_x64_to_tick_index,
+    tick_index_to_sqrt_price_x64, tick_to_sqrt_price_x64, update_liquidity_on_cross,
 };
 pub use cpmm::*;
 pub use damm_v2::{

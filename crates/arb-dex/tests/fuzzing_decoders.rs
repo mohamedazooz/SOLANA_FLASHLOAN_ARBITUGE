@@ -12,8 +12,9 @@
 //! a clean, fail-closed `Err(...)`.
 
 use arb_dex::{
-    AmmPool, orca_whirlpool::OrcaWhirlpool, pump_fun::PumpFunBondingCurve,
-    pump_swap::PumpSwapPoolHeader, raydium_v4::RaydiumV4Pool,
+    AmmPool, meteora_damm_v2::MeteoraDammV2Pool, orca_whirlpool::OrcaWhirlpool,
+    pump_fun::PumpFunBondingCurve, pump_swap::PumpSwapPoolHeader, raydium_clmm::RaydiumClmmPool,
+    raydium_v4::RaydiumV4Pool,
 };
 use arb_types::{MintId, PoolId};
 use proptest::collection::vec;
@@ -86,4 +87,46 @@ proptest! {
         // Feeding correct discriminator with arbitrary body must never panic
         let _ = PumpSwapPoolHeader::decode(&data);
     }
+}
+
+#[test]
+fn orca_whirlpool_rejects_sqrt_price_outside_official_bounds() {
+    let mut pool = OrcaWhirlpool::new(
+        PoolId(Pubkey::new_unique()),
+        MintId(Pubkey::new_unique()),
+        MintId(Pubkey::new_unique()),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        64,
+        25,
+    );
+    let mut data = vec![0u8; arb_dex::orca_whirlpool::WHIRLPOOL_MIN_SIZE];
+    data[49..65].copy_from_slice(&1u128.to_le_bytes());
+    let orca_max = arb_constants::ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64;
+    data[65..81].copy_from_slice(&(orca_max + 1).to_le_bytes());
+    assert!(pool.update_from_account(&data).is_err());
+    data[65..81].copy_from_slice(&orca_max.to_le_bytes());
+    assert!(pool.update_from_account(&data).is_ok());
+}
+
+#[test]
+fn raydium_clmm_rejects_sqrt_price_outside_official_bounds() {
+    let mut data = vec![0u8; arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_MIN_SIZE];
+    data[237..253].copy_from_slice(&1u128.to_le_bytes());
+    let raydium_max = arb_constants::RAYDIUM_CLMM_MAX_SQRT_PRICE_X64;
+    data[253..269].copy_from_slice(&(raydium_max + 1).to_le_bytes());
+    assert!(RaydiumClmmPool::from_account(PoolId(Pubkey::new_unique()), &data).is_err());
+    data[253..269].copy_from_slice(&raydium_max.to_le_bytes());
+    assert!(RaydiumClmmPool::from_account(PoolId(Pubkey::new_unique()), &data).is_ok());
+}
+
+#[test]
+fn meteora_damm_v2_rejects_sqrt_price_outside_official_bounds() {
+    let mut data = vec![0u8; arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE];
+    data[360..376].copy_from_slice(&1u128.to_le_bytes());
+    let damm_max = arb_constants::METEORA_DAMM_V2_MAX_SQRT_PRICE_X64;
+    data[456..472].copy_from_slice(&(damm_max + 1).to_le_bytes());
+    assert!(MeteoraDammV2Pool::from_account(PoolId(Pubkey::new_unique()), &data).is_err());
+    data[456..472].copy_from_slice(&damm_max.to_le_bytes());
+    assert!(MeteoraDammV2Pool::from_account(PoolId(Pubkey::new_unique()), &data).is_ok());
 }
