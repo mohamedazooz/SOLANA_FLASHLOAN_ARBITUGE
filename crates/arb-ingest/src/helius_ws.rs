@@ -134,9 +134,15 @@ impl HeliusWsClient {
     }
 
     pub fn from_env() -> Option<Self> {
-        let urls = Self::collect_ws_urls(|k| std::env::var(k).ok());
+        let mut urls = Self::collect_ws_urls(|k| std::env::var(k).ok());
         if urls.is_empty() {
-            return None;
+            // Configurable fallback to Solana Public WebSockets
+            let primary = std::env::var("SOLANA_MAINNET_PUBLIC_WS")
+                .unwrap_or_else(|_| "wss://api.mainnet-beta.solana.com".to_string());
+            let fallback = std::env::var("SOLANA_PUBLICNODE_WS")
+                .unwrap_or_else(|_| "wss://solana-rpc.publicnode.com".to_string());
+            urls.push(primary);
+            urls.push(fallback);
         }
         Some(Self::new(urls))
     }
@@ -146,8 +152,11 @@ impl HeliusWsClient {
         F: Fn(&str) -> Option<String>,
     {
         let mut urls = Vec::new();
-        // Priority 1: Multi-provider endpoints prioritizing SOLAMI, SHYFT, and HELIUS
+        // Priority 1: Multi-provider endpoints prioritizing explicit WS_URLs, SOLAMI, SHYFT, and HELIUS
         for key in [
+            "WS_URL_PRIMARY",
+            "WS_URL_SECONDARY",
+            "WS_URL_FALLBACK",
             "SOLAMI_WS_URL",
             "SOLAMI_WS",
             "SHYFT_WS",
@@ -629,6 +638,7 @@ impl HeliusWsClient {
                     info!(
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
+                    info!(target: "arb_events", "WEBSOCKET_CONNECTED: endpoint={safe_url}");
 
                     // 1. Subscribe to real-time slot notifications (capability-gated:
                     //    skipped when WS_SLOT_SUBSCRIBE=0 or when this provider
@@ -745,6 +755,9 @@ impl HeliusWsClient {
                                     }
                                 };
                                 let Some(msg_res) = msg_opt else {
+                                    if !received_account_update {
+                                        self.record_connect_backoff(idx, "stream ended immediately by peer");
+                                    }
                                     warn!("WebSocket stream ended by peer ([{endpoint_num}/{total_endpoints}] {safe_url}); failing over");
                                     break;
                                 };
@@ -787,6 +800,9 @@ impl HeliusWsClient {
                                         // Heartbeat acknowledgement received
                                     }
                                     Ok(Message::Close(_)) => {
+                                        if !received_account_update {
+                                            self.record_connect_backoff(idx, "closed immediately by peer");
+                                        }
                                         warn!("WebSocket closed by server ([{endpoint_num}/{total_endpoints}] {safe_url}); failing over");
                                         break;
                                     }

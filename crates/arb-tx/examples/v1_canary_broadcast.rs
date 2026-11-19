@@ -84,6 +84,18 @@ fn rpc_endpoint() -> anyhow::Result<String> {
             }
         }
     }
+    for path in [".env", "../../.env", "SOLANA_FLASHLOAN_ARBITUGE/.env"] {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for line in content.lines() {
+                if let Some(v) = line.strip_prefix("SOLANA_RPC_PRIMARY=") {
+                    let v = v.trim().trim_matches('"').to_string();
+                    if !v.is_empty() {
+                        return Ok(v);
+                    }
+                }
+            }
+        }
+    }
     anyhow::bail!("no RPC endpoint configured (set SOLANA_RPC_PRIMARY)")
 }
 
@@ -111,7 +123,23 @@ async fn rpc_call(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let started = Instant::now();
-    let secret = std::env::var("SOLANA_PRIVATE_KEY").map_err(|_| {
+    let mut secret = std::env::var("SOLANA_PRIVATE_KEY").ok();
+    if secret.is_none() {
+        for path in [".env", "../../.env", "SOLANA_FLASHLOAN_ARBITUGE/.env"] {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                for line in content.lines() {
+                    if let Some(v) = line.strip_prefix("SOLANA_PRIVATE_KEY=") {
+                        secret = Some(v.trim().trim_matches('"').to_string());
+                        break;
+                    }
+                }
+            }
+            if secret.is_some() {
+                break;
+            }
+        }
+    }
+    let secret = secret.ok_or_else(|| {
         anyhow::anyhow!("SOLANA_PRIVATE_KEY not set — refusing to run the canary unsigned")
     })?;
     let signer = KeypairSigner::from_base58(&secret)?;

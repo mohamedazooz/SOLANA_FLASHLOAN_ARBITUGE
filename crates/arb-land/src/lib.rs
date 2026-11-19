@@ -51,7 +51,7 @@ pub fn shared_dispatch_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
             .build()
@@ -289,43 +289,90 @@ impl JitoLander {
             "method": "getTipAccounts",
             "params": []
         });
-        let url = self.primary_endpoint();
-        let r = self
-            .apply_auth(self.client.post(&url))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ArbError::Internal(format!("getTipAccounts request failed: {e}")))?;
-        let status = r.status();
-        let text = r
-            .text()
-            .await
-            .map_err(|e| ArbError::Internal(format!("getTipAccounts body: {e}")))?;
-        if !status.is_success() {
-            return Err(ArbError::Internal(format!(
-                "getTipAccounts HTTP {status}: {text}"
-            )));
+
+        let mut last_err = None;
+        for url in self.endpoints() {
+            let res = self
+                .apply_auth(self.client.post(&url))
+                .json(&body)
+                .send()
+                .await;
+
+            let r = match res {
+                Ok(resp) => resp,
+                Err(e) => {
+                    last_err = Some(ArbError::Internal(format!(
+                        "getTipAccounts request failed on {url}: {e}"
+                    )));
+                    continue;
+                }
+            };
+
+            let status = r.status();
+            let text = match r.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    last_err = Some(ArbError::Internal(format!(
+                        "getTipAccounts body on {url}: {e}"
+                    )));
+                    continue;
+                }
+            };
+
+            if !status.is_success() {
+                last_err = Some(ArbError::Internal(format!(
+                    "getTipAccounts HTTP {status} on {url}: {text}"
+                )));
+                continue;
+            }
+
+            let v: Value = match serde_json::from_str(&text) {
+                Ok(val) => val,
+                Err(e) => {
+                    last_err = Some(ArbError::DeserializationError(format!(
+                        "getTipAccounts: {e}"
+                    )));
+                    continue;
+                }
+            };
+
+            if let Some(err) = v.get("error") {
+                last_err = Some(ArbError::Internal(format!(
+                    "getTipAccounts error on {url}: {err}"
+                )));
+                continue;
+            }
+
+            let accounts: Vec<String> = v
+                .get("result")
+                .and_then(|x| x.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if !accounts.is_empty() {
+                return Ok(accounts);
+            }
         }
-        let v: Value = serde_json::from_str(&text)
-            .map_err(|e| ArbError::DeserializationError(format!("getTipAccounts: {e}")))?;
-        if let Some(err) = v.get("error") {
-            return Err(ArbError::Internal(format!("getTipAccounts error: {err}")));
+
+        // If block engines were unreachable over public network jitter, fall back to canonical known constants
+        if !arb_constants::JITO_TIP_ACCOUNTS.is_empty() {
+            tracing::warn!(
+                "Jito getTipAccounts network endpoints were slow/unreachable; falling back to {} canonical tip accounts: {:?}",
+                arb_constants::JITO_TIP_ACCOUNTS.len(),
+                last_err
+            );
+            return Ok(arb_constants::JITO_TIP_ACCOUNTS
+                .iter()
+                .map(|s| s.to_string())
+                .collect());
         }
-        let accounts: Vec<String> = v
-            .get("result")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if accounts.is_empty() {
-            return Err(ArbError::Internal(
-                "getTipAccounts returned an empty account list".into(),
-            ));
-        }
-        Ok(accounts)
+
+        Err(last_err
+            .unwrap_or_else(|| ArbError::Internal("getTipAccounts: no accounts returned".into())))
     }
 
     /// Runtime verification: the hardcoded tip constants must match the live

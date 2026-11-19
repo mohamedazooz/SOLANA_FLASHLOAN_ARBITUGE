@@ -26,6 +26,9 @@ pub struct TelegramNotifier {
     chat_id: Option<String>,
     client: Client,
     sol_price: std::sync::Arc<parking_lot::RwLock<f64>>,
+    wif_price: std::sync::Arc<parking_lot::RwLock<f64>>,
+    popcat_price: std::sync::Arc<parking_lot::RwLock<f64>>,
+    fartcoin_price: std::sync::Arc<parking_lot::RwLock<f64>>,
     /// True only after a verified live source (Binance/Coinbase feed, on-chain
     /// SOL/USDC pool, or an operator-provided SOL_USD_PRICE) set the price.
     /// The 200.0 seed is a placeholder, never economic evidence.
@@ -68,15 +71,24 @@ impl TelegramNotifier {
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
             .filter(|p| *p > 0.0);
-        let initial_sol_price = env_sol_price.unwrap_or(200.0);
+        let initial_sol_price = env_sol_price.unwrap_or(0.0);
         let sol_price = std::sync::Arc::new(parking_lot::RwLock::new(initial_sol_price));
+        let wif_price = std::sync::Arc::new(parking_lot::RwLock::new(0.0));
+        let popcat_price = std::sync::Arc::new(parking_lot::RwLock::new(0.0));
+        let fartcoin_price = std::sync::Arc::new(parking_lot::RwLock::new(0.0));
         let sol_price_live =
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(env_sol_price.is_some()));
 
         let min_rejected_alert_sol = std::env::var("TELEGRAM_REJECTED_ALERT_MIN_SOL")
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
-            .unwrap_or(min_alert_usd / initial_sol_price);
+            .unwrap_or_else(|| {
+                if initial_sol_price > 0.0 {
+                    min_alert_usd / initial_sol_price
+                } else {
+                    0.005
+                }
+            });
         // Minimum gross profit percentage relative to loan size to trigger rejection alert (default 0.01% = 1 bps)
         let min_rejected_alert_pct = std::env::var("TELEGRAM_REJECTED_ALERT_MIN_PCT")
             .ok()
@@ -162,17 +174,29 @@ impl TelegramNotifier {
             debug!("Telegram credentials not fully configured — notifications disabled");
         }
 
-        // Spawn real-time live market price tracker for SOL/USD (Binance + Coinbase feed)
+        // Spawn real-time live market price tracker for SOL/USD, WIF, POPCAT, FARTCOIN (Binance + Coinbase feed)
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let client_price = client.clone();
             let sol_price_bg = sol_price.clone();
             let sol_price_live_bg = sol_price_live.clone();
+            let wif_price_bg = wif_price.clone();
+            let popcat_price_bg = popcat_price.clone();
+            let fartcoin_price_bg = fartcoin_price.clone();
             handle.spawn(async move {
+                let binance_base = std::env::var("BINANCE_API_URL")
+                    .unwrap_or_else(|_| "https://api.binance.com".to_string());
+                let binance_fapi_base = std::env::var("BINANCE_FAPI_URL")
+                    .unwrap_or_else(|_| "https://fapi.binance.com".to_string());
+                let coinbase_base = std::env::var("COINBASE_API_URL")
+                    .unwrap_or_else(|_| "https://api.coinbase.com".to_string());
+
                 loop {
-                    let mut fetched = None;
+                    // 1. SOL/USDT (Binance Spot)
+                    let mut fetched_sol = None;
+                    let sol_url = format!("{}/api/v3/ticker/price?symbol=SOLUSDT", binance_base);
                     if let Ok(resp) = client_price
-                        .get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT")
-                        .timeout(std::time::Duration::from_secs(5))
+                        .get(&sol_url)
+                        .timeout(std::time::Duration::from_secs(4))
                         .send()
                         .await
                     {
@@ -181,7 +205,7 @@ impl TelegramNotifier {
                                 if let Some(p_str) = json.get("price").and_then(|p| p.as_str()) {
                                     if let Ok(p) = p_str.parse::<f64>() {
                                         if p > 0.0 && p.is_finite() {
-                                            fetched = Some(p);
+                                            fetched_sol = Some(p);
                                         }
                                     }
                                 }
@@ -189,10 +213,11 @@ impl TelegramNotifier {
                         }
                     }
 
-                    if fetched.is_none() {
+                    if fetched_sol.is_none() {
+                        let coinbase_sol_url = format!("{}/v2/prices/SOL-USD/spot", coinbase_base);
                         if let Ok(resp) = client_price
-                            .get("https://api.coinbase.com/v2/prices/SOL-USD/spot")
-                            .timeout(std::time::Duration::from_secs(5))
+                            .get(&coinbase_sol_url)
+                            .timeout(std::time::Duration::from_secs(4))
                             .send()
                             .await
                         {
@@ -203,7 +228,7 @@ impl TelegramNotifier {
                                     {
                                         if let Ok(p) = p_str.parse::<f64>() {
                                             if p > 0.0 && p.is_finite() {
-                                                fetched = Some(p);
+                                                fetched_sol = Some(p);
                                             }
                                         }
                                     }
@@ -212,13 +237,81 @@ impl TelegramNotifier {
                         }
                     }
 
-                    if let Some(p) = fetched {
+                    if let Some(p) = fetched_sol {
                         *sol_price_bg.write() = p;
                         sol_price_live_bg.store(true, std::sync::atomic::Ordering::Relaxed);
-                        debug!("Live SOL/USD price updated from market feed: ${:.2}", p);
                     }
 
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    // 2. WIF/USDT (Binance Spot)
+                    let wif_url = format!("{}/api/v3/ticker/price?symbol=WIFUSDT", binance_base);
+                    if let Ok(resp) = client_price
+                        .get(&wif_url)
+                        .timeout(std::time::Duration::from_secs(4))
+                        .send()
+                        .await
+                    {
+                        if resp.status().is_success() {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if let Some(p_str) = json.get("price").and_then(|p| p.as_str()) {
+                                    if let Ok(p) = p_str.parse::<f64>() {
+                                        if p > 0.0 && p.is_finite() {
+                                            *wif_price_bg.write() = p;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 3. POPCAT/USDT (Binance Futures)
+                    let popcat_url = format!(
+                        "{}/fapi/v1/ticker/price?symbol=POPCATUSDT",
+                        binance_fapi_base
+                    );
+                    if let Ok(resp) = client_price
+                        .get(&popcat_url)
+                        .timeout(std::time::Duration::from_secs(4))
+                        .send()
+                        .await
+                    {
+                        if resp.status().is_success() {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if let Some(p_str) = json.get("price").and_then(|p| p.as_str()) {
+                                    if let Ok(p) = p_str.parse::<f64>() {
+                                        if p > 0.0 && p.is_finite() {
+                                            *popcat_price_bg.write() = p;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 4. FARTCOIN/USDT (Binance Futures)
+                    let fartcoin_url = format!(
+                        "{}/fapi/v1/ticker/price?symbol=FARTCOINUSDT",
+                        binance_fapi_base
+                    );
+                    if let Ok(resp) = client_price
+                        .get(&fartcoin_url)
+                        .timeout(std::time::Duration::from_secs(4))
+                        .send()
+                        .await
+                    {
+                        if resp.status().is_success() {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if let Some(p_str) = json.get("price").and_then(|p| p.as_str()) {
+                                    if let Ok(p) = p_str.parse::<f64>() {
+                                        if p > 0.0 && p.is_finite() {
+                                            *fartcoin_price_bg.write() = p;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 }
             });
         }
@@ -228,6 +321,9 @@ impl TelegramNotifier {
             chat_id,
             client,
             sol_price,
+            wif_price,
+            popcat_price,
+            fartcoin_price,
             sol_price_live,
             min_rejected_alert_sol,
             min_rejected_alert_pct,
@@ -256,7 +352,34 @@ impl TelegramNotifier {
 
     pub fn sol_price(&self) -> f64 {
         let p = *self.sol_price.read();
-        if p > 0.0 && p.is_finite() { p } else { 200.0 }
+        if p > 0.0 && p.is_finite() { p } else { 0.0 }
+    }
+
+    pub fn live_market_prices(&self) -> (f64, f64, f64, f64) {
+        (
+            *self.sol_price.read(),
+            *self.wif_price.read(),
+            *self.popcat_price.read(),
+            *self.fartcoin_price.read(),
+        )
+    }
+
+    pub fn update_wif_price(&self, price: f64) {
+        if price > 0.0 && price.is_finite() {
+            *self.wif_price.write() = price;
+        }
+    }
+
+    pub fn update_popcat_price(&self, price: f64) {
+        if price > 0.0 && price.is_finite() {
+            *self.popcat_price.write() = price;
+        }
+    }
+
+    pub fn update_fartcoin_price(&self, price: f64) {
+        if price > 0.0 && price.is_finite() {
+            *self.fartcoin_price.write() = price;
+        }
     }
 
     /// True only when the current SOL/USD price came from a verified live
@@ -670,8 +793,12 @@ impl TelegramNotifier {
         timings: &str,
     ) {
         let sig_display = signature.unwrap_or(bundle_id);
-        let solscan_link = format!("https://solscan.io/tx/{sig_display}");
-        let solana_fm_link = format!("https://solana.fm/tx/{sig_display}");
+        let solscan_base = std::env::var("SOLSCAN_TX_BASE_URL")
+            .unwrap_or_else(|_| "https://solscan.io/tx/".to_string());
+        let solana_fm_base = std::env::var("SOLANAFM_TX_BASE_URL")
+            .unwrap_or_else(|_| "https://solana.fm/tx/".to_string());
+        let solscan_link = format!("{}{sig_display}", solscan_base);
+        let solana_fm_link = format!("{}{sig_display}", solana_fm_base);
         let live_sol_price = self.sol_price();
         let price_label = self.sol_price_provenance_label();
         let profit_usd = if passed_profit_usd > 0.0 {
@@ -866,14 +993,16 @@ impl TelegramNotifier {
                     } else {
                         "Jito Leader".to_string()
                     };
+                    let solscan_base = std::env::var("SOLSCAN_TX_BASE_URL").unwrap_or_else(|_| "https://solscan.io/tx/".to_string());
                     format!(
-                        "• <b>{}</b>\n  💰 صافي الربح: <b>+{:.6} SOL</b> (~${:.2})\n  🏦 القرض: {:.4} SOL | أحواض: {}\n  👑 البيلدر: {}\n  🔗 <a href=\"https://solscan.io/tx/{}\">{}</a> (سلوت {})",
+                        "• <b>{}</b>\n  💰 صافي الربح: <b>+{:.6} SOL</b> (~${:.2})\n  🏦 القرض: {:.4} SOL | أحواض: {}\n  👑 البيلدر: {}\n  🔗 <a href=\"{}{}\">{}</a> (سلوت {})",
                         esc(&t.route),
                         t.profit_sol,
                         t.profit_usd,
                         t.loan_sol,
                         pools_info,
                         esc(&leader_info),
+                        solscan_base,
                         esc(&t.signature),
                         esc(&sig_short),
                         t.slot
@@ -1073,6 +1202,9 @@ mod tests {
             chat_id: None,
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            wif_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            popcat_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            fartcoin_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
             sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             min_rejected_alert_sol: 0.005,
             min_rejected_alert_pct: 0.01,
@@ -1102,6 +1234,9 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            wif_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            popcat_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            fartcoin_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
             sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.005,
             min_rejected_alert_pct: 0.01,
@@ -1166,6 +1301,9 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            wif_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            popcat_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            fartcoin_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
             sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.001,
             min_rejected_alert_pct: 0.01,
@@ -1212,6 +1350,9 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(200.0)),
+            wif_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            popcat_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            fartcoin_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
             sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.001,
             min_rejected_alert_pct: 0.01,
@@ -1250,6 +1391,9 @@ mod tests {
             chat_id: Some("123456789".to_string()),
             client: reqwest::Client::new(),
             sol_price: std::sync::Arc::new(parking_lot::RwLock::new(215.50)),
+            wif_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            popcat_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            fartcoin_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
             sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             min_rejected_alert_sol: 0.001,
             // 0.02% (2 bps) percentage threshold

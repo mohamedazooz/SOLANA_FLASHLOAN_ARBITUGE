@@ -4,6 +4,8 @@
 
 pub mod gmgn;
 pub use gmgn::{GmgnClient, TrendingToken};
+pub mod solscan;
+pub use solscan::{SolscanClient, SolscanConfig, SolscanMarketPair, SolscanTokenMeta};
 pub mod meteora_data_api;
 pub use meteora_data_api::{DiscoveredMeteoraPool, MeteoraDataApiClient, MeteoraPoolItem};
 pub mod dependency_manifest;
@@ -96,6 +98,8 @@ pub use bitquery::{
 };
 pub mod helius_ws;
 pub use helius_ws::HeliusWsClient;
+pub mod transaction_rpc;
+pub use transaction_rpc::TransactionRpcAdapter;
 
 use arb_types::{ArbError, PoolId, PoolState, Result, Slot};
 use parking_lot::RwLock;
@@ -580,6 +584,7 @@ impl IngestClient {
     pub fn apply_pool_update(&self, pool_state: PoolState) -> Result<bool> {
         let slot_val = pool_state.slot.0;
         if self.slot_is_dead(slot_val) {
+            tracing::debug!(target: "arb_events", "POOL_INVALID: pool={} slot={} reason=dead_slot", pool_state.pool_id, slot_val);
             return Ok(false);
         }
         let key = DedupeKey {
@@ -595,18 +600,20 @@ impl IngestClient {
             }
         }
 
+        let pid = pool_state.pool_id;
         // Update exactly one pool. Reject an older state even when its dedupe key differs.
         {
             let mut pools = self.cache.pools.write();
-            if let Some(current) = pools.get(&pool_state.pool_id) {
+            if let Some(current) = pools.get(&pid) {
                 if (pool_state.slot.0, pool_state.write_version)
                     <= (current.slot.0, current.write_version)
                 {
                     return Ok(false);
                 }
             }
-            pools.insert(pool_state.pool_id, pool_state);
+            pools.insert(pid, pool_state);
         }
+        tracing::info!(target: "arb_events", "POOL_UPDATED: pool={} slot={}", pid, slot_val);
         self.cache.version.fetch_add(1, Ordering::AcqRel);
         self.cache.latest_slot.fetch_max(slot_val, Ordering::AcqRel);
         self.latest_slot.fetch_max(slot_val, Ordering::AcqRel);

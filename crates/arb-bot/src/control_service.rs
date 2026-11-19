@@ -129,6 +129,8 @@ pub struct StatusSnapshot {
     pub stream_connected: bool,
     pub helius_connected: bool,
     pub opportunities_total: u64,
+    pub opportunities_evaluated_total: u64,
+    pub routes_per_second: f64,
     pub profitable_total: u64,
     pub executed_total: u64,
     pub successful_total: u64,
@@ -150,6 +152,11 @@ struct ControlInner {
     executions: Mutex<VecDeque<ExecutionRecord>>,
     rejections: Mutex<VecDeque<RejectionRecord>>,
     logs: Mutex<VecDeque<LogRecord>>,
+    opportunities_evaluated_total: AtomicU64,
+    opportunities_recorded_total: AtomicU64,
+    last_eval_instant: Mutex<Instant>,
+    eval_rate_counter: AtomicU64,
+    routes_per_second: parking_lot::RwLock<f64>,
     profitable_total: AtomicU64,
     executed_total: AtomicU64,
     successful_total: AtomicU64,
@@ -159,6 +166,7 @@ struct ControlInner {
     /// Live state providers, injected from the supervisor at construction.
     state: Mutex<ControlDeps>,
     overrides: Mutex<ConfigOverrides>,
+    ticker: parking_lot::RwLock<serde_json::Value>,
 }
 
 /// Per-protocol route coverage published by the supervisor for the unified
@@ -304,6 +312,11 @@ impl ControlService {
                 executions: Mutex::new(VecDeque::with_capacity(EXECUTION_RING_CAP)),
                 rejections: Mutex::new(VecDeque::with_capacity(REJECTION_RING_CAP)),
                 logs: Mutex::new(VecDeque::with_capacity(LOG_RING_CAP)),
+                opportunities_evaluated_total: AtomicU64::new(0),
+                opportunities_recorded_total: AtomicU64::new(0),
+                last_eval_instant: Mutex::new(Instant::now()),
+                eval_rate_counter: AtomicU64::new(0),
+                routes_per_second: parking_lot::RwLock::new(0.0),
                 profitable_total: AtomicU64::new(0),
                 executed_total: AtomicU64::new(0),
                 successful_total: AtomicU64::new(0),
@@ -312,8 +325,28 @@ impl ControlService {
                 audit_path: audit_path.into(),
                 state: Mutex::new(ControlDeps::default()),
                 overrides: Mutex::new(ConfigOverrides::default()),
+                ticker: parking_lot::RwLock::new(serde_json::json!({
+                    "sol_price_usd": 0.0,
+                    "at_unix": now_unix(),
+                    "tokens": {
+                        "SOL": { "symbol": "SOL/USD", "price": 0.0, "venues": "Orca • Meteora • Raydium", "change_24h": "+0.0%" },
+                        "WIF": { "symbol": "WIF/SOL", "price": 0.0, "venues": "Raydium • Orca • Meteora", "change_24h": "+0.0%" },
+                        "POPCAT": { "symbol": "POPCAT/SOL", "price": 0.0, "venues": "Raydium • Meteora", "change_24h": "+0.0%" },
+                        "FARTCOIN": { "symbol": "FARTCOIN/SOL", "price": 0.0, "venues": "PumpSwap • Raydium • Orca", "change_24h": "+0.0%" },
+                        "USDC": { "symbol": "USDC/USD", "price": 1.000, "venues": "Kamino • Orca", "change_24h": "0.0%" }
+                    }
+                })),
             }),
         }
+    }
+
+    pub fn update_ticker(&self, ticker: serde_json::Value) {
+        *self.inner.ticker.write() = ticker.clone();
+        self.emit("ticker", ticker);
+    }
+
+    pub fn ticker(&self) -> serde_json::Value {
+        self.inner.ticker.read().clone()
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<ControlEvent> {
@@ -368,6 +401,17 @@ impl ControlService {
             arb_metrics::get_simulated_net_profit_total()
         };
         let deps_obs = deps.observability.clone();
+        let evaluated = self
+            .inner
+            .opportunities_evaluated_total
+            .load(Ordering::Relaxed);
+        let recorded = self
+            .inner
+            .opportunities_recorded_total
+            .load(Ordering::Relaxed);
+        let metrics_total = arb_metrics::get_opportunities_total();
+        let opps_total = evaluated.max(recorded).max(metrics_total);
+        let rps = *self.inner.routes_per_second.read();
         StatusSnapshot {
             mode: mode.to_string(),
             execution_enabled: self.inner.execution_enabled.load(Ordering::Acquire),
@@ -377,7 +421,9 @@ impl ControlService {
             pools_tracked: deps.pools_tracked,
             stream_connected: deps.stream_connected,
             helius_connected: deps.helius_connected,
-            opportunities_total: arb_metrics::get_opportunities_total(),
+            opportunities_total: opps_total,
+            opportunities_evaluated_total: opps_total,
+            routes_per_second: rps,
             profitable_total: self.inner.profitable_total.load(Ordering::Relaxed),
             executed_total: self.inner.executed_total.load(Ordering::Relaxed),
             successful_total: self.inner.successful_total.load(Ordering::Relaxed),
@@ -479,7 +525,34 @@ impl ControlService {
 
     // ---- telemetry ingestion (called by the supervisor loop) ------------
 
+    pub fn record_evaluations(&self, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.inner
+            .opportunities_evaluated_total
+            .fetch_add(count, Ordering::Relaxed);
+        let now = Instant::now();
+        let mut last_instant = self.inner.last_eval_instant.lock();
+        let elapsed = now.duration_since(*last_instant);
+        let added = self
+            .inner
+            .eval_rate_counter
+            .fetch_add(count, Ordering::Relaxed)
+            + count;
+        if elapsed.as_millis() >= 1000 {
+            let secs = elapsed.as_secs_f64();
+            let rate = (added as f64) / secs;
+            *self.inner.routes_per_second.write() = rate;
+            *last_instant = now;
+            self.inner.eval_rate_counter.store(0, Ordering::Relaxed);
+        }
+    }
+
     pub fn record_opportunity(&self, mut record: OpportunityRecord) {
+        self.inner
+            .opportunities_recorded_total
+            .fetch_add(1, Ordering::Relaxed);
         record.gross_profit_lamports = i64::try_from(
             record
                 .expected_output_lamports

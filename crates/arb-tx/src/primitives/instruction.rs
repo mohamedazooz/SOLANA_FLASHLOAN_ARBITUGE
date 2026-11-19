@@ -86,6 +86,19 @@ pub fn build_jito_tip_instruction(
     }
 }
 
+/// Build a native SOL transfer instruction from `from` to `to` for profit settlement.
+pub fn build_native_sol_transfer(from: Pubkey, to: Pubkey, lamports: u64) -> CompiledInstruction {
+    let mut data = Vec::with_capacity(12);
+    data.extend_from_slice(&2u32.to_le_bytes()); // SystemProgram::Transfer index 2
+    data.extend_from_slice(&lamports.to_le_bytes());
+
+    CompiledInstruction {
+        program_id: Pubkey::new_from_array(SYSTEM_PROGRAM_ID),
+        accounts: vec![AccountMeta::new(from, true), AccountMeta::new(to, false)],
+        data,
+    }
+}
+
 /// Attach the Jito `jitodontfront` marker to an existing instruction.
 ///
 /// A bundle containing a transaction that references the marker account is

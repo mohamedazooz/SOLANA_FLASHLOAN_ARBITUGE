@@ -11,6 +11,15 @@ export default defineConfig({
         target: "http://127.0.0.1:8080",
         changeOrigin: true,
         ws: true,
+        configure: (proxy, _options) => {
+          proxy.on("error", (err, _req, _res) => {
+            // Suppress unhandled ECONNRESET / socket hang-up on client disconnect/refresh
+            if (err.message && (err.message.includes("ECONNRESET") || err.message.includes("socket hang up"))) {
+              return;
+            }
+            console.warn("[vite proxy warning]", err.message);
+          });
+        },
       },
     },
   },

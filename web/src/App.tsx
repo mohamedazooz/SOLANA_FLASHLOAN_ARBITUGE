@@ -1,169 +1,217 @@
-import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import { api, getToken, setToken } from "./api";
-import Login from "./components/Login";
-import Overview from "./components/Overview";
-import Opportunities from "./components/Opportunities";
-import Pools from "./components/Pools";
-import Executions from "./components/Executions";
-import Rejections from "./components/Rejections";
-import StrategyConfig from "./components/StrategyConfig";
-import Providers from "./components/Providers";
-import RouteMonitor from "./components/RouteMonitor";
-import RiskControl from "./components/RiskControl";
-import Logs from "./components/Logs";
-import TelegramPanel from "./components/TelegramPanel";
-import EgyptianGuide from "./components/EgyptianGuide";
-import type { StatusSnapshot } from "./api";
-
-const SECTIONS: { id: string; label: string; el: (status: StatusSnapshot | null, reload: () => void) => ReactNode }[] = [
-  { id: "overview", label: "A · Overview", el: (s) => <Overview status={s} /> },
-  { id: "opportunities", label: "B · Live Opportunities", el: () => <Opportunities /> },
-  { id: "pools", label: "C · Pools & Liquidity", el: () => <Pools /> },
-  { id: "executions", label: "D · Execution Monitor", el: () => <Executions /> },
-  { id: "rejections", label: "D2 · Rejections", el: () => <Rejections /> },
-  { id: "strategy", label: "E · Strategy Config", el: (_s, reload) => <StrategyConfig onSaved={reload} /> },
-  { id: "providers", label: "F · Providers", el: () => <Providers /> },
-  { id: "routes", label: "J · Route Monitor", el: () => <RouteMonitor /> },
-  { id: "risk", label: "G · Risk & Emergency", el: (s, reload) => <RiskControl status={s} onChanged={reload} /> },
-  { id: "logs", label: "H · Logs & Analytics", el: () => <Logs /> },
-  { id: "telegram", label: "I · Telegram", el: () => <TelegramPanel /> },
-];
+import { useEffect, useRef, useState } from 'react';
+import { api, getToken, setToken, type StatusSnapshot } from './api';
+import { Sidebar, type TabType } from './components/Sidebar';
+import { Login } from './components/Login';
+import { Overview } from './components/Overview';
+import { Opportunities } from './components/Opportunities';
+import { Pools } from './components/Pools';
+import { Executions } from './components/Executions';
+import { Logs } from './components/Logs';
+import Rejections from './components/Rejections';
+import StrategyConfig from './components/StrategyConfig';
+import Providers from './components/Providers';
+import RouteMonitor from './components/RouteMonitor';
+import RiskControl from './components/RiskControl';
+import EgyptianGuide from './components/EgyptianGuide';
+import {
+  ShieldAlert,
+  ShieldCheck,
+  RefreshCw,
+} from 'lucide-react';
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(!!getToken());
   const [status, setStatus] = useState<StatusSnapshot | null>(null);
-  const [section, setSection] = useState("overview");
-  const wsRef = useRef<WebSocket | null>(null);
+  const [currentTab, setCurrentTab] = useState<TabType>('overview');
+  const [collapsed, setCollapsed] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(false);
   const timerRef = useRef<number | null>(null);
 
   const reload = () => {
-    api
-      .status()
-      .then(setStatus)
-      .catch(() => setAuthed(false));
+    setLoading(true);
+    api.status()
+      .then((data) => {
+        setStatus(data);
+        setAuthed(true);
+      })
+      .catch(() => {
+        // If unauthorized
+      })
+      .finally(() => setLoading(false));
   };
 
   useEffect(() => {
     if (!authed) return;
     reload();
-    timerRef.current = window.setInterval(reload, 5_000);
+    timerRef.current = window.setInterval(reload, 4000);
 
-    // Reconnect with capped exponential backoff + jitter so a fleet of tabs
-    // never reconnects in lockstep (thundering herd). Bounded attempts; the
-    // REST poller keeps the UI fresh regardless. A 401/expired token surfaces
-    // through the next REST poll instead of a reload loop.
-    let attempt = 0;
-    let reconnectTimer: number | null = null;
-    let disposed = false;
-
+    // WebSocket real-time state stream
+    let ws: WebSocket | null = null;
+    let timeout: any = null;
     const connect = () => {
-      if (disposed) return;
-      // The WS URL carries a single-use ticket fetched per connection; if the
-      // ticket request fails (e.g. expired session) the REST poller keeps the
-      // UI fresh and the next poll surfaces the 401.
-      api
-        .wsUrl()
-        .then((url) => {
-          if (disposed) return;
-          const ws = new WebSocket(url);
-          ws.onopen = () => {
-            attempt = 0;
-          };
-          ws.onclose = () => {
-            if (disposed || attempt >= 8) return;
-            const backoff = Math.min(500 * 2 ** attempt, 30_000);
-            const jitter = Math.random() * 500;
-            attempt += 1;
-            reconnectTimer = window.setTimeout(connect, backoff + jitter);
-          };
-          ws.onmessage = (ev) => {
-            try {
-              const parsed = JSON.parse(ev.data);
-              if (parsed && typeof parsed === "object" && "mode" in parsed) {
-                setStatus(parsed as StatusSnapshot);
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const token = getToken();
+      const wsUrl = `${proto}//${window.location.host}/api/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data && typeof data === 'object') {
+              if ('mode' in data) {
+                setStatus(data as StatusSnapshot);
+              } else if (data.kind === 'opportunity' && data.payload?.slot) {
+                const s = Number(data.payload.slot);
+                setStatus((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        slot: Math.max(prev.slot, s),
+                        profitable_total: prev.profitable_total + (data.payload.eligible ? 1 : 0),
+                      }
+                    : prev
+                );
               }
-            } catch {
-              /* ignore malformed frames */
             }
-          };
-          wsRef.current = ws;
-        })
-        .catch(() => {
-          if (disposed || attempt >= 8) return;
-          const backoff = Math.min(500 * 2 ** attempt, 30_000);
-          attempt += 1;
-          reconnectTimer = window.setTimeout(connect, backoff);
-        });
+          } catch {
+            // non-json
+          }
+        };
+        ws.onclose = () => {
+          timeout = setTimeout(connect, 4000);
+        };
+        ws.onerror = () => {
+          ws?.close();
+        };
+      } catch {
+        timeout = setTimeout(connect, 5000);
+      }
     };
+
     connect();
 
     return () => {
-      disposed = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (timerRef.current) window.clearInterval(timerRef.current);
-      wsRef.current?.close();
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (ws) ws.close();
+      if (timeout) clearTimeout(timeout);
     };
   }, [authed]);
 
+  const handleLogout = () => {
+    api.logout().catch(() => {});
+    setToken(null);
+    setAuthed(false);
+  };
+
+  const handleEmergencyStop = async () => {
+    try {
+      await api.updateConfig({ emergency_stopped: true, paused: true });
+      reload();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleResumeExecution = async () => {
+    try {
+      await api.updateConfig({ emergency_stopped: false, paused: false, execution_enabled: true });
+      reload();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   if (!authed) {
-    return (
-      <Login
-        onLogin={() => {
-          setAuthed(true);
-        }}
-      />
-    );
+    return <Login onLogin={() => { setAuthed(true); reload(); }} />;
   }
 
-  const active = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0];
-
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="logo">⚡</span>
-          <div>
-            <h1>Solana Flash-Loan Arbitrage</h1>
-            <span className="sub">Unified control · V1 transport · Kamino + Meteora DLMM</span>
+    <div className="min-h-screen bg-[#06080f] text-slate-100 flex flex-row-reverse" dir="rtl">
+      {/* ── Fixed Institutional Sidebar ── */}
+      <Sidebar
+        currentTab={currentTab}
+        onSelectTab={setCurrentTab}
+        status={status}
+        collapsed={collapsed}
+        onToggleCollapse={() => setCollapsed(!collapsed)}
+        onLogout={handleLogout}
+      />
+
+      {/* ── Main Workspace ── */}
+      <main
+        className={`flex-1 transition-all duration-300 min-h-screen flex flex-col ${
+          collapsed ? 'mr-20' : 'mr-72'
+        }`}
+      >
+        {/* ── Top Command Header ── */}
+        <header className="sticky top-0 z-30 flex items-center justify-between px-6 py-3.5 bg-[#080c16]/85 backdrop-blur-xl border-b border-[#162035]">
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+              <span className="text-xs font-mono font-bold text-slate-200">SOLANA MAINNET-BETA</span>
+            </div>
+
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-lg bg-[#0e1526] border border-[#1a2642] text-xs font-mono">
+              <span className="text-slate-400">SLOT:</span>
+              <span className="font-bold text-cyan-400">#{status?.slot?.toLocaleString() ?? '---'}</span>
+            </div>
+
+            <div className="hidden md:flex items-center gap-2 px-3 py-1 rounded-lg bg-[#0e1526] border border-[#1a2642] text-xs font-mono">
+              <span className="text-slate-400">TRACKED:</span>
+              <span className="font-bold text-slate-200">{status?.pools_tracked ?? 0} POOLS</span>
+            </div>
           </div>
-        </div>
-        <div className="topbar-status">
-          {status && (
-            <>
-              <span className={`badge mode-${status.mode}`}>{status.mode}</span>
-              <span className={`badge ${status.paused ? "badge-red" : "badge-green"}`}>
-                {status.paused ? "paused" : "running"}
-              </span>
-              <span className="mono">slot {status.slot.toLocaleString()}</span>
-            </>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={reload}
+              className="p-2 rounded-lg bg-[#0e1526] border border-[#1a2642] text-slate-300 hover:text-cyan-400 hover:bg-[#131d33] transition-colors"
+              title="تحديث البيانات"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+
+            {status?.emergency_stopped ? (
+              <button
+                onClick={handleResumeExecution}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-500 text-slate-950 hover:bg-emerald-400 shadow-md shadow-emerald-500/20 transition-all"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                استئناف العمل
+              </button>
+            ) : (
+              <button
+                onClick={handleEmergencyStop}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30 transition-all"
+              >
+                <ShieldAlert className="w-4 h-4" />
+                إيقاف طوارئ
+              </button>
+            )}
+          </div>
+        </header>
+
+        {/* ── View Content Area ── */}
+        <div className="p-6 flex-1 space-y-6">
+          {currentTab === 'overview' && (
+            <Overview
+              status={status}
+              onEmergencyStop={handleEmergencyStop}
+              onResumeExecution={handleResumeExecution}
+            />
           )}
-          <button
-            className="btn btn-ghost"
-            onClick={async () => {
-              await api.logout().catch(() => {});
-              setToken(null);
-              setAuthed(false);
-            }}
-          >
-            Logout
-          </button>
+          {currentTab === 'opportunities' && <Opportunities />}
+          {currentTab === 'pools' && <Pools />}
+          {currentTab === 'executions' && <Executions />}
+          {currentTab === 'logs' && <Logs />}
+          {currentTab === 'rejections' && <Rejections />}
+          {currentTab === 'risk' && <RiskControl status={status} onChanged={reload} />}
+          {currentTab === 'providers' && <Providers />}
+          {currentTab === 'routes' && <RouteMonitor />}
+          {currentTab === 'strategy' && <StrategyConfig onSaved={reload} />}
+          {currentTab === 'guide' && <EgyptianGuide />}
         </div>
-      </header>
-      <nav className="tabs">
-        {SECTIONS.map((s) => (
-          <button
-            key={s.id}
-            className={`tab ${section === s.id ? "active" : ""}`}
-            onClick={() => setSection(s.id)}
-          >
-            {s.label}
-          </button>
-        ))}
-      </nav>
-      <main>
-        <EgyptianGuide />
-        {active.el(status, reload)}
       </main>
     </div>
   );

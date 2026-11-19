@@ -50,6 +50,20 @@ pub const TOKEN_2022_NATIVE_MINT: &str = "9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 /// USDT mint (SPL Token) on Mainnet.
 pub const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+/// WIF mint on Solana.
+pub const WIF_MINT: &str = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm";
+/// POPCAT mint on Solana.
+pub const POPCAT_MINT: &str = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr";
+/// BONK mint on Solana.
+pub const BONK_MINT: &str = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
+/// FARTCOIN mint on Solana.
+pub const FARTCOIN_MINT: &str = "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump";
+/// RAY mint on Solana.
+pub const RAY_MINT: &str = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
+/// JUP mint on Solana.
+pub const JUP_MINT: &str = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN";
+/// PYTH mint on Solana.
+pub const PYTH_MINT: &str = "HZ1JovNiRvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3";
 
 // ============================================================================
 // Jito Tip Accounts (Mainnet)
@@ -513,8 +527,16 @@ pub const APPLICATION_SAFETY_CU_LIMIT: u32 = SOLANA_RUNTIME_MAX_COMPUTE_UNITS;
 pub const MAX_COMPUTE_UNIT_LIMIT: u32 = APPLICATION_SAFETY_CU_LIMIT;
 /// Compute unit buffer percentage.
 pub const CU_BUFFER_PCT: u32 = 15;
-/// Solana runtime packet MTU limit.
-pub const SOLANA_PACKET_MTU_LIMIT: usize = 1232;
+/// Solana runtime legacy v0 packet MTU limit (IPv6 UDP / Jito).
+pub const SOLANA_V0_PACKET_MTU_LIMIT: usize = 1232;
+/// Solana runtime v1 packet MTU limit (SIMD-0296 & SIMD-0385 QUIC 4096 bytes).
+pub const SOLANA_V1_PACKET_MTU_LIMIT: usize = 4096;
+/// Default application packet MTU limit for legacy v0 transactions.
+pub const SOLANA_PACKET_MTU_LIMIT: usize = SOLANA_V0_PACKET_MTU_LIMIT;
+/// Transaction version discriminator for legacy v0 (0x80).
+pub const TRANSACTION_VERSION_V0_PREFIX: u8 = 0x80;
+/// Transaction version discriminator for SIMD-0385 v1 (0x81).
+pub const TRANSACTION_VERSION_V1_PREFIX: u8 = 0x81;
 /// Standard Solana consensus network base signature fee (5,000 lamports).
 pub const SOLANA_BASE_FEE_LAMPORTS: u64 = 5_000;
 /// Base priority fee in micro-lamports.

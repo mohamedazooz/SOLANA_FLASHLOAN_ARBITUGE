@@ -1,0 +1,14 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "./Cargo.toml",
+    "./webhook-service/Cargo.toml"
+  ],
+  "rust-analyzer.cargo.buildScripts.enable": true,
+  "rust-analyzer.check.command": "check",
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "**/_backup_pre_unification": true,
+    "**/target": true,
+    "**/node_modules": true
+  }
+}

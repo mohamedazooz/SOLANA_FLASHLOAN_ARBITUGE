@@ -41,7 +41,8 @@ pub struct PumpDevWebSocketClient {
 
 impl Default for PumpDevWebSocketClient {
     fn default() -> Self {
-        Self::new(PUMPDEV_WS_URL)
+        let url = std::env::var("PUMPDEV_WS_URL").unwrap_or_else(|_| PUMPDEV_WS_URL.to_string());
+        Self::new(&url)
     }
 }
 

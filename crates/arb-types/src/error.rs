@@ -47,6 +47,30 @@ pub enum ArbError {
 
     #[error("pump.fun reserve exceeded: requested {requested}, available {available}")]
     PumpFunReserveExceeded { requested: u64, available: u64 },
+
+    #[error("pool disabled: {0}")]
+    PoolDisabled(String),
+
+    #[error("incomplete pool state: {0}")]
+    IncompleteState(String),
+
+    #[error("invalid token: {0}")]
+    InvalidToken(String),
+
+    #[error("zero amount input")]
+    ZeroAmount,
+
+    #[error("insufficient liquidity: {0}")]
+    InsufficientLiquidity(String),
+
+    #[error("calculation error: {0}")]
+    CalculationError(String),
+
+    #[error("unsupported operation: {0}")]
+    UnsupportedOperation(String),
+
+    #[error("pool migrated: {0}")]
+    PoolMigrated(String),
 }
 
 // ============================================================================

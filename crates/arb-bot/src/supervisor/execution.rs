@@ -113,28 +113,9 @@ impl Supervisor {
                 return (bh, lvbh);
             }
         }
-        let req_params = serde_json::json!([{"commitment": "confirmed"}]);
-        if let Ok(val) = self.rpc_pool.call("getLatestBlockhash", req_params).await {
-            let value = val
-                .get("value")
-                .cloned()
-                .or_else(|| val.get("result").and_then(|r| r.get("value")).cloned());
-            let bh_str = value
-                .as_ref()
-                .and_then(|v| v.get("blockhash"))
-                .and_then(|b| b.as_str());
-            let lvbh = value
-                .as_ref()
-                .and_then(|v| v.get("lastValidBlockHeight"))
-                .and_then(|h| h.as_i64());
-
-            if let Some(bh) = bh_str
-                && let Ok(bytes) = bs58::decode(bh).into_vec()
-                && let Ok(arr) = bytes.try_into()
-            {
-                *self.blockhash_cache.lock() = Some((arr, Instant::now(), lvbh));
-                return (arr, lvbh);
-            }
+        if let Ok((arr, lvbh)) = self.tx_rpc.get_latest_blockhash().await {
+            *self.blockhash_cache.lock() = Some((arr, Instant::now(), lvbh));
+            return (arr, lvbh);
         }
         ([0u8; 32], None)
     }
