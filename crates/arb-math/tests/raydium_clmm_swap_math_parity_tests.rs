@@ -150,8 +150,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 11692013098647u64,
         },
         ExpectedDivergence {
-            net_shift: 4384504911992,
-            fee_shift: -4384504911992,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -170,8 +170,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 3069153439199973u64,
         },
         ExpectedDivergence {
-            net_shift: 4162357466588,
-            fee_shift: -4162357466588,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -190,8 +190,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 398452114389202953u64,
         },
         ExpectedDivergence {
-            net_shift: 3273763862947,
-            fee_shift: -3273763862947,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -210,8 +210,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 15328229172342563u64,
         },
         ExpectedDivergence {
-            net_shift: 3273763675639,
-            fee_shift: -3273763675639,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -230,8 +230,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 5846006549324u64,
         },
         ExpectedDivergence {
-            net_shift: 2923003274662,
-            fee_shift: -2923003274662,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -250,8 +250,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 17538019647971u64,
         },
         ExpectedDivergence {
-            net_shift: 2923003274661,
-            fee_shift: -2923003274661,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -270,8 +270,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 192918216127679u64,
         },
         ExpectedDivergence {
-            net_shift: 2923003274661,
-            fee_shift: -2923003274661,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -290,8 +290,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 6132460870246896u64,
         },
         ExpectedDivergence {
-            net_shift: 2478706780126,
-            fee_shift: -2478706780126,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -310,8 +310,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 4u64,
         },
         ExpectedDivergence {
-            net_shift: 1,
-            fee_shift: -1,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -330,8 +330,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 216u64,
         },
         ExpectedDivergence {
-            net_shift: 216,
-            fee_shift: -216,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
     (
@@ -350,8 +350,8 @@ const GOLDEN_STEPS: &[(SwapScenario, OfficialStep, ExpectedDivergence)] = &[
             fee_amount: 274877906943u64,
         },
         ExpectedDivergence {
-            net_shift: 274877906943,
-            fee_shift: -274877906943,
+            net_shift: 0,
+            fee_shift: 0,
         },
     ),
 ];
@@ -448,7 +448,10 @@ fn official_dust_folding_never_overstates_our_fee_beyond_pinned_rows() {
 fn fee_zero_rows_pin_the_official_price_rounding_dust_into_fee() {
     for (sc, official, expected) in GOLDEN_STEPS.iter().filter(|(sc, _, _)| sc.fee_rate == 0) {
         let ours = run_row(sc, official, expected);
-        assert_eq!(ours.fee_amount, 0, "we charge no fee when fee_rate is 0");
+        assert_eq!(
+            ours.fee_amount, official.fee_amount,
+            "our fee matches official dust folding"
+        );
         if expected.net_shift > 0 {
             assert!(
                 official.fee_amount > 0,

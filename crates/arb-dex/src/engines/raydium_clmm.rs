@@ -9,7 +9,9 @@
 
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
-use arb_math::clmm::{TickArrayFacade, TickFacade, quote_clmm};
+use arb_math::clmm::{
+    ClmmTickMath, TickArrayFacade, TickFacade, quote_clmm_with_ticks_per_array_and_math,
+};
 use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
 use std::time::Instant;
 
@@ -90,23 +92,30 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
             })
             .collect();
 
-        let fee_rate = if let Some(bps) = state.fee_bps() {
-            bps.saturating_mul(100)
-        } else {
-            // Default 2500 for Raydium CLMM (0.25%)
-            2500
-        };
+        // The decoded raw `fee_rate` is in 1e-6 (ppm) units — the same unit the
+        // Raydium program uses. Never re-derive it from whole basis points and
+        // never default it: a wrong fee is a wrong quote.
+        if clmm_state.fee_rate == 0 {
+            return Err(ArbError::IncompleteState(format!(
+                "Raydium CLMM {} has no decoded fee_rate",
+                state.pool_id.0
+            )));
+        }
 
-        // 3. Compute CLMM swap step traversal
-        let gross_out = quote_clmm(
+        // 3. Compute CLMM swap step traversal with the Raydium tick-math regime.
+        // Raydium's `tick_math` rounds differently from Orca's, so sharing the
+        // Orca table would drift on every tick boundary.
+        let gross_out = quote_clmm_with_ticks_per_array_and_math(
             input_net_into_pool,
             clmm_state.sqrt_price,
             clmm_state.tick_current,
             clmm_state.liquidity,
             clmm_state.tick_spacing,
-            fee_rate,
+            clmm_state.fee_rate,
             a_to_b,
             &arrays,
+            RAYDIUM_CLMM_TICK_ARRAY_SIZE,
+            ClmmTickMath::Raydium,
         )
         .map_err(|e| ArbError::CalculationError(format!("Raydium CLMM step swap failed: {e:?}")))?;
 
@@ -130,7 +139,8 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
             (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
         );
 
-        let fee_amount = (input_net_into_pool as u128 * fee_rate as u128 / 1_000_000) as u64;
+        let fee_amount =
+            (input_net_into_pool as u128 * clmm_state.fee_rate as u128 / 1_000_000) as u64;
         let elapsed = start_time.elapsed().as_micros() as u64;
 
         Ok(QuoteResult {

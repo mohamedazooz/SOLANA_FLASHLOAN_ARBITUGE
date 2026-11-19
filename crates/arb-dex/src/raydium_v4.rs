@@ -86,23 +86,45 @@ impl RaydiumV4Pool {
         self.quote_reserve = quote_reserve;
     }
 
-    /// Refresh effective reserves deducting need_take_pnl fees from vault balances.
-    pub fn refresh_effective_reserves(&mut self) {
+    /// Refresh effective reserves from the observed vault balances, deducting
+    /// the protocol's accrued `need_take_pnl`.
+    ///
+    /// The on-chain program computes `vault.amount - need_take_pnl` with
+    /// `checked_sub` and aborts when the vault cannot cover the accrued PnL.
+    /// Mirroring that here matters: a `saturating_sub` would silently keep a
+    /// previously observed (now stale) reserve and quote against a pool state
+    /// the program would reject. Until at least one vault balance has been
+    /// observed, the caller-provided reserves are left untouched.
+    pub fn refresh_effective_reserves(&mut self) -> Result<()> {
+        if self.base_vault_balance == 0 && self.quote_vault_balance == 0 {
+            return Ok(());
+        }
         let eff_base = self
             .base_vault_balance
-            .saturating_sub(self.need_take_pnl_coin);
+            .checked_sub(self.need_take_pnl_coin)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Raydium v4 vault cannot cover need_take_pnl_coin".into())
+            })?;
         let eff_quote = self
             .quote_vault_balance
-            .saturating_sub(self.need_take_pnl_pc);
-        if eff_base > 0 && eff_quote > 0 {
-            self.base_reserve = eff_base as u128;
-            self.quote_reserve = eff_quote as u128;
-        }
+            .checked_sub(self.need_take_pnl_pc)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Raydium v4 vault cannot cover need_take_pnl_pc".into())
+            })?;
+        self.base_reserve = u128::from(eff_base);
+        self.quote_reserve = u128::from(eff_quote);
+        Ok(())
     }
 
     /// Check if this pool is suitable for arbitrage.
+    ///
+    /// `AmmStatus::swap_permission()` on-chain accepts `Initialized` (1),
+    /// `SwapOnly` (6) and `WaitingTrade` (7). `WaitingTrade` is only tradeable
+    /// once `pool_open_time` has elapsed, which a static snapshot cannot prove,
+    /// so it stays excluded (fail closed). Status 1 is a fully tradeable pool
+    /// and must not be dropped.
     pub fn is_arbitrage_eligible(&self) -> bool {
-        self.status == 6
+        matches!(self.status, 1 | 6)
             && self.base_reserve > 0
             && self.quote_reserve > 0
             && self.fee_numerator > 0

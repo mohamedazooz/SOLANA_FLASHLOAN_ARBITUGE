@@ -11,7 +11,7 @@
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID;
-use arb_math::clmm::{TickArrayFacade, TickFacade, quote_clmm};
+use arb_math::clmm::{TickArrayFacade, TickFacade, orca_tick_array_start_indexes, quote_clmm};
 use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -37,27 +37,21 @@ impl OrcaWhirlpoolQuoteEngine {
         pda
     }
 
-    /// Get the 3 consecutive TickArray PDAs needed for the swap instruction.
+    /// Get the 3 consecutive TickArray PDAs the on-chain swap requires.
     pub fn get_tick_arrays_for_swap(
         pool_id: &Pubkey,
         tick_current: i32,
         tick_spacing: u16,
         a_to_b: bool,
     ) -> (Pubkey, Pubkey, Pubkey) {
-        let spacing = (tick_spacing as i32).max(1);
-        let ticks_in_array = ORCA_TICK_ARRAY_SIZE * spacing;
-        let start_tick = tick_current.div_euclid(ticks_in_array) * ticks_in_array;
-
-        let ta0 = Self::derive_tick_array_pda(pool_id, start_tick);
-        if a_to_b {
-            let ta1 = Self::derive_tick_array_pda(pool_id, start_tick - ticks_in_array);
-            let ta2 = Self::derive_tick_array_pda(pool_id, start_tick - (2 * ticks_in_array));
-            (ta0, ta1, ta2)
-        } else {
-            let ta1 = Self::derive_tick_array_pda(pool_id, start_tick + ticks_in_array);
-            let ta2 = Self::derive_tick_array_pda(pool_id, start_tick + (2 * ticks_in_array));
-            (ta0, ta1, ta2)
-        }
+        let starts = orca_tick_array_start_indexes(tick_current, tick_spacing, a_to_b);
+        let base = arb_math::clmm::get_start_tick_index(tick_current, tick_spacing);
+        let start_at = |index: usize| -> i32 { starts.get(index).copied().unwrap_or(base) };
+        (
+            Self::derive_tick_array_pda(pool_id, start_at(0)),
+            Self::derive_tick_array_pda(pool_id, start_at(1)),
+            Self::derive_tick_array_pda(pool_id, start_at(2)),
+        )
     }
 }
 
@@ -129,11 +123,27 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
             })
             .collect();
 
-        let fee_rate = if let Some(bps) = state.fee_bps() {
-            bps.saturating_mul(100)
+        let fee_rate = if clmm_state.fee_rate != 0 {
+            u32::from(clmm_state.fee_rate)
+        } else if let Some(bps) = state.fee_bps() {
+            // Lossy fallback only: `fee_bps` quantises to whole basis points.
+            // The decoded raw `fee_rate` (hundredths of a bip) is authoritative.
+            u32::from(bps).saturating_mul(100)
         } else {
-            3000 // 0.3% default
+            return Err(ArbError::IncompleteState(format!(
+                "Orca Whirlpool {} has no decoded fee_rate",
+                state.pool_id.0
+            )));
         };
+        if fee_rate == 0 || fee_rate >= 1_000_000 {
+            return Err(ArbError::InvalidInput(format!(
+                "Orca Whirlpool {} fee_rate {fee_rate} outside 1..1_000_000",
+                state.pool_id.0
+            )));
+        }
+        let fee_rate = u16::try_from(fee_rate).map_err(|_| {
+            ArbError::InvalidInput(format!("Orca Whirlpool fee_rate {fee_rate} exceeds u16"))
+        })?;
 
         // 3. Compute CLMM swap step traversal
         let gross_out = quote_clmm(
