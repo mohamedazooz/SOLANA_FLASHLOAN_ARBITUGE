@@ -486,12 +486,60 @@ async fn ws_loop(state: WebState, mut socket: WebSocket) {
 }
 
 async fn index() -> Html<String> {
-    for candidate in ["web/dist/index.html", "dashboard/index.html"] {
+    for candidate in [
+        "web/dist/index.html",
+        "SOLANA_FLASHLOAN_ARBITUGE/web/dist/index.html",
+        "dashboard/index.html",
+        "SOLANA_FLASHLOAN_ARBITUGE/dashboard/index.html",
+    ] {
         if let Ok(html) = std::fs::read_to_string(candidate) {
             return Html(html);
         }
     }
     Html(include_str!("../../../dashboard/index.html").to_string())
+}
+
+async fn dashboard_page() -> Html<String> {
+    for candidate in [
+        "dashboard/index.html",
+        "SOLANA_FLASHLOAN_ARBITUGE/dashboard/index.html",
+    ] {
+        if let Ok(html) = std::fs::read_to_string(candidate) {
+            return Html(html);
+        }
+    }
+    Html(include_str!("../../../dashboard/index.html").to_string())
+}
+
+async fn telemetry(State(state): State<WebState>) -> Response {
+    let status = state.control.status();
+    let opps = state.control.opportunities(20);
+    let events: Vec<Value> = opps
+        .iter()
+        .map(|o| {
+            json!({
+                "time": format!("slot {}", o.slot),
+                "slot": o.slot,
+                "route": o.route,
+                "size": (o.borrow_lamports as f64) / 1e9,
+                "profit_sol": (o.net_profit_lamports as f64) / 1e9,
+                "tip": 5000,
+                "status": if o.eligible { "simulated" } else { "rejected" }
+            })
+        })
+        .collect();
+
+    Json(json!({
+        "slot": status.slot,
+        "pools": status.pools_tracked,
+        "net_sol": status.net_pnl_sol,
+        "net_usd": status.net_pnl_sol * 73.77,
+        "mode": status.mode,
+        "tip_p50": 5000,
+        "opportunities_count": status.opportunities_total,
+        "events": events,
+    }))
+    .into_response()
 }
 
 /// Content type for a served asset, by extension. Unknown extensions are
@@ -519,30 +567,34 @@ async fn assets(Path(path): Path<String>) -> Response {
     if path.contains("..") || path.contains('\\') || asset_content_type(&path).is_none() {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let fs_path = std::path::Path::new("web/dist").join(&path);
-    let Ok(canonical) = fs_path.canonicalize() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let Ok(dist_root) = std::path::Path::new("web/dist").canonicalize() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if !canonical.starts_with(&dist_root) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    match std::fs::read(&canonical) {
-        Ok(bytes) => {
-            let ct = asset_content_type(&path).unwrap_or("application/octet-stream");
-            (
-                [
-                    (axum::http::header::CONTENT_TYPE, ct),
-                    (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
-                ],
-                bytes,
-            )
-                .into_response()
+    let dist_roots = ["web/dist", "SOLANA_FLASHLOAN_ARBITUGE/web/dist"];
+    for root in dist_roots {
+        let Ok(dist_canonical) = std::path::Path::new(root).canonicalize() else {
+            continue;
+        };
+        let candidates = [
+            std::path::Path::new(root).join("assets").join(&path),
+            std::path::Path::new(root).join(&path),
+        ];
+        for fs_path in candidates {
+            if let Ok(canonical) = fs_path.canonicalize() {
+                if canonical.starts_with(&dist_canonical) {
+                    if let Ok(bytes) = std::fs::read(&canonical) {
+                        let ct = asset_content_type(&path).unwrap_or("application/octet-stream");
+                        return (
+                            [
+                                (axum::http::header::CONTENT_TYPE, ct),
+                                (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
+                            ],
+                            bytes,
+                        )
+                            .into_response();
+                    }
+                }
+            }
         }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn health() -> &'static str {
@@ -557,6 +609,7 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/status", get(status))
+        .route("/api/telemetry", get(telemetry))
         .route("/api/opportunities", get(opportunities))
         .route("/api/executions", get(executions))
         .route("/api/rejections", get(rejections))
@@ -569,6 +622,7 @@ pub fn router(control: ControlService) -> anyhow::Result<Router> {
         .route("/api/ws-ticket", post(ws_ticket))
         .route("/api/ws", get(ws_events))
         .route("/", get(index))
+        .route("/dashboard", get(dashboard_page))
         .route("/assets/{*path}", get(assets))
         .route("/health", get(health))
         .layer(middleware::from_fn(security_headers))
@@ -667,6 +721,57 @@ mod tests {
         } else {
             assert_eq!(res.status(), StatusCode::NOT_FOUND);
         }
+    }
+
+    #[tokio::test]
+    async fn assets_route_finds_file_in_assets_subdir() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let test_dir = std::path::Path::new("web/dist/assets");
+        let _ = std::fs::create_dir_all(test_dir);
+        let test_file = test_dir.join("test_bundle.js");
+        let _ = std::fs::write(&test_file, b"console.log('test');");
+
+        let app = router(test_control()).unwrap();
+        let res = app
+            .oneshot(
+                Request::get("/assets/test_bundle.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers().get("content-type").unwrap(),
+            "application/javascript"
+        );
+        let _ = std::fs::remove_file(test_file);
+        unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
+    }
+
+    #[tokio::test]
+    async fn telemetry_and_dashboard_routes_accessible() {
+        let _env = ENV_LOCK.lock().await;
+        unsafe { std::env::set_var("WEB_ADMIN_PASSWORD", PASSWORD) };
+        let app = router(test_control()).unwrap();
+
+        // Telemetry is public for the live dashboard
+        let res = app
+            .clone()
+            .oneshot(Request::get("/api/telemetry").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Sentinel dashboard page route
+        let res = app
+            .oneshot(Request::get("/dashboard").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
     }
 
     // WEB_ADMIN_PASSWORD is process-global; every test that reads or mutates it
