@@ -85,7 +85,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
 
         // On-chain: trade_fee = ceil(dx * trade_fee_rate / 1_000_000)
         let num_fee = (input_net_into_pool as u128).saturating_mul(trade_fee_rate);
-        let trade_fee = (num_fee + CPMM_FEE_RATE_DENOMINATOR - 1) / CPMM_FEE_RATE_DENOMINATOR;
+        let trade_fee = num_fee.div_ceil(CPMM_FEE_RATE_DENOMINATOR);
         let trade_fee_u64 = u64::try_from(trade_fee).unwrap_or(input_net_into_pool);
 
         let input_after_fee = input_net_into_pool.saturating_sub(trade_fee_u64);
@@ -184,7 +184,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         // dx' = ceil((x * dy) / (y - dy))
         let num = r_in.saturating_mul(target_dy);
         let denom = r_out.saturating_sub(target_dy);
-        let dx_prime = (num + denom - 1) / denom;
+        let dx_prime = num.div_ceil(denom);
 
         let trade_fee_rate = if state.fee_denominator == 1_000_000 {
             state.fee_numerator as u128
@@ -194,7 +194,9 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
 
         // dx = ceil(dx' * 1_000_000 / (1_000_000 - trade_fee_rate))
         let denom_fee = CPMM_FEE_RATE_DENOMINATOR.saturating_sub(trade_fee_rate);
-        let dx = (dx_prime.saturating_mul(CPMM_FEE_RATE_DENOMINATOR) + denom_fee - 1) / denom_fee;
+        let dx = dx_prime
+            .saturating_mul(CPMM_FEE_RATE_DENOMINATOR)
+            .div_ceil(denom_fee);
         let req_in = u64::try_from(dx)
             .map_err(|_| ArbError::CalculationError("Overflow in exact out".into()))?;
 

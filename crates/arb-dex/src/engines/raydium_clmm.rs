@@ -91,7 +91,7 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
             .collect();
 
         let fee_rate = if let Some(bps) = state.fee_bps() {
-            (bps as u16).saturating_mul(100)
+            bps.saturating_mul(100)
         } else {
             // Default 2500 for Raydium CLMM (0.25%)
             2500
