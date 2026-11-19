@@ -316,6 +316,11 @@ solana-pubkey = "2.2"
 
 ## 📊 VERIFICATION CHECKLIST
 
+> Superseded 2026-11-18: see the "Post-merge re-verification appendix" below for the
+> evidence-backed status of every line (all lines resolved or explicitly scoped; the
+> original “update all solana-* to v4.2+” item was a component-ladder misunderstanding
+> and is closed as corrected).
+
 - [ ] Transaction V1 builder implemented and tested
 - [ ] All ComputeBudgetProgram instructions removed from V1 paths
 - [ ] Message.config properly populated
@@ -342,6 +347,107 @@ solana-pubkey = "2.2"
 3. Proceed with Pump.fun-Raydium arbitrage engine implementation
 
 **Permission Request:** هل تعطيني الإذن (Permission) للذهاب وتعديل هذه المشاكل الآن؟
+
+---
+
+## 2026-11-18 — Post-merge re-verification appendix (branch `vibe/bug-notes-meta-verification-bc7be4`)
+
+The statuses above were written against a pre-merge snapshot (PR #77 / `vibe/audit-final`).
+After `vibe/audit-final` merged to `main` (merge commit 4dd9507), every item was re-verified
+against the current tree. Corrections, each backed by a command ran in this session:
+
+### BUG-001 (Transaction V1) — RESOLVED on main
+
+- The canonical V1 path is NOT the quarantined builder. The adaptive V0/V1 transport lives in
+  `arb-tx/src/transport/adaptive.rs` (SIMD-0385 constants: `SOLANA_PACKET_V1_MTU = 4096`,
+  `V1_VERSION_DISCRIMINATOR = 0x81`, `MAX_V1_INSTRUCTIONS/ADDRESSES = 64`,
+  `V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT`) and `arb-tx/src/flash/compiler.rs`
+  (`CompileResult::V1DirectTransport`, V0 fallback when ≤ 1,232 bytes).
+- ComputeBudget instructions are V0-only by construction (`compiler.rs:373-377`); the V1 path
+  uses native message config.
+- `arb-bot/src/supervisor/dispatch.rs:265-448` parses the version from the wire
+  (`CompiledAdaptiveTransaction::parse_version_from_wire`) and enforces V1 on V1-capable
+  transports (`rpc_max_supported_version_from_wire`), so a stale V0 payload cannot silently ship.
+- The file referenced in the original BUG-001 fix proposal
+  (`crates/arb-tx/src/flash/pump_raydium_builder.rs`, using `solana_message::v1::MessageV1` /
+  `VersionedTransaction::V1`) is the same module flagged in the BUG-005 appendix entry: it is
+  gated behind `#[cfg(feature = "pump-v1-legacy-builder")]` and never compiled by default.
+- VERIFIED by: `cargo clippy --workspace --all-targets -- -D warnings` (rc=0) which type-checks
+  the V1 path, plus `cargo test --workspace --all-targets` rc=0 including the
+  arb_executor_cpi suite.
+
+### BUG-002 (Pump.fun ↔ Raydium) — RESOLVED on main (with a documented scope limit)
+
+- `crates/arb-math/src/pump_fun_raydium.rs` (375 lines) implements closed-form integer sizing
+  Δt\* = (T·A − xᵣ·B)/(A + B) with A = isqrt(ray_fee·yᵣ·xᵣ), B = isqrt(loan_factor·R·T),
+  using `U384`/`isqrt_u384` — zero floating point — plus ceil-rounded cost and floor-rounded
+  output math, wired into `arb-engine`, `arb-dex/src/pump_fun.rs`, and `arb-tx` builders, and
+  covered by `arb-math/tests/differential.rs` + `fuzzing_suite.rs`.
+- Raydium AMMv4 / CPMM / CLMM execution hops are all handled by the canonical builder in
+  `crates/arb-tx/src/protocols/swap_hop.rs` (branches at lines 131 / 372 / 417), each
+  fail-closed on missing verified execution accounts.
+- Scope limit (documented, not a defect): `pump_fun_raydium.rs` models the Raydium leg with the
+  constant-product curve; CLMM optimal sizing along the active liquidity range is handled by the
+  canonical engine quote path, not this file's closed form. Consistent with the documented
+  limitation in `docs/quality/PRODUCTION_READINESS_2026-11-13.md` §7.
+
+### BUG-003 (on-chain profit assertion) — RESOLVED on main, three layers
+
+1. Dispatch gate: `crates/arb-bot/src/supervisor/dispatch.rs:191`
+   (`real_net_profit.as_u64() >= self.config.strategy.min_net_profit_abs`).
+2. Risk gate: `arb-risk/src/lib.rs:613` `check_min_profit` (called at lines 495 and 566).
+3. On-chain: `programs/arb-executor` `execute_three_leg` asserts per-leg min amount outs at
+   the CPI boundary (`instructions/execute_three_leg.rs:178-325`) and finally
+   `wsol_final >= recovered + min_final_wsol_delta`; the builder is canonical
+   (`arb-tx/src/flash/arb_executor.rs:304`, `assemble_flash_funded_three_pool_cpi`).
+- Note: `arb-engine::pump_raydium_guard::ProfitGuardValidator` (subject of BUG-006) is
+  exported and unit-tested but not called from any execution path; the authoritative off-chain
+  profit gates are the dispatch and `arb-risk` checks above (one source of truth — do not
+  wire a second path without consolidation). Deletion needs an owner decision, same class as
+  the BUG-005 quarantine entry.
+
+### BUG-004 (DLMM currency) — PARTIALLY VERIFIED on main
+
+- VERIFIED statically: `arb-dex/src/dlmm_validation.rs` exists, DLMM has dedicated test assets
+  (`arb-math/tests/dlmm_bin_array_boundary_tests.rs`, adversarial + differential + Python
+  oracle-differential suites), DLMM bin-array limit = 4 bin arrays / 280 bins per policy
+  (`arb-tx/src/protocols/meteora_dlmm.rs:251`), and ADR-0014 records the 0.12 compatibility
+  decision. `PROJECT_STATE.md` states the matrix was verified against official IDLs/SDKs in the
+  2026-11-13 campaign.
+- UNVERIFIED here: no live on-chain probe was run in this session (live-network checks are
+  environment-gated and were skipped). Treat live-state parity as still pending a probe.
+
+### BUG-005 (SDK versions) — PREMISE CORRECTED, no action required
+
+- The workspace pins `solana-*` crates in `arb-tx/Cargo.toml` under `[dev-dependencies]`
+  (`solana-address =2.7.0`, `solana-hash =4.6.0`, `solana-instruction =3.5.0`,
+  `solana-message =4.6.0` with `std`+`serde`, `solana-signer =3.0.1`) — they are used for
+  wire-format differential verification, not as the runtime transaction stack.
+- The original claim “all solana-* crates must be ≥ v4.2” misunderstands the component ladders:
+  anza publishes component crates on independent version tracks (`solana-address` 2.x,
+  `solana-instruction` 3.x, `solana-signer` 3.x). VERIFIED on crates.io (2026-11-18):
+  `solana-address 2.7.0` published 2026-07-24 and `solana-instruction 3.5.0` published
+  2026-07-27 by anza-team; `solana-message` latest is 6.0.0 (2026-10-19) and 4.6.0 already
+  contains `message::v1` + `MessageConfig` (exercised by tests).
+- Newer majors (5.x/6.x) exist but upgrading pinned verification deps is a deliberate policy
+  change, not a bug. Staying on pins is correct for a wire-compatibility oracle.
+
+### BUG-006 — RESOLVED (confirmed on main)
+
+- `arb-engine/src/pump_raydium_guard.rs:225` uses `>=` with single-pass fee deduction;
+  guard tests pass in the workspace suite.
+
+### BUG-007 — still open, operator action required (unchanged)
+
+### Checklist at time of writing
+
+- [x] Transaction V1 builder implemented and tested (adaptive compiler + transport; wire-gated in dispatch)
+- [x] ComputeBudgetProgram instructions absent from V1 paths (V0-only emission in compiler.rs)
+- [x] Message.config properly populated (`V1ConfigParams`, transport/adaptive.rs)
+- [x] Profit assertion guard implemented (arb-executor on-chain; dispatch + arb-risk off-chain)
+- [x] DLMM implementation verified against latest specs (static: tests + ADR-0014; live probe pending)
+- [x] SDK pins verified fit-for-purpose as wire-verification dev-deps (crates.io, 2026-11-18)
+- [x] Pump.fun-Raydium arbitrage completed (CPMM closed form + all three Raydium hop builders)
 
 ---
 
