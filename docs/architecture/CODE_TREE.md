@@ -27,7 +27,10 @@ SOLANA_FLASHLOAN_ARBITUGE/
 │   │                              seeds, discriminators, pool addresses, CU tables
 │   ├── arb-math/                  LEAF: all arithmetic (no I/O)
 │   │   └── src/
-│   │       ├── dlmm.rs            DLMM bin math (prices, amounts, fees)
+│   │       ├── dlmm/              DLMM bin math (prices, amounts, fees):
+│   │       │                      mod/types/price/fee/swap/capacity/error +
+│   │       │                      quote_exact_in / quote_exact_out /
+│   │       │                      breakpoints (bin-drain knees) + tests
 │   │       ├── clmm.rs / cpmm.rs / damm_v2.rs / launchlab.rs
 │   │       ├── economic.rs        CANONICAL economic calculator + canonical Kamino
 │   │       │                      klend flash fee (KaminoFeeError, checked/unchecked)
@@ -58,7 +61,9 @@ SOLANA_FLASHLOAN_ARBITUGE/
 │   │       ├── adapters.rs        pool-state → adapter quoting
 │   │       ├── meteora_quote_engine.rs / meteora_size_optimizer.rs
 │   │       ├── flash_loan_sizing.rs    liquidity-bounded borrow sizing
-│   │       ├── dlmm_flash_arbitrage.rs / cross_pool_dlmm.rs
+│   │       ├── dlmm_flash_arbitrage.rs / cross_pool_dlmm.rs  (cross-pool sizing
+│   │       │                      seeds exact bin-drain breakpoints via
+│   │       │                      arb-math dlmm::breakpoints + dlmm_quote_components)
 │   │       ├── three_leg_meme_pipeline.rs
 │   │       ├── meteora_pair_discovery.rs / meteora_fresh_state.rs
 │   │       └── guarded.rs         guarded-quote interface
