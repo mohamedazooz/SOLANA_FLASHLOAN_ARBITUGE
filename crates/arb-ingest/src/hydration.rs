@@ -267,6 +267,8 @@ impl MultiDexRegistry {
                                                         tick_index: t.tick_index,
                                                         initialized: true,
                                                         liquidity_net: t.liquidity_net,
+                                                        limit_order_unfilled: t
+                                                            .limit_order_unfilled,
                                                     })
                                                     .collect(),
                                             });
@@ -301,6 +303,8 @@ impl MultiDexRegistry {
                                                         tick_index: t.tick_index,
                                                         initialized: true,
                                                         liquidity_net: t.liquidity_net,
+                                                        limit_order_unfilled: t
+                                                            .limit_order_unfilled,
                                                     })
                                                     .collect(),
                                             });

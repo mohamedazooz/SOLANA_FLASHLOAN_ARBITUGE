@@ -80,3 +80,49 @@
 - [x] Wire `arb-executor` CPI option in `Supervisor::assemble_native_ixs` for pure 3-pool Meteora DLMM routes.
 - [x] Create comprehensive architecture and lifecycle documentation in `docs/`.
 - [x] Maintain zero warnings across workspace.
+
+---
+
+## 5. Session (2026-11-20, branch `vibe/raydium-phase45-d4dc69`) — Raydium CLMM Phase 4 Dynamic-Fee/Fee-Side Gates + Raydium V4 Phase 5 Post-OpenBook V2 Execution
+
+### Phase 4: Raydium CLMM dynamic-fee & fee-side gates (arb-math + arb-dex)
+- **`arb_math::raydium_dynamic_fee`** (new module): `raydium_clmm_dynamic_fee_rate_upper_bound`
+  (exact `compute_dynamic_fee_rate` formula evaluated at `max_volatility_accumulator`,
+  fee monotonic in VA -> sound ceiling), `raydium_clmm_total_fee_rate_upper_bound`
+  (base + worst-case dynamic, capped at `MAX_FEE_RATE_NUMERATOR = 100_000`).
+  Constants VERIFIED against deployed program source (`states/pool_fee.rs`,
+  `instructions/swap.rs`), checked 2026-11-20.
+- **`RaydiumClmmPool`**: `dynamic_fee_rate_upper_bound()` / `total_fee_rate_upper_bound()`
+  expose the bound; `fee_bps()` and `clmm_state().fee_rate` now use the base+dynamic
+  upper bound and fail closed (None) when the dynamic-fee tail (offsets 1102/1106/1118)
+  is missing or the bound exceeds the u16 quote-math domain — never clamped.
+- **`quote()` gates (fail-closed)**:
+  1. `fee_on` (`CollectFeeOn`) must be provable from account bytes (`len >= 391`).
+  2. Only `FromInput` (0) is supported — Token0/Token1-only fee collection rejected
+     (our model charges the fee on the input token; the other modes change the fee side).
+  3. Dynamic-fee state must be provable (`len >= 1122`) — reject rather than assume disabled.
+- **Limit-order traversal fix**: `parse_raydium_clmm_tick_array_account` dropped the
+  parsed `limit_order_unfilled` (hard-coded 0). Fixed; a tick holding unfilled Raydium
+  CLMM limit orders now (a) counts as initialized per official `is_initialized()` and
+  (b) aborts the pure-AMM traversal with `LimitOrderTickInSwapPath` when the swap path
+  crosses it exactly at the tick price.
+- **New tests**: `raydium_clmm_limit_order_tests.rs` (7) + `raydium_clmm_phase45_tests.rs` (10).
+
+### Phase 5: Raydium V4 execution accounts post-OpenBook
+- `RaydiumV4Pool::execution_accounts()` previously required a hydrated OpenBook market
+  (serum_market + derived vault_signer), making pools untradable when the market
+  account is not fetched/returned. Since the default schema `SwapBaseInV2` (opcode 16,
+  8 accounts) needs no OpenBook accounts, the gate now requires only the AMM vaults;
+  unresolved serum keys stay default-nil and an explicit V1 build still fails closed
+  in `arb_tx::protocols::raydium_v4::build_raydium_v4_swap_instruction_versioned`.
+- **New tests**: `raydium_v4_v2_execution_tests.rs` (4).
+
+### Verification (this session, all commands executed in-sandbox)
+- `cargo check --workspace` — clean.
+- `cargo fmt --all -- --check` — clean.
+- `cargo clippy --workspace --all-targets` — 0 warnings, 0 errors.
+- `cargo test --workspace --all-targets` — **1343 ok / 0 fail** (baseline before session: 1318; +25 new).
+- Phase 3 note (unchanged status): **PARTIALLY VERIFIED** — the Phase-3 DEX coverage
+  checklist gates were merged earlier (PR #87 and predecessors); the DeFiLlama/registry
+  discovery-driven pool-onboarding evidence below has not been re-executed against a
+  live RPC in this session.

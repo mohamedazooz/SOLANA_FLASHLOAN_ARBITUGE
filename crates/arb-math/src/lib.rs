@@ -23,6 +23,7 @@ pub mod latency;
 pub mod launchlab;
 pub mod pump_boost_arb;
 pub mod pump_fun_raydium;
+pub mod raydium_dynamic_fee;
 
 pub use chronos::{
     BPS_DIVISOR_F64, ExecutionTimeline, GateDecision, GateInput, GateOutput, LatencyMetrics,
@@ -72,6 +73,9 @@ pub use dlmm::{
 };
 pub use dlmm_pro::*;
 pub use launchlab::{quote_launchlab_buy_exact_in, quote_launchlab_sell_exact_in};
+pub use raydium_dynamic_fee::{
+    raydium_clmm_dynamic_fee_rate_upper_bound, raydium_clmm_total_fee_rate_upper_bound,
+};
 
 use arb_types::Lamports;
 

@@ -711,6 +711,7 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
                         initialized: t.initialized,
                         liquidity_net: t.liquidity_net,
                         liquidity_gross: 0,
+                        limit_order_unfilled: t.limit_order_unfilled,
                     })
                     .collect(),
             })
@@ -1061,6 +1062,7 @@ mod tests {
                         tick_index: -88 * 4 + i * 4,
                         initialized: true,
                         liquidity_net: 500_000_000_000,
+                        limit_order_unfilled: 0,
                     })
                     .collect(),
             }];

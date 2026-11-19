@@ -253,6 +253,7 @@ impl AmmPool for OrcaWhirlpool {
                             tick_index: tick.tick_index,
                             initialized: true,
                             liquidity_net: tick.liquidity_net,
+                            limit_order_unfilled: tick.limit_order_unfilled,
                         })
                         .collect(),
                 })

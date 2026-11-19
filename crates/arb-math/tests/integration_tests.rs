@@ -161,12 +161,14 @@ fn test_clmm_multi_tick_traversal_with_tick_arrays() {
                 initialized: true,
                 liquidity_net: 500_000_000_000,
                 liquidity_gross: 500_000_000_000,
+                limit_order_unfilled: 0,
             },
             TickFacade {
                 tick_index: -128,
                 initialized: true,
                 liquidity_net: -200_000_000_000,
                 liquidity_gross: 200_000_000_000,
+                limit_order_unfilled: 0,
             },
         ],
     }];

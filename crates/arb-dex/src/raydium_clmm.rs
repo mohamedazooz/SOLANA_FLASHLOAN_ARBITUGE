@@ -37,6 +37,18 @@ pub struct RaydiumClmmPool {
     /// Fee rate in `1e6` precision (from `AmmConfig.trade_fee_rate`), e.g. `2500` = 25 bps.
     pub fee_rate_ppm: u32,
     pub status: u8,
+    /// Official `PoolState::fee_on` (`CollectFeeOn`): 0 = FromInput,
+    /// 1 = Token0Only, 2 = Token1Only. `None` when the account bytes are too
+    /// short to prove the field (fail-closed: quote refuses unknown fee side).
+    pub fee_on: Option<u8>,
+    /// Official `PoolState::dynamic_fee_info` (offset 1096..1176, verified
+    /// 2026-11-20 against the deployed program source). `None` when the
+    /// account bytes are too short to prove the dynamic fee is disabled.
+    pub dynamic_fee_control: Option<u32>,
+    pub max_volatility_accumulator: Option<u32>,
+    /// Non-config inputs are informational only (the swap can raise the
+    /// accumulator mid-swap); the fee quote uses the max-accumulator bound.
+    pub volatility_accumulator: u32,
     pub tick_arrays: Vec<TickArrayFacade>,
     pub tick_array_pdas: Vec<Pubkey>,
     pub bitmap_extension: Option<Pubkey>,
@@ -65,6 +77,10 @@ impl RaydiumClmmPool {
             tick_current: 0,
             fee_rate_ppm: 2_500, // Updated by AmmConfig dependency
             status: 0,
+            fee_on: None,
+            dynamic_fee_control: None,
+            max_volatility_accumulator: None,
+            volatility_accumulator: 0,
             tick_arrays: Vec::new(),
             tick_array_pdas: Vec::new(),
             bitmap_extension: None,
@@ -121,11 +137,21 @@ impl RaydiumClmmPool {
                 i128::from_le_bytes(data[offset + 4..offset + 20].try_into().unwrap());
             let liquidity_gross =
                 u128::from_le_bytes(data[offset + 20..offset + 36].try_into().unwrap());
+            // TickState limit-order fields (VERIFIED layout, checked 2026-11-20).
+            let orders_amount =
+                u64::from_le_bytes(data[offset + 124..offset + 132].try_into().unwrap());
+            let part_filled_remaining =
+                u64::from_le_bytes(data[offset + 132..offset + 140].try_into().unwrap());
+            let limit_order_unfilled = orders_amount
+                .checked_add(part_filled_remaining)
+                .ok_or(ArbError::Overflow)?;
             ticks.push(TickFacade {
                 tick_index: tick,
-                initialized: liquidity_gross > 0,
+                // Official is_initialized(): liquidity OR limit orders.
+                initialized: liquidity_gross > 0 || limit_order_unfilled > 0,
                 liquidity_net,
                 liquidity_gross,
+                limit_order_unfilled,
             });
             offset += RAYDIUM_CLMM_TICK_STATE_SIZE;
         }
@@ -133,6 +159,25 @@ impl RaydiumClmmPool {
             start_tick_index,
             ticks,
         })
+    }
+
+    /// Worst-case dynamic fee rate (denominator `1e6`) this pool can charge in
+    /// the current account epoch: the exact on-chain formula evaluated at
+    /// `max_volatility_accumulator` (fee is monotonic in the volatility
+    /// accumulator). `None` when the account bytes are too short to prove the
+    /// dynamic-fee configuration (fail-closed).
+    pub fn dynamic_fee_rate_upper_bound(&self) -> Option<u32> {
+        Some(arb_math::raydium_clmm_dynamic_fee_rate_upper_bound(
+            self.dynamic_fee_control?,
+            self.max_volatility_accumulator?,
+            self.tick_spacing,
+        ))
+    }
+
+    /// `base_fee_rate + worst-case dynamic` total fee rate (denominator `1e6`),
+    /// matching on-chain `get_total_fee_rate` under the max-accumulator bound.
+    pub fn total_fee_rate_upper_bound(&self) -> Option<u64> {
+        Some(u64::from(self.fee_rate_ppm) + u64::from(self.dynamic_fee_rate_upper_bound()?))
     }
 
     pub fn apply_amm_config_data(&mut self, data: &[u8]) -> Result<()> {
@@ -182,8 +227,9 @@ impl AmmPool for RaydiumClmmPool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
+        let total = self.total_fee_rate_upper_bound()?;
         // Round UP to basis points: understating fees would overstate quotes.
-        u16::try_from(self.fee_rate_ppm.div_ceil(100)).ok()
+        u16::try_from(total.div_ceil(100)).ok()
     }
 
     fn clmm_state(&self) -> Option<ClmmState> {
@@ -192,9 +238,10 @@ impl AmmPool for RaydiumClmmPool {
             liquidity: self.liquidity,
             tick_current: self.tick_current,
             tick_spacing: self.tick_spacing,
-            // Fail-closed: never clamp a fee rate into the u16 domain (a
-            // clamped 10% fee would silently undercharge and overstate out).
-            fee_rate: u16::try_from(self.fee_rate_ppm).ok()?,
+            // Fail-closed: use the base+dynamic upper bound and never clamp a
+            // fee rate into the u16 domain (a clamped 10% fee would silently
+            // undercharge and overstate out).
+            fee_rate: u16::try_from(self.total_fee_rate_upper_bound()?).ok()?,
             tick_arrays: self
                 .tick_arrays
                 .iter()
@@ -208,6 +255,7 @@ impl AmmPool for RaydiumClmmPool {
                             tick_index: t.tick_index,
                             initialized: true,
                             liquidity_net: t.liquidity_net,
+                            limit_order_unfilled: t.limit_order_unfilled,
                         })
                         .collect(),
                 })
@@ -333,6 +381,20 @@ impl AmmPool for RaydiumClmmPool {
         if data.len() > 389 {
             self.status = data[389];
         }
+        // PoolState tail: fee_on @390, dynamic_fee_info @1096..1176 (verified
+        // 2026-11-20; total account LEN = 1544). Short accounts cannot prove
+        // the fee side or that the dynamic fee is disabled -> remain None and
+        // fail closed at quote time.
+        if data.len() >= 391 {
+            self.fee_on = Some(data[390]);
+        }
+        if data.len() >= 1122 {
+            self.dynamic_fee_control =
+                Some(u32::from_le_bytes(data[1102..1106].try_into().unwrap()));
+            self.max_volatility_accumulator =
+                Some(u32::from_le_bytes(data[1106..1110].try_into().unwrap()));
+            self.volatility_accumulator = u32::from_le_bytes(data[1118..1122].try_into().unwrap());
+        }
         self.tick_array_pdas = self.tick_array_pdas_around_current();
         Ok(())
     }
@@ -358,12 +420,33 @@ impl AmmPool for RaydiumClmmPool {
                     .into(),
             ));
         }
-        let net_in = amount_in;
-        let fee_rate = u16::try_from(self.fee_rate_ppm).map_err(|_| {
+        // Fee side: our quote math charges the fee on the input token, which
+        // matches only `CollectFeeOn::FromInput` (0). Token0/Token1-only fee
+        // collection changes which token the fee is taken in -> reject.
+        match self.fee_on {
+            None => {
+                return Err(ArbError::InvalidInput(
+                    "Raydium CLMM account too short to prove fee side (fee_on); reject rather than assume".into(),
+                ));
+            }
+            Some(0) => {}
+            Some(other) => {
+                return Err(ArbError::InvalidInput(format!(
+                    "Raydium CLMM fee_on = {other}: only FromInput (0) fee collection is supported; reject rather than mis-model the fee side"
+                )));
+            }
+        }
+        let total_fee_rate = self.total_fee_rate_upper_bound().ok_or_else(|| {
+            ArbError::InvalidInput(
+                "Raydium CLMM account too short to prove the dynamic-fee state; reject rather than assume disabled".into(),
+            )
+        })?;
+        let fee_rate = u16::try_from(total_fee_rate).map_err(|_| {
             ArbError::InvalidInput(
                 "Raydium CLMM fee rate exceeds the current u16 quote-math domain; reject rather than clamp".into(),
             )
         })?;
+        let net_in = amount_in;
         let gross_out = arb_math::clmm::quote_clmm_with_ticks_per_array(
             net_in,
             self.sqrt_price_x64,

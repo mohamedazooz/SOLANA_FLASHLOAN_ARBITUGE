@@ -124,6 +124,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
                         initialized: t.initialized,
                         liquidity_net: t.liquidity_net,
                         liquidity_gross: 0,
+                        limit_order_unfilled: t.limit_order_unfilled,
                     })
                     .collect(),
             })

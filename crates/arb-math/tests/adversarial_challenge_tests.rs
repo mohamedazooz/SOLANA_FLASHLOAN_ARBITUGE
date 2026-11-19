@@ -41,6 +41,7 @@ fn challenge_clmm_cross_one_tick_boundary_a_to_b() {
             initialized: true,
             liquidity_net: 2_000_000_000_000,
             liquidity_gross: 2_000_000_000_000,
+            limit_order_unfilled: 0,
         }],
     }];
 
@@ -94,6 +95,7 @@ fn challenge_clmm_cross_one_tick_boundary_b_to_a() {
             initialized: true,
             liquidity_net: 2_000_000_000_000,
             liquidity_gross: 2_000_000_000_000,
+            limit_order_unfilled: 0,
         }],
     }];
 
@@ -143,18 +145,21 @@ fn challenge_clmm_cross_two_and_three_tick_boundaries() {
                 initialized: true,
                 liquidity_net: 2_000_000_000_000, // L becomes 8T
                 liquidity_gross: 2_000_000_000_000,
+                limit_order_unfilled: 0,
             },
             TickFacade {
                 tick_index: -128,
                 initialized: true,
                 liquidity_net: -1_000_000_000_000, // L becomes 9T
                 liquidity_gross: 1_000_000_000_000,
+                limit_order_unfilled: 0,
             },
             TickFacade {
                 tick_index: -192,
                 initialized: true,
                 liquidity_net: 3_000_000_000_000, // L becomes 6T
                 liquidity_gross: 3_000_000_000_000,
+                limit_order_unfilled: 0,
             },
         ],
     }];
