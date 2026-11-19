@@ -182,7 +182,8 @@ impl AmmPool for RaydiumClmmPool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
-        u16::try_from(self.fee_rate_ppm / 100).ok()
+        // Round UP to basis points: understating fees would overstate quotes.
+        u16::try_from(self.fee_rate_ppm.div_ceil(100)).ok()
     }
 
     fn clmm_state(&self) -> Option<ClmmState> {
@@ -191,7 +192,9 @@ impl AmmPool for RaydiumClmmPool {
             liquidity: self.liquidity,
             tick_current: self.tick_current,
             tick_spacing: self.tick_spacing,
-            fee_rate: u16::try_from(self.fee_rate_ppm).unwrap_or(u16::MAX),
+            // Fail-closed: never clamp a fee rate into the u16 domain (a
+            // clamped 10% fee would silently undercharge and overstate out).
+            fee_rate: u16::try_from(self.fee_rate_ppm).ok()?,
             tick_arrays: self
                 .tick_arrays
                 .iter()
