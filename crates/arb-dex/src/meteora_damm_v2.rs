@@ -2,7 +2,9 @@
 
 use crate::traits::AmmPool;
 use arb_constants::{METEORA_DAMM_V2_POOL_AUTHORITY, METEORA_DAMM_V2_PROGRAM_ID};
-use arb_math::{DammV2FeeParams, damm_v2_virtual_reserves};
+use arb_math::{
+    DammV2FeeParams, damm_v2_virtual_reserves, sqrt_price_x64_in_meteora_damm_v2_bounds,
+};
 use arb_types::{
     ArbError, DexProtocol, MintId, PoolExecutionAccounts, PoolId, Result, TokenProgramKind,
 };
@@ -192,6 +194,14 @@ impl AmmPool for MeteoraDammV2Pool {
         self.sqrt_min_price_x64 = u128::from_le_bytes(data[424..440].try_into().unwrap());
         self.sqrt_max_price_x64 = u128::from_le_bytes(data[440..456].try_into().unwrap());
         self.sqrt_price_x64 = u128::from_le_bytes(data[456..472].try_into().unwrap());
+        if self.sqrt_price_x64 != 0
+            && !sqrt_price_x64_in_meteora_damm_v2_bounds(self.sqrt_price_x64)
+        {
+            return Err(ArbError::InvalidInput(format!(
+                "Meteora DAMM v2 sqrt_price_x64 {} outside official program bounds",
+                self.sqrt_price_x64
+            )));
+        }
         self.activation_point = u64::from_le_bytes(data[472..480].try_into().unwrap());
 
         let flag_a = data[482];

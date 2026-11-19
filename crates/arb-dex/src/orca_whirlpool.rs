@@ -2,7 +2,9 @@
 
 use crate::traits::AmmPool;
 use arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID;
-use arb_math::clmm::{TickArrayFacade, parse_tick_array_account, quote_clmm};
+use arb_math::clmm::{
+    TickArrayFacade, parse_tick_array_account, quote_clmm, sqrt_price_x64_in_orca_whirlpool_bounds,
+};
 use arb_types::{
     ArbError, ClmmState, DexProtocol, MintId, PoolExecutionAccounts, PoolId, Result,
     TokenProgramKind,
@@ -278,6 +280,14 @@ impl AmmPool for OrcaWhirlpool {
         }
         if let Ok(b) = data[65..81].try_into() {
             self.sqrt_price_x64 = u128::from_le_bytes(b);
+            if self.sqrt_price_x64 != 0
+                && !sqrt_price_x64_in_orca_whirlpool_bounds(self.sqrt_price_x64)
+            {
+                return Err(ArbError::InvalidInput(format!(
+                    "Whirlpool sqrt_price_x64 {} outside official program bounds",
+                    self.sqrt_price_x64
+                )));
+            }
         }
         if let Ok(b) = data[81..85].try_into() {
             self.tick_current_index = i32::from_le_bytes(b);

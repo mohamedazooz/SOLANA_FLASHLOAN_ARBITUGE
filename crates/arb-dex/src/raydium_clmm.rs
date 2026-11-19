@@ -2,7 +2,7 @@
 
 use crate::traits::AmmPool;
 use arb_constants::RAYDIUM_CLMM_PROGRAM_ID;
-use arb_math::clmm::{TickArrayFacade, TickFacade};
+use arb_math::clmm::{TickArrayFacade, TickFacade, sqrt_price_x64_in_raydium_clmm_bounds};
 use arb_types::{
     ArbError, ClmmState, ClmmTick, ClmmTickArray, DexProtocol, MintId, PoolExecutionAccounts,
     PoolId, Result, TokenProgramKind,
@@ -320,6 +320,12 @@ impl AmmPool for RaydiumClmmPool {
         self.tick_spacing = u16::from_le_bytes(data[235..237].try_into().unwrap()).max(1);
         self.liquidity = u128::from_le_bytes(data[237..253].try_into().unwrap());
         self.sqrt_price_x64 = u128::from_le_bytes(data[253..269].try_into().unwrap());
+        if self.sqrt_price_x64 != 0 && !sqrt_price_x64_in_raydium_clmm_bounds(self.sqrt_price_x64) {
+            return Err(ArbError::InvalidInput(format!(
+                "Raydium CLMM sqrt_price_x64 {} outside official program bounds",
+                self.sqrt_price_x64
+            )));
+        }
         self.tick_current = i32::from_le_bytes(data[269..273].try_into().unwrap());
         if data.len() > 389 {
             self.status = data[389];
