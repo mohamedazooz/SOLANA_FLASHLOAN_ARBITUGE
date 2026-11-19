@@ -243,12 +243,17 @@ pub fn build_swap_hop_instruction(
                             .into(),
                 });
             }
-            // Remaining tick arrays beyond index 0 are duplicate-filled:
-            // Whirlpool ignores unused remaining tick-array accounts, and the
-            // registry supplies the full traversal sequence for crossing swaps.
-            let ta0 = tick_array_pdas[0];
-            let ta1 = tick_array_pdas.get(1).copied().unwrap_or(ta0);
-            let ta2 = tick_array_pdas.get(2).copied().unwrap_or(ta1);
+            // The registry publishes `[a_to_b x3][b_to_a x3]`; select the half
+            // that matches this hop's direction. A legacy 3-PDA window is used
+            // as-is (the caller is responsible for its direction).
+            let [ta0, ta1, ta2] =
+                OrcaWhirlpoolAccounts::select_tick_arrays(tick_array_pdas, a_to_b);
+            if ta0 == Pubkey::default() {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Orca tick_array_pdas resolved to the zero pubkey".into(),
+                });
+            }
             let accounts = OrcaWhirlpoolAccounts::with_tick_arrays(
                 hop.pool_id.0,
                 *vault_a,

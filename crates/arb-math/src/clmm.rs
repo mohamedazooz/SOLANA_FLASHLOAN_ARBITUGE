@@ -619,6 +619,60 @@ pub struct TickArrayFacade {
     pub ticks: Vec<TickFacade>,
 }
 
+/// `Tick::check_is_valid_start_tick` from the Whirlpool program: a start tick
+/// must be a multiple of the tick spacing and inside the global tick range.
+pub fn is_valid_tick_array_start_tick(start_tick_index: i32, tick_spacing: u16) -> bool {
+    if tick_spacing == 0 {
+        return false;
+    }
+    if start_tick_index.rem_euclid(i32::from(tick_spacing)) != 0 {
+        return false;
+    }
+    (MIN_TICK_INDEX..=MAX_TICK_INDEX).contains(&start_tick_index)
+}
+
+/// The EXACT ordered tick-array start indexes the on-chain Whirlpool `swap`
+/// instruction requires.
+///
+/// Mirrors `SparseSwapTickSequenceBuilder::get_start_tick_indexes` in the
+/// official program (`programs/whirlpool/src/util/sparse_swap.rs`):
+///
+/// * `a_to_b`  -> `[base, base - T, base - 2T]` (never shifted, even when
+///   `tick_current == base`).
+/// * `b_to_a`  -> `[base, base + T, base + 2T]`, or `[base + T, base + 2T,
+///   base + 3T]` when `tick_current + tick_spacing` reaches the array's upper
+///   edge.
+///
+/// `T = 88 * tick_spacing`. Invalid start ticks are dropped exactly like the
+/// program does (the sequence then ends early). An empty result means no
+/// usable Whirlpool tick array exists near the current tick.
+pub fn orca_tick_array_start_indexes(
+    tick_current: i32,
+    tick_spacing: u16,
+    a_to_b: bool,
+) -> Vec<i32> {
+    if tick_spacing == 0 {
+        return Vec::new();
+    }
+    let spacing = i32::from(tick_spacing);
+    let ticks_in_array = (TICK_ARRAY_SIZE as i32) * spacing;
+    let base = tick_current.div_euclid(ticks_in_array) * ticks_in_array;
+    let offsets: [i32; 3] = if a_to_b {
+        [0, -1, -2]
+    } else if tick_current.saturating_add(spacing) >= base.saturating_add(ticks_in_array) {
+        [1, 2, 3]
+    } else {
+        [0, 1, 2]
+    };
+    offsets
+        .iter()
+        .filter_map(|&offset| {
+            let start_tick = base.checked_add(offset.checked_mul(ticks_in_array)?)?;
+            is_valid_tick_array_start_tick(start_tick, tick_spacing).then_some(start_tick)
+        })
+        .collect()
+}
+
 /// Calculate the start tick index for a tick given Whirlpool tick spacing.
 pub fn get_start_tick_index(tick: i32, tick_spacing: u16) -> i32 {
     get_start_tick_index_with_size(tick, tick_spacing, TICK_ARRAY_SIZE)
@@ -810,50 +864,70 @@ pub fn find_next_tick_boundary_with_size(
         .ok_or(ClmmMathError::IntegerOverflow)?;
     let mut current_array_start =
         get_start_tick_index_with_size(tick_current, tick_spacing, ticks_per_array_count);
-    if a_to_b && tick_current == current_array_start {
-        current_array_start = current_array_start
-            .checked_sub(ticks_per_array)
-            .ok_or(ClmmMathError::IntegerOverflow)?;
-    }
-    let current_array = tick_arrays
-        .iter()
-        .find(|array| array.start_tick_index == current_array_start)
-        .ok_or(ClmmMathError::MissingTickArrayCoverage(current_array_start))?;
 
-    let candidate = if a_to_b {
-        current_array
-            .ticks
+    loop {
+        let current_array = tick_arrays
             .iter()
-            .filter(|tick| tick.initialized && tick.tick_index <= tick_current)
-            .max_by_key(|tick| tick.tick_index)
-            .copied()
-    } else {
-        current_array
-            .ticks
-            .iter()
-            .filter(|tick| tick.initialized && tick.tick_index > tick_current)
-            .min_by_key(|tick| tick.tick_index)
-            .copied()
-    };
+            .find(|array| array.start_tick_index == current_array_start)
+            .ok_or(ClmmMathError::MissingTickArrayCoverage(current_array_start))?;
 
-    if let Some(tick) = candidate {
-        return Ok((tick.tick_index, Some(tick)));
-    }
+        let candidate = if a_to_b {
+            current_array
+                .ticks
+                .iter()
+                .filter(|tick| {
+                    tick.initialized
+                        && tick.tick_index <= tick_current
+                        && tick.tick_index >= current_array_start
+                })
+                .max_by_key(|tick| tick.tick_index)
+                .copied()
+        } else {
+            current_array
+                .ticks
+                .iter()
+                .filter(|tick| tick.initialized && tick.tick_index > tick_current)
+                .min_by_key(|tick| tick.tick_index)
+                .copied()
+        };
 
-    // No initialized tick exists in this array. Move to its edge; the next
-    // iteration must have the adjacent array loaded or fail with MissingTickArrayCoverage.
-    let boundary = if a_to_b {
-        current_array_start
-    } else {
-        current_array_start
-            .checked_add(ticks_per_array)
-            .ok_or(ClmmMathError::IntegerOverflow)?
-    };
-    let boundary = boundary.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX);
-    if boundary == tick_current {
-        return Err(ClmmMathError::NoProgress);
+        if let Some(tick) = candidate {
+            return Ok((tick.tick_index, Some(tick)));
+        }
+
+        // No initialized tick remains in this array in the swap direction.
+        // Move to its edge; the next iteration must have the adjacent array
+        // loaded or fail with MissingTickArrayCoverage.
+        let boundary = if a_to_b {
+            current_array_start
+        } else {
+            current_array_start
+                .checked_add(ticks_per_array)
+                .ok_or(ClmmMathError::IntegerOverflow)?
+        };
+
+        // `a_to_b` at the array's lower edge: the edge equals the current
+        // tick, so there is zero room left inside this array. Descend into the
+        // previous array instead of fabricating progress. The Whirlpool
+        // program orders arrays `[base, base - T, base - 2T]`, so the previous
+        // array is exactly the next one it will search.
+        if a_to_b && boundary == tick_current {
+            let previous_start = current_array_start
+                .checked_sub(ticks_per_array)
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            if previous_start < MIN_TICK_INDEX {
+                return Err(ClmmMathError::IncompleteQuote);
+            }
+            current_array_start = previous_start;
+            continue;
+        }
+
+        let boundary = boundary.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX);
+        if boundary == tick_current {
+            return Err(ClmmMathError::NoProgress);
+        }
+        return Ok((boundary, None));
     }
-    Ok((boundary, None))
 }
 
 /// Updates liquidity L when crossing an initialized tick boundary.
@@ -1081,6 +1155,84 @@ mod tests {
     fn tick_traversal_requires_current_array_coverage() {
         let err = find_next_tick_boundary(0, 1, false, &[]).unwrap_err();
         assert_eq!(err, ClmmMathError::MissingTickArrayCoverage(0));
+    }
+
+    /// Official program rule (`SparseSwapTickSequenceBuilder::get_start_tick_indexes`):
+    /// a_to_b never shifts; b_to_a shifts only when the last tick of the array
+    /// is reached.
+    #[test]
+    fn orca_tick_array_window_matches_program_rules() {
+        let spacing = 4u16;
+        let t = 88 * 4; // 352
+
+        // a_to_b, tick inside the array: [base, base-T, base-2T].
+        assert_eq!(
+            orca_tick_array_start_indexes(0, spacing, true),
+            vec![0, -t, -2 * t]
+        );
+        // a_to_b exactly at the array start: NO shift (the old code shifted).
+        assert_eq!(
+            orca_tick_array_start_indexes(t, spacing, true),
+            vec![t, 0, -t]
+        );
+
+        // b_to_a, tick at the array start: [base, +T, +2T].
+        assert_eq!(
+            orca_tick_array_start_indexes(t, spacing, false),
+            vec![t, 2 * t, 3 * t]
+        );
+        // b_to_a in the final tick of the array (tick + spacing reaches the
+        // upper edge): [base+T, +2T, +3T].
+        assert_eq!(
+            orca_tick_array_start_indexes(2 * t - i32::from(spacing), spacing, false),
+            vec![2 * t, 3 * t, 4 * t]
+        );
+
+        // Invalid start ticks (outside the global range) are dropped, exactly
+        // like the program. At the top of the range the b_to_a window runs out
+        // of valid start ticks.
+        let top_base = MAX_TICK_INDEX - MAX_TICK_INDEX.rem_euclid(t);
+        let window = orca_tick_array_start_indexes(top_base, spacing, false);
+        assert!(window.iter().all(|s| *s <= MAX_TICK_INDEX));
+        assert!(window.len() < 3, "window = {window:?}");
+    }
+
+    /// a_to_b at the array's lower edge must descend into the previous array
+    /// rather than fabricate a tick at the boundary.
+    #[test]
+    fn a_to_b_lower_edge_descends_to_previous_array() {
+        let spacing = 1u16;
+        let array_a = TickArrayFacade {
+            start_tick_index: 0,
+            ticks: (0..TICK_ARRAY_SIZE)
+                .map(|i| TickFacade {
+                    tick_index: i as i32,
+                    initialized: false,
+                    liquidity_net: 0,
+                    liquidity_gross: 0,
+                })
+                .collect(),
+        };
+        let mut prev_ticks: Vec<TickFacade> = (-(TICK_ARRAY_SIZE as i32)..0)
+            .map(|tick_index| TickFacade {
+                tick_index,
+                initialized: false,
+                liquidity_net: 0,
+                liquidity_gross: 0,
+            })
+            .collect();
+        // One initialized tick inside the previous array.
+        prev_ticks[TICK_ARRAY_SIZE - 5].initialized = true;
+        prev_ticks[TICK_ARRAY_SIZE - 5].liquidity_net = 10;
+        let array_prev = TickArrayFacade {
+            start_tick_index: -(TICK_ARRAY_SIZE as i32),
+            ticks: prev_ticks,
+        };
+
+        let (boundary, tick) =
+            find_next_tick_boundary(0, spacing, true, &[array_a, array_prev]).unwrap();
+        assert_eq!(boundary, -5);
+        assert_eq!(tick.map(|t| t.tick_index), Some(-5));
     }
 
     #[test]

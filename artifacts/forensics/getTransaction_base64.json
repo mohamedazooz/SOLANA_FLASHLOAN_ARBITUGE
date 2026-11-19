@@ -1,0 +1,45 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "blockTime": 1795101513,
+    "meta": {
+      "computeUnitsConsumed": 17724,
+      "costUnits": 18779,
+      "err": null,
+      "fee": 6000,
+      "innerInstructions": [],
+      "loadedAddresses": {
+        "readonly": [],
+        "writable": []
+      },
+      "logMessages": [
+        "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr invoke [1]",
+        "Program log: Memo (len 45): \"SOLANA_FLASHLOAN_ARBITUGE V1 TRANSPORT CANARY\"",
+        "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr consumed 17724 of 200000 compute units",
+        "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr success"
+      ],
+      "postBalances": [
+        19964925,
+        523015236
+      ],
+      "postTokenBalances": [],
+      "preBalances": [
+        19970925,
+        523015236
+      ],
+      "preTokenBalances": [],
+      "rewards": [],
+      "status": {
+        "Ok": null
+      }
+    },
+    "slot": 471383273,
+    "transaction": [
+      "gQEAAQ8AAAC2NQ3HL1cHvQHa8m5NHe35++7t2AQEfE9+D9x0AKfaTwECEdScydl43HFIGw1ReHq67AWqAnxwFqCVmlZNNfhD610FSlNamSkhBk0k6HFg2jh8fDW13bySu4HkH6hAQQVEjegDAAAAAAAAQA0DAAAAAAQBAC0AU09MQU5BX0ZMQVNITE9BTl9BUkJJVFVHRSBWMSBUUkFOU1BPUlQgQ0FOQVJZKz8lNyFF/3MRuFMHeNvfFPeNRooNZeu5IP+CjXOnfKy3GbfuFzH5jXsqwNLLWIe5nwPiLvSlvsZJNWivyDanCg==",
+      "base64"
+    ],
+    "transactionIndex": 190,
+    "version": 1
+  },
+  "id": 1
+}
