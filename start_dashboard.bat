@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 title SENTINEL // Solana Flashloan Arbitrage Master Controller
@@ -82,7 +82,7 @@ if %errorlevel% equ 0 (
 ) else (
     if exist "%BASE_DIR%\web\package.json" (
         echo   [+] جاري تشغيل سيرفر Vite في نافذة تيرمينال منفصلة...
-        start "[4] Vite Web Dashboard (Port 5173)" /D "%BASE_DIR%\web" cmd /k "npm run dev"
+        start "[4] Vite Web Dashboard (Port 5173)" /D "%BASE_DIR%\web" cmd /k "npm.cmd run dev"
     )
 )
 

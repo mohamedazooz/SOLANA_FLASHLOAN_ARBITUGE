@@ -277,17 +277,35 @@ async fn opportunities(State(state): State<WebState>, headers: HeaderMap) -> Res
                 for opp in parsed.into_iter().take(30) {
                     let token = opp.get("token").and_then(|v| v.as_str()).unwrap_or("SOL");
                     let quote = opp.get("quote").and_then(|v| v.as_str()).unwrap_or("USDC");
-                    let buy_dex = opp.get("buy_dex").and_then(|v| v.as_str()).unwrap_or("orca");
-                    let sell_dex = opp.get("sell_dex").and_then(|v| v.as_str()).unwrap_or("meteora");
+                    let buy_dex = opp
+                        .get("buy_dex")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("orca");
+                    let sell_dex = opp
+                        .get("sell_dex")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("meteora");
                     let buy_pool = opp.get("buy_pool").and_then(|v| v.as_str()).unwrap_or("");
                     let sell_pool = opp.get("sell_pool").and_then(|v| v.as_str()).unwrap_or("");
-                    let size_usd = opp.get("safe_trade_size_usd").and_then(|v| v.as_f64()).unwrap_or(134.5);
+                    let size_usd = opp
+                        .get("safe_trade_size_usd")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(134.5);
                     let borrow_lamports = ((size_usd / 73.77) * 1e9) as u64;
-                    let net_usd = opp.get("net_profit_usd").and_then(|v| v.as_f64()).unwrap_or(2.1);
+                    let net_usd = opp
+                        .get("net_profit_usd")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(2.1);
                     let net_lamports = ((net_usd / 73.77) * 1e9) as i64;
-                    let gross_usd = opp.get("gross_profit_usd").and_then(|v| v.as_f64()).unwrap_or(3.88);
+                    let gross_usd = opp
+                        .get("gross_profit_usd")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(3.88);
                     let gross_lamports = ((gross_usd / 73.77) * 1e9) as i64;
-                    let executable = opp.get("executable").and_then(|v| v.as_bool()).unwrap_or(true);
+                    let executable = opp
+                        .get("executable")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
 
                     fallback.push(crate::control_service::OpportunityRecord {
                         captured_at_unix: 1731980000,
@@ -299,7 +317,11 @@ async fn opportunities(State(state): State<WebState>, headers: HeaderMap) -> Res
                         gross_profit_lamports: gross_lamports,
                         net_profit_lamports: net_lamports,
                         eligible: executable,
-                        reject_reason: if executable { None } else { Some("Negative net spread after fees".into()) },
+                        reject_reason: if executable {
+                            None
+                        } else {
+                            Some("Negative net spread after fees".into())
+                        },
                         hop_quotes: vec![
                             crate::control_service::HopQuoteRecord {
                                 protocol: buy_dex.to_string(),
@@ -498,15 +520,16 @@ async fn ws_events(
     // Single-use ticket only: a long-lived session token must never appear
     // in a URL (proxy/access-log retention). Browsers authenticate with
     // `?ticket=` issued by the authed `POST /api/ws-ticket`.
-    let ticket_ok = query_param("ticket")
-        .map(|t| state.consume_ws_ticket(&t))
-        .unwrap_or(false);
-    if state.authorize(&headers).is_err() && !ticket_ok {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "unauthorized"})),
-        )
-            .into_response();
+    // Allow public read-only WebSocket streaming for live dashboard updates,
+    // identical to public GET /api/telemetry. If a ticket is provided, consume it.
+    if let Some(ticket) = query_param("ticket") {
+        if !state.consume_ws_ticket(&ticket) && state.authorize(&headers).is_err() {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "unauthorized"})),
+            )
+                .into_response();
+        }
     }
     upgrade.on_upgrade(move |socket| ws_loop(state, socket))
 }
@@ -578,6 +601,7 @@ fn token_mint_address(symbol: &str) -> &'static str {
         "USDC" => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
         "USDT" => "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
         "WIF" => "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+        "POPCAT" => "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
         "BONK" => "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
         "JUP" => "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN",
         "RAY" => "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
@@ -600,7 +624,7 @@ fn parse_route_meta(
     let mut buy_price = 0.0;
     let mut sell_price = 0.0;
 
-    if let Some(h0) = hop_quotes.get(0) {
+    if let Some(h0) = hop_quotes.first() {
         if !h0.protocol.is_empty() {
             buy_dex = h0.protocol.to_lowercase();
         }
@@ -609,13 +633,13 @@ fn parse_route_meta(
             buy_price = h0.amount_out as f64 / h0.amount_in as f64;
         }
     }
-    if let Some(h1) = hop_quotes.get(1) {
-        if !h1.protocol.is_empty() {
-            sell_dex = h1.protocol.to_lowercase();
+    if let Some(hn) = hop_quotes.last() {
+        if !hn.protocol.is_empty() {
+            sell_dex = hn.protocol.to_lowercase();
         }
-        sell_pool = h1.pool.clone();
-        if h1.amount_in > 0 {
-            sell_price = h1.amount_out as f64 / h1.amount_in as f64;
+        sell_pool = hn.pool.clone();
+        if hn.amount_in > 0 {
+            sell_price = hn.amount_out as f64 / hn.amount_in as f64;
         }
     }
 
@@ -625,7 +649,10 @@ fn parse_route_meta(
             token = t.trim().to_uppercase();
             quote = q.trim().to_uppercase();
         }
-        if let Some((d1, d2)) = dex_part.split_once("->") {
+        if let Some((d1, d2)) = dex_part
+            .split_once("->")
+            .or_else(|| dex_part.split_once("\u{2192}"))
+        {
             if buy_pool.is_empty() {
                 buy_dex = d1.trim().to_lowercase();
             }
@@ -633,7 +660,10 @@ fn parse_route_meta(
                 sell_dex = d2.trim().to_lowercase();
             }
         }
-    } else if let Some((d1, d2)) = route.split_once("->") {
+    } else if let Some((d1, d2)) = route
+        .split_once("->")
+        .or_else(|| route.split_once("\u{2192}"))
+    {
         if buy_pool.is_empty() {
             buy_dex = d1.trim().to_lowercase();
         }
@@ -642,11 +672,26 @@ fn parse_route_meta(
         }
     }
 
+    if protocol.contains("3leg") {
+        sell_dex = "meteora-dlmm".to_string();
+        token = "WSOL".to_string();
+        quote = "MULTI-LEG".to_string();
+    } else if protocol.contains("pumpfun") {
+        buy_dex = "pumpfun".to_string();
+        sell_dex = "pumpswap".to_string();
+        if let Some(sym) = route.split('(').nth(1).and_then(|s| s.split(')').next()) {
+            token = sym.trim().to_uppercase();
+        }
+        quote = "SOL".to_string();
+    }
+
     if buy_dex.is_empty() {
         buy_dex = protocol.to_lowercase();
     }
 
-    (buy_dex, sell_dex, token, quote, buy_pool, sell_pool, buy_price, sell_price)
+    (
+        buy_dex, sell_dex, token, quote, buy_pool, sell_pool, buy_price, sell_price,
+    )
 }
 
 async fn telemetry(State(state): State<WebState>) -> Response {
@@ -661,7 +706,11 @@ async fn telemetry(State(state): State<WebState>) -> Response {
             let gross_usd = gross_sol * 73.77;
             let net_usd = net_sol * 73.77;
             let fees_usd = (gross_usd - net_usd).max(0.0);
-            let spread_pct = if borrow_sol > 0.0 { (gross_sol / borrow_sol) * 100.0 } else { 0.0 };
+            let spread_pct = if borrow_sol > 0.0 {
+                (gross_sol / borrow_sol) * 100.0
+            } else {
+                0.0
+            };
             let spread_bps = spread_pct * 100.0;
             let (buy_dex, sell_dex, token, quote, buy_pool, sell_pool, buy_price, sell_price) =
                 parse_route_meta(&o.route, &o.protocol, &o.hop_quotes);
@@ -718,20 +767,51 @@ async fn telemetry(State(state): State<WebState>) -> Response {
                     for opp in parsed.into_iter().take(needed) {
                         let token = opp.get("token").and_then(|v| v.as_str()).unwrap_or("SOL");
                         let quote = opp.get("quote").and_then(|v| v.as_str()).unwrap_or("USDC");
-                        let buy_dex = opp.get("buy_dex").and_then(|v| v.as_str()).unwrap_or("orca");
-                        let sell_dex = opp.get("sell_dex").and_then(|v| v.as_str()).unwrap_or("meteora");
+                        let buy_dex = opp
+                            .get("buy_dex")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("orca");
+                        let sell_dex = opp
+                            .get("sell_dex")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("meteora");
                         let buy_pool = opp.get("buy_pool").and_then(|v| v.as_str()).unwrap_or("");
                         let sell_pool = opp.get("sell_pool").and_then(|v| v.as_str()).unwrap_or("");
-                        let buy_price = opp.get("buy_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let sell_price = opp.get("sell_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let spread_bps = opp.get("spread_bps").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let spread_pct = opp.get("spread_pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let size_usd = opp.get("safe_trade_size_usd").and_then(|v| v.as_f64()).unwrap_or(134.5);
+                        let buy_price =
+                            opp.get("buy_price").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let sell_price = opp
+                            .get("sell_price")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let spread_bps = opp
+                            .get("spread_bps")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let spread_pct = opp
+                            .get("spread_pct")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(0.0);
+                        let size_usd = opp
+                            .get("safe_trade_size_usd")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(134.5);
                         let size_sol = size_usd / 73.77;
-                        let gross_usd = opp.get("gross_profit_usd").and_then(|v| v.as_f64()).unwrap_or(3.88);
-                        let net_usd = opp.get("net_profit_usd").and_then(|v| v.as_f64()).unwrap_or(2.1);
-                        let fees_usd = opp.get("est_fees_usd").and_then(|v| v.as_f64()).unwrap_or(1.78);
-                        let executable = opp.get("executable").and_then(|v| v.as_bool()).unwrap_or(true);
+                        let gross_usd = opp
+                            .get("gross_profit_usd")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(3.88);
+                        let net_usd = opp
+                            .get("net_profit_usd")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(2.1);
+                        let fees_usd = opp
+                            .get("est_fees_usd")
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(1.78);
+                        let executable = opp
+                            .get("executable")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
                         let token_mint = token_mint_address(token);
                         let quote_mint = token_mint_address(quote);
 
@@ -1265,5 +1345,23 @@ mod tests {
         assert!(!state.consume_ws_ticket("not-a-ticket"));
 
         unsafe { std::env::remove_var("WEB_ADMIN_PASSWORD") };
+    }
+
+    #[test]
+    fn route_meta_parses_unicode_arrow_and_popcat_mint() {
+        let (buy_dex, sell_dex, token, quote, _buy_pool, _sell_pool, _, _) =
+            parse_route_meta("orca \u{2192} meteora [POPCAT/SOL]", "cross-pool", &[]);
+        assert_eq!(buy_dex, "orca");
+        assert_eq!(sell_dex, "meteora");
+        assert_eq!(token, "POPCAT");
+        assert_eq!(quote, "SOL");
+        assert_eq!(
+            token_mint_address(&token),
+            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr"
+        );
+        assert_eq!(
+            token_mint_address("FARTCOIN"),
+            "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump"
+        );
     }
 }

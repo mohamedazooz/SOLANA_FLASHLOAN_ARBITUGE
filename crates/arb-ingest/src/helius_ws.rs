@@ -146,11 +146,19 @@ impl HeliusWsClient {
         F: Fn(&str) -> Option<String>,
     {
         let mut urls = Vec::new();
-        // Priority 1: Role-Separated Endpoints
+        // Priority 1: Multi-provider endpoints prioritizing SOLAMI, SHYFT, and HELIUS
         for key in [
+            "SOLAMI_WS_URL",
+            "SOLAMI_WS",
+            "SHYFT_WS",
+            "SHYFT_WS_URL",
+            "SOLANA_RPC_WS_URL",
+            "HELIUS_WS_URL",
+            "HELIUS_WS",
             "SOLANA_WS_PRIMARY",
             "SOLANA_WS_FALLBACK_1",
             "SOLANA_WS_FALLBACK_2",
+            "SOLANA_WS_URL",
         ] {
             if let Some(u) = lookup(key) {
                 let trimmed = u.trim().to_string();
@@ -1379,11 +1387,7 @@ impl HeliusWsClient {
                     if let Some(slot) = v.pointer("/params/result/slot").and_then(|s| s.as_u64()) {
                         let parent = v.pointer("/params/result/parent").and_then(|p| p.as_u64());
                         self.latest_slot.store(slot, Ordering::Release);
-                        ingest.record_slot_update(
-                            slot,
-                            parent,
-                            slot_integrity::SLOT_PROCESSED,
-                        );
+                        ingest.record_slot_update(slot, parent, slot_integrity::SLOT_PROCESSED);
                         ingest.record_helius_slot(slot);
                         ingest.mark_helius_connected();
                         ingest.mark_stream_connected();
@@ -1504,6 +1508,32 @@ mod tests {
     }
 
     #[test]
+    fn collect_ws_urls_prioritizes_solami_shyft_helius_multi_provider() {
+        let mut vars: HashMap<&str, String> = HashMap::new();
+        vars.insert(
+            "HELIUS_WS_URL",
+            "wss://mainnet.helius-rpc.com/?api-key=test".into(),
+        );
+        vars.insert(
+            "SOLAMI_WS_URL",
+            "wss://ws.solami.dev/data/subscribe?api_key=test".into(),
+        );
+        vars.insert("SHYFT_WS", "wss://rpc.fra.shyft.to?api_key=test".into());
+        vars.insert("SOLANA_WS_PRIMARY", "wss://solana-ws-primary.com".into());
+
+        let urls = HeliusWsClient::collect_ws_urls(|k| vars.get(k).map(|v| v.to_string()));
+        assert_eq!(
+            urls,
+            vec![
+                "wss://ws.solami.dev/data/subscribe?api_key=test",
+                "wss://rpc.fra.shyft.to?api_key=test",
+                "wss://mainnet.helius-rpc.com/?api-key=test",
+                "wss://solana-ws-primary.com",
+            ]
+        );
+    }
+
+    #[test]
     fn collect_ws_urls_resolves_helius_api_when_key_unset() {
         let mut vars = HashMap::new();
         vars.insert("HELIUS_API", "test-helius-key-123");
@@ -1577,10 +1607,7 @@ mod tests {
             "id": 101,
             "error": { "code": -32600, "message": "unsupported method" }
         });
-        assert_eq!(
-            client.handle_message(&unsupported_err, &ingest),
-            Ok(false)
-        );
+        assert_eq!(client.handle_message(&unsupported_err, &ingest), Ok(false));
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
     }
 

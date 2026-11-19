@@ -17,6 +17,7 @@ paths = [
   '''^reports/phase16/shadow_soak_merged_main_log_sample\.txt$''',
   '''^fixtures/phase17_meteora_pools\.json$''',
   '''^fixtures/meteora_mainnet_snapshot\.json$''',
+  '''^docs/reference_archive/.*''',
 ]
 regexes = [
   '''dGhlIHNhbXBsZSBub25jZQ==''',
