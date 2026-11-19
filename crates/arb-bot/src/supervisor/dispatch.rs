@@ -142,11 +142,9 @@ impl Supervisor {
         match self.mode() {
             BotMode::Observe => {
                 debug!("Observe mode active: skipping dispatch for {}", route_label);
-                return;
             }
             BotMode::Analyze => {
                 debug!("Analyze mode active: skipping dispatch for {}", route_label);
-                return;
             }
             BotMode::PaperTrade => {
                 info!(

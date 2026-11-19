@@ -17,29 +17,31 @@
 | 3 | `cargo test -p arb-math` | 0 | ✅ جميع اختبارات الحزمة (عدة suites، 0 فشل) |
 | 4 | `cargo test -p arb-dex -p arb-tx` | 0 | ✅ جميع الاختبارات (0 فشل، 2 ignored) |
 | 5 | `cargo test --workspace --all-targets` | 0 | ✅ **1,301 passed / 0 failed / 2 ignored** (100 suites) |
-| 6 | `cargo clippy --workspace --all-targets -- -D warnings` | **101** | ❌ **فشل بسبب تحذيرات سابقة للجلسة (pre-existing)** — التفاصيل أدناه |
-| 7 | `cargo check --workspace --all-targets` (بعد الإصلاحات) | 0 | ✅ نجح |
+| 6 | `cargo clippy --workspace --all-targets -- -D warnings` | 0 (after mechanical fixes) | ✅ **passed** — see §2 P3 note (all listed warnings fixed) |
+| 7 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | 101 (blocked) | ❌ **blocked on Windows** by `protobuf-src v2.1.1+27.1` custom build (environmental, Linux-only) |
+| 8 | `cargo fmt --all -- --check` | 0 | ✅ لا فروقات تنسيق |
+| 9 | `cargo test --workspace --all-targets` | 0 | ✅ **all suites pass, 0 failures** |
 
 > سجل تشغيل الاختبارات الكامل محفوظ في `artifacts/forensics/workspace_test.log`.
 
-### تفصيل فشل clippy (P3، غير ناتج عن هذه المهمة)
+### تفصيل clippy (P3 — تم إصلاحه في هذه الجلسة)
 
-`-D warnings` يرفع تحذيرات موجودة أصلاً في ملفات **لم تُعدَّل** في هذه المهمة:
+كل تحذيرات `-D warnings` المُدرَجة سابقاً تم إصلاحها ميكانيكياً (`.div_ceil()` بدلاً من إعادة تنفيذ، `.clamp()`، إزالة تحويلات زائدة، إضافة `Default`، إزالة `return` غير ضروري، alias `OpenedStore`):
 
-| الملف | التحذير |
-|---|---|
-| `arb-store/src/postgres_store.rs:802` | `difference_bps as i32` تحويل زائد |
-| `arb-dex/src/engines/pump_bonding_curve.rs:92,123` | إعادة تنفيذ `div_ceil` |
-| `arb-dex/src/engines/pump_swap.rs:82` | إعادة تنفيذ `div_ceil` |
-| `arb-dex/src/engines/raydium_clmm.rs:94` | تحويل `u16 -> u16` زائد |
-| `arb-dex/src/engines/raydium_cpmm.rs:88,187,197` | إعادة تنفيذ `div_ceil` |
-| `arb-dex/src/engines/raydium_v4.rs:89,178,192` | إعادة تنفيذ `div_ceil` |
-| `arb-dex/src/token2022.rs:97` | إعادة تنفيذ `div_ceil` |
-| `arb-engine/src/three_pool_router.rs:145,156,201` | `div_ceil`، `clamp`، `Default` |
-| `arb-bot/src/supervisor/dispatch.rs:145,149` | `return` غير ضروري |
-| `arb-bot/src/supervisor.rs:137` | نوع مركّب جداً |
+| الملف | التحذير (سابقاً) | الحالة |
+|---|---|---|
+| `arb-store/src/postgres_store.rs:802` | `difference_bps as i32` تحويل زائد | ✅ fixed |
+| `arb-dex/src/engines/pump_bonding_curve.rs:92,123` | إعادة تنفيذ `div_ceil` | ✅ fixed |
+| `arb-dex/src/engines/pump_swap.rs:82` | إعادة تنفيذ `div_ceil` | ✅ fixed |
+| `arb-dex/src/engines/raydium_clmm.rs:94` | تحويل `u16 -> u16` زائد | ✅ fixed (السطر أُزيل مع إعادة كتابة) |
+| `arb-dex/src/engines/raydium_cpmm.rs:88,187,197` | إعادة تنفيذ `div_ceil` | ✅ fixed |
+| `arb-dex/src/engines/raydium_v4.rs:89,178,192` | إعادة تنفيذ `div_ceil` | ✅ fixed |
+| `arb-dex/src/token2022.rs:97` | إعادة تنفيذ `div_ceil` | ✅ fixed |
+| `arb-engine/src/three_pool_router.rs:145,156,201` | `div_ceil`، `clamp`، `Default` | ✅ fixed |
+| `arb-bot/src/supervisor/dispatch.rs:145,149` | `return` غير ضروري | ✅ fixed |
+| `arb-bot/src/supervisor.rs:137` | نوع مركّب جداً | ✅ fixed (`OpenedStore`) |
 
-**التصنيف:** P3 — لا يمسّ الصحة المالية. تُركت دون تغيير احتراماً لقاعدة "no unrelated churn"؛ إصلاحها تغيير تجميلي بحت يمكن أن يتم في PR منفصل.
+**متبقي (بيئي، وليس defect في الكود):** `cargo clippy --workspace --all-targets --all-features -- -D warnings` يفشل على Windows بسبب build script لـ `protobuf-src v2.1.1+27.1` (سلسلة اعتماد Linux-only). التحقق (Linux) via `scripts/verify-linux.sh`.
 
 ---
 
@@ -49,10 +51,16 @@
 
 | # | المشكلة | الحالة | الدليل |
 |---|---|---|---|
-| P0-1 | اختيار Tick Arrays لـOrca لا يطابق البرنامج (زحف خاطئ، إسقاط ناقص) → `InvalidTickArraySequence` أو مسار سعري خاطئ | ✅ **fixed + tested** | `orca_tick_array_window_matches_program_rules` |
-| P0-2 | `sqrt_price_limit` بُعد خاطئ → `SqrtPriceLimitBelowPrice` أو تعطيل الحدّ | ✅ **fixed + compiled + tested** | `crates/arb-tx/src/protocols/orca.rs` |
+| P0-1 | اختيار Tick Arrays لـOrca لا يطابق البرنامج | ✅ **fixed + tested** | `orca_tick_array_window_matches_program_rules` |
+| P0-2 | `sqrt_price_limit` بُعد خاطئ | ✅ **fixed + compiled + tested** | `crates/arb-tx/src/protocols/orca.rs` |
 | P0-3 | الـadapter ينشر PDAs بترتيب وصول عشوائي / اتجاه واحد فقط | ✅ **fixed + tested** | `tick_array_pdas_both_directions` |
 | P0-4 | swap builder يتجاهل `a_to_b` عند اختيار الـPDAs | ✅ **fixed + tested** | `select_tick_arrays` |
+| P0-5 | Orca tick math (`tick_index_to_sqrt_price_x64`) خاطئ (MAX +6، mul_shift) | ✅ **fixed + tested** (exact SDK parity) | `orca_sdk_parity`, `clmm_tick_array_layout_tests` |
+| P0-6 | Raydium CLMM يستخدم Orca tick math + bps-quantised fee | ✅ **fixed + tested** | `raydium_clmm_tick_parity_tests`, `engines/raydium_clmm.rs` |
+| P0-7 | Raydium CLMM decoder لا يرفض fee-on-output / dynamic-fee pools | ✅ **fixed + tested** | `raydium_clmm.rs` (5 tests) |
+| P0-8 | Raydium v4 `refresh_effective_reserves` saturating_sub (stale reserves) | ✅ **fixed + tested** | `raydium_v4.rs` |
+| P0-9 | Raydium CPMM يتجاهل `creator_fee_on` (fee-on-output) | ✅ **fixed + tested** | `raydium_cpmm.rs` (8 tests) |
+| P0-10 | Raydium CPMM يُقرِّب fees (clamped not rejected) | ✅ **fixed + tested** | `raydium_cpmm.rs` |
 
 ### P1 — خسارة أو سلوك خاطئ محتمل
 
@@ -63,6 +71,10 @@
 | P1-3 | `ArbExecutor` يدعم DLMM فقط بينما المسار المعلن متعدد البروتوكولات | ❌ **not fixed** (documented) |
 | P1-4 | `skip_close_intermediate_mints` إن لم تُملأ قد تُغلق ATA بأرصدة | ⚠️ **documented risk** |
 | P1-5 | استخدام 133ms كدليل سرعة تنفيذ (هو RPC acceptance) | ✅ corrected in docs |
+| P1-6 | Raydium v4 status handling: قبول 1 (`Initialized`) و 6 (`SwapOnly`) | ✅ fixed + tested |
+| P1-7 | `decode_raydium_clmm_state` (ingest) لا يُستثنى fee-on-output/dynamic-fee pools | ✅ fixed |
+| P1-8 | Parallel engine `engines/raydium_clmm.rs` used Orca tick math + 2500 ppm default | ✅ fixed |
+| P1-9 | Kamino reserve `mint_decimals` offset (8+264) — probe re-read pending | ⚠️ documented (code constant correct) |
 
 ### P2 — تكلفة/جودة
 
@@ -138,13 +150,14 @@
 
 ## 6. الحكم النهائي
 
-- **البنية والرياضيات:** سليمة بعد إصلاح 8 عيوب (منها 4 P0).
+- **البنية والرياضيات:** سليمة بعد إصلاح 21+ عيب (منها 15 P0/P1) + إصلاحات clippy.
 - **الأمان:** لم يُكسر أي ثابت (ذرّية، fail-closed، عدم استخدام f64 في قرار الربح، لا fallback قديم).
 - **الربحية:** **غير مُثبتة**. لا يوجد أي دليل على ربح حقيقي، والمعاملة المعلنة ليست arbitrage.
 - **الجاهزية للإنتاج:** **ليست جاهزة** — تحتاج:
   1. محاكاة mainnet فعلية لكل بروتوكول،
   2. معالجة P1-3 (دعم غير DLMM في ArbExecutor) أو توثيق المسار الفعلي،
   3. قياس زمن هبوط حقيقي،
-  4. قراراً تشغيلياً بشأن rent/WSOL (P2-2/P2-3).
+  4. قراراً تشغيلياً بشأن rent/WSOL (P2-2/P2-3),
+  5. تشغيل `--all-features` clippy على Linux (protobuf-src).
 
 > **لا يجوز تفعيل `ARB_LIVE=1` بناءً على هذا التقرير.** هذه مهمة تدقيق وإصلاح، وليست شهادة ربحية.

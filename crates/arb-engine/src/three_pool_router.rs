@@ -142,7 +142,11 @@ impl ThreePoolRouteEngine {
 
         // Kamino Flash Loan fee calculation: ceil(borrow * fee_bps / 10_000)
         let flash_loan_fee = if flash_fee_bps > 0 {
-            ((borrow_amount as u128 * flash_fee_bps as u128 + 9_999) / 10_000) as u64
+            // u128 product cannot overflow (u64 * u16), but the quotient can
+            // exceed u64 for absurd borrow sizes: refuse instead of truncating
+            // a cost downward.
+            let fee = (u128::from(borrow_amount) * u128::from(flash_fee_bps)).div_ceil(10_000);
+            u64::try_from(fee).map_err(|_| ArbError::Overflow)?
         } else {
             0u64
         };
@@ -153,7 +157,7 @@ impl ThreePoolRouteEngine {
         // Dynamic Jito tip calculation: e.g. 70% of gross profit if profitable
         let jito_tip = if gross_profit > 0 {
             let tip = (gross_profit as u64 * tip_share_bps as u64) / 10_000;
-            tip.max(10_000).min(50_000_000) // bounded between 0.00001 SOL and 0.05 SOL
+            tip.clamp(10_000, 50_000_000) // bounded between 0.00001 SOL and 0.05 SOL
         } else {
             0
         };
@@ -195,6 +199,12 @@ impl ThreePoolRouteEngine {
 /// Kamino Flash Loan Borrow-Size Optimizer using Golden-Section & Bounded Search.
 pub struct KaminoBorrowOptimizer {
     pub router: ThreePoolRouteEngine,
+}
+
+impl Default for KaminoBorrowOptimizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KaminoBorrowOptimizer {

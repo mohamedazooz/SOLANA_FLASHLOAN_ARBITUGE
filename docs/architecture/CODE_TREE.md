@@ -39,7 +39,9 @@ SOLANA_FLASHLOAN_ARBITUGE/
 │   │       └── latency.rs         latency measurement helpers
 │   ├── arb-dex/                   protocol adapters: decode + quote per DEX
 │   │   └── src/                   traits.rs (adapter interface), meteora_dlmm,
-│   │                              meteora_damm_v2, raydium_v4/cpmm/clmm/launchlab,
+│   │                              meteora_damm_v2 (pool_status @ byte 481,
+│   │                              fail-closed Enable/activation gates),
+│   │                              raydium_v4/cpmm/clmm/launchlab,
 │   │                              orca_whirlpool, pump_fun, pump_swap, dlmm_validation
 │   ├── arb-ingest/                market data + state freshness
 │   │   └── src/
@@ -181,3 +183,17 @@ All historical `arb_tx::<module>::Item` paths still resolve: each group
   A fabricated OpenBook market address in `primitives/builder.rs` was corrected;
   regression guards in `arb-tx/tests/address_regression_guards.rs` now cover it.
 - Full report: `reports/cleanup/COMPREHENSIVE_CLEANUP_REPORT.md`.
+
+## Parity / guard hardening (2026-11-20, vibe branch)
+
+- `arb-dex/tests/meteora_damm_v2_status_tests.rs` — fail-closed `pool_status`
+  (cp_amm byte 481, 0 = Enable) + pre-activation quote gates, verified against
+  the deployed cp_amm program source.
+- `arb-math/tests/raydium_clmm_swap_math_parity_tests.rs` — golden swap-step
+  parity vs the official Raydium CLMM `compute_swap` lab: `sqrt_price_next`
+  and `amount_out` bit-exact in 1000/1000 harness rows; the only divergence is
+  the internal `amount_in`/`fee_amount` split (official folds sqrt-rounding
+  dust into fee), pinned per-row with expected shifts.
+- `arb-dex/src/raydium_clmm.rs` — `clmm_state()` no longer clamps a fee rate
+  above the u16 domain (silently undercharging); fail-closed `None` instead.
+  `fee_bps()` rounds UP so fee understatement cannot inflate quotes.

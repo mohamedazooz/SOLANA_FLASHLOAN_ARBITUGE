@@ -131,13 +131,15 @@ pub struct Supervisor {
 /// because dispatch-intent reconciliation (R12) requires durable persistence.
 /// Precedence: `store_url` postgres → `database_url` postgres → `database_url`
 /// sqlite → `store_url` sqlite/plain path.
+type OpenedStore = (
+    Arc<dyn Store>,
+    Option<Arc<arb_store::AsyncIntelligencePersistence>>,
+);
+
 fn open_store_and_intel(
     store_url: &str,
     database_url: Option<&str>,
-) -> anyhow::Result<(
-    Arc<dyn Store>,
-    Option<Arc<arb_store::AsyncIntelligencePersistence>>,
-)> {
+) -> anyhow::Result<OpenedStore> {
     if store_url.starts_with("postgres") {
         let pg = Arc::new(
             PostgresStore::open(store_url)

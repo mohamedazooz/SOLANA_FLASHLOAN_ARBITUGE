@@ -1,0 +1,72 @@
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "blockTime": 1795101513,
+    "meta": {
+      "computeUnitsConsumed": 17724,
+      "costUnits": 18779,
+      "err": null,
+      "fee": 6000,
+      "innerInstructions": [],
+      "loadedAddresses": {
+        "readonly": [],
+        "writable": []
+      },
+      "logMessages": [
+        "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr invoke [1]",
+        "Program log: Memo (len 45): \"SOLANA_FLASHLOAN_ARBITUGE V1 TRANSPORT CANARY\"",
+        "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr consumed 17724 of 200000 compute units",
+        "Program MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr success"
+      ],
+      "postBalances": [
+        19964925,
+        523015236
+      ],
+      "postTokenBalances": [],
+      "preBalances": [
+        19970925,
+        523015236
+      ],
+      "preTokenBalances": [],
+      "rewards": [],
+      "status": {
+        "Ok": null
+      }
+    },
+    "slot": 471383273,
+    "transaction": {
+      "message": {
+        "accountKeys": [
+          "2Cby3xFT48ifATWhqDVmpnMCe4tiXvY8MtGFWYDfec7n",
+          "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+        ],
+        "header": {
+          "numReadonlySignedAccounts": 0,
+          "numReadonlyUnsignedAccounts": 1,
+          "numRequiredSignatures": 1
+        },
+        "instructions": [
+          {
+            "accounts": [],
+            "data": "34ZJVN7YTVhmoKyBtsaKHkBrWQ8FqDrS5ZyvLcAKPgz559PNxzBY4dRa8WEzXJ",
+            "programIdIndex": 1,
+            "stackHeight": 1
+          }
+        ],
+        "recentBlockhash": "DGG85cT98XpeZFkEXn3jB8atrW4MMVo3t9QxHfg8Fp6J",
+        "transactionConfig": {
+          "computeUnitLimit": 200000,
+          "heapSize": null,
+          "loadedAccountsDataSizeLimit": 67108864,
+          "priorityFee": 1000
+        }
+      },
+      "signatures": [
+        "s9eVzA5J7hgSunKyyjUkJ2nwpQw6FrNL4rQViYHjiJmdznVS9kSaHuk2vSpbca1o9kmU5ijrCgkysHxdkqqa4js"
+      ]
+    },
+    "transactionIndex": 190,
+    "version": 1
+  },
+  "id": 1
+}

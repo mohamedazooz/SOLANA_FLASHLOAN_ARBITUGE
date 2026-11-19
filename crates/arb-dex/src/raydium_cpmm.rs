@@ -36,9 +36,16 @@ pub struct RaydiumCpmmPool {
     pub creator_fees_0: u64,
     pub creator_fees_1: u64,
     pub enable_creator_fee: bool,
+    /// Official `PoolState.creator_fee_on`: `0` = both tokens, `1` = token0
+    /// only, `2` = token1 only. Controls whether the creator fee is taken from
+    /// the input token or from the output token for a given direction.
+    pub creator_fee_on: u8,
     /// Combined fee rate in 1e6 PPM units (trade_fee + creator_fee).
     pub trade_fee_rate_ppm: u64,
     pub creator_fee_rate_ppm: u64,
+    /// True once the `AmmConfig` dependency has been decoded. Until then the
+    /// fee schedule is unknown and quoting must fail closed.
+    pub amm_config_loaded: bool,
     pub transfer_fee_0_bps: u16,
     pub transfer_fee_1_bps: u16,
     pub has_risky: bool,
@@ -73,8 +80,12 @@ impl RaydiumCpmmPool {
             creator_fees_0: 0,
             creator_fees_1: 0,
             enable_creator_fee: false,
-            trade_fee_rate_ppm: 2_500, // default 25 bps until AmmConfig loaded
+            creator_fee_on: 0,
+            // No synthesized fee schedule: quoting stays disabled until the
+            // pool's `AmmConfig` account has actually been decoded.
+            trade_fee_rate_ppm: 0,
             creator_fee_rate_ppm: 0,
+            amm_config_loaded: false,
             transfer_fee_0_bps: 0,
             transfer_fee_1_bps: 0,
             has_risky: false,
@@ -108,19 +119,46 @@ impl RaydiumCpmmPool {
                 .try_into()
                 .map_err(|_| ArbError::DeserializationError("bad amm_config trade fee".into()))?,
         );
-        if trade_fee > 0 && trade_fee <= 100_000 {
-            self.trade_fee_rate_ppm = trade_fee;
+        if trade_fee > 100_000 {
+            return Err(ArbError::InvalidInput(format!(
+                "Raydium CPMM AmmConfig trade_fee_rate {trade_fee} exceeds the program maximum 100,000 ppm"
+            )));
         }
+        self.trade_fee_rate_ppm = trade_fee;
 
         if data.len() >= 116 {
             let creator_fee = u64::from_le_bytes(data[108..116].try_into().map_err(|_| {
                 ArbError::DeserializationError("bad amm_config creator fee".into())
             })?);
-            if creator_fee <= 50_000 {
-                self.creator_fee_rate_ppm = creator_fee;
+            if creator_fee > 50_000 {
+                return Err(ArbError::InvalidInput(format!(
+                    "Raydium CPMM AmmConfig creator_fee_rate {creator_fee} exceeds the program maximum 50,000 ppm"
+                )));
             }
+            self.creator_fee_rate_ppm = creator_fee;
         }
+        self.amm_config_loaded = true;
         Ok(())
+    }
+
+    /// Fee charged on the input token for this direction, in 1e6 ppm units.
+    ///
+    /// Mirrors `PoolState::is_creator_fee_on_input` + `adjust_creator_fee_rate`:
+    /// the creator fee is only charged when the pool enables it, and it lands on
+    /// the input token only for the directions where `creator_fee_on` says so.
+    /// In the remaining directions it is deducted from the *output* amount.
+    pub fn creator_fee_on_input(&self, a_to_b: bool) -> Result<bool> {
+        if !self.enable_creator_fee || self.creator_fee_rate_ppm == 0 {
+            return Ok(true);
+        }
+        match self.creator_fee_on {
+            0 => Ok(true),
+            1 => Ok(a_to_b),
+            2 => Ok(!a_to_b),
+            other => Err(ArbError::InvalidInput(format!(
+                "Raydium CPMM creator_fee_on={other} is not a valid CreatorFeeOn variant"
+            ))),
+        }
     }
 
     pub fn effective_fee_rate_ppm(&self) -> u64 {
@@ -155,6 +193,9 @@ impl AmmPool for RaydiumCpmmPool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
+        if !self.amm_config_loaded {
+            return None;
+        }
         let eff_ppm = self.effective_fee_rate_ppm();
         let bps = (u128::from(eff_ppm) * 10_000) / RAYDIUM_CPMM_FEE_DENOMINATOR;
         u16::try_from(bps).ok().filter(|b| *b <= 10_000)
@@ -266,6 +307,9 @@ impl AmmPool for RaydiumCpmmPool {
         self.protocol_fees_1 = u64::from_le_bytes(data[349..357].try_into().unwrap());
         self.fund_fees_0 = u64::from_le_bytes(data[357..365].try_into().unwrap());
         self.fund_fees_1 = u64::from_le_bytes(data[365..373].try_into().unwrap());
+        if data.len() > 389 {
+            self.creator_fee_on = data[389];
+        }
 
         if data.len() >= 413 {
             self.enable_creator_fee = data[390] != 0;
@@ -286,6 +330,11 @@ impl AmmPool for RaydiumCpmmPool {
                 "Raydium CPMM swap disabled in pool status".into(),
             ));
         }
+        if !self.amm_config_loaded {
+            return Err(ArbError::IncompleteState(
+                "Raydium CPMM AmmConfig not loaded: fee schedule unknown, refusing to quote".into(),
+            ));
+        }
         if self.reserve_0 == 0 || self.reserve_1 == 0 {
             return Err(ArbError::InvalidInput("Raydium CPMM zero reserves".into()));
         }
@@ -295,20 +344,168 @@ impl AmmPool for RaydiumCpmmPool {
                     .into(),
             ));
         }
-        let net_in = amount_in;
         let (r_in, r_out) = if a_to_b {
             (self.reserve_0, self.reserve_1)
         } else {
             (self.reserve_1, self.reserve_0)
         };
-        let gross_out = cpmm_out_upfront_fee_ceil(
-            u128::from(net_in),
+
+        // Official `CurveCalculator::swap_base_input`:
+        //   creator fee on input  -> total fee = ceil(dx*(trade+creator)/1e6), one deduction
+        //   creator fee on output -> trade fee = ceil(dx*trade/1e6), then
+        //                            creator fee = ceil(out*creator/1e6) off the output
+        let creator_rate = if self.enable_creator_fee {
+            self.creator_fee_rate_ppm
+        } else {
+            0
+        };
+        let creator_on_input = self.creator_fee_on_input(a_to_b)?;
+        if creator_rate == 0 || creator_on_input {
+            let total_fee_rate = self.trade_fee_rate_ppm.saturating_add(creator_rate);
+            return cpmm_out_upfront_fee_ceil(
+                u128::from(amount_in),
+                r_in,
+                r_out,
+                u128::from(total_fee_rate),
+                RAYDIUM_CPMM_FEE_DENOMINATOR,
+            )
+            .ok_or(ArbError::Overflow);
+        }
+
+        let swapped = cpmm_out_upfront_fee_ceil(
+            u128::from(amount_in),
             r_in,
             r_out,
-            u128::from(self.effective_fee_rate_ppm()),
+            u128::from(self.trade_fee_rate_ppm),
             RAYDIUM_CPMM_FEE_DENOMINATOR,
         )
         .ok_or(ArbError::Overflow)?;
-        Ok(gross_out)
+        let numerator = u128::from(swapped)
+            .checked_mul(u128::from(creator_rate))
+            .and_then(|v| v.checked_add(RAYDIUM_CPMM_FEE_DENOMINATOR - 1))
+            .ok_or(ArbError::Overflow)?;
+        let creator_fee = numerator / RAYDIUM_CPMM_FEE_DENOMINATOR;
+        let net = u128::from(swapped)
+            .checked_sub(creator_fee)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Raydium CPMM creator fee exceeds the swapped output".into())
+            })?;
+        u64::try_from(net).map_err(|_| ArbError::Overflow)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const POOL_LEN: usize = 637;
+
+    /// Minimal live-shaped CPMM `PoolState` (8-byte discriminator + 637 bytes).
+    fn pool_state_bytes(creator_fee_on: u8, enable_creator_fee: bool) -> Vec<u8> {
+        let mut data = vec![0u8; POOL_LEN];
+        data[72..104].copy_from_slice(&[7u8; 32]); // token_0_vault
+        data[104..136].copy_from_slice(&[8u8; 32]); // token_1_vault
+        data[168..200].copy_from_slice(&[9u8; 32]); // token_0_mint
+        data[200..232].copy_from_slice(&[10u8; 32]); // token_1_mint
+        data[296..328].copy_from_slice(&[11u8; 32]); // observation_key
+        data[329] = 0; // swap enabled
+        data[331] = 9;
+        data[332] = 6;
+        data[389] = creator_fee_on;
+        data[390] = u8::from(enable_creator_fee);
+        data
+    }
+
+    fn amm_config_bytes(trade_fee: u64, creator_fee: u64) -> Vec<u8> {
+        let mut data = vec![0u8; 236];
+        data[12..20].copy_from_slice(&trade_fee.to_le_bytes());
+        data[108..116].copy_from_slice(&creator_fee.to_le_bytes());
+        data
+    }
+
+    fn pool(creator_fee_on: u8, enable_creator_fee: bool, creator_fee: u64) -> RaydiumCpmmPool {
+        let mut pool = RaydiumCpmmPool::from_account(
+            PoolId(Pubkey::new_unique()),
+            &pool_state_bytes(creator_fee_on, enable_creator_fee),
+        )
+        .expect("valid pool state");
+        pool.apply_amm_config_data(&amm_config_bytes(2_500, creator_fee))
+            .expect("valid amm config");
+        pool.update_reserves(1_000_000_000, 2_000_000_000);
+        pool
+    }
+
+    #[test]
+    fn quote_is_refused_until_the_amm_config_is_loaded() {
+        let mut p = RaydiumCpmmPool::from_account(
+            PoolId(Pubkey::new_unique()),
+            &pool_state_bytes(0, false),
+        )
+        .expect("valid pool state");
+        p.update_reserves(1_000_000_000, 2_000_000_000);
+        let error = p.quote(1_000_000, true).expect_err("must refuse");
+        assert!(error.to_string().contains("AmmConfig not loaded"));
+        assert_eq!(p.fee_bps(), None);
+    }
+
+    #[test]
+    fn trade_fee_only_quotes_match_the_official_curve() {
+        let p = pool(0, false, 0);
+        assert_eq!(p.quote(1_000_000, true).unwrap(), 1_993_011);
+        assert_eq!(p.quote(1_000_000, false).unwrap(), 498_501);
+    }
+
+    #[test]
+    fn creator_fee_on_both_tokens_is_charged_on_input_for_both_directions() {
+        let p = pool(0, true, 5_000);
+        assert_eq!(p.quote(1_000_000, true).unwrap(), 1_983_031);
+        assert_eq!(p.quote(1_000_000, false).unwrap(), 496_003);
+    }
+
+    #[test]
+    fn creator_fee_on_token0_moves_to_the_output_for_one_for_zero() {
+        let p = pool(1, true, 5_000);
+        // zero_for_one: token0 is the input -> creator fee on input.
+        assert_eq!(p.quote(1_000_000, true).unwrap(), 1_983_031);
+        // one_for_zero: token0 is the output -> creator fee off the output.
+        assert_eq!(p.quote(1_000_000, false).unwrap(), 496_008);
+    }
+
+    #[test]
+    fn creator_fee_on_token1_moves_to_the_output_for_zero_for_one() {
+        let p = pool(2, true, 5_000);
+        // zero_for_one: token1 is the output -> creator fee off the output.
+        assert_eq!(p.quote(1_000_000, true).unwrap(), 1_983_045);
+        // one_for_zero: token1 is the input -> creator fee on input.
+        assert_eq!(p.quote(1_000_000, false).unwrap(), 496_003);
+    }
+
+    #[test]
+    fn disabling_the_creator_fee_ignores_the_configured_rate() {
+        let p = pool(1, false, 5_000);
+        assert_eq!(p.quote(1_000_000, true).unwrap(), 1_993_011);
+        assert_eq!(p.quote(1_000_000, false).unwrap(), 498_501);
+    }
+
+    #[test]
+    fn invalid_creator_fee_mode_fails_closed() {
+        let p = pool(3, true, 5_000);
+        assert!(p.quote(1_000_000, true).is_err());
+    }
+
+    #[test]
+    fn out_of_range_config_fees_are_rejected_not_clamped() {
+        let mut p =
+            RaydiumCpmmPool::from_account(PoolId(Pubkey::new_unique()), &pool_state_bytes(0, true))
+                .expect("valid pool state");
+        assert!(
+            p.apply_amm_config_data(&amm_config_bytes(100_001, 0))
+                .is_err()
+        );
+        assert!(
+            p.apply_amm_config_data(&amm_config_bytes(2_500, 50_001))
+                .is_err()
+        );
+        assert!(!p.amm_config_loaded);
     }
 }

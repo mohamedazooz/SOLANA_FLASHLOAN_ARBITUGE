@@ -99,9 +99,41 @@
 | F | P3 | `build_close_token_account` يفترض SPL Token وليس 2022 |
 | G | P1 | الإغلاق قد يُدمّر ATA موجودة مسبقاً إذا لم تُملأ `skip_close_intermediate_mints` |
 
-## التحقق
+## Additional repairs in this session (2026-11-19, extended)
 
-- `cargo check --workspace --all-targets` ✅
-- `cargo test -p arb-math` ✅ (كل الاختبارات)
-- `cargo test -p arb-dex -p arb-tx` ✅
-- تفاصيل الأوامر والنتائج في `FINAL_VERIFICATION_REPORT.md`.
+| # | Severity | File | Description |
+|---|---|---|---|
+| 9 | **P0** | `crates/arb-math/src/clmm.rs` | `tick_index_to_sqrt_price_x64` rewritten to official Orca semantics (positive Q96.32 via `mul_shift_96`, negative Q64.64); `MAX_SQRT_PRICE_X64` corrected to `79226673515401279992447579055`; `get_amount_delta_a` now rejects shift overflow; `compute_swap_step_checked` matches official `compute_swap` (net/fee split, max-swap fee, zero-liquidity traversal); `is_valid_tick_array_start_tick` includes left-edge array. |
+| 10 | **P0** | `crates/arb-math/src/clmm.rs` | New Raydium-specific tick math: `RAYDIUM_MAX_SQRT_PRICE_X64 = 79226673521066979257578248091`, `tick_index_to_sqrt_price_x64_raydium`, `sqrt_price_x64_to_tick_index_raydium`, `ClmmTickMath` enum; `compute_swap_with_ticks_per_array_and_math` / `quote_clmm_with_ticks_per_array_and_math` so Orca and Raydium no longer share one rounding regime. |
+| 11 | **P0** | `crates/arb-dex/src/raydium_clmm.rs` | Decode `fee_on` (offset 389) and `dynamic_fee_info` (offset 1096); `clmm_state()` returns `None` for dynamic-fee and fee-on-output pools; `quote()` fails closed for dynamic fee and for the fee-on-output direction per official `is_fee_on_input` mapping; fee rate beyond u16 domain rejected (not clamped). `parse_tick_array_account` offsets corrected to `data[8..12]` and `12 + i*113`. |
+| 12 | **P0** | `crates/arb-ingest/src/decoders.rs` | `decode_raydium_clmm_state` returns `None` when `fee_on != 0` or `dynamic_fee_info` non-zero. |
+| 13 | **P0** | `crates/arb-dex/src/raydium_v4.rs` | `refresh_effective_reserves` now returns `Result<()>` using `checked_sub` (no `saturating_sub` stale-reserve fallback), writes zero reserves instead of keeping stale ones; `is_arbitrage_eligible` accepts status 1 (`Initialized`) and 6 (`SwapOnly`), still rejects 7 (`WaitingTrade`) because `pool_open_time` cannot be proven from a snapshot. |
+| 14 | **P0** | `crates/arb-dex/src/raydium_cpmm.rs` | Added `creator_fee_on` decode (offset 389); implemented official fee-on-output branch (`trade` on input, `ceil(out*creator/1e6)` off output) instead of always combining trade+creator on input; fail-closed when `AmmConfig` not loaded; fee rates validated against program maxima (not silently clamped); `amm_config_loaded` gate on `fee_bps()`. |
+| 15 | **P1** | `crates/arb-dex/src/engines/raydium_clmm.rs` | Replaced Orca `quote_clmm` + bps-quantised fee with `quote_clmm_with_ticks_per_array_and_math(..., RAYDIUM_CLMM_TICK_ARRAY_SIZE, ClmmTickMath::Raydium)` and raw `clmm_state.fee_rate`; removed silent 2500 ppm default; fails closed when `fee_rate == 0`. |
+| 16 | **P2** | `crates/arb-dex/src/engines/{pump_bonding_curve,pump_swap,raydium_cpmm,raydium_v4}.rs`, `token2022.rs` | Replaced manual `(n + d - 1) / d` ceil with `.div_ceil()` to satisfy clippy; fixed `raydium_clmm.rs` `fee_rate` scope error. |
+| 17 | **P2** | `crates/arb-engine/src/three_pool_router.rs` | Flash-loan fee uses `.div_ceil()` with `u64::try_from` (no truncation of a cost downward); tip uses `.clamp()`; `KaminoBorrowOptimizer: Default`. |
+| 18 | **P2** | `crates/arb-bot/src/supervisor/dispatch.rs`, `supervisor.rs` | Removed needless `return;` in Observe/Analyze arms; introduced `OpenedStore` type alias for `type_complexity`. |
+| 19 | **P2** | `crates/arb-store/src/postgres_store.rs` | Removed redundant `as i32` cast. |
+| 20 | **test** | `crates/arb-math/tests/{orca_sdk_parity,raydium_clmm_tick_parity_tests,clmm_tick_array_layout_tests}.rs` | Exact-equality expectations vs official SDK bit-tables; new 6-test layout suite. |
+| 21 | **test** | `crates/arb-dex/src/raydium_cpmm.rs` (mod tests) | 8 new unit tests covering creator-fee-on-output branches, fail-closed modes, config validation. |
+
+### Verification evidence (this session)
+
+- `cargo fmt --all -- --check`: clean (exit 0).
+- `cargo check --workspace --all-targets`: exit 0.
+- `cargo clippy --workspace --all-targets -- -D warnings`: exit 0.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: blocked on Windows by `protobuf-src v2.1.1+27.1` custom build (environmental, Linux-only dependency chain); documented, not a code defect.
+- `cargo test --workspace`: all suites pass, 0 failures (arb-math 156 unit + integration suites; arb-dex 50 lib tests; arb-bot 78 supervisor tests; etc.).
+- Live Kamino reserve offsets re-verified via read-only RPC (`artifacts/forensics/verify_kamino_reserve_offsets.py`): discriminator `[43,242,204,202,26,247,59,127]`, length 8,624, WSOL mint, supply vault `GafNuUXj9rxGLn4y79dPu6MHSuPWeJR6UtTWuexpGh3U`, fee vault `3JNof8s453bwG5UqiXBLJc77NRQXezYYEBbk3fqnoKph`, status 0 (Active), `flash_loan_fee_sf = 11529215046068` (1e-5), supply 272,151.78 SOL.
+- Live Orca tick-array layout verified on mainnet pool `Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE` (all 88 ticks initialized, trailing pool pubkey matches).
+- Reported transaction `s9eVzA5J…4js` decoded: V1, 235 bytes, slot 471383273, CU 17,724, fee 6,000 lamports, **Memo-only canary — not an arbitrage**. Classification unchanged: VERIFIED NON-ARBITRAGE TEST TRANSACTION.
+
+## What remains unverified / blocked
+
+- `--all-features` clippy on Windows (protobuf-src build). Run on Linux per `scripts/verify-linux.sh`.
+- No second independent RPC source tested (rate-limit risk).
+- Live Kamino `mint_decimals` re-read at offset 272 (8+264) still pending in the probe script (current script reads offset 264); code constant `KAMINO_RESERVE_MINT_DECIMALS_OFFSET = 8 + 264` is correct per layout.
+- `ArbExecutor` supports DLMM only (documented, P1).
+- ATA close assumes SPL Token not Token-2022 (documented, P3).
+- `AdaptiveBidder` uses `f64` in `keep_share`/`max_tip_share` (documented, P2).
+- `build_close_token_account` assumes SPL Token (P3).

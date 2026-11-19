@@ -79,7 +79,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
         };
 
         let num_fee = (input_net_into_pool as u128).saturating_mul(total_fee_bps);
-        let fee = (num_fee + 10_000 - 1) / 10_000;
+        let fee = num_fee.div_ceil(10_000);
         let fee_u64 = u64::try_from(fee).unwrap_or(input_net_into_pool);
 
         let input_after_fee = input_net_into_pool.saturating_sub(fee_u64);

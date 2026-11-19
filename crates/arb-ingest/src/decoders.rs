@@ -686,6 +686,17 @@ pub fn decode_raydium_clmm_state(data: &[u8], fee_bps: u16) -> Option<arb_types:
         return None;
     }
 
+    // `PoolState.fee_on != 0` charges the fee on the output token in one
+    // direction, and a non-zero `dynamic_fee_info` makes the fee depend on
+    // live volatility. `ClmmState` cannot represent either, so exclude the
+    // pool from sizing/routing instead of feeding wrong economics.
+    if data.get(390).copied().unwrap_or(0) != 0 {
+        return None;
+    }
+    if data.len() >= 1176 && data[1096..1176].iter().any(|&byte| byte != 0) {
+        return None;
+    }
+
     // Raydium CLMM's SwapMath fee unit is millionths (1e6), not BPS.
     // 25 bps must become 2,500 ppm; passing 25 undercharged fees by 100x.
     let fee_rate = fee_bps.checked_mul(100)?;

@@ -799,7 +799,7 @@ impl ProtocolIntelligenceRepository for PostgresStore {
         let (onchain_simulated_quote_raw, difference_raw, difference_bps, state_slot) = (
             rec.onchain_simulated_quote_raw.clone(),
             rec.difference_raw.clone(),
-            rec.difference_bps as i32,
+            rec.difference_bps,
             rec.state_slot as i64,
         );
         let (result, failure_reason) = (rec.result.clone(), rec.failure_reason.clone());
