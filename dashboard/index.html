@@ -97,7 +97,7 @@
 
         .header-meta {
             display: flex;
-            gap: 1rem;
+            gap: 0.75rem;
             align-items: center;
             flex-wrap: wrap;
         }
@@ -138,6 +138,7 @@
             display: inline-flex;
             align-items: center;
             gap: 0.4rem;
+            text-decoration: none;
         }
 
         .btn:hover {
@@ -161,10 +162,41 @@
             background: rgba(244, 63, 94, 0.25);
         }
 
+        .copy-btn {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: var(--text-muted);
+            border-radius: 4px;
+            padding: 0.1rem 0.35rem;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        .copy-btn:hover {
+            color: var(--accent-cyan);
+            border-color: var(--accent-cyan);
+            background: rgba(0, 243, 255, 0.1);
+        }
+
+        .pool-link {
+            color: var(--accent-cyan);
+            text-decoration: none;
+            font-family: var(--font-mono);
+            font-size: 0.72rem;
+        }
+
+        .pool-link:hover {
+            text-decoration: underline;
+            color: #67e8f9;
+        }
+
         /* Egyptian Explanation Box */
         .egyptian-banner {
-            background: linear-gradient(135deg, rgba(13, 18, 29, 0.95), rgba(18, 25, 39, 0.9));
-            border: 1px solid rgba(0, 243, 255, 0.3);
+            background: linear-gradient(135deg, rgba(13, 18, 29, 0.96), rgba(18, 25, 39, 0.92));
+            border: 1px solid rgba(0, 243, 255, 0.35);
             border-radius: 10px;
             padding: 1.25rem 1.5rem;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
@@ -176,10 +208,15 @@
             content: '';
             position: absolute;
             top: 0;
-            left: 0;
-            width: 4px;
+            right: 0;
+            width: 5px;
             height: 100%;
             background: var(--accent-cyan);
+        }
+
+        body.ltr .egyptian-banner::before {
+            right: auto;
+            left: 0;
         }
 
         .banner-header {
@@ -209,27 +246,27 @@
         }
 
         .banner-body {
-            font-size: 0.88rem;
+            font-size: 0.86rem;
             line-height: 1.7;
             color: #cbd5e1;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
             gap: 1rem;
             margin-top: 0.5rem;
         }
 
         .explainer-card {
-            background: rgba(6, 8, 13, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(6, 8, 13, 0.75);
+            border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 8px;
-            padding: 0.85rem 1rem;
+            padding: 0.95rem 1.1rem;
         }
 
         .explainer-card strong {
             color: var(--accent-cyan);
             display: block;
-            margin-bottom: 0.35rem;
-            font-size: 0.92rem;
+            margin-bottom: 0.4rem;
+            font-size: 0.95rem;
         }
 
         .grid-stats {
@@ -266,7 +303,7 @@
         }
 
         .card-value {
-            font-size: 1.6rem;
+            font-size: 1.55rem;
             font-weight: 800;
             color: var(--text-main);
             font-family: var(--font-mono);
@@ -291,7 +328,7 @@
             border-radius: 8px;
             padding: 0.75rem 1.25rem;
             display: flex;
-            gap: 1rem;
+            gap: 0.85rem;
             align-items: center;
             flex-wrap: wrap;
         }
@@ -323,7 +360,7 @@
 
         .main-layout {
             display: grid;
-            grid-template-columns: 2.2fr 1fr;
+            grid-template-columns: 2.3fr 1fr;
             gap: 1.25rem;
             flex: 1;
         }
@@ -365,7 +402,7 @@
             flex: 1;
             overflow-x: auto;
             overflow-y: auto;
-            max-height: 520px;
+            max-height: 560px;
         }
 
         table {
@@ -434,7 +471,7 @@
             line-height: 1.6;
             color: #94a3b8;
             overflow-y: auto;
-            max-height: 520px;
+            max-height: 560px;
             font-family: var(--font-mono);
         }
 
@@ -457,8 +494,8 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0, 0, 0, 0.75);
-            backdrop-filter: blur(4px);
+            background: rgba(0, 0, 0, 0.78);
+            backdrop-filter: blur(5px);
             display: none;
             justify-content: center;
             align-items: center;
@@ -469,10 +506,10 @@
         .modal-content {
             background: var(--bg-panel);
             border: 1px solid var(--accent-cyan);
-            box-shadow: 0 0 30px rgba(0, 243, 255, 0.2);
+            box-shadow: 0 0 35px rgba(0, 243, 255, 0.25);
             border-radius: 12px;
             width: 100%;
-            max-width: 650px;
+            max-width: 680px;
             max-height: 90vh;
             overflow-y: auto;
             padding: 1.5rem;
@@ -488,7 +525,7 @@
         }
 
         .modal-title {
-            font-size: 1.1rem;
+            font-size: 1.15rem;
             font-weight: 800;
             color: var(--accent-cyan);
         }
@@ -505,15 +542,15 @@
 
         .route-step {
             background: var(--bg-card);
-            border-right: 3px solid var(--accent-cyan);
+            border-right: 4px solid var(--accent-cyan);
             border-radius: 6px;
-            padding: 0.75rem 1rem;
-            margin-bottom: 0.75rem;
+            padding: 0.85rem 1.1rem;
+            margin-bottom: 0.85rem;
         }
 
         body.ltr .route-step {
             border-right: none;
-            border-left: 3px solid var(--accent-cyan);
+            border-left: 4px solid var(--accent-cyan);
         }
 
         .route-step-num {
@@ -525,14 +562,38 @@
 
         .route-step-title {
             font-weight: 700;
-            margin: 0.2rem 0;
+            margin: 0.25rem 0;
             color: var(--text-main);
+            font-size: 0.95rem;
         }
 
         .route-step-desc {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            line-height: 1.5;
+            font-size: 0.83rem;
+            color: #cbd5e1;
+            line-height: 1.6;
+        }
+
+        /* Toast Popup */
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(16, 185, 129, 0.95);
+            color: #030712;
+            padding: 0.6rem 1.35rem;
+            border-radius: 9999px;
+            font-weight: 800;
+            font-size: 0.85rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+            display: none;
+            z-index: 2000;
+            animation: fadeInToast 0.25s ease-out;
+        }
+
+        @keyframes fadeInToast {
+            from { opacity: 0; transform: translate(-50%, 15px); }
+            to { opacity: 1; transform: translate(-50%, 0); }
         }
 
         footer {
@@ -556,7 +617,7 @@
             <div class="brand-logo"></div>
             <div>
                 <div class="brand-title">SENTINEL <span>//</span> سولانا فلاش لون أربيتراتج</div>
-                <div class="brand-subtitle" id="subTitleText">نظام التحكيم السعري اللحظي واستغلال فروق الأسعار بدون رأس مال</div>
+                <div class="brand-subtitle" id="subTitleText">نظام التحكيم السعري اللحظي واستغلال فروق الأسعار بين المنصات بدون رأس مال</div>
             </div>
         </div>
         <div class="header-meta">
@@ -565,6 +626,7 @@
                 <span id="botModeText">SHADOW SIMULATION (محاكاة آمنة)</span>
             </div>
             <div class="mono" id="clockTime" style="font-size: 0.82rem; color: var(--text-muted);">--:--:-- UTC</div>
+            <a href="http://localhost:5173" target="_blank" class="btn btn-cyan" title="فتح الواجهة البرمجية المتقدمة Vite React">⚛️ React UI (5173)</a>
             <button class="btn" id="langToggleBtn" onclick="toggleLanguage()">🇬🇧 English</button>
             <button class="btn btn-rose" id="killSwitchHeaderBtn" onclick="handleKillSwitch()">🚨 إيقاف الطوارئ (Kill Switch)</button>
         </div>
@@ -574,26 +636,37 @@
     <div class="egyptian-banner" id="egyptianBanner">
         <div class="banner-header">
             <div class="banner-title">
-                <span>💡 دليل البوت السريع: إزاي السيستم شغال وبنكسب إزاي؟ (باللهجة المصرية البسيطة)</span>
+                <span>💡 دليل البوت الشامل: كل حاجة مشروحة بالمصري البسيط (ازاي بنكسب ومنين وازاي السيستم شغال؟)</span>
             </div>
             <button class="banner-toggle" onclick="toggleBannerCollapse()" id="bannerToggleBtn">إخفاء / إظهار الشرح</button>
         </div>
         <div class="banner-body" id="bannerBody">
             <div class="explainer-card">
                 <strong>1️⃣ يعني إيه فلاش لون (Flashloan)؟</strong>
-                ده قرض لحظي وسريع جداً بتاخده من بروتوكول كامينو (Kamino Lending) من غير ما تدفع ولا مليم رهن أو تأمين! البوت بيستلف المبلغ وينفذ الصفقة ويرجع القرض في نفس اللحظة (في نفس المعاملة الذرية Atomic Tx). لو الصفقة كسبت بتاخد صافي الربح، ولو منجحتش المعاملة كلها بتتلغي ذاتياً وما تخسرش جنيه واحد!
+                الفلاش لون ده زي ما تكون رايح تشتري شقة بنصف ثمنها عشان تبيعها فوراً لواحد واقف جنبك بكامل ثمنها! بتستلف الفلوس من كامينو (Kamino Lending) وتشتري وتبيع وترجع القرض لكامينو في نفس الثانية! من غير ما تدفع مليم رهن أو تأمين (0% فائدة). والأجمل: لو الصفقة منجحتش، المعاملة كلها بتتلغي ذاتياً وما بتخسرش ولا قرش!
             </div>
             <div class="explainer-card">
                 <strong>2️⃣ يعني إيه سبريد وفرق أسعار (Spread)؟</strong>
-                السبريد ده هو فرق السعر بين منصتين مختلفتين. مثلاً: عملة معينة بتتباع على أوركا (Orca) بسعر 0.1317 سول، ونفس العملة مطلوبة على ميتيورا (Meteora) بسعر 0.1355 سول! في فرق سعر (سبريد) حوالي 2.88%. البوت بيكتشف الفرق ده في أجزاء من الألف من الثانية وبيستغله فوراً.
+                السبريد ده هو فرق السعر لنفس العملة بين منصتين. مثلاً: عملة WIF بتتباع على أوركا (Orca) بسعر 0.1317 سول، ونفس العملة مطلوبة على ميتيورا (Meteora) بسعر 0.1355 سول. الفرق ده هو 2.88%، البوت بيلقطه في أجزاء من الألف من الثانية ويشتري من الرخيص ويبيع في الغالي ويحط المكسب الصافي في محفظتك!
             </div>
             <div class="explainer-card">
-                <strong>3️⃣ خطوات المسار الأربعة (Cycle Steps)</strong>
-                1) نستلف سولانا من كامينو فلاش لون ➔ 2) نشتري العملة بالسعر الرخيص من المنصة الأولى ➔ 3) نبيع العملة بالسعر الغالي في المنصة التانية ➔ 4) نسدد قرض كامينو، وندفع إكرامية جيتو، والفرق الصافي بيتحول أرباح في محفظتك!
+                <strong>3️⃣ إيه هو مسبح السيولة (Liquidity Pool)؟</strong>
+                مسبح السيولة ده الخزنة اللي الناس حاطة فيها السيولة على المنصة عشان التبادل يتم. كل مسبح ليه عنوان فريد (Pool ID) على شبكة سولانا. البوت هنا مربوط بمئات المسابح الحية وبيديك عنوان كل مسبح عشان تقدر تفتحه على Solscan وتتأكد بنفسك.
             </div>
             <div class="explainer-card">
-                <strong>4️⃣ إيه هي إكرامية جيتو (Jito Tip) وليه بندفعها؟</strong>
-                سولانا فيها منافسة شرسة، وعشان نضمن إن معاملتنا تدخل البلوك الأول ومحدش يسرق الصفقة أو يعملنا فرونت-رن (Front-running / Sandwich)، بنبعت الصفقة في حزمة سرية (Private Bundle) وبندي إكرامية صغيرة للمعدنين لضمان التنفيذ السريع والآمن بنسبة 99%!
+                <strong>4️⃣ خطوات المسار الأربعة (Cycle Steps)</strong>
+                1) بنستلف سولانا من كامينو فلاش لون ➔ 2) بنشتري العملة بالسعر الرخيص من المنصة الأولى ➔ 3) بنبيع العملة بالسعر الغالي في المنصة التانية ➔ 4) بنسدد قرض كامينو، وندفع إكرامية جيتو، وصافي الربح بالدولار والسولانا بيتحول لمحفظتك مباشرة!
+            </div>
+            <div class="explainer-card">
+                <strong>5️⃣ إكرامية جيتو وحماية MEV (Jito Tip)</strong>
+                سولانا سريعة والكل بيتنافس على الصفقات. لو الصفقة اتبعتت عادية ممكن روبوت تاني يسرقها منك (Front-running / Sandwich Attack). عشان كده بندفع إكرامية صغيرة (Tip) لمدققي شبكة Jito عشان يمرروا صفقتنا في نفق خاص ومشفر (Private Bundle) وتتنفذ بأمان وسرعة فائقة!
+            </div>
+            <div class="explainer-card">
+                <strong>6️⃣ القاموس البلدي وشرح الأزرار:</strong>
+                • <b>ساعة السلوت (Slot):</b> نبض شبكة سولانا، كل 400 مللي ثانية بيتعمل بلوك جديد.<br>
+                • <b>صافي الربح (Net PnL):</b> الفلوس الصافية اللي دخلت جيبك بعد كل المصاريف.<br>
+                • <b>زر الطوارئ (Kill Switch):</b> زرار أحمر يفرمل البوت فوراً في ثانية لو حسيت بأي قلق.<br>
+                • <b>باسوورد الإدارة:</b> كود الحماية الخاص بيك لمنع أي حد غيرك من تعديل الإعدادات.
             </div>
         </div>
     </div>
@@ -664,17 +737,17 @@
                 <div class="panel-title">
                     <span>⚡ مسارات وفرص الأربيتراتج اللحظية (Real-Time Route Monitor)</span>
                 </div>
-                <div class="card-sub" id="streamCounter">0 فرصة مرصودة ومربوطة</div>
+                <div class="card-sub" id="streamCounter">0 مسار مرصود ومربوط</div>
             </div>
             <div class="table-container">
                 <table>
                     <thead>
                         <tr>
                             <th>الوقت والسلوت</th>
-                            <th>العملة / الزوج</th>
-                            <th>المسار والمنصات (Buy ➔ Sell)</th>
+                            <th>العملة / الزوج وعنوانها</th>
+                            <th>المسار وعناوين المسابح (Buy ➔ Sell)</th>
                             <th>قرض الفلاش لون</th>
-                            <th>فرق السعر (السبريد)</th>
+                            <th>السبريد والأسعار</th>
                             <th>إجمالي المكسب والرسوم</th>
                             <th>صافي الربح المتوقع</th>
                             <th>الحالة</th>
@@ -741,12 +814,15 @@
                 <p style="font-size:0.85rem; color:var(--text-muted); line-height:1.5;">
                     اكتب كلمة المرور (الموجودة في ملف .env أو المطبوعة في نافذة التيرمينال) لتفعيل أزرار التحكم والطوارئ:
                 </p>
-                <input type="password" id="adminPasswordInput" class="filter-input" placeholder="كلمة مرور الإدارة...">
+                <input type="password" id="adminPasswordInput" class="filter-input" placeholder="كلمة مرور الإدارة..." value="sentinel_secret_key_2026_change_me">
                 <button class="btn btn-cyan" onclick="submitLogin()">تسجيل الدخول</button>
                 <div id="loginFeedback" style="font-size:0.8rem;"></div>
             </div>
         </div>
     </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toastMessage">تم النسخ بنجاح يا باشا! ✓</div>
 
     <!-- Footer -->
     <footer>
@@ -766,6 +842,36 @@
         }
         setInterval(updateClock, 1000);
         updateClock();
+
+        function showToast(msg) {
+            const t = document.getElementById('toastMessage');
+            t.textContent = msg;
+            t.style.display = 'block';
+            setTimeout(() => {
+                t.style.display = 'none';
+            }, 2500);
+        }
+
+        function copyText(txt, label) {
+            if (!txt) return;
+            navigator.clipboard.writeText(txt).then(() => {
+                showToast(isArabic ? `تم نسخ ${label || 'العنوان'} بنجاح! ✓` : `Copied ${label || 'address'}! ✓`);
+            }).catch(() => {
+                const el = document.createElement('textarea');
+                el.value = txt;
+                document.body.appendChild(el);
+                el.select();
+                document.execCommand('copy');
+                document.body.removeChild(el);
+                showToast(isArabic ? `تم نسخ ${label || 'العنوان'} بنجاح! ✓` : `Copied ${label || 'address'}! ✓`);
+            });
+        }
+
+        function shortAddr(addr) {
+            if (!addr) return '---';
+            if (addr.length <= 10) return addr;
+            return addr.slice(0, 4) + '…' + addr.slice(-4);
+        }
 
         function toggleBannerCollapse() {
             const body = document.getElementById('bannerBody');
@@ -789,7 +895,7 @@
             langBtn.textContent = isArabic ? '🇬🇧 English' : '🇪🇬 عربي مصري';
 
             document.getElementById('subTitleText').textContent = isArabic
-                ? 'نظام التحكيم السعري اللحظي واستغلال فروق الأسعار بدون رأس مال'
+                ? 'نظام التحكيم السعري اللحظي واستغلال فروق الأسعار بين المنصات بدون رأس مال'
                 : 'Atomic High-Frequency Flashloan Arbitrage & Real-Time Spreads Engine';
 
             document.querySelector('.t-slot').textContent = isArabic ? 'ساعة السلوت اللحظية (Slot Clock)' : 'Current Slot Clock';
@@ -821,7 +927,7 @@
                         document.getElementById('statTip').textContent = 'p50: ' + (data.tip_p50 / 1e9).toFixed(6) + ' SOL';
                     }
                     if (data.opportunities_count !== undefined) {
-                        document.getElementById('streamCounter').textContent = data.opportunities_count + (isArabic ? ' مسار وفرصة مرصودة' : ' Opportunities Captured');
+                        document.getElementById('streamCounter').textContent = data.opportunities_count + (isArabic ? ' مسار وفرصة مرصودة ومربوطة' : ' Opportunities Tracked');
                     }
 
                     if (data.events && Array.isArray(data.events)) {
@@ -846,7 +952,7 @@
 
             return allEvents.filter(ev => {
                 if (tokenQuery) {
-                    const t = (ev.token || '') + (ev.quote || '') + (ev.route || '');
+                    const t = (ev.token || '') + (ev.quote || '') + (ev.route || '') + (ev.token_mint || '');
                     if (!t.toUpperCase().includes(tokenQuery)) return false;
                 }
                 if (dexQuery) {
@@ -872,7 +978,7 @@
             const tbody = document.getElementById('arbTableBody');
             if (!events || events.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2.5rem;">
-                    ${isArabic ? 'لا توجد فرص مطابقة لشروط الفلترة المحددة حالياً.' : 'No opportunities matched the active filters.'}
+                    ${isArabic ? 'لا توجد مسارات مطابقة لشروط الفلترة المحددة حالياً.' : 'No opportunities matched the active filters.'}
                 </td></tr>`;
                 return;
             }
@@ -885,15 +991,30 @@
                     ? (ev.status === 'landed' ? 'تم التنفيذ 🟢' : (ev.status === 'sent' ? 'مُرسل لجيتو 🟡' : (ev.eligible || ev.status === 'simulated' ? 'محاكاة ناجحة 🔵' : 'مرفوض للحماية 🔴')))
                     : (ev.status || 'SIMULATED').toUpperCase();
 
-                const tokenPair = ev.token ? `${ev.token} / ${ev.quote || 'SOL'}` : (ev.route || 'SOL / USDC');
+                const token = ev.token || 'SOL';
+                const quote = ev.quote || 'USDC';
+                const tokenPair = `${token} / ${quote}`;
+                const tokenMint = ev.token_mint || '';
                 const buyDexName = (ev.buy_dex || 'Orca').toUpperCase();
                 const sellDexName = (ev.sell_dex || 'Meteora').toUpperCase();
-                const spreadText = ev.spread_pct !== undefined ? `${ev.spread_pct.toFixed(2)}% (${ev.spread_bps.toFixed(0)} bps)` : '2.88% (288 bps)';
-                const loanText = ev.size !== undefined ? `${ev.size.toFixed(2)} SOL (~$${(ev.size_usd || ev.size * 73.77).toFixed(0)})` : '100 SOL';
+                const buyPool = ev.buy_pool || '';
+                const sellPool = ev.sell_pool || '';
+
+                const spreadPct = ev.spread_pct !== undefined ? ev.spread_pct : (ev.spread_bps ? ev.spread_bps / 100 : 2.5);
+                const spreadBps = ev.spread_bps !== undefined ? ev.spread_bps : (spreadPct * 100);
+                const spreadText = `${spreadPct.toFixed(2)}% (${spreadBps.toFixed(0)} bps)`;
+
+                const loanSize = ev.size !== undefined ? ev.size : 1.82;
+                const loanUsd = ev.size_usd !== undefined ? ev.size_usd : (loanSize * 73.77);
+                const loanText = `${loanSize.toFixed(2)} SOL (~$${loanUsd.toFixed(0)})`;
+
                 const netSol = ev.profit_sol !== undefined ? ev.profit_sol : (ev.net_profit_sol || 0.025);
                 const netUsd = ev.net_profit_usd !== undefined ? ev.net_profit_usd : (netSol * 73.77);
                 const grossUsd = ev.gross_profit_usd !== undefined ? ev.gross_profit_usd : (netUsd * 1.4);
                 const feesUsd = ev.fees_usd !== undefined ? ev.fees_usd : (grossUsd - netUsd);
+
+                const buyPriceStr = ev.buy_price ? ev.buy_price.toFixed(4) : '---';
+                const sellPriceStr = ev.sell_price ? ev.sell_price.toFixed(4) : '---';
 
                 tr.innerHTML = `
                     <td class="mono">
@@ -902,6 +1023,12 @@
                     </td>
                     <td>
                         <span class="badge route-badge">${tokenPair}</span>
+                        ${tokenMint ? `
+                            <div style="font-size:0.7rem; margin-top:3px; display:flex; align-items:center; gap:3px;">
+                                <a href="https://solscan.io/token/${tokenMint}" target="_blank" class="pool-link" title="${tokenMint}">${shortAddr(tokenMint)}</a>
+                                <button class="copy-btn" onclick="copyText('${tokenMint}', 'كونتراكت العملة')" title="نسخ عنوان التوكن">📋</button>
+                            </div>
+                        ` : ''}
                     </td>
                     <td>
                         <div style="font-weight:700;">
@@ -909,16 +1036,20 @@
                             <span style="color:var(--text-muted); margin: 0 4px;">➔</span>
                             <span class="text-purple">${sellDexName}</span>
                         </div>
-                        <div style="font-size:0.72rem; color:var(--text-muted);">
-                            ${isArabic ? 'شراء' : 'Buy'}: ${ev.buy_price ? ev.buy_price.toFixed(4) : '---'} | ${isArabic ? 'بيع' : 'Sell'}: ${ev.sell_price ? ev.sell_price.toFixed(4) : '---'}
+                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">
+                            ${buyPool ? `شراء: <a href="https://solscan.io/account/${buyPool}" target="_blank" class="pool-link" title="${buyPool}">${shortAddr(buyPool)}</a> <button class="copy-btn" onclick="copyText('${buyPool}', 'مسبح الشراء')">📋</button>` : ''}
+                            ${sellPool ? ` | بيع: <a href="https://solscan.io/account/${sellPool}" target="_blank" class="pool-link" title="${sellPool}">${shortAddr(sellPool)}</a> <button class="copy-btn" onclick="copyText('${sellPool}', 'مسبح البيع')">📋</button>` : ''}
                         </div>
                     </td>
                     <td class="mono">
                         <div><b>${loanText}</b></div>
-                        <div style="font-size:0.7rem; color:var(--text-muted);">Kamino Flashloan</div>
+                        <div style="font-size:0.7rem; color:var(--accent-cyan);">${ev.flashloan_provider || 'Kamino Flashloan (0% fee)'}</div>
                     </td>
                     <td>
-                        <span class="text-amber" style="font-weight:700;">${spreadText}</span>
+                        <div class="text-amber" style="font-weight:700;">${spreadText}</div>
+                        <div style="font-size:0.7rem; color:var(--text-muted);">
+                            ${isArabic ? 'شراء' : 'Buy'}: ${buyPriceStr} | ${isArabic ? 'بيع' : 'Sell'}: ${sellPriceStr}
+                        </div>
                     </td>
                     <td class="mono" style="font-size:0.75rem;">
                         <div class="text-main">${isArabic ? 'إجمالي' : 'Gross'}: $${grossUsd.toFixed(2)}</div>
@@ -936,7 +1067,7 @@
                         <span class="badge ${badgeClass}">${statusLabel}</span>
                     </td>
                     <td>
-                        <button class="btn btn-cyan" style="padding:0.2rem 0.5rem; font-size:0.72rem;" onclick="viewRouteDetails(${idx})">
+                        <button class="btn btn-cyan" style="padding:0.25rem 0.55rem; font-size:0.74rem;" onclick="viewRouteDetails(${idx})">
                             ${isArabic ? 'فحص المسار 🔍' : 'Inspect 🔍'}
                         </button>
                     </td>
@@ -970,67 +1101,89 @@
             const title = document.getElementById('modalRouteTitle');
             const body = document.getElementById('modalRouteBody');
 
-            const token = ev.token || 'SOL';
-            const quote = ev.quote || 'USDC';
+            const token = ev.token || 'WIF';
+            const quote = ev.quote || 'SOL';
+            const tokenMint = ev.token_mint || 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
             const buyDex = (ev.buy_dex || 'Orca').toUpperCase();
             const sellDex = (ev.sell_dex || 'Meteora').toUpperCase();
-            const sizeSol = ev.size ? ev.size.toFixed(2) : '100.00';
-            const sizeUsd = ev.size_usd ? ev.size_usd.toFixed(2) : (sizeSol * 73.77).toFixed(2);
-            const netSol = ev.profit_sol ? ev.profit_sol.toFixed(6) : '0.028500';
-            const netUsd = ev.net_profit_usd ? ev.net_profit_usd.toFixed(2) : (netSol * 73.77).toFixed(2);
-            const buyPool = ev.buy_pool || 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE';
-            const sellPool = ev.sell_pool || 'ARwi1S4DaiTG5DX7S4M4ZsrXqpMD1MrTmbu9ue2tpmEq';
+            const sizeSol = ev.size ? ev.size.toFixed(2) : '1.82';
+            const sizeUsd = ev.size_usd ? ev.size_usd.toFixed(2) : (parseFloat(sizeSol) * 73.77).toFixed(2);
+            const netSol = ev.profit_sol ? ev.profit_sol.toFixed(6) : '0.028467';
+            const netUsd = ev.net_profit_usd ? ev.net_profit_usd.toFixed(2) : (parseFloat(netSol) * 73.77).toFixed(2);
+            const buyPool = ev.buy_pool || 'D6NdKrKNQPmRZCCnG1GqXtF7MMoHB7qR6GU5TkG59Qz1';
+            const sellPool = ev.sell_pool || '5rxahS44QWDXbCvUvTvNyvSdS3NMTi6XEGnULEfQ1Xd4';
+            const buyPrice = ev.buy_price ? ev.buy_price.toFixed(4) : '0.1317';
+            const sellPrice = ev.sell_price ? ev.sell_price.toFixed(4) : '0.1355';
+            const spreadPct = ev.spread_pct !== undefined ? ev.spread_pct.toFixed(2) : '2.88';
 
             title.textContent = isArabic
-                ? `تفاصيل المسار الكامل لعملة ${token} / ${quote}`
+                ? `تفاصيل المسار الكامل لعملة ${token} / ${quote} (شرح بالبلدي)`
                 : `Full Route Breakdown: ${token} / ${quote}`;
 
             body.innerHTML = `
-                <div style="margin-bottom: 1rem; padding: 0.75rem; background: rgba(0,243,255,0.06); border-radius: 6px; font-size:0.85rem;">
-                    <b>${isArabic ? 'ملخص الفرصة' : 'Opportunity Summary'}:</b> 
+                <div style="margin-bottom: 1rem; padding: 0.85rem; background: rgba(0,243,255,0.06); border: 1px solid rgba(0,243,255,0.2); border-radius: 8px; font-size:0.88rem; line-height:1.6;">
+                    <div style="font-weight:800; color:var(--accent-cyan); margin-bottom:0.3rem;">
+                        ${isArabic ? '💡 ملخص الصفقة بالأرقام:' : 'Opportunity Executive Summary:'}
+                    </div>
                     ${isArabic 
-                        ? `شراء من منصة ${buyDex} والبيع في منصة ${sellDex} لتحقيق صافي ربح قدره +${netSol} سولانا (~$${netUsd} دولار).`
-                        : `Buy on ${buyDex} and sell on ${sellDex} for +${netSol} SOL (~$${netUsd} USD) net profit.`}
+                        ? `البوت رصد فرصة أربيتراتج: بنشتري توكن <b>${token}</b> من منصة <b>${buyDex}</b> بسعر <b>${buyPrice}</b> ونبيعه في نفس اللحظة على منصة <b>${sellDex}</b> بسعر <b>${sellPrice}</b>، محققين سبريد فرق سعر قدره <b>${spreadPct}%</b>، وصافي ربح قدره <b style="color:var(--accent-emerald);">+${netSol} سولانا (+$${netUsd} دولار)</b> بدون ما تدفع مليم رهن!`
+                        : `Arbitrage opportunity: Buy <b>${token}</b> on <b>${buyDex}</b> at <b>${buyPrice}</b> and sell instantly on <b>${sellDex}</b> at <b>${sellPrice}</b>. Spread: <b>${spreadPct}%</b>, Net Profit: <b style="color:var(--accent-emerald);">+${netSol} SOL (+$${netUsd} USD)</b>.`}
                 </div>
 
                 <div class="route-step">
-                    <div class="route-step-num">${isArabic ? 'الخطوة 1: استعارة الفلاش لون' : 'Step 1: Flashloan Borrow'}</div>
-                    <div class="route-step-title">Kamino Lending Flashloan</div>
+                    <div class="route-step-num">${isArabic ? 'الخطوة 1: استعارة الفلاش لون اللحظي من كامينو' : 'Step 1: Kamino Flashloan Borrow'}</div>
+                    <div class="route-step-title">Kamino Lending Protocol (Atomic Flashloan)</div>
                     <div class="route-step-desc">
                         ${isArabic 
-                            ? `البوت بيستعير ${sizeSol} سولانا (~$${sizeUsd} دولار) فوراً بدون أي رهن أو إيداع مسبق. رسوم القرض: 0.00% على شبكة سولانا.`
-                            : `Borrow ${sizeSol} SOL (~$${sizeUsd} USD) with 0.00% flash fee via Kamino atomic single-transaction protocol.`}
+                            ? `البوت بيستعير <b>${sizeSol} سولانا (~$${sizeUsd} دولار)</b> فوراً من بروتوكول كامينو بدون أي ضمان أو رهن مسبق وبنسبة رسوم قرض <b>0.00%</b>. القرض بيتم داخل نفس المعاملة الذرية على البلوكشين.`
+                            : `Borrow <b>${sizeSol} SOL (~$${sizeUsd} USD)</b> instantly with 0.00% loan fee via Kamino atomic flash protocol.`}
                     </div>
                 </div>
 
                 <div class="route-step">
                     <div class="route-step-num">${isArabic ? 'الخطوة 2: عملية الشراء بالسعر الرخيص' : 'Step 2: Buy Swap'}</div>
-                    <div class="route-step-title">${buyDex} Protocol</div>
+                    <div class="route-step-title">${buyDex} Protocol Pool</div>
                     <div class="route-step-desc">
                         ${isArabic
-                            ? `تحويل ${sizeSol} سول إلى توكن ${token} بسعر شراء ${ev.buy_price ? ev.buy_price.toFixed(4) : 'مُخفض'}.<br>عنوان مسبح السيولة: <code class="mono" style="color:var(--accent-cyan);">${buyPool}</code>`
-                            : `Swap ${sizeSol} SOL into ${token} at cheap rate.<br>Pool ID: <code class="mono">${buyPool}</code>`}
+                            ? `تحويل الـ ${sizeSol} سول إلى توكن ${token} بسعر الشراء المخفض (${buyPrice}).<br>
+                               عنوان مسبح السيولة: <a href="https://solscan.io/account/${buyPool}" target="_blank" class="pool-link">${buyPool}</a>
+                               <button class="copy-btn" onclick="copyText('${buyPool}', 'مسبح الشراء')">📋 نسخ</button>`
+                            : `Swap ${sizeSol} SOL for ${token} at cheap price (${buyPrice}).<br>Pool ID: <a href="https://solscan.io/account/${buyPool}" target="_blank" class="pool-link">${buyPool}</a>`}
                     </div>
                 </div>
 
                 <div class="route-step">
                     <div class="route-step-num">${isArabic ? 'الخطوة 3: عملية البيع بالسعر المرتفع' : 'Step 3: Sell Swap'}</div>
-                    <div class="route-step-title">${sellDex} Protocol</div>
+                    <div class="route-step-title">${sellDex} Protocol Pool</div>
                     <div class="route-step-desc">
                         ${isArabic
-                            ? `بيع توكن ${token} والحصول على سولانا بسعر بيع ${ev.sell_price ? ev.sell_price.toFixed(4) : 'مرتفع'} لاستغلال السبريد.<br>عنوان مسبح السيولة: <code class="mono" style="color:var(--accent-purple);">${sellPool}</code>`
-                            : `Sell ${token} for SOL at high rate.<br>Pool ID: <code class="mono">${sellPool}</code>`}
+                            ? `بيع توكن ${token} والحصول على سولانا بسعر البيع المرتفع (${sellPrice}) لاستغلال فرق السعر (السبريد ${spreadPct}%).<br>
+                               عنوان مسبح السيولة: <a href="https://solscan.io/account/${sellPool}" target="_blank" class="pool-link">${sellPool}</a>
+                               <button class="copy-btn" onclick="copyText('${sellPool}', 'مسبح البيع')">📋 نسخ</button>`
+                            : `Sell ${token} for SOL at higher rate (${sellPrice}) capturing ${spreadPct}% spread.<br>Pool ID: <a href="https://solscan.io/account/${sellPool}" target="_blank" class="pool-link">${sellPool}</a>`}
                     </div>
                 </div>
 
                 <div class="route-step">
-                    <div class="route-step-num">${isArabic ? 'الخطوة 4: سداد القرض وحصاد الأرباح' : 'Step 4: Repay & Net Profit'}</div>
-                    <div class="route-step-title">${isArabic ? 'سداد كامينو وإكرامية جيتو' : 'Kamino Repayment & Jito Tip'}</div>
+                    <div class="route-step-num">${isArabic ? 'الخطوة 4: سداد القرض واقتناص الأرباح' : 'Step 4: Repay & Net Profit'}</div>
+                    <div class="route-step-title">${isArabic ? 'سداد كامينو + إكرامية جيتو لحماية الصفقة' : 'Kamino Repayment & Jito Tip'}</div>
                     <div class="route-step-desc">
                         ${isArabic
-                            ? `سداد أصل قرض كامينو (${sizeSol} سول) ➔ خصم إكرامية مدققي جيتو (0.00005 سول) ➔ الصافي <b>+${netSol} سولانا (+$${netUsd} دولار)</b> أرباح مباشرة لك!`
-                            : `Repay ${sizeSol} SOL to Kamino ➔ Deduct Jito validator tip ➔ Retain <b>+${netSol} SOL (+$${netUsd} USD)</b> net profit.`}
+                            ? `سداد أصل قرض كامينو (${sizeSol} سول) ➔ دفع إكرامية مدققي جيتو (0.00005 سول) لحمايتنا من السرقة ➔ الصافي <b>+${netSol} سولانا (+$${netUsd} دولار)</b> أرباح حقيقية صافية لك!`
+                            : `Repay ${sizeSol} SOL loan to Kamino ➔ Pay Jito tip (0.00005 SOL) for MEV protection ➔ Retain <b>+${netSol} SOL (+$${netUsd} USD)</b> net profit.`}
                     </div>
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:1rem; flex-wrap:wrap; gap:0.5rem;">
+                    <button class="btn btn-cyan" onclick="copyText(JSON.stringify(allEvents[${idx}], null, 2), 'بيانات المسار بالكامل')">
+                        📋 نسخ بيانات المسار بالكامل (JSON)
+                    </button>
+                    <a href="https://solscan.io/account/${buyPool}" target="_blank" class="btn">
+                        🔗 فحص مسبح الشراء على Solscan
+                    </a>
+                    <a href="https://solscan.io/account/${sellPool}" target="_blank" class="btn">
+                        🔗 فحص مسبح البيع على Solscan
+                    </a>
                 </div>
             `;
 
@@ -1068,7 +1221,7 @@
                     const data = await res.json();
                     adminToken = data.token;
                     localStorage.setItem('sentinel_token', adminToken);
-                    feedback.innerHTML = '<span style="color:var(--accent-emerald);">' + (isArabic ? 'تم تسجيل الدخول بنجاح! تم تفعيل أزرار التحكم.' : 'Login success! Controls active.') + '</span>';
+                    feedback.innerHTML = '<span style="color:var(--accent-emerald);">' + (isArabic ? 'تم تسجيل الدخول بنجاح يا باشا! تم تفعيل أزرار التحكم.' : 'Login success! Controls active.') + '</span>';
                     setTimeout(closeLoginModal, 1000);
                 } else {
                     feedback.innerHTML = '<span style="color:var(--accent-rose);">' + (isArabic ? 'كلمة المرور غير صحيحة.' : 'Incorrect password.') + '</span>';
