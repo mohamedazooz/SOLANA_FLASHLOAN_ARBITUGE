@@ -152,26 +152,33 @@ fn test_clmm_multi_tick_traversal_with_tick_arrays() {
     let p0 = tick_index_to_sqrt_price_x64(0).expect("tick 0");
     let spacing = 64u16;
 
-    // Create mock tick array with initialized ticks
-    let tick_arrays = vec![TickArrayFacade {
-        start_tick_index: -5632,
-        ticks: vec![
-            TickFacade {
-                tick_index: -64,
-                initialized: true,
-                liquidity_net: 500_000_000_000,
-                liquidity_gross: 500_000_000_000,
-                limit_order_unfilled: 0,
-            },
-            TickFacade {
-                tick_index: -128,
-                initialized: true,
-                liquidity_net: -200_000_000_000,
-                liquidity_gross: 200_000_000_000,
-                limit_order_unfilled: 0,
-            },
-        ],
-    }];
+    // Create mock tick array with initialized ticks. The start-0 array holds
+    // the current tick and is always loaded on-chain (empty here).
+    let tick_arrays = vec![
+        TickArrayFacade {
+            start_tick_index: 0,
+            ticks: vec![],
+        },
+        TickArrayFacade {
+            start_tick_index: -5632,
+            ticks: vec![
+                TickFacade {
+                    tick_index: -64,
+                    initialized: true,
+                    liquidity_net: 500_000_000_000,
+                    liquidity_gross: 500_000_000_000,
+                    limit_order_unfilled: 0,
+                },
+                TickFacade {
+                    tick_index: -128,
+                    initialized: true,
+                    liquidity_net: -200_000_000_000,
+                    liquidity_gross: 200_000_000_000,
+                    limit_order_unfilled: 0,
+                },
+            ],
+        },
+    ];
 
     let quote = compute_swap(
         p0,

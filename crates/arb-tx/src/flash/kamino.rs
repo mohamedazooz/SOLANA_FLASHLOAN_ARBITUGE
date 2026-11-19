@@ -90,13 +90,17 @@ pub fn build_kamino_flash_borrow(
     data.extend_from_slice(&FLASH_BORROW_DISCRIMINATOR);
     data.extend_from_slice(&amount.to_le_bytes());
 
-    // When no referrer is provided, Anchor optional accounts default to program_id (readonly)
-    let ref_token_state = accounts
-        .referrer_token_state
-        .unwrap_or(accounts.klend_program_id);
-    let ref_acc = accounts
-        .referrer_account
-        .unwrap_or(accounts.klend_program_id);
+    // When no referrer is provided, Anchor optional accounts default to
+    // program_id (readonly). When provided they are WRITABLE in the official
+    // klend interface (`optional_account(.., true)`), so mirror that exactly.
+    let ref_token_state_meta = match accounts.referrer_token_state {
+        Some(key) => AccountMeta::new(key, false),
+        None => AccountMeta::new_readonly(accounts.klend_program_id, false),
+    };
+    let ref_acc_meta = match accounts.referrer_account {
+        Some(key) => AccountMeta::new(key, false),
+        None => AccountMeta::new_readonly(accounts.klend_program_id, false),
+    };
 
     CompiledInstruction {
         program_id: accounts.klend_program_id,
@@ -109,8 +113,8 @@ pub fn build_kamino_flash_borrow(
             AccountMeta::new(accounts.reserve_supply_vault, false),    // 5. Source vault (mut)
             AccountMeta::new(accounts.user_liquidity_ata, false), // 6. User destination ATA (mut)
             AccountMeta::new(accounts.reserve_fee_vault, false),  // 7. Fee receiver vault (mut)
-            AccountMeta::new_readonly(ref_token_state, false), // 8. Referrer token state (or program_id)
-            AccountMeta::new_readonly(ref_acc, false), // 9. Referrer account (or program_id)
+            ref_token_state_meta,                                 // 8. Referrer token state
+            ref_acc_meta,                                         // 9. Referrer account
             AccountMeta::new_readonly(accounts.sysvar_instructions, false), // 10. Sysvar instructions
             AccountMeta::new_readonly(accounts.token_program, false),       // 11. Token program
         ],
@@ -131,12 +135,14 @@ pub fn build_kamino_flash_repay(
     data.extend_from_slice(&amount.to_le_bytes());
     data.push(borrow_instruction_index);
 
-    let ref_token_state = accounts
-        .referrer_token_state
-        .unwrap_or(accounts.klend_program_id);
-    let ref_acc = accounts
-        .referrer_account
-        .unwrap_or(accounts.klend_program_id);
+    let ref_token_state_meta = match accounts.referrer_token_state {
+        Some(key) => AccountMeta::new(key, false),
+        None => AccountMeta::new_readonly(accounts.klend_program_id, false),
+    };
+    let ref_acc_meta = match accounts.referrer_account {
+        Some(key) => AccountMeta::new(key, false),
+        None => AccountMeta::new_readonly(accounts.klend_program_id, false),
+    };
 
     CompiledInstruction {
         program_id: accounts.klend_program_id,
@@ -149,8 +155,8 @@ pub fn build_kamino_flash_repay(
             AccountMeta::new(accounts.reserve_supply_vault, false),    // 5. Destination vault (mut)
             AccountMeta::new(accounts.user_liquidity_ata, false),      // 6. User source ATA (mut)
             AccountMeta::new(accounts.reserve_fee_vault, false), // 7. Fee receiver vault (mut)
-            AccountMeta::new_readonly(ref_token_state, false), // 8. Referrer token state (or program_id)
-            AccountMeta::new_readonly(ref_acc, false), // 9. Referrer account (or program_id)
+            ref_token_state_meta,                                // 8. Referrer token state
+            ref_acc_meta,                                        // 9. Referrer account
             AccountMeta::new_readonly(accounts.sysvar_instructions, false), // 10. Sysvar instructions
             AccountMeta::new_readonly(accounts.token_program, false),       // 11. Token program
         ],

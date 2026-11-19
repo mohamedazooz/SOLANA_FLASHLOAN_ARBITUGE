@@ -1055,19 +1055,28 @@ mod tests {
         // Pool with a tick array so the swap can cross a tick boundary.
         let mut p = clmm_pool(1, 1u128 << 64, 1_000_000_000_000, 0, 4);
         if let Some(c) = p.clmm.as_mut() {
-            c.tick_arrays = vec![ClmmTickArray {
-                start_tick_index: -88 * 4,
-                ticks: (0..88)
-                    .map(|i| ClmmTick {
-                        tick_index: -88 * 4 + i * 4,
-                        initialized: true,
-                        liquidity_net: 500_000_000_000,
-                        limit_order_unfilled: 0,
-                    })
-                    .collect(),
-            }];
+            // The array containing the current tick (start 0) is always loaded
+            // by the program (empty of initialized ticks here); the next array
+            // down holds the crossing ticks.
+            c.tick_arrays = vec![
+                ClmmTickArray {
+                    start_tick_index: 0,
+                    ticks: Vec::new(),
+                },
+                ClmmTickArray {
+                    start_tick_index: -88 * 4,
+                    ticks: (0..88)
+                        .map(|i| ClmmTick {
+                            tick_index: -88 * 4 + i * 4,
+                            initialized: true,
+                            liquidity_net: 500_000_000_000,
+                            limit_order_unfilled: 0,
+                        })
+                        .collect(),
+                },
+            ];
             // seed the active tick
-            c.tick_arrays[0].ticks[0].liquidity_net = 500_000_000_000;
+            c.tick_arrays[1].ticks[0].liquidity_net = 500_000_000_000;
         }
         let q = quote_hop(&mut p, 1_000_000, true);
         assert!(q.is_ok(), "CLMM quote with tick arrays should succeed");

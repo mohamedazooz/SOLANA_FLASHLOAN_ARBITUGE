@@ -49,16 +49,19 @@ pub use pump_fun_raydium::{
 };
 
 pub use clmm::{
-    ClmmMathError, MAX_SQRT_PRICE_X64, MAX_TICK, MAX_TICK_INDEX, MIN_SQRT_PRICE_X64, MIN_TICK,
-    MIN_TICK_INDEX, Q64, StepSwapResult, TickArrayFacade, TickFacade, WhirlpoolQuote,
-    clmm_active_tick_max_input, clmm_max_delta_x_in_tick, clmm_max_delta_y_in_tick,
-    clmm_max_input_in_tick, compute_swap, compute_swap_step, compute_swap_step_checked,
-    find_next_tick_boundary, get_amount_delta_a, get_amount_delta_b, get_delta_x, get_delta_y,
+    ClmmMathError, ClmmTickMath, MAX_SQRT_PRICE_X64, MAX_TICK, MAX_TICK_INDEX, MIN_SQRT_PRICE_X64,
+    MIN_TICK, MIN_TICK_INDEX, Q64, RAYDIUM_MAX_SQRT_PRICE_X64, StepSwapResult, TickArrayFacade,
+    TickFacade, WhirlpoolQuote, clmm_active_tick_max_input, clmm_max_delta_x_in_tick,
+    clmm_max_delta_y_in_tick, clmm_max_input_in_tick, compute_swap, compute_swap_step,
+    compute_swap_step_checked, compute_swap_with_ticks_per_array_and_math, find_next_tick_boundary,
+    get_amount_delta_a, get_amount_delta_b, get_delta_x, get_delta_y,
     get_next_sqrt_price_from_a_input, get_next_sqrt_price_from_b_input, get_start_tick_index,
     is_token_a, is_token_a_pubkey, parse_tick_array_account, quote_clmm,
+    quote_clmm_with_ticks_per_array, quote_clmm_with_ticks_per_array_and_math,
     sqrt_price_x64_in_meteora_damm_v2_bounds, sqrt_price_x64_in_orca_whirlpool_bounds,
     sqrt_price_x64_in_raydium_clmm_bounds, sqrt_price_x64_to_tick_index,
-    tick_index_to_sqrt_price_x64, tick_to_sqrt_price_x64, update_liquidity_on_cross,
+    sqrt_price_x64_to_tick_index_raydium, tick_index_to_sqrt_price_x64,
+    tick_index_to_sqrt_price_x64_raydium, tick_to_sqrt_price_x64, update_liquidity_on_cross,
 };
 pub use cpmm::*;
 pub use damm_v2::{

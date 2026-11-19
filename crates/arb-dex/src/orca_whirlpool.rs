@@ -3,7 +3,8 @@
 use crate::traits::AmmPool;
 use arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID;
 use arb_math::clmm::{
-    TickArrayFacade, parse_tick_array_account, quote_clmm, sqrt_price_x64_in_orca_whirlpool_bounds,
+    TickArrayFacade, orca_tick_array_start_indexes, parse_tick_array_account, quote_clmm,
+    sqrt_price_x64_in_orca_whirlpool_bounds,
 };
 use arb_types::{
     ArbError, ClmmState, DexProtocol, MintId, PoolExecutionAccounts, PoolId, Result,
@@ -88,30 +89,31 @@ impl OrcaWhirlpool {
         pda
     }
 
-    /// Derive an ordered TickArray PDA window for a swap.
+    /// Derive an ordered TickArray PDA window for a swap, exactly matching the
+    /// on-chain program's required start-tick sequence
+    /// (`orca_tick_array_start_indexes`).
     pub fn tick_array_pdas_for_swap(&self, a_to_b: bool, array_count: usize) -> Vec<Pubkey> {
         if array_count == 0 || self.tick_spacing == 0 {
             return Vec::new();
         }
-        let ticks_per_array = TICK_ARRAY_SIZE * i32::from(self.tick_spacing);
-        let mut start_tick = self.tick_current_index.div_euclid(ticks_per_array) * ticks_per_array;
-        if a_to_b && self.tick_current_index == start_tick {
-            let Some(previous_start) = start_tick.checked_sub(ticks_per_array) else {
-                return Vec::new();
-            };
-            start_tick = previous_start;
-        }
-        (0..array_count)
-            .filter_map(|index| {
-                let distance = i32::try_from(index).ok()?.checked_mul(ticks_per_array)?;
-                let start = if a_to_b {
-                    start_tick.checked_sub(distance)?
-                } else {
-                    start_tick.checked_add(distance)?
-                };
-                Some(self.derive_tick_array_pda(start))
-            })
+        orca_tick_array_start_indexes(self.tick_current_index, self.tick_spacing, a_to_b)
+            .into_iter()
+            .take(array_count)
+            .map(|start_tick| self.derive_tick_array_pda(start_tick))
             .collect()
+    }
+
+    /// Both directional windows, `a_to_b` first. The execution registry cannot
+    /// know the hop direction at build time, so it must publish both: the swap
+    /// builder selects the half that matches `a_to_b`.
+    pub fn tick_array_pdas_both_directions(&self) -> Vec<Pubkey> {
+        let mut pdas = self.tick_array_pdas_for_swap(true, 3);
+        let b_to_a = self.tick_array_pdas_for_swap(false, 3);
+        if pdas.is_empty() || b_to_a.is_empty() {
+            return Vec::new();
+        }
+        pdas.extend(b_to_a);
+        pdas
     }
 
     /// Derive Oracle PDA for the whirlpool.
@@ -178,25 +180,23 @@ impl AmmPool for OrcaWhirlpool {
         if self.token_vault_a == Pubkey::default() || self.token_vault_b == Pubkey::default() {
             return None;
         }
-        let tick_array_pdas = if self.tick_array_pdas.len() >= 3 {
-            [
-                self.tick_array_pdas[0],
-                self.tick_array_pdas[1],
-                self.tick_array_pdas[2],
-            ]
-        } else {
-            let derived = self.tick_array_pdas_for_swap(true, 3);
-            if derived.len() < 3 {
+        // Always derive the canonical windows from the decoded pool state.
+        // Tick-array keys arrive from the dependency stream in arbitrary order,
+        // so trusting arrival order would execute against the wrong arrays.
+        let mut tick_array_pdas = self.tick_array_pdas_both_directions();
+        if tick_array_pdas.len() < 6 {
+            if self.tick_array_pdas.len() >= 3 {
+                tick_array_pdas = self.tick_array_pdas.clone();
+            } else {
                 return None;
             }
-            [derived[0], derived[1], derived[2]]
-        };
+        }
 
         Some(PoolExecutionAccounts::OrcaWhirlpool {
             vault_a: self.token_vault_a,
             vault_b: self.token_vault_b,
             oracle: self.derive_oracle_pda(),
-            tick_array_pdas: tick_array_pdas.to_vec(),
+            tick_array_pdas,
             pool_mint_a: self.token_mint_a.0,
         })
     }
@@ -207,7 +207,7 @@ impl AmmPool for OrcaWhirlpool {
             self.token_vault_b,
             self.derive_oracle_pda(),
         ];
-        keys.extend(self.tick_array_pdas_for_swap(true, 3));
+        keys.extend(self.tick_array_pdas_both_directions());
         keys
     }
 

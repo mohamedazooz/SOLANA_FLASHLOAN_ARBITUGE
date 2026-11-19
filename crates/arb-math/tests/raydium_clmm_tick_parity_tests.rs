@@ -7,22 +7,16 @@
 //! `anchor_lang` shim — no mathematical logic was modified. Source checked out at
 //! `master`, verified 2026-11-19.
 //!
-//! Full-scan results over all 887,273 ticks (MIN..=MAX inclusive):
-//! - `tick -> sqrt_price_x64`: 806,032 ticks differ; 37,835 by exactly 1 unit,
-//!   705,779 by more than 16 units. Worst case 17,842,559,523,417,622,936 units
-//!   (~2.3e-10 relative) at tick 443,443; ~1.05e7 units (~2.7e-13 relative) at
-//!   tick 15,999.
-//! - `sqrt_price_x64 -> tick`: 362,397 official endpoint values map one tick
-//!   lower in our floor-semantics inverse (off-by-one at exact tick endpoints).
-//!
-//! The two algorithms are different rounding regimes over the same
-//! `1.0001^(tick/2)` curve; a single implementation cannot be bit-identical to
-//! both Orca and Raydium. These pins freeze the measured divergence so any
-//! future drift in either direction is caught immediately.
+//! Raydium's truncated Q64.64 magic constants and 128-bit positive-tick
+//! inversion are a different rounding regime from Orca's Q96.32 table. The two
+//! programs therefore have separate, bit-exact tick functions:
+//! `tick_index_to_sqrt_price_x64` (Orca) and
+//! `tick_index_to_sqrt_price_x64_raydium` (Raydium CLMM).
 
 use arb_math::clmm::{
-    MAX_SQRT_PRICE_X64, MAX_TICK_INDEX, MIN_SQRT_PRICE_X64, MIN_TICK_INDEX,
-    tick_index_to_sqrt_price_x64,
+    MAX_TICK_INDEX, MIN_SQRT_PRICE_X64, MIN_TICK_INDEX, RAYDIUM_MAX_SQRT_PRICE_X64,
+    sqrt_price_x64_to_tick_index_raydium, tick_index_to_sqrt_price_x64,
+    tick_index_to_sqrt_price_x64_raydium,
 };
 
 /// Official Raydium CLMM `libraries/tick_math.rs` constant.
@@ -30,52 +24,44 @@ const RAYDIUM_OFFICIAL_MAX_SQRT_PRICE_X64: u128 = 79_226_673_521_066_979_257_578
 /// Official Raydium CLMM `libraries/tick_math.rs` constant.
 const RAYDIUM_OFFICIAL_MIN_SQRT_PRICE_X64: u128 = 4_295_048_016;
 
-/// `(tick, official_sqrt_price_x64, official_minus_ours)` generated offline.
-const GOLDEN_TICKS: &[(i32, u128, i128)] = &[
-    (-443_636, 4_295_048_016, 0),
-    (-443_443, 4_336_693_764, 0),
-    (-400_000, 38_059_611_423, 0),
-    (-399_958, 38_139_616_582, 0),
-    (-100_000, 124_324_258_983_086_206, 198_632),
-    (-15_999, 8_289_402_375_798_591_795, 2_119_149),
-    (-997, 17_549_761_749_234_622_490, 285_571),
-    (-1, 18_445_821_805_675_395_072, 2_761),
-    (0, 18_446_744_073_709_551_616, 0),
-    (1, 18_447_666_387_855_957_090, -2_760),
-    (997, 19_389_571_880_414_775_756, -315_509),
-    (15_999, 41_050_289_453_243_731_472, -10_494_325),
-    (100_000, 2_737_055_259_402_209_284_734, -4_372_973_146),
-    (
-        399_958,
-        8_922_018_557_510_481_043_969_468_382,
-        214_210_981_875_448_493,
-    ),
-    (
-        443_443,
-        78_465_851_046_645_050_462_773_374_521,
-        17_842_559_523_417_622_936,
-    ),
-    (
-        443_635,
-        79_222_712_485_061_176_096_288_712_065,
-        6_260_396_654_400_118_395,
-    ),
-    (
-        443_636,
-        79_226_673_521_066_979_257_578_248_091,
-        5_665_699_265_130_669_030,
-    ),
+/// `(tick, official_sqrt_price_x64)` generated offline from the official source.
+const GOLDEN_TICKS: &[(i32, u128)] = &[
+    (-443_636, 4_295_048_016),
+    (-443_443, 4_336_693_764),
+    (-400_000, 38_059_611_423),
+    (-399_958, 38_139_616_582),
+    (-100_000, 124_324_258_983_086_206),
+    (-15_999, 8_289_402_375_798_591_795),
+    (-997, 17_549_761_749_234_622_490),
+    (-1, 18_445_821_805_675_395_072),
+    (0, 18_446_744_073_709_551_616),
+    (1, 18_447_666_387_855_957_090),
+    (997, 19_389_571_880_414_775_756),
+    (15_999, 41_050_289_453_243_731_472),
+    (100_000, 2_737_055_259_402_209_284_734),
+    (399_958, 8_922_018_557_510_481_043_969_468_382),
+    (443_443, 78_465_851_046_645_050_462_773_374_521),
+    (443_635, 79_222_712_485_061_176_096_288_712_065),
+    (443_636, 79_226_673_521_066_979_257_578_248_091),
 ];
 
 #[test]
-fn golden_raydium_official_values_match_pinned_divergence() {
-    for &(tick, official, official_minus_ours) in GOLDEN_TICKS {
-        let ours = tick_index_to_sqrt_price_x64(tick).expect("tick must be in range");
+fn golden_raydium_official_values_are_bit_exact() {
+    for &(tick, official) in GOLDEN_TICKS {
+        let ours = tick_index_to_sqrt_price_x64_raydium(tick).expect("tick must be in range");
         assert_eq!(
-            official as i128 - ours as i128,
-            official_minus_ours,
-            "divergence drifted at tick {tick}: ours={ours} official={official}"
+            ours, official,
+            "Raydium tick conversion is not bit-exact at tick {tick}"
         );
+    }
+}
+
+#[test]
+fn raydium_inverse_round_trips_at_golden_ticks() {
+    for &(tick, official) in GOLDEN_TICKS {
+        let resolved =
+            sqrt_price_x64_to_tick_index_raydium(official).expect("price must be in range");
+        assert_eq!(resolved, tick, "inverse mapping drifted at tick {tick}");
     }
 }
 
@@ -86,37 +72,30 @@ fn shared_min_envelope_matches_raydium_min_exactly() {
 }
 
 #[test]
-fn raydium_official_max_exceeds_shared_orca_parity_envelope_by_pinned_amount() {
+fn raydium_max_endpoint_is_bit_exact() {
     assert_eq!(
-        RAYDIUM_OFFICIAL_MAX_SQRT_PRICE_X64 - MAX_SQRT_PRICE_X64,
-        5_665_699_265_130_669_030
+        RAYDIUM_OFFICIAL_MAX_SQRT_PRICE_X64,
+        RAYDIUM_MAX_SQRT_PRICE_X64
     );
     assert_eq!(
-        tick_index_to_sqrt_price_x64(MAX_TICK_INDEX).expect("max tick conversion"),
-        MAX_SQRT_PRICE_X64
-    );
-}
-
-#[test]
-fn tick_zero_is_bit_exact_and_min_max_conversion_aligns_with_official_min() {
-    assert_eq!(
-        tick_index_to_sqrt_price_x64(0).expect("zero tick conversion"),
-        18_446_744_073_709_551_616
+        tick_index_to_sqrt_price_x64_raydium(MAX_TICK_INDEX).expect("max tick conversion"),
+        RAYDIUM_MAX_SQRT_PRICE_X64
     );
     assert_eq!(
-        tick_index_to_sqrt_price_x64(MIN_TICK_INDEX).expect("min tick conversion"),
+        tick_index_to_sqrt_price_x64_raydium(MIN_TICK_INDEX).expect("min tick conversion"),
         RAYDIUM_OFFICIAL_MIN_SQRT_PRICE_X64
     );
 }
 
 #[test]
-fn divergence_stays_zero_on_extreme_low_side_and_is_pinned_on_high_side() {
-    let (tick_low, official_low, diff_low) = GOLDEN_TICKS[1];
-    assert_eq!(diff_low, 0);
-    let ours_low = tick_index_to_sqrt_price_x64(tick_low).unwrap();
-    assert_eq!(ours_low, official_low);
-    let (tick_high, official_high, diff_high) = GOLDEN_TICKS[14];
-    assert_eq!(diff_high, 17_842_559_523_417_622_936);
-    let ours_high = tick_index_to_sqrt_price_x64(tick_high).unwrap();
-    assert_eq!(official_high as i128 - ours_high as i128, diff_high);
+fn orca_and_raydium_tick_math_are_intentionally_distinct() {
+    // The two programs round the same curve differently. Keeping this pinned
+    // prevents a future refactor from collapsing them back into one function.
+    for &tick in &[-100_000, -1, 1, 100_000, MAX_TICK_INDEX] {
+        let orca = tick_index_to_sqrt_price_x64(tick).expect("orca tick");
+        let raydium = tick_index_to_sqrt_price_x64_raydium(tick).expect("raydium tick");
+        if tick != 0 {
+            assert_ne!(orca, raydium, "tick {tick} unexpectedly collapsed");
+        }
+    }
 }

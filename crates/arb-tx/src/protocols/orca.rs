@@ -1,6 +1,7 @@
 //! Orca Whirlpool swap instruction builder and PDA derivation.
 
 use crate::*;
+use arb_math::clmm::orca_tick_array_start_indexes;
 
 /// Derive Whirlpool TickArray PDA for a given start tick index.
 pub fn derive_orca_tick_array_pda(whirlpool: &Pubkey, start_tick_index: i32) -> Pubkey {
@@ -34,24 +35,15 @@ impl OrcaWhirlpoolAccounts {
         a_to_b: bool,
     ) -> Self {
         let program_id = Pubkey::from_str(ORCA_WHIRLPOOL_PROGRAM_ID).unwrap();
-        let spacing = (tick_spacing as i32).max(1);
-        let ticks_in_array = 88 * spacing;
-        let start_tick = tick_current_index.div_euclid(ticks_in_array) * ticks_in_array;
+        let starts = orca_tick_array_start_indexes(tick_current_index, tick_spacing, a_to_b);
+        let base = arb_math::clmm::get_start_tick_index(tick_current_index, tick_spacing);
+        let start_at = |index: usize| -> i32 { starts.get(index).copied().unwrap_or(base) };
 
         let derive_ta = |start: i32| derive_orca_tick_array_pda(&whirlpool, start);
 
-        let ta0 = derive_ta(start_tick);
-        let (ta1, ta2) = if a_to_b {
-            (
-                derive_ta(start_tick - ticks_in_array),
-                derive_ta(start_tick - 2 * ticks_in_array),
-            )
-        } else {
-            (
-                derive_ta(start_tick + ticks_in_array),
-                derive_ta(start_tick + 2 * ticks_in_array),
-            )
-        };
+        let ta0 = derive_ta(start_at(0));
+        let ta1 = derive_ta(start_at(1));
+        let ta2 = derive_ta(start_at(2));
 
         let (oracle, _) =
             Pubkey::find_program_address(&[b"oracle", whirlpool.as_ref()], &program_id);
@@ -66,6 +58,24 @@ impl OrcaWhirlpoolAccounts {
             tick_array_2: ta2,
             oracle,
         }
+    }
+
+    /// Select the correct 3 arrays for the hop direction from the registry
+    /// window. The adapter publishes `[a_to_b x3][b_to_a x3]` (6 PDAs). A
+    /// legacy 3-PDA window is used as-is and assumed pre-ordered by the caller.
+    pub fn select_tick_arrays(tick_array_pdas: &[Pubkey], a_to_b: bool) -> [Pubkey; 3] {
+        let base = if tick_array_pdas.len() >= 6 && !a_to_b {
+            3
+        } else {
+            0
+        };
+        let ta0 = tick_array_pdas
+            .get(base)
+            .copied()
+            .unwrap_or(Pubkey::default());
+        let ta1 = tick_array_pdas.get(base + 1).copied().unwrap_or(ta0);
+        let ta2 = tick_array_pdas.get(base + 2).copied().unwrap_or(ta1);
+        [ta0, ta1, ta2]
     }
 
     pub fn with_tick_arrays(
@@ -119,25 +129,22 @@ pub fn build_orca_whirlpool_swap_instruction_11(
     data.extend_from_slice(&[248, 198, 158, 145, 225, 117, 135, 200]);
     data.extend_from_slice(&amount_in.to_le_bytes());
     data.extend_from_slice(&other_amount_threshold.to_le_bytes());
-    // Slippage-derived sqrt_price_limit: no hardcoded full-range values.
-    // When a_to_b (price drops), the limit is the price at which we receive exactly
-    // other_amount_threshold of token B for amount_in of token A.
-    // When b_to_a (price rises), the limit is the price at which we pay exactly
-    // amount_in of token B for other_amount_threshold of token A.
-    const Q64: u128 = 1u128 << 64;
-    let sqrt_price_limit = if amount_in > 0 && other_amount_threshold > 0 {
-        if a_to_b {
-            // price = other_amount_threshold / amount_in (B per A)
-            (u128::from(other_amount_threshold) * Q64) / u128::from(amount_in)
-        } else {
-            // price = amount_in / other_amount_threshold (A per B) -> invert for B per A
-            (u128::from(amount_in) * Q64) / u128::from(other_amount_threshold)
-        }
-    } else if a_to_b {
-        // No slippage protection possible; use the absolute minimum price.
-        4_295_048_016u128
+    // `sqrt_price_limit` is a Q64.64 SQUARE-ROOT price bound in raw token
+    // units, NOT a token-ratio. The previous implementation derived it as
+    // `threshold / amount_in`, which is dimensionally wrong: for a_to_b it
+    // usually landed far below spot (silently disabling the bound) and for
+    // b_to_a it landed below spot, which the program rejects outright
+    // (`SqrtPriceLimitBelowPrice`).
+    //
+    // Exact-input slippage is already enforced by `other_amount_threshold`
+    // (the program requires `amount_out >= threshold`). We therefore pass the
+    // official program envelope so the threshold is the binding guard:
+    //   a_to_b -> MIN_SQRT_PRICE (price may fall, no additional floor)
+    //   b_to_a -> MAX_SQRT_PRICE (price may rise, no additional ceiling)
+    let sqrt_price_limit = if a_to_b {
+        arb_constants::CLMM_MIN_SQRT_PRICE_X64
     } else {
-        79_226_673_515_401_499_993_453_864_427u128
+        arb_constants::ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64
     };
     data.extend_from_slice(&sqrt_price_limit.to_le_bytes());
     data.push(1); // amount_specified_is_input = true

@@ -33,17 +33,25 @@ fn challenge_clmm_cross_one_tick_boundary_a_to_b() {
     let liquidity = 10_000_000_000_000u128;
     let fee_rate = 500u16; // 5 bps (500 / 1_000_000)
 
-    // Tick array with initialized tick at -64
-    let tick_arrays = vec![TickArrayFacade {
-        start_tick_index: -5632,
-        ticks: vec![TickFacade {
-            tick_index: -64,
-            initialized: true,
-            liquidity_net: 2_000_000_000_000,
-            liquidity_gross: 2_000_000_000_000,
-            limit_order_unfilled: 0,
-        }],
-    }];
+    // The array containing the current tick (start 0) is always supplied by
+    // the on-chain program and must be present in a faithful quote; it holds
+    // no initialized ticks here. The next array down holds the boundary at -64.
+    let tick_arrays = vec![
+        TickArrayFacade {
+            start_tick_index: 0,
+            ticks: vec![],
+        },
+        TickArrayFacade {
+            start_tick_index: -5632,
+            ticks: vec![TickFacade {
+                tick_index: -64,
+                initialized: true,
+                liquidity_net: 2_000_000_000_000,
+                liquidity_gross: 2_000_000_000_000,
+                limit_order_unfilled: 0,
+            }],
+        },
+    ];
 
     // Compute input needed to reach exactly tick -64
     let p_target = tick_index_to_sqrt_price_x64(-64).expect("Target price");
@@ -136,33 +144,40 @@ fn challenge_clmm_cross_two_and_three_tick_boundaries() {
     let initial_liquidity = 10_000_000_000_000u128;
     let fee_rate = 300u16; // 3 bps
 
-    // 3 initialized ticks at -64, -128, -192
-    let tick_arrays = vec![TickArrayFacade {
-        start_tick_index: -5632,
-        ticks: vec![
-            TickFacade {
-                tick_index: -64,
-                initialized: true,
-                liquidity_net: 2_000_000_000_000, // L becomes 8T
-                liquidity_gross: 2_000_000_000_000,
-                limit_order_unfilled: 0,
-            },
-            TickFacade {
-                tick_index: -128,
-                initialized: true,
-                liquidity_net: -1_000_000_000_000, // L becomes 9T
-                liquidity_gross: 1_000_000_000_000,
-                limit_order_unfilled: 0,
-            },
-            TickFacade {
-                tick_index: -192,
-                initialized: true,
-                liquidity_net: 3_000_000_000_000, // L becomes 6T
-                liquidity_gross: 3_000_000_000_000,
-                limit_order_unfilled: 0,
-            },
-        ],
-    }];
+    // 3 initialized ticks at -64, -128, -192. The start-0 array contains the
+    // current tick and is always loaded by the program (empty here).
+    let tick_arrays = vec![
+        TickArrayFacade {
+            start_tick_index: 0,
+            ticks: vec![],
+        },
+        TickArrayFacade {
+            start_tick_index: -5632,
+            ticks: vec![
+                TickFacade {
+                    tick_index: -64,
+                    initialized: true,
+                    liquidity_net: 2_000_000_000_000, // L becomes 8T
+                    liquidity_gross: 2_000_000_000_000,
+                    limit_order_unfilled: 0,
+                },
+                TickFacade {
+                    tick_index: -128,
+                    initialized: true,
+                    liquidity_net: -1_000_000_000_000, // L becomes 9T
+                    liquidity_gross: 1_000_000_000_000,
+                    limit_order_unfilled: 0,
+                },
+                TickFacade {
+                    tick_index: -192,
+                    initialized: true,
+                    liquidity_net: 3_000_000_000_000, // L becomes 6T
+                    liquidity_gross: 3_000_000_000_000,
+                    limit_order_unfilled: 0,
+                },
+            ],
+        },
+    ];
 
     // 1. Two-boundary crossing: reach past -128 but before -192
     let p_64 = tick_index_to_sqrt_price_x64(-64).expect("invariant");

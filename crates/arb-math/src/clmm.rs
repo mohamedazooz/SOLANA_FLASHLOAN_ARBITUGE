@@ -19,13 +19,10 @@ pub const MAX_TICK: i32 = MAX_TICK_INDEX;
 /// Raydium CLMM, and Meteora DAMM v2 sources). See
 /// `arb_constants::CLMM_MIN_SQRT_PRICE_X64`.
 pub const MIN_SQRT_PRICE_X64: u128 = 4_295_048_016;
-/// Endpoint of this module's tick conversion
-/// (`tick_index_to_sqrt_price_x64(MAX_TICK)`) = official Orca 2.1.1
-/// `MAX_SQRT_PRICE` + 6 Q64.64 units (within the 16-unit parity tolerance).
-/// Per-program exact official upper bounds live in `arb-constants`; the Orca
-/// bound is the tightest, so this envelope never accepts a decoded sqrt price
-/// meaningfully above any supported program's official range.
-pub const MAX_SQRT_PRICE_X64: u128 = 79_226_673_515_401_279_992_447_579_061;
+/// Bit-exact official Orca Whirlpool `MAX_SQRT_PRICE_X64`
+/// (`programs/whirlpool/src/math/tick_math.rs`). It is also the exact output
+/// of `tick_index_to_sqrt_price_x64(MAX_TICK)` below.
+pub const MAX_SQRT_PRICE_X64: u128 = 79_226_673_515_401_279_992_447_579_055;
 pub const Q64: u128 = 1u128 << 64;
 
 pub const FEE_RATE_DENOMINATOR: u64 = 1_000_000;
@@ -126,78 +123,244 @@ pub fn tick_index_to_sqrt_price_x64(tick_index: i32) -> Result<u128, ClmmMathErr
         return Err(ClmmMathError::TickIndexOutOfBounds(tick_index));
     }
 
+    if tick_index >= 0 {
+        // Official `get_sqrt_price_positive_tick`: Q96.32 constants,
+        // `mul_shift_96` per set bit, final `>> 32` to Q64.64.
+        let tick = tick_index;
+        let mut ratio: u128 = if tick & 1 != 0 {
+            79_232_123_823_359_799_118_286_999_567
+        } else {
+            79_228_162_514_264_337_593_543_950_336
+        };
+        if tick & 2 != 0 {
+            ratio = mul_shift_96(ratio, 79_236_085_330_515_764_027_303_304_731)?;
+        }
+        if tick & 4 != 0 {
+            ratio = mul_shift_96(ratio, 79_244_008_939_048_815_603_706_035_061)?;
+        }
+        if tick & 8 != 0 {
+            ratio = mul_shift_96(ratio, 79_259_858_533_276_714_757_314_932_305)?;
+        }
+        if tick & 16 != 0 {
+            ratio = mul_shift_96(ratio, 79_291_567_232_598_584_799_939_703_904)?;
+        }
+        if tick & 32 != 0 {
+            ratio = mul_shift_96(ratio, 79_355_022_692_464_371_645_785_046_466)?;
+        }
+        if tick & 64 != 0 {
+            ratio = mul_shift_96(ratio, 79_482_085_999_252_804_386_437_311_141)?;
+        }
+        if tick & 128 != 0 {
+            ratio = mul_shift_96(ratio, 79_736_823_300_114_093_921_829_183_326)?;
+        }
+        if tick & 256 != 0 {
+            ratio = mul_shift_96(ratio, 80_248_749_790_819_932_309_965_073_892)?;
+        }
+        if tick & 512 != 0 {
+            ratio = mul_shift_96(ratio, 81_282_483_887_344_747_381_513_967_011)?;
+        }
+        if tick & 1024 != 0 {
+            ratio = mul_shift_96(ratio, 83_390_072_131_320_151_908_154_831_281)?;
+        }
+        if tick & 2048 != 0 {
+            ratio = mul_shift_96(ratio, 87_770_609_709_833_776_024_991_924_138)?;
+        }
+        if tick & 4096 != 0 {
+            ratio = mul_shift_96(ratio, 97_234_110_755_111_693_312_479_820_773)?;
+        }
+        if tick & 8192 != 0 {
+            ratio = mul_shift_96(ratio, 119_332_217_159_966_728_226_237_229_890)?;
+        }
+        if tick & 16384 != 0 {
+            ratio = mul_shift_96(ratio, 179_736_315_981_702_064_433_883_588_727)?;
+        }
+        if tick & 32768 != 0 {
+            ratio = mul_shift_96(ratio, 407_748_233_172_238_350_107_850_275_304)?;
+        }
+        if tick & 65536 != 0 {
+            ratio = mul_shift_96(ratio, 2_098_478_828_474_011_932_436_660_412_517)?;
+        }
+        if tick & 131072 != 0 {
+            ratio = mul_shift_96(ratio, 55_581_415_166_113_811_149_459_800_483_533)?;
+        }
+        if tick & 262144 != 0 {
+            ratio = mul_shift_96(ratio, 38_992_368_544_603_139_932_233_054_999_993_551)?;
+        }
+        return Ok(ratio >> 32);
+    }
+
+    // Official `get_sqrt_price_negative_tick`: Q64.64 constants and
+    // `(ratio * c) >> 64` per set bit. All products fit in u128.
     let abs_tick = tick_index.unsigned_abs();
-
-    // 19 precomputed fixed-point constants in Q128.128 format representing 1 / sqrt(1.0001^(2^i))
-    let mut ratio = if (abs_tick & 0x1) != 0 {
-        U256::from(0xfffc_b933_bd6f_ad37_aa2d_162d_1a59_4001u128)
+    let mut ratio: u128 = if abs_tick & 1 != 0 {
+        18_445_821_805_675_392_311
     } else {
-        U256::from(1) << 128
+        18_446_744_073_709_551_616
     };
+    if abs_tick & 2 != 0 {
+        ratio = (ratio * 18_444_899_583_751_176_498) >> 64;
+    }
+    if abs_tick & 4 != 0 {
+        ratio = (ratio * 18_443_055_278_223_354_162) >> 64;
+    }
+    if abs_tick & 8 != 0 {
+        ratio = (ratio * 18_439_367_220_385_604_838) >> 64;
+    }
+    if abs_tick & 16 != 0 {
+        ratio = (ratio * 18_431_993_317_065_449_817) >> 64;
+    }
+    if abs_tick & 32 != 0 {
+        ratio = (ratio * 18_417_254_355_718_160_513) >> 64;
+    }
+    if abs_tick & 64 != 0 {
+        ratio = (ratio * 18_387_811_781_193_591_352) >> 64;
+    }
+    if abs_tick & 128 != 0 {
+        ratio = (ratio * 18_329_067_761_203_520_168) >> 64;
+    }
+    if abs_tick & 256 != 0 {
+        ratio = (ratio * 18_212_142_134_806_087_854) >> 64;
+    }
+    if abs_tick & 512 != 0 {
+        ratio = (ratio * 17_980_523_815_641_551_639) >> 64;
+    }
+    if abs_tick & 1024 != 0 {
+        ratio = (ratio * 17_526_086_738_831_147_013) >> 64;
+    }
+    if abs_tick & 2048 != 0 {
+        ratio = (ratio * 16_651_378_430_235_024_244) >> 64;
+    }
+    if abs_tick & 4096 != 0 {
+        ratio = (ratio * 15_030_750_278_693_429_944) >> 64;
+    }
+    if abs_tick & 8192 != 0 {
+        ratio = (ratio * 12_247_334_978_882_834_399) >> 64;
+    }
+    if abs_tick & 16384 != 0 {
+        ratio = (ratio * 8_131_365_268_884_726_200) >> 64;
+    }
+    if abs_tick & 32768 != 0 {
+        ratio = (ratio * 3_584_323_654_723_342_297) >> 64;
+    }
+    if abs_tick & 65536 != 0 {
+        ratio = (ratio * 696_457_651_847_595_233) >> 64;
+    }
+    if abs_tick & 131072 != 0 {
+        ratio = (ratio * 26_294_789_957_452_057) >> 64;
+    }
+    if abs_tick & 262144 != 0 {
+        ratio = (ratio * 37_481_735_321_082) >> 64;
+    }
+    Ok(ratio)
+}
 
-    if (abs_tick & 0x2) != 0 {
-        ratio = (ratio * U256::from(0xfff9_7272_373d_4132_59a4_6990_580e_213au128)) >> 128;
-    }
-    if (abs_tick & 0x4) != 0 {
-        ratio = (ratio * U256::from(0xfff2_e50f_5f65_6932_ef12_357c_f3c7_fdccu128)) >> 128;
-    }
-    if (abs_tick & 0x8) != 0 {
-        ratio = (ratio * U256::from(0xffe5_caca_7e10_e4e6_1c36_24ea_a094_1cd0u128)) >> 128;
-    }
-    if (abs_tick & 0x10) != 0 {
-        ratio = (ratio * U256::from(0xffcb_9843_d60f_6159_c9db_5883_5c92_6644u128)) >> 128;
-    }
-    if (abs_tick & 0x20) != 0 {
-        ratio = (ratio * U256::from(0xff97_3b41_fa98_c081_472e_6896_dfb2_54c0u128)) >> 128;
-    }
-    if (abs_tick & 0x40) != 0 {
-        ratio = (ratio * U256::from(0xff2e_a164_66c9_6a38_43ec_78b3_26b5_2861u128)) >> 128;
-    }
-    if (abs_tick & 0x80) != 0 {
-        ratio = (ratio * U256::from(0xfe5d_ee04_6a99_a2a8_11c4_61f1_969c_3053u128)) >> 128;
-    }
-    if (abs_tick & 0x100) != 0 {
-        ratio = (ratio * U256::from(0xfcbe_86c7_900a_88ae_dcff_c83b_479a_a3a4u128)) >> 128;
-    }
-    if (abs_tick & 0x200) != 0 {
-        ratio = (ratio * U256::from(0xf987_a725_3ac4_1317_6f2b_074c_f781_5e54u128)) >> 128;
-    }
-    if (abs_tick & 0x400) != 0 {
-        ratio = (ratio * U256::from(0xf339_2b08_22b7_0005_940c_7a39_8e4b_70f3u128)) >> 128;
-    }
-    if (abs_tick & 0x800) != 0 {
-        ratio = (ratio * U256::from(0xe715_9475_a2c2_9b74_43b2_9c7f_a6e8_89d9u128)) >> 128;
-    }
-    if (abs_tick & 0x1000) != 0 {
-        ratio = (ratio * U256::from(0xd097_f3bd_fd20_22b8_845a_d8f7_92aa_5825u128)) >> 128;
-    }
-    if (abs_tick & 0x2000) != 0 {
-        ratio = (ratio * U256::from(0xa9f7_4646_2d87_0fdf_8a65_dc1f_90e0_61e5u128)) >> 128;
-    }
-    if (abs_tick & 0x4000) != 0 {
-        ratio = (ratio * U256::from(0x70d8_69a1_56d2_a1b8_90bb_3df6_2baf_32f7u128)) >> 128;
-    }
-    if (abs_tick & 0x8000) != 0 {
-        ratio = (ratio * U256::from(0x31be_135f_97d0_8fd9_8123_1505_542f_cfa6u128)) >> 128;
-    }
-    if (abs_tick & 0x10000) != 0 {
-        ratio = (ratio * U256::from(0x09aa_508b_5b7a_84e1_c677_de54_f3e9_9bc9_u128)) >> 128;
-    }
-    if (abs_tick & 0x20000) != 0 {
-        ratio = (ratio * U256::from(0x005d_6af8_dedb_8119_6699_c329_225e_e604_u128)) >> 128;
-    }
-    if (abs_tick & 0x40000) != 0 {
-        ratio = (ratio * U256::from(0x0000_2216_e584_f5fa_1ea9_2604_1bed_fe98_u128)) >> 128;
-    }
+/// Official Whirlpool `mul_shift_96`: `(n0 * n1) >> 96` in a 256-bit
+/// intermediate. The product is guaranteed to fit in `u128` for every
+/// constant used by the positive-tick table.
+fn mul_shift_96(n0: u128, n1: u128) -> Result<u128, ClmmMathError> {
+    let product = U256::from(n0) * U256::from(n1);
+    u128::try_from(product >> 96).map_err(|_| ClmmMathError::IntegerOverflow)
+}
 
+/// Official Raydium CLMM `MAX_SQRT_PRICE_X64` (`libraries/tick_math.rs`).
+pub const RAYDIUM_MAX_SQRT_PRICE_X64: u128 = 79_226_673_521_066_979_257_578_248_091;
+
+/// Bit-exact official Raydium CLMM `get_sqrt_price_at_tick`.
+///
+/// Raydium uses **truncated Q64.64 magic constants** and a 128-bit
+/// `U128::MAX / ratio` inversion for positive ticks, which is a different
+/// rounding regime from Orca's Q96.32 `mul_shift_96` table. Sharing one tick
+/// function between the two programs is therefore not bit-exact.
+pub fn tick_index_to_sqrt_price_x64_raydium(tick_index: i32) -> Result<u128, ClmmMathError> {
+    if !(MIN_TICK_INDEX..=MAX_TICK_INDEX).contains(&tick_index) {
+        return Err(ClmmMathError::TickIndexOutOfBounds(tick_index));
+    }
+    let abs_tick = tick_index.unsigned_abs();
+    let mut ratio: u128 = if abs_tick & 0x1 != 0 {
+        0xfffc_b933_bd6f_b800
+    } else {
+        1u128 << 64
+    };
+    const MAGIC: [u128; 18] = [
+        0xfff9_7272_373d_4000,
+        0xfff2_e50f_5f65_7000,
+        0xffe5_caca_7e10_f000,
+        0xffcb_9843_d60f_7000,
+        0xff97_3b41_fa98_e800,
+        0xff2e_a164_66c9_b000,
+        0xfe5d_ee04_6a9a_3800,
+        0xfcbe_86c7_900b_b000,
+        0xf987_a725_3ac6_5800,
+        0xf339_2b08_22bb_6000,
+        0xe715_9475_a2ca_f000,
+        0xd097_f3bd_fd2f_2000,
+        0xa9f7_4646_2d9f_8000,
+        0x70d8_69a1_56f3_1c00,
+        0x31be_135f_97ed_3200,
+        0x09aa_508b_5b85_a500,
+        0x005d_6af8_dedc_582c,
+        0x0000_2216_e584_f5fa,
+    ];
+    for (bit, magic) in MAGIC.iter().enumerate() {
+        let mask = 1u32 << (bit + 1);
+        if abs_tick & mask != 0 {
+            ratio = (ratio * magic) >> 64;
+        }
+    }
     if tick_index > 0 {
-        ratio = U256::MAX / ratio;
+        ratio = u128::MAX / ratio;
+    }
+    Ok(ratio)
+}
+
+/// Exact inverse of the Raydium CLMM tick conversion (floor semantics).
+pub fn sqrt_price_x64_to_tick_index_raydium(sqrt_price_x64: u128) -> Result<i32, ClmmMathError> {
+    if !(MIN_SQRT_PRICE_X64..=RAYDIUM_MAX_SQRT_PRICE_X64).contains(&sqrt_price_x64) {
+        return Err(ClmmMathError::SqrtPriceOutOfBounds);
+    }
+    let mut low = MIN_TICK_INDEX;
+    let mut high = MAX_TICK_INDEX;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let p_mid = tick_index_to_sqrt_price_x64_raydium(mid)?;
+        if p_mid <= sqrt_price_x64 {
+            let next_p = if mid < MAX_TICK_INDEX {
+                tick_index_to_sqrt_price_x64_raydium(mid + 1)?
+            } else {
+                u128::MAX
+            };
+            if sqrt_price_x64 < next_p {
+                return Ok(mid);
+            }
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    Ok(low.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX))
+}
+
+/// Program-specific tick math selected by the quote path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClmmTickMath {
+    Orca,
+    Raydium,
+}
+
+impl ClmmTickMath {
+    pub fn sqrt_price_from_tick(self, tick: i32) -> Result<u128, ClmmMathError> {
+        match self {
+            Self::Orca => tick_index_to_sqrt_price_x64(tick),
+            Self::Raydium => tick_index_to_sqrt_price_x64_raydium(tick),
+        }
     }
 
-    let sqrt_price_x64_u256 = ratio >> 64;
-    let res = u128::try_from(sqrt_price_x64_u256).map_err(|_| ClmmMathError::IntegerOverflow)?;
-
-    Ok(res)
+    pub fn tick_from_sqrt_price(self, sqrt_price_x64: u128) -> Result<i32, ClmmMathError> {
+        match self {
+            Self::Orca => sqrt_price_x64_to_tick_index(sqrt_price_x64),
+            Self::Raydium => sqrt_price_x64_to_tick_index_raydium(sqrt_price_x64),
+        }
+    }
 }
 
 /// Checked tick-to-sqrt-price conversion. Invalid ticks are never mapped to a synthetic zero price.
@@ -274,7 +437,13 @@ pub fn get_amount_delta_a(
 
     let delta_p = U256::from(sqrt_price_upper - sqrt_price_lower);
     let l = U256::from(liquidity);
-    let numerator = (l * delta_p) << 64;
+    let product = l * delta_p;
+    let numerator = product << 64;
+    // Official `get_amount_delta_a` calls `checked_shl(64)` on the 256-bit
+    // product and fails with `ShiftOverflow` when bits would be discarded.
+    if (numerator >> 64) != product {
+        return Err(ClmmMathError::IntegerOverflow);
+    }
     let denominator = U256::from(sqrt_price_lower) * U256::from(sqrt_price_upper);
 
     if denominator.is_zero() {
@@ -485,7 +654,7 @@ pub fn compute_swap_step_checked(
     fee_rate: u16, // hundredths of a bip (1_000_000 denominator)
     a_to_b: bool,
 ) -> Result<StepSwapResult, ClmmMathError> {
-    if liquidity == 0 || amount_remaining == 0 {
+    if amount_remaining == 0 {
         return Ok(StepSwapResult {
             amount_in: 0,
             amount_out: 0,
@@ -494,53 +663,60 @@ pub fn compute_swap_step_checked(
             fee_amount: 0,
         });
     }
+    if u64::from(fee_rate) >= FEE_RATE_DENOMINATOR {
+        return Err(ClmmMathError::DivisionByZero);
+    }
 
-    // 1. Calculate max amount_in needed to reach sqrt_price_target_x64
+    // Official `compute_swap`:
+    //   amount_remaining_less_fee = checked_mul_div(amount_remaining,
+    //       FEE_RATE_MUL_VALUE - fee_rate, FEE_RATE_MUL_VALUE)   // floor
+    let amount_remaining_less_fee = u64::try_from(
+        u128::from(amount_remaining) * u128::from(FEE_RATE_DENOMINATOR - u64::from(fee_rate))
+            / u128::from(FEE_RATE_DENOMINATOR),
+    )
+    .map_err(|_| ClmmMathError::IntegerOverflow)?;
+
+    // Amount needed to move all the way to the target tick (rounded up).
     let amount_in_max = if a_to_b {
         get_amount_delta_a(
             sqrt_price_target_x64,
             sqrt_price_current_x64,
             liquidity,
-            true, // round_up = true for input
+            true,
         )?
     } else {
         get_amount_delta_b(
             sqrt_price_current_x64,
             sqrt_price_target_x64,
             liquidity,
-            true, // round_up = true for input
+            true,
         )?
     };
 
-    // 2. Net amount available after deducting fee from remaining input
-    let fee_on_remaining = div_ceil_u64(
-        u128::from(amount_remaining) * u128::from(fee_rate),
-        u128::from(FEE_RATE_DENOMINATOR),
-    )?;
-    let amount_remaining_net = amount_remaining.saturating_sub(fee_on_remaining);
-
-    if amount_remaining_net >= amount_in_max {
-        // Full step reached target tick
-        let fee_denom = u128::from(FEE_RATE_DENOMINATOR.saturating_sub(u64::from(fee_rate)));
+    if amount_remaining_less_fee >= amount_in_max {
+        // Full step reaches the target tick. Fee is grossed up over the net
+        // amount, exactly like the on-chain program.
         let fee_amount = div_ceil_u64(
             u128::from(amount_in_max) * u128::from(fee_rate),
-            fee_denom.max(1),
+            u128::from(FEE_RATE_DENOMINATOR - u64::from(fee_rate)),
         )?;
-        let amount_in = amount_in_max.saturating_add(fee_amount);
+        let amount_in = amount_in_max
+            .checked_add(fee_amount)
+            .ok_or(ClmmMathError::IntegerOverflow)?;
 
         let amount_out = if a_to_b {
             get_amount_delta_b(
                 sqrt_price_target_x64,
                 sqrt_price_current_x64,
                 liquidity,
-                false, // round_up = false for output
+                false,
             )?
         } else {
             get_amount_delta_a(
                 sqrt_price_current_x64,
                 sqrt_price_target_x64,
                 liquidity,
-                false, // round_up = false for output
+                false,
             )?
         };
 
@@ -552,31 +728,41 @@ pub fn compute_swap_step_checked(
             fee_amount,
         })
     } else {
-        // Partial step within tick: consumed all remaining amount
-        let fee_amount = fee_on_remaining;
-        let net_in = amount_remaining_net;
-
+        // Partial step: consume all remaining input inside this tick. The
+        // realised input is re-derived from the actual price move (it can be
+        // one unit below `amount_remaining_less_fee`), and the fee is the
+        // exact remainder — never an independently rounded fee.
         let next_sqrt_price = if a_to_b {
-            get_next_sqrt_price_from_a_input(sqrt_price_current_x64, liquidity, net_in)?
+            get_next_sqrt_price_from_a_input(
+                sqrt_price_current_x64,
+                liquidity,
+                amount_remaining_less_fee,
+            )?
         } else {
-            get_next_sqrt_price_from_b_input(sqrt_price_current_x64, liquidity, net_in)?
+            get_next_sqrt_price_from_b_input(
+                sqrt_price_current_x64,
+                liquidity,
+                amount_remaining_less_fee,
+            )?
+        };
+
+        let amount_in_net = if a_to_b {
+            get_amount_delta_a(next_sqrt_price, sqrt_price_current_x64, liquidity, true)?
+        } else {
+            get_amount_delta_b(sqrt_price_current_x64, next_sqrt_price, liquidity, true)?
         };
 
         let amount_out = if a_to_b {
-            get_amount_delta_b(
-                next_sqrt_price,
-                sqrt_price_current_x64,
-                liquidity,
-                false, // round_up = false
-            )?
+            get_amount_delta_b(next_sqrt_price, sqrt_price_current_x64, liquidity, false)?
         } else {
-            get_amount_delta_a(
-                sqrt_price_current_x64,
-                next_sqrt_price,
-                liquidity,
-                false, // round_up = false
-            )?
+            get_amount_delta_a(sqrt_price_current_x64, next_sqrt_price, liquidity, false)?
         };
+
+        // `amount_in` is the GROSS input consumed by this step (net swap
+        // amount + fee), matching the quote accumulator's contract.
+        let fee_amount = amount_remaining
+            .checked_sub(amount_in_net)
+            .ok_or(ClmmMathError::IntegerOverflow)?;
 
         Ok(StepSwapResult {
             amount_in: amount_remaining,
@@ -628,6 +814,68 @@ pub struct TickArrayFacade {
     pub ticks: Vec<TickFacade>,
 }
 
+/// `Tick::check_is_valid_start_tick` from the Whirlpool program: a start tick
+/// must be a multiple of the tick spacing and inside the global tick range,
+/// except for the single left-edge array whose start is below `MIN_TICK_INDEX`.
+pub fn is_valid_tick_array_start_tick(start_tick_index: i32, tick_spacing: u16) -> bool {
+    if tick_spacing == 0 {
+        return false;
+    }
+    let ticks_in_array = (TICK_ARRAY_SIZE as i32) * i32::from(tick_spacing);
+    if !(MIN_TICK_INDEX..=MAX_TICK_INDEX).contains(&start_tick_index) {
+        if start_tick_index > MIN_TICK_INDEX {
+            return false;
+        }
+        // Exact official expression (truncating `%`, not `rem_euclid`).
+        let min_array_start_index =
+            MIN_TICK_INDEX - (MIN_TICK_INDEX % ticks_in_array + ticks_in_array);
+        return start_tick_index == min_array_start_index;
+    }
+    start_tick_index.rem_euclid(ticks_in_array) == 0
+}
+
+/// The EXACT ordered tick-array start indexes the on-chain Whirlpool `swap`
+/// instruction requires.
+///
+/// Mirrors `SparseSwapTickSequenceBuilder::get_start_tick_indexes` in the
+/// official program (`programs/whirlpool/src/util/sparse_swap.rs`):
+///
+/// * `a_to_b`  -> `[base, base - T, base - 2T]` (never shifted, even when
+///   `tick_current == base`).
+/// * `b_to_a`  -> `[base, base + T, base + 2T]`, or `[base + T, base + 2T,
+///   base + 3T]` when `tick_current + tick_spacing` reaches the array's upper
+///   edge.
+///
+/// `T = 88 * tick_spacing`. Invalid start ticks are dropped exactly like the
+/// program does (the sequence then ends early). An empty result means no
+/// usable Whirlpool tick array exists near the current tick.
+pub fn orca_tick_array_start_indexes(
+    tick_current: i32,
+    tick_spacing: u16,
+    a_to_b: bool,
+) -> Vec<i32> {
+    if tick_spacing == 0 {
+        return Vec::new();
+    }
+    let spacing = i32::from(tick_spacing);
+    let ticks_in_array = (TICK_ARRAY_SIZE as i32) * spacing;
+    let base = tick_current.div_euclid(ticks_in_array) * ticks_in_array;
+    let offsets: [i32; 3] = if a_to_b {
+        [0, -1, -2]
+    } else if tick_current.saturating_add(spacing) >= base.saturating_add(ticks_in_array) {
+        [1, 2, 3]
+    } else {
+        [0, 1, 2]
+    };
+    offsets
+        .iter()
+        .filter_map(|&offset| {
+            let start_tick = base.checked_add(offset.checked_mul(ticks_in_array)?)?;
+            is_valid_tick_array_start_tick(start_tick, tick_spacing).then_some(start_tick)
+        })
+        .collect()
+}
+
 /// Calculate the start tick index for a tick given Whirlpool tick spacing.
 pub fn get_start_tick_index(tick: i32, tick_spacing: u16) -> i32 {
     get_start_tick_index_with_size(tick, tick_spacing, TICK_ARRAY_SIZE)
@@ -644,6 +892,11 @@ pub fn get_start_tick_index_with_size(
 }
 
 /// Parse an on-chain Whirlpool TickArray account (9,988 bytes).
+///
+/// Official fixed layout (`FixedTickArray`):
+/// `[0..8]` Anchor discriminator, `[8..12]` `start_tick_index: i32`,
+/// `[12..9956]` 88 packed `Tick` records of 113 bytes each,
+/// `[9956..9988]` the owning `whirlpool: Pubkey`.
 pub fn parse_tick_array_account(
     data: &[u8],
     tick_spacing: u16,
@@ -651,7 +904,7 @@ pub fn parse_tick_array_account(
     if data.len() < WHIRLPOOL_TICK_ARRAY_SIZE {
         return Err(ClmmMathError::InvalidAccountData);
     }
-    let start_tick_bytes: [u8; 4] = data[40..44]
+    let start_tick_bytes: [u8; 4] = data[8..12]
         .try_into()
         .map_err(|_| ClmmMathError::InvalidAccountData)?;
     if tick_spacing == 0 {
@@ -669,7 +922,7 @@ pub fn parse_tick_array_account(
     }
 
     for i in 0..TICK_ARRAY_SIZE {
-        let offset = 44 + i * TICK_STRUCT_SIZE;
+        let offset = 12 + i * TICK_STRUCT_SIZE;
         let initialized_byte = *data.get(offset).ok_or(ClmmMathError::InvalidAccountData)?;
         if initialized_byte > 1 {
             return Err(ClmmMathError::InvalidAccountData);
@@ -843,50 +1096,70 @@ pub fn find_next_tick_boundary_with_size(
         .ok_or(ClmmMathError::IntegerOverflow)?;
     let mut current_array_start =
         get_start_tick_index_with_size(tick_current, tick_spacing, ticks_per_array_count);
-    if a_to_b && tick_current == current_array_start {
-        current_array_start = current_array_start
-            .checked_sub(ticks_per_array)
-            .ok_or(ClmmMathError::IntegerOverflow)?;
-    }
-    let current_array = tick_arrays
-        .iter()
-        .find(|array| array.start_tick_index == current_array_start)
-        .ok_or(ClmmMathError::MissingTickArrayCoverage(current_array_start))?;
 
-    let candidate = if a_to_b {
-        current_array
-            .ticks
+    loop {
+        let current_array = tick_arrays
             .iter()
-            .filter(|tick| tick.initialized && tick.tick_index <= tick_current)
-            .max_by_key(|tick| tick.tick_index)
-            .copied()
-    } else {
-        current_array
-            .ticks
-            .iter()
-            .filter(|tick| tick.initialized && tick.tick_index > tick_current)
-            .min_by_key(|tick| tick.tick_index)
-            .copied()
-    };
+            .find(|array| array.start_tick_index == current_array_start)
+            .ok_or(ClmmMathError::MissingTickArrayCoverage(current_array_start))?;
 
-    if let Some(tick) = candidate {
-        return Ok((tick.tick_index, Some(tick)));
-    }
+        let candidate = if a_to_b {
+            current_array
+                .ticks
+                .iter()
+                .filter(|tick| {
+                    tick.initialized
+                        && tick.tick_index <= tick_current
+                        && tick.tick_index >= current_array_start
+                })
+                .max_by_key(|tick| tick.tick_index)
+                .copied()
+        } else {
+            current_array
+                .ticks
+                .iter()
+                .filter(|tick| tick.initialized && tick.tick_index > tick_current)
+                .min_by_key(|tick| tick.tick_index)
+                .copied()
+        };
 
-    // No initialized tick exists in this array. Move to its edge; the next
-    // iteration must have the adjacent array loaded or fail with MissingTickArrayCoverage.
-    let boundary = if a_to_b {
-        current_array_start
-    } else {
-        current_array_start
-            .checked_add(ticks_per_array)
-            .ok_or(ClmmMathError::IntegerOverflow)?
-    };
-    let boundary = boundary.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX);
-    if boundary == tick_current {
-        return Err(ClmmMathError::NoProgress);
+        if let Some(tick) = candidate {
+            return Ok((tick.tick_index, Some(tick)));
+        }
+
+        // No initialized tick remains in this array in the swap direction.
+        // Move to its edge; the next iteration must have the adjacent array
+        // loaded or fail with MissingTickArrayCoverage.
+        let boundary = if a_to_b {
+            current_array_start
+        } else {
+            current_array_start
+                .checked_add(ticks_per_array)
+                .ok_or(ClmmMathError::IntegerOverflow)?
+        };
+
+        // `a_to_b` at the array's lower edge: the edge equals the current
+        // tick, so there is zero room left inside this array. Descend into the
+        // previous array instead of fabricating progress. The Whirlpool
+        // program orders arrays `[base, base - T, base - 2T]`, so the previous
+        // array is exactly the next one it will search.
+        if a_to_b && boundary == tick_current {
+            let previous_start = current_array_start
+                .checked_sub(ticks_per_array)
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            if previous_start < MIN_TICK_INDEX {
+                return Err(ClmmMathError::IncompleteQuote);
+            }
+            current_array_start = previous_start;
+            continue;
+        }
+
+        let boundary = boundary.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX);
+        if boundary == tick_current {
+            return Err(ClmmMathError::NoProgress);
+        }
+        return Ok((boundary, None));
     }
-    Ok((boundary, None))
 }
 
 /// Updates liquidity L when crossing an initialized tick boundary.
@@ -956,6 +1229,33 @@ pub fn compute_swap(
 /// Compute exact swap quote with custom ticks per array count (88 for Orca, 60 for Raydium CLMM).
 #[allow(clippy::too_many_arguments)]
 pub fn compute_swap_with_ticks_per_array(
+    sqrt_price_current_x64: u128,
+    tick_current_index: i32,
+    liquidity: u128,
+    tick_spacing: u16,
+    fee_rate: u16,
+    amount_specified: u64,
+    a_to_b: bool,
+    tick_arrays: &[TickArrayFacade],
+    ticks_per_array_count: usize,
+) -> Result<WhirlpoolQuote, ClmmMathError> {
+    compute_swap_with_ticks_per_array_and_math(
+        sqrt_price_current_x64,
+        tick_current_index,
+        liquidity,
+        tick_spacing,
+        fee_rate,
+        amount_specified,
+        a_to_b,
+        tick_arrays,
+        ticks_per_array_count,
+        ClmmTickMath::Orca,
+    )
+}
+
+/// Program-specific variant of [`compute_swap_with_ticks_per_array`].
+#[allow(clippy::too_many_arguments)]
+pub fn compute_swap_with_ticks_per_array_and_math(
     mut sqrt_price_current_x64: u128,
     mut tick_current_index: i32,
     mut liquidity: u128,
@@ -965,6 +1265,7 @@ pub fn compute_swap_with_ticks_per_array(
     a_to_b: bool,
     tick_arrays: &[TickArrayFacade],
     ticks_per_array_count: usize,
+    tick_math: ClmmTickMath,
 ) -> Result<WhirlpoolQuote, ClmmMathError> {
     let mut amount_remaining = amount_specified;
     let mut total_amount_in = 0u64;
@@ -978,7 +1279,10 @@ pub fn compute_swap_with_ticks_per_array(
         .ok_or(ClmmMathError::IntegerOverflow)?
         .max(1);
 
-    while amount_remaining > 0 && liquidity > 0 {
+    // The on-chain loop runs until the input is consumed or the price limit is
+    // reached; it does NOT stop when active liquidity is zero. A zero-liquidity
+    // range is traversed for free to the next initialized tick / array edge.
+    while amount_remaining > 0 {
         if steps_taken >= max_steps {
             return Err(ClmmMathError::IterationLimitExceeded);
         }
@@ -990,7 +1294,7 @@ pub fn compute_swap_with_ticks_per_array(
             ticks_per_array_count,
         )?;
 
-        let target_sqrt_price = tick_index_to_sqrt_price_x64(next_tick)?;
+        let target_sqrt_price = tick_math.sqrt_price_from_tick(next_tick)?;
         let previous_sqrt_price = sqrt_price_current_x64;
         let step = compute_swap_step_checked(
             previous_sqrt_price,
@@ -1043,7 +1347,7 @@ pub fn compute_swap_with_ticks_per_array(
                 next_tick
             };
         } else {
-            tick_current_index = sqrt_price_x64_to_tick_index(sqrt_price_current_x64)?;
+            tick_current_index = tick_math.tick_from_sqrt_price(sqrt_price_current_x64)?;
             break;
         }
     }
@@ -1101,7 +1405,35 @@ pub fn quote_clmm_with_ticks_per_array(
     tick_arrays: &[TickArrayFacade],
     ticks_per_array_count: usize,
 ) -> Result<u64, ClmmMathError> {
-    let quote = compute_swap_with_ticks_per_array(
+    quote_clmm_with_ticks_per_array_and_math(
+        amount_in,
+        sqrt_price,
+        tick,
+        liquidity,
+        tick_spacing,
+        fee_rate,
+        a_to_b,
+        tick_arrays,
+        ticks_per_array_count,
+        ClmmTickMath::Orca,
+    )
+}
+
+/// Program-specific variant of [`quote_clmm_with_ticks_per_array`].
+#[allow(clippy::too_many_arguments)]
+pub fn quote_clmm_with_ticks_per_array_and_math(
+    amount_in: u64,
+    sqrt_price: u128,
+    tick: i32,
+    liquidity: u128,
+    tick_spacing: u16,
+    fee_rate: u16,
+    a_to_b: bool,
+    tick_arrays: &[TickArrayFacade],
+    ticks_per_array_count: usize,
+    tick_math: ClmmTickMath,
+) -> Result<u64, ClmmMathError> {
+    let quote = compute_swap_with_ticks_per_array_and_math(
         sqrt_price,
         tick,
         liquidity,
@@ -1111,6 +1443,7 @@ pub fn quote_clmm_with_ticks_per_array(
         a_to_b,
         tick_arrays,
         ticks_per_array_count,
+        tick_math,
     )?;
     Ok(quote.amount_out_received)
 }
@@ -1123,6 +1456,86 @@ mod tests {
     fn tick_traversal_requires_current_array_coverage() {
         let err = find_next_tick_boundary(0, 1, false, &[]).unwrap_err();
         assert_eq!(err, ClmmMathError::MissingTickArrayCoverage(0));
+    }
+
+    /// Official program rule (`SparseSwapTickSequenceBuilder::get_start_tick_indexes`):
+    /// a_to_b never shifts; b_to_a shifts only when the last tick of the array
+    /// is reached.
+    #[test]
+    fn orca_tick_array_window_matches_program_rules() {
+        let spacing = 4u16;
+        let t = 88 * 4; // 352
+
+        // a_to_b, tick inside the array: [base, base-T, base-2T].
+        assert_eq!(
+            orca_tick_array_start_indexes(0, spacing, true),
+            vec![0, -t, -2 * t]
+        );
+        // a_to_b exactly at the array start: NO shift (the old code shifted).
+        assert_eq!(
+            orca_tick_array_start_indexes(t, spacing, true),
+            vec![t, 0, -t]
+        );
+
+        // b_to_a, tick at the array start: [base, +T, +2T].
+        assert_eq!(
+            orca_tick_array_start_indexes(t, spacing, false),
+            vec![t, 2 * t, 3 * t]
+        );
+        // b_to_a in the final tick of the array (tick + spacing reaches the
+        // upper edge): [base+T, +2T, +3T].
+        assert_eq!(
+            orca_tick_array_start_indexes(2 * t - i32::from(spacing), spacing, false),
+            vec![2 * t, 3 * t, 4 * t]
+        );
+
+        // Invalid start ticks (outside the global range) are dropped, exactly
+        // like the program. At the top of the range the b_to_a window runs out
+        // of valid start ticks.
+        let top_base = MAX_TICK_INDEX - MAX_TICK_INDEX.rem_euclid(t);
+        let window = orca_tick_array_start_indexes(top_base, spacing, false);
+        assert!(window.iter().all(|s| *s <= MAX_TICK_INDEX));
+        assert!(window.len() < 3, "window = {window:?}");
+    }
+
+    /// a_to_b at the array's lower edge must descend into the previous array
+    /// rather than fabricate a tick at the boundary.
+    #[test]
+    fn a_to_b_lower_edge_descends_to_previous_array() {
+        let spacing = 1u16;
+        let array_a = TickArrayFacade {
+            start_tick_index: 0,
+            ticks: (0..TICK_ARRAY_SIZE)
+                .map(|i| TickFacade {
+                    tick_index: i as i32,
+                    initialized: false,
+                    liquidity_net: 0,
+                    liquidity_gross: 0,
+                    limit_order_unfilled: 0,
+                })
+                .collect(),
+        };
+        let mut prev_ticks: Vec<TickFacade> = (-(TICK_ARRAY_SIZE as i32)..0)
+            .map(|tick_index| TickFacade {
+                tick_index,
+                initialized: false,
+                liquidity_net: 0,
+                liquidity_gross: 0,
+                limit_order_unfilled: 0,
+            })
+            .collect();
+        // One initialized tick inside the previous array.
+        prev_ticks[TICK_ARRAY_SIZE - 5].initialized = true;
+        prev_ticks[TICK_ARRAY_SIZE - 5].liquidity_net = 10;
+        let array_prev = TickArrayFacade {
+            start_tick_index: -(TICK_ARRAY_SIZE as i32),
+            ticks: prev_ticks,
+        };
+
+        let (boundary, tick) =
+            find_next_tick_boundary(0, spacing, true, &[array_a, array_prev]).unwrap();
+        assert_eq!(boundary, -5);
+        assert_eq!(tick.map(|t| t.tick_index), Some(-5));
     }
 
     #[test]

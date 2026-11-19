@@ -31,26 +31,23 @@ fn tick_conversion_endpoints_match_shared_envelope_exactly() {
         tick_index_to_sqrt_price_x64(MAX_TICK_INDEX).expect("max tick conversion"),
         MAX_SQRT_PRICE_X64
     );
-    assert_eq!(MAX_SQRT_PRICE_X64, 79_226_673_515_401_279_992_447_579_061);
+    assert_eq!(MAX_SQRT_PRICE_X64, 79_226_673_515_401_279_992_447_579_055);
 }
 
 #[test]
-fn max_endpoint_stays_within_orca_core_official_bound_plus_tolerance() {
+fn max_endpoint_is_bit_exact_with_orca_core() {
     let local_max = tick_index_to_sqrt_price_x64(MAX_TICK_INDEX).expect("max tick conversion");
-    assert!(
-        local_max > ORCA_CORE_MAX_SQRT_PRICE,
-        "guard against accidental constant drift: local endpoint must stay above pinned core bound"
+    assert_eq!(
+        local_max, ORCA_CORE_MAX_SQRT_PRICE,
+        "tick conversion must be bit-identical to the official Orca endpoint"
     );
-    let delta = local_max - ORCA_CORE_MAX_SQRT_PRICE;
-    assert_eq!(delta, 6);
-    assert!(delta <= 16);
     assert_eq!(ORCA_CORE_MAX_SQRT_PRICE, ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64);
 }
 
 #[test]
 fn sharing_envelope_never_accepts_above_any_official_program_bound() {
     let local_max = tick_index_to_sqrt_price_x64(MAX_TICK_INDEX).expect("max tick conversion");
-    assert!(local_max <= ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64 + 16);
+    assert_eq!(local_max, ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64);
     assert!(local_max < RAYDIUM_CLMM_MAX_SQRT_PRICE_X64);
     assert!(local_max < METEORA_DAMM_V2_MAX_SQRT_PRICE_X64);
     assert!(RAYDIUM_CLMM_MAX_SQRT_PRICE_X64 > ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64);
