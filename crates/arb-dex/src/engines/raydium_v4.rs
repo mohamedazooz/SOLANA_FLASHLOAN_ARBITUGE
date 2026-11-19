@@ -86,7 +86,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
 
         // Ceiling division for fees: ceil(dx * fee_num / fee_denom)
         let num_fee = (input_net_into_pool as u128).saturating_mul(fee_num);
-        let fee = (num_fee + fee_denom - 1) / fee_denom;
+        let fee = num_fee.div_ceil(fee_denom);
         let fee_u64 = u64::try_from(fee).unwrap_or(input_net_into_pool);
 
         let input_after_fee = input_net_into_pool.saturating_sub(fee_u64);
@@ -175,7 +175,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
 
         let num = r_in.saturating_mul(target_dy);
         let denom = r_out.saturating_sub(target_dy);
-        let dx_prime = (num + denom - 1) / denom;
+        let dx_prime = num.div_ceil(denom);
 
         let fee_num = if state.fee_numerator > 0 {
             state.fee_numerator as u128
@@ -189,7 +189,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
         };
         let denom_fee = fee_denom.saturating_sub(fee_num);
 
-        let dx = (dx_prime.saturating_mul(fee_denom) + denom_fee - 1) / denom_fee;
+        let dx = dx_prime.saturating_mul(fee_denom).div_ceil(denom_fee);
         let req_in = u64::try_from(dx)
             .map_err(|_| ArbError::CalculationError("Overflow in exact out".into()))?;
 

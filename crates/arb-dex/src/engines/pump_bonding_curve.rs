@@ -89,7 +89,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
             // BUY: SOL In -> Meme Token Out
             // 1% fee taken on SOL in
             let num_fee = (input_net_into_pool as u128).saturating_mul(PUMP_FEE_BPS);
-            let fee_sol = (num_fee + 10_000 - 1) / 10_000; // ceil
+            let fee_sol = num_fee.div_ceil(10_000); // ceil
             let sol_eff = (input_net_into_pool as u128).saturating_sub(fee_sol);
 
             if sol_eff == 0 {
@@ -120,7 +120,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
 
             // 1% fee taken on SOL out
             let num_fee = sol_gross.saturating_mul(PUMP_FEE_BPS);
-            let fee_sol = (num_fee + 10_000 - 1) / 10_000; // ceil
+            let fee_sol = num_fee.div_ceil(10_000); // ceil
             let sol_out = sol_gross.saturating_sub(fee_sol);
 
             if sol_out == 0 {

@@ -130,7 +130,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
             .collect();
 
         let fee_rate = if let Some(bps) = state.fee_bps() {
-            (bps as u16).saturating_mul(100)
+            bps.saturating_mul(100)
         } else {
             3000 // 0.3% default
         };

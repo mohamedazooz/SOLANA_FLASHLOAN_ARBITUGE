@@ -30,6 +30,9 @@ pub struct MeteoraDammV2Pool {
     pub sqrt_min_price_x64: u128,
     pub sqrt_max_price_x64: u128,
     pub activation_point: u64,
+    /// On-chain `Pool::pool_status`: 0 = Enable, 1 = Disable (official cp_amm
+    /// `state/pool.rs`). Any other value is treated as disabled (fail-closed).
+    pub pool_status: u8,
     pub current_point: u64,
     pub fee_params: DammV2FeeParams,
     /// False until the complete current fee context (including dynamic-fee
@@ -63,6 +66,7 @@ impl MeteoraDammV2Pool {
             sqrt_min_price_x64: 0,
             sqrt_max_price_x64: 0,
             activation_point: 0,
+            pool_status: 1,
             current_point: 0,
             fee_params: DammV2FeeParams::default(),
             fee_context_verified: false,
@@ -74,6 +78,12 @@ impl MeteoraDammV2Pool {
         };
         pool.update_from_account(data)?;
         Ok(pool)
+    }
+
+    /// Verified against the deployed cp_amm program layout
+    /// (`programs/cp-amm/src/state/pool.rs`, checked 2026-11-20).
+    pub fn is_tradable(&self) -> bool {
+        self.pool_status == 0
     }
 }
 
@@ -175,6 +185,8 @@ impl AmmPool for MeteoraDammV2Pool {
         // 440..456: sqrt_max_price (u128)
         // 456..472: sqrt_price (u128)
         // 472..480: activation_point (u64)
+        // 480: activation_type (u8)
+        // 481: pool_status (u8; 0 = enable, 1 = disable)
         // 482: token_a_flag (u8)
         // 483: token_b_flag (u8)
         // 484: collect_fee_mode (u8)
@@ -203,6 +215,7 @@ impl AmmPool for MeteoraDammV2Pool {
             )));
         }
         self.activation_point = u64::from_le_bytes(data[472..480].try_into().unwrap());
+        self.pool_status = data[481];
 
         let flag_a = data[482];
         let flag_b = data[483];
@@ -226,6 +239,21 @@ impl AmmPool for MeteoraDammV2Pool {
     fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
         if self.has_risky {
             return Err(ArbError::InvalidInput("risky Token-2022 extension".into()));
+        }
+        // Official cp_amm permissionless `can_swap`: swaps require
+        // `pool_status == PoolStatus::Enable` and, for non-whitelisted
+        // senders, `current_point >= activation_point`. Fail-closed on both.
+        if self.pool_status != 0 {
+            return Err(ArbError::PoolDisabled(format!(
+                "Meteora DAMM v2 pool {} disabled (pool_status {})",
+                self.pool_id, self.pool_status
+            )));
+        }
+        if self.fee_context_verified && self.current_point < self.activation_point {
+            return Err(ArbError::PoolDisabled(format!(
+                "Meteora DAMM v2 pool {} not active (current_point {} < activation_point {})",
+                self.pool_id, self.current_point, self.activation_point
+            )));
         }
         if !self.fee_context_verified {
             return Err(ArbError::InvalidInput(

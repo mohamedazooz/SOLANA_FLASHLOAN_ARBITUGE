@@ -94,7 +94,7 @@ impl TransferFeeConfig {
         if denom == 0 {
             return None;
         }
-        let mut gross = u64::try_from((num + denom - 1) / denom).ok()?;
+        let mut gross = u64::try_from(num.div_ceil(denom)).ok()?;
 
         // Verify and refine if off by 1 due to ceiling rounding
         while self.calculate_net_received(gross) < target_net {
