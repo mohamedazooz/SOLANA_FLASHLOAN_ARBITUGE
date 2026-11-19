@@ -7,10 +7,15 @@
 //! bin-traversal quote engine (`quote_pool` ⇒ `arb_math::dlmm::quote_dlmm_view`
 //! — never x*y=k), and runs a bounded integer candidate-size optimizer:
 //!
-//! 1. Coarse logarithmic sampling (power-of-two doubling ladder with linear
-//!    fill) between the capacity floor and the configured / on-chain ceiling.
-//! 2. Discrete DLMM quote evaluation of every candidate through both pools.
-//! 3. Integer golden-section local refinement inside the bracket around the
+//! 1. Exact bin-drain breakpoint seeding: the profit/size curve of a two-pool
+//!    DLMM cycle is piecewise-linear with knees exactly at the cumulative
+//!    inputs that drain each pool's bins — leg-1 breakpoints are used directly
+//!    and leg-2 breakpoints are mapped through leg-1's exact-out inverse.
+//! 2. Coarse logarithmic sampling (power-of-two doubling ladder with linear
+//!    fill) between the capacity floor and the configured / on-chain ceiling,
+//!    with the breakpoints blended in as additional candidates.
+//! 3. Discrete DLMM quote evaluation of every candidate through both pools.
+//! 4. Integer golden-section local refinement inside the bracket around the
 //!    best coarse candidate.
 //!
 //! All executable amounts are exact integer token base units. No floats are
@@ -29,7 +34,7 @@ use arb_types::{
 };
 use std::collections::{HashMap, HashSet};
 
-use crate::{EPSILON_CYCLE_SPREAD_BPS, MarketEdge, MarketGraph, quote_pool};
+use crate::{EPSILON_CYCLE_SPREAD_BPS, MarketEdge, MarketGraph, dlmm_quote_components, quote_pool};
 
 /// Tuning knobs for the cross-pool DLMM strategy. All defaults are safe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +177,69 @@ fn edge_program_of(edge: &MarketEdge, mint: MintId) -> TokenProgramKind {
 /// Bounded attempts for the second-hop capacity rescale.
 const MAX_RESIZE_PASSES: usize = 4;
 
+/// Upper bound on breakpoint-derived candidate seeds injected per direction.
+/// The coarse ladder and refinement steps stay in charge of the final choice;
+/// seeding only restores the exact piecewise-linear knees the ladder misses.
+const MAX_BREAKPOINT_SEEDS: usize = 24;
+
+/// Exact bin-drain candidate seeds for the two-leg cycle (the knees of its
+/// piecewise-linear profit/size curve):
+///
+/// - Leg-1 breakpoints are cumulative fee-included inputs — already in cycle
+///   size space.
+/// - Leg-2 breakpoints are leg-2 input (= mid-mint) values; each is mapped
+///   through leg-1's `quote_dlmm_exact_out` inverse — the exact leg-1 input
+///   whose net output equals that mid-mint amount — so no slope heuristic is
+///   used anywhere in the mapping.
+/// - Leg-2 breakpoints above the second hop's capacity ceiling (when known)
+///   are dropped: `two_hop_quote` already rescales such sizes down onto the
+///   same knee.
+///
+/// The result is shaped by `dlmm_breakpoint_seed_sizes` (band filter, dedupe,
+/// even spread, `MAX_BREAKPOINT_SEEDS` cap). A failed quote only drops a
+/// seed — seeds are hints; every optimizer evaluation stays fail-closed.
+fn pair_breakpoint_seeds(
+    e1: &MarketEdge,
+    e2: &MarketEdge,
+    lo: u64,
+    hi: u64,
+    cap2: Option<u64>,
+) -> Vec<u64> {
+    let mut raw = Vec::new();
+
+    if let Some((pool1, bins1)) = dlmm_quote_components(e1) {
+        let dir1 = e1.pool_base == e1.from_mint;
+        if let Ok(breaks1) = arb_math::dlmm::dlmm_drain_breakpoints(&pool1, &bins1, dir1) {
+            raw.extend(breaks1.iter().map(|b| b.cumulative_input));
+        }
+
+        if let Some((pool2, bins2)) = dlmm_quote_components(e2) {
+            let dir2 = e2.pool_base == e2.from_mint;
+            if let Ok(breaks2) = arb_math::dlmm::dlmm_drain_breakpoints(&pool2, &bins2, dir2) {
+                for b in breaks2 {
+                    if let Some(cap) = cap2
+                        && cap > 0
+                        && b.cumulative_input > cap
+                    {
+                        continue;
+                    }
+                    if let Ok(q) = arb_math::dlmm::quote_dlmm_exact_out(
+                        &pool1,
+                        &bins1,
+                        b.cumulative_input,
+                        dir1,
+                        None,
+                    ) {
+                        raw.push(q.amount_in);
+                    }
+                }
+            }
+        }
+    }
+
+    arb_math::dlmm::dlmm_breakpoint_seed_sizes(&raw, lo, hi, MAX_BREAKPOINT_SEEDS)
+}
+
 /// Complete the two-leg integer quote chain for one direction at input `size`,
 /// honoring the second pool's active-bin capacity via proportional rescaling.
 ///
@@ -280,6 +348,9 @@ fn optimize_size(
             coarse_points.push(v);
         }
     }
+    // Exact piecewise-linear knees from both legs' bin-drain enumeration.
+    coarse_points.extend(pair_breakpoint_seeds(e1, e2, lo, hi, cap2));
+
     coarse_points.sort_unstable();
     coarse_points.dedup();
 
@@ -620,4 +691,246 @@ pub fn cross_pool_intermediate_mints(opp: &ExecutionOpportunity) -> Vec<MintId> 
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arb_math::dlmm::{DlmmParameters, DlmmPoolState, DlmmVariableParameters, quote_dlmm_view};
+    use arb_types::{DexProtocol, MintId, PoolId, TokenProgramKind};
+    use solana_pubkey::Pubkey;
+
+    const BIN_STEP_BPS: u16 = 25;
+
+    fn mint(tag: u64) -> MintId {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&(0xA11CEu64 + tag).to_le_bytes());
+        MintId(Pubkey::new_from_array(bytes))
+    }
+
+    fn fee_params() -> arb_types::DlmmFeeParams {
+        arb_types::DlmmFeeParams {
+            base_factor: 200,
+            filter_period: 60,
+            decay_period: 600,
+            reduction_factor: 5_000,
+            variable_fee_control: 40_000,
+            max_volatility_accumulator: 1_100_000,
+            protocol_share: 1_000,
+            base_fee_power_factor: 1,
+            function_type: 0,
+            collect_fee_mode: 0,
+        }
+    }
+
+    /// Leg-1-style edge: base(X) → quote(Y), `swap_for_y = true` (walks down).
+    /// Leg-2-style edge: quote → base, `swap_for_y = false` (walks up).
+    fn dlmm_edge(
+        tag: u64,
+        base_to_quote: bool,
+        active_id: i32,
+        per_bin: u64,
+        depth: i32,
+    ) -> MarketEdge {
+        let base = mint(tag);
+        let quote = mint(tag + 100);
+        let (from_mint, to_mint) = if base_to_quote {
+            (base, quote)
+        } else {
+            (quote, base)
+        };
+        let step = if base_to_quote { -1_i32 } else { 1_i32 };
+        let bins = (0..depth)
+            .map(|d| arb_types::DlmmBin {
+                bin_id: active_id + d * step,
+                amount_x: if base_to_quote { 0 } else { per_bin as u128 },
+                amount_y: if base_to_quote { per_bin as u128 } else { 0 },
+                ..Default::default()
+            })
+            .collect();
+        MarketEdge {
+            pool_id: PoolId(Pubkey::new_from_array([tag as u8; 32])),
+            protocol: DexProtocol::MeteoraDlmm,
+            kind: PoolKind::Dlmm,
+            from_mint,
+            to_mint,
+            pool_base: base,
+            pool_quote: quote,
+            reserve_in: 1_000_000_000,
+            reserve_out: 1_000_000_000,
+            fee_bps: 5,
+            clmm: None,
+            dlmm: Some(arb_types::DlmmState {
+                active_bin_id: active_id,
+                status: 0,
+                bin_step_bps: BIN_STEP_BPS,
+                bins,
+                params: Some(fee_params()),
+                volatility_accumulator: 0,
+                volatility_reference: 0,
+                index_reference: active_id,
+                last_update_timestamp: 1_700_000_000,
+                support_limit_order: false,
+            }),
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            execution_accounts: None,
+            active_bin_id: Some(active_id),
+        }
+    }
+
+    /// Independent hand-built arb-math view of an edge (mirrors the
+    /// conversion under test without calling it).
+    fn math_view(e: &MarketEdge) -> (DlmmPoolState, Vec<arb_math::dlmm::DlmmBin>) {
+        let d = e.dlmm.as_ref().expect("dlmm state");
+        let params = d.params.as_ref().expect("fee params");
+        let pool = DlmmPoolState {
+            active_id: d.active_bin_id,
+            bin_step: d.bin_step_bps,
+            status: d.status,
+            parameters: DlmmParameters {
+                bin_step: d.bin_step_bps,
+                base_factor: params.base_factor,
+                filter_period: params.filter_period,
+                decay_period: params.decay_period,
+                reduction_factor: params.reduction_factor,
+                variable_fee_control: params.variable_fee_control,
+                max_volatility_accumulator: params.max_volatility_accumulator,
+                protocol_share: params.protocol_share,
+                base_fee_power_factor: params.base_fee_power_factor,
+                collect_fee_mode: params.collect_fee_mode,
+            },
+            v_parameters: DlmmVariableParameters {
+                volatility_accumulator: d.volatility_accumulator,
+                volatility_reference: d.volatility_reference,
+                index_reference: d.index_reference,
+                last_update_timestamp: d.last_update_timestamp,
+            },
+            support_limit_order: d.support_limit_order,
+        };
+        let bins = d
+            .bins
+            .iter()
+            .map(|b| arb_math::dlmm::DlmmBin {
+                id: b.bin_id,
+                amount_x: b.amount_x as u64,
+                amount_y: b.amount_y as u64,
+                ..Default::default()
+            })
+            .collect();
+        (pool, bins)
+    }
+
+    fn leg1_breakpoints(e: &MarketEdge) -> Vec<arb_math::dlmm::DlmmDrainBreakpoint> {
+        let (pool, bins) = math_view(e);
+        arb_math::dlmm::dlmm_drain_breakpoints(&pool, &bins, e.pool_base == e.from_mint)
+            .expect("leg-1 breakpoints")
+    }
+
+    #[test]
+    fn seeds_cover_exactly_the_leg1_drain_breakpoints_when_leg2_has_no_window() {
+        let e1 = dlmm_edge(1, true, 100, 20_000_000, 3);
+        let mut e2 = dlmm_edge(2, false, 200, 30_000_000, 2);
+        if let Some(d) = &mut e2.dlmm {
+            d.bins.clear();
+        }
+
+        let seeds = pair_breakpoint_seeds(&e1, &e2, 1, u64::MAX, None);
+        let expected: Vec<u64> = leg1_breakpoints(&e1)
+            .iter()
+            .map(|b| b.cumulative_input)
+            .collect();
+        assert_eq!(seeds, expected);
+        assert!(seeds.windows(2).all(|w| w[0] < w[1]));
+        assert!(seeds.len() <= MAX_BREAKPOINT_SEEDS);
+    }
+
+    #[test]
+    fn seeds_map_leg2_breakpoints_exactly_through_the_leg1_inverse() {
+        let e1 = dlmm_edge(1, true, 100, 20_000_000, 3);
+        let e2 = dlmm_edge(2, false, 200, 30_000_000, 2);
+
+        let leg1_set: Vec<u64> = leg1_breakpoints(&e1)
+            .iter()
+            .map(|b| b.cumulative_input)
+            .collect();
+        let (pool2, bins2) = math_view(&e2);
+        let leg2_breaks =
+            arb_math::dlmm::dlmm_drain_breakpoints(&pool2, &bins2, e2.pool_base == e2.from_mint)
+                .expect("leg-2 breakpoints");
+        let leg2_inputs: Vec<u64> = leg2_breaks.iter().map(|b| b.cumulative_input).collect();
+
+        let seeds = pair_breakpoint_seeds(&e1, &e2, 1, u64::MAX, None);
+        // Every leg-1 breakpoint survives, sorted and deduped.
+        for v in &leg1_set {
+            assert!(seeds.contains(v), "leg-1 breakpoint {v} missing from seeds");
+        }
+        // Every mapped seed is the exact leg-1 input whose net output equals
+        // some leg-2 breakpoint input (re-verified through the quote engine).
+        let mapped: Vec<u64> = seeds
+            .iter()
+            .copied()
+            .filter(|s| !leg1_set.contains(s))
+            .collect();
+        assert!(
+            !mapped.is_empty(),
+            "leg-2 breakpoints must contribute mapped seeds"
+        );
+        let (pool1, bins1) = math_view(&e1);
+        let dir1 = e1.pool_base == e1.from_mint;
+        for s in &mapped {
+            let q = quote_dlmm_view(&pool1, &bins1, *s, dir1, None).expect("leg-1 quote");
+            assert!(
+                leg2_inputs.contains(&q.amount_out),
+                "seed {s} produces out1 = {} which is not a leg-2 breakpoint input {leg2_inputs:?}",
+                q.amount_out
+            );
+        }
+    }
+
+    #[test]
+    fn seeds_respect_band_and_second_hop_capacity() {
+        let e1 = dlmm_edge(1, true, 100, 20_000_000, 3);
+        let e2 = dlmm_edge(2, false, 200, 30_000_000, 2);
+        let leg1_set: Vec<u64> = leg1_breakpoints(&e1)
+            .iter()
+            .map(|b| b.cumulative_input)
+            .collect();
+
+        // Band: breakpoints below `lo` are dropped.
+        let lo_above_first = leg1_set[0] + 1;
+        let seeds = pair_breakpoint_seeds(&e1, &e2, lo_above_first, u64::MAX, None);
+        assert!(seeds.iter().all(|&s| s >= lo_above_first));
+        assert!(!seeds.contains(&leg1_set[0]));
+
+        // Second-hop capacity: breakpoints above `cap2` would be rescaled by
+        // `two_hop_quote` onto the same knee, so they are not seeded.
+        let (pool2, bins2) = math_view(&e2);
+        let leg2_first =
+            arb_math::dlmm::dlmm_drain_breakpoints(&pool2, &bins2, e2.pool_base == e2.from_mint)
+                .expect("leg-2 breakpoints")[0]
+                .cumulative_input;
+        let seeds_capped = pair_breakpoint_seeds(&e1, &e2, 1, u64::MAX, Some(leg2_first - 1));
+        let seeds_full = pair_breakpoint_seeds(&e1, &e2, 1, u64::MAX, None);
+        assert!(seeds_capped.len() < seeds_full.len());
+        assert_eq!(seeds_capped, leg1_set);
+    }
+
+    #[test]
+    fn seeds_fail_closed_to_empty_when_leg1_cannot_be_priced() {
+        let e1 = dlmm_edge(1, true, 100, 20_000_000, 3);
+        let e2 = dlmm_edge(2, false, 200, 30_000_000, 2);
+        let mut disabled = e1.clone();
+        if let Some(d) = &mut disabled.dlmm {
+            d.status = 1;
+        }
+        assert!(pair_breakpoint_seeds(&disabled, &e2, 1, u64::MAX, None).is_empty());
+        // Missing fee params must behave the same way.
+        let mut unpriced = e1.clone();
+        if let Some(d) = &mut unpriced.dlmm {
+            d.params = None;
+        }
+        assert!(pair_breakpoint_seeds(&unpriced, &e2, 1, u64::MAX, None).is_empty());
+    }
 }

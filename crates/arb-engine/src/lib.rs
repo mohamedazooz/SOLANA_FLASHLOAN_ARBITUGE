@@ -80,6 +80,61 @@ pub const EPSILON_CYCLE_SPREAD_BPS: u64 = 1;
 /// Minimum required net profit in lamports to justify execution and Jito tip.
 pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 
+/// Fail-closed conversion of a DLMM edge into the `arb-math` quote view
+/// (`DlmmPoolState` + route-local bins). Single source of truth for every
+/// consumer that prices DLMM liquidity (`quote_pool`, cross-pool breakpoint
+/// seeds): returns `None` when the pool cannot be priced honestly (disabled
+/// pool, unsupported function/fee mode, or any bin amount outside the `u64`
+/// quote domain). Capacity estimation (`edge_max_input_capacity`) keeps its
+/// own saturating clamp by design and must not switch to this helper.
+pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<(DlmmPoolState, Vec<ArbDlmmBin>)> {
+    let d = edge.dlmm.as_ref()?;
+    let params = d.params.as_ref()?;
+    if d.status != 0 || params.function_type > 2 || params.collect_fee_mode > 1 {
+        return None;
+    }
+    let pool = DlmmPoolState {
+        active_id: d.active_bin_id,
+        bin_step: d.bin_step_bps,
+        status: d.status,
+        parameters: DlmmParameters {
+            bin_step: d.bin_step_bps,
+            base_factor: params.base_factor,
+            filter_period: params.filter_period,
+            decay_period: params.decay_period,
+            reduction_factor: params.reduction_factor,
+            variable_fee_control: params.variable_fee_control,
+            max_volatility_accumulator: params.max_volatility_accumulator,
+            protocol_share: params.protocol_share,
+            base_fee_power_factor: params.base_fee_power_factor,
+            collect_fee_mode: params.collect_fee_mode,
+        },
+        v_parameters: DlmmVariableParameters {
+            volatility_accumulator: d.volatility_accumulator,
+            volatility_reference: d.volatility_reference,
+            index_reference: d.index_reference,
+            last_update_timestamp: d.last_update_timestamp,
+        },
+        support_limit_order: d.support_limit_order,
+    };
+    let bins: Vec<ArbDlmmBin> = d
+        .bins
+        .iter()
+        .map(|b| {
+            Some(ArbDlmmBin {
+                id: b.bin_id,
+                amount_x: u64::try_from(b.amount_x).ok()?,
+                amount_y: u64::try_from(b.amount_y).ok()?,
+                price_q64: 0,
+                open_order_amount: b.open_order_amount,
+                processed_order_remaining_amount: b.processed_order_remaining_amount,
+                limit_order_ask_side: b.limit_order_ask_side,
+            })
+        })
+        .collect::<Option<Vec<ArbDlmmBin>>>()?;
+    Some((pool, bins))
+}
+
 /// Profit (output - input) for a cycle at a given input size d (P1 #11: golden-section target).
 ///
 /// Returns `0` (not an error) when the pool cannot be priced honestly — callers
@@ -148,66 +203,14 @@ pub fn quote_pool(
             0
         }
         PoolKind::Dlmm => {
-            if let Some(e) = edge {
-                if let Some(d) = &e.dlmm {
-                    if let Some(params) = &d.params {
-                        if d.status != 0 || params.function_type > 2 || params.collect_fee_mode > 1
-                        {
-                            return 0;
-                        }
-                        if !d.bins.is_empty() {
-                            let pool = DlmmPoolState {
-                                active_id: d.active_bin_id,
-                                bin_step: d.bin_step_bps,
-                                status: d.status,
-                                parameters: DlmmParameters {
-                                    bin_step: d.bin_step_bps,
-                                    base_factor: params.base_factor,
-                                    filter_period: params.filter_period,
-                                    decay_period: params.decay_period,
-                                    reduction_factor: params.reduction_factor,
-                                    variable_fee_control: params.variable_fee_control,
-                                    max_volatility_accumulator: params.max_volatility_accumulator,
-                                    protocol_share: params.protocol_share,
-                                    base_fee_power_factor: params.base_fee_power_factor,
-                                    collect_fee_mode: params.collect_fee_mode,
-                                },
-                                v_parameters: DlmmVariableParameters {
-                                    volatility_accumulator: d.volatility_accumulator,
-                                    volatility_reference: d.volatility_reference,
-                                    index_reference: d.index_reference,
-                                    last_update_timestamp: d.last_update_timestamp,
-                                },
-                                support_limit_order: d.support_limit_order,
-                            };
-                            let bins: Option<Vec<ArbDlmmBin>> = d
-                                .bins
-                                .iter()
-                                .map(|b| {
-                                    Some(ArbDlmmBin {
-                                        id: b.bin_id,
-                                        amount_x: u64::try_from(b.amount_x).ok()?,
-                                        amount_y: u64::try_from(b.amount_y).ok()?,
-                                        price_q64: 0,
-                                        open_order_amount: b.open_order_amount,
-                                        processed_order_remaining_amount: b
-                                            .processed_order_remaining_amount,
-                                        limit_order_ask_side: b.limit_order_ask_side,
-                                    })
-                                })
-                                .collect();
-                            let Some(bins) = bins else {
-                                return 0;
-                            };
-                            let Ok(amount) = u64::try_from(dx) else {
-                                return 0;
-                            };
-                            let a_to_b = e.pool_base == e.from_mint;
-                            if let Ok(q) = quote_dlmm_view(&pool, &bins, amount, a_to_b, None) {
-                                return q.amount_out as u128;
-                            }
-                        }
-                    }
+            if let Some(e) = edge
+                && let Some((pool, bins)) = dlmm_quote_components(e)
+                && !bins.is_empty()
+                && let Ok(amount) = u64::try_from(dx)
+            {
+                let a_to_b = e.pool_base == e.from_mint;
+                if let Ok(q) = quote_dlmm_view(&pool, &bins, amount, a_to_b, None) {
+                    return q.amount_out as u128;
                 }
             }
             // Fail-closed: Never fall back to linear/CPMM for DLMM
