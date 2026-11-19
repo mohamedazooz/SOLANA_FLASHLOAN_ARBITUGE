@@ -71,3 +71,4 @@ web/tsconfig.tsbuildinfo
 
 # Local archive snapshots (never commit workspace archives)
 *.rar
+SOLANA_HFT_REFERENCE_PACK/

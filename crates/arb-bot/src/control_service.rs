@@ -735,13 +735,18 @@ fn humantime_unix(unix: u64) -> String {
 pub const CONTROL_COMMANDS: &[&str] = &[
     "status",
     "start",
+    "resume",
     "stop",
+    "pause",
     "paper",
+    "simulate",
     "live",
     "opportunities",
     "pnl",
     "providers",
     "config",
+    "emergency_stop",
+    "clear_emergency_stop",
 ];
 
 /// Executes a unified command string (same grammar for web and Telegram).
@@ -759,9 +764,9 @@ pub fn execute_command(
                 s.mode, s.paused, s.emergency_stopped, s.slot, s.pools_tracked, s.net_pnl_sol
             ))
         }
-        "start" => service.start().map(str::to_string),
-        "stop" => service.stop().map(str::to_string),
-        "paper" => service
+        "start" | "resume" => service.start().map(str::to_string),
+        "stop" | "pause" => service.stop().map(str::to_string),
+        "paper" | "simulate" => service
             .set_mode(ExecutionMode::Paper, arg)
             .map(|_| "mode -> paper".to_string()),
         "live" => service
@@ -837,7 +842,13 @@ mod tests {
         assert!(execute_command(&svc, "/status", None).is_ok());
         assert!(execute_command(&svc, "stop", None).is_ok());
         assert!(svc.status().paused);
+        assert!(execute_command(&svc, "pause", None).is_ok());
+        assert!(svc.status().paused);
+        assert!(execute_command(&svc, "resume", None).is_ok());
+        assert!(svc.status().execution_enabled);
         assert!(execute_command(&svc, "/paper", None).is_ok());
+        assert_eq!(svc.current_mode(), BotMode::Simulate);
+        assert!(execute_command(&svc, "simulate", None).is_ok());
         assert_eq!(svc.current_mode(), BotMode::Simulate);
         assert!(execute_command(&svc, "opportunities", None).is_ok());
         assert!(execute_command(&svc, "definitely-not-a-command", None).is_err());

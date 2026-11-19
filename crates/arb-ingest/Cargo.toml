@@ -7,7 +7,6 @@ edition = "2024"
 [features]
 default = []
 extra-ingest = []
-yellowstone-grpc = ["tonic", "prost", "yellowstone-grpc-proto"]
 
 [dependencies]
 arb-types = { path = "../arb-types" }
@@ -35,13 +34,6 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["r
 # acceptance task. Types are solana-* 4.x.
 solami = { workspace = true, optional = true }
 arb-metrics = { path = "../arb-metrics" }
-
-# Yellowstone gRPC dependencies (feature-gated)
-# Versions aligned with yellowstone-grpc-proto (tonic 0.14 / prost 0.14).
-# tonic 0.14 TLS features are split per root store; client TLS uses tls-native-roots.
-tonic = { version = "0.14", optional = true, features = ["tls-native-roots"] }
-prost = { version = "0.14", optional = true, features = ["std"] }
-yellowstone-grpc-proto = { version = "14.0", optional = true }
 
 [[test]]
 name = "bitquery_ws_live"

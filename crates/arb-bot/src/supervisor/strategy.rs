@@ -487,6 +487,71 @@ impl Supervisor {
 
         let opportunities = rank_opportunities_cross_mint(merged);
 
+        // Feed evaluated cross-pool 2-leg and multi-hop opportunities into the control service & live WS / telemetry
+        if let Some(control) = self.control() {
+            for o in opportunities.iter().take(24) {
+                // Skip if this opportunity was already recorded in the 3-leg DLMM pass
+                let is_three_leg_dlmm = o.hops.len() >= 3
+                    && o.hops
+                        .iter()
+                        .all(|h| h.protocol == DexProtocol::MeteoraDlmm);
+                if is_three_leg_dlmm {
+                    continue;
+                }
+
+                let proto_str = if o.hops.len() == 2 {
+                    if o.hops[0].protocol == o.hops[1].protocol {
+                        format!("{:?}", o.hops[0].protocol).to_lowercase()
+                    } else {
+                        format!("{:?}-to-{:?}", o.hops[0].protocol, o.hops[1].protocol)
+                            .to_lowercase()
+                    }
+                } else if o.hops.len() == 1 {
+                    format!("{:?}", o.hops[0].protocol).to_lowercase()
+                } else {
+                    format!("multi-hop-{}leg", o.hops.len())
+                };
+
+                let hop_quotes: Vec<crate::control_service::HopQuoteRecord> = o
+                    .hops
+                    .iter()
+                    .enumerate()
+                    .map(|(i, h)| {
+                        let amount_in = o.hop_inputs.get(i).copied().unwrap_or(o.size_in.0);
+                        let amount_out =
+                            o.hop_inputs.get(i + 1).copied().unwrap_or(o.expected_out.0);
+                        crate::control_service::HopQuoteRecord {
+                            protocol: format!("{:?}", h.protocol),
+                            pool: h.pool_id.0.to_string(),
+                            amount_in,
+                            amount_out,
+                        }
+                    })
+                    .collect();
+
+                let route_label = o
+                    .hops
+                    .iter()
+                    .map(|h| format!("{}", h.pool_id))
+                    .collect::<Vec<_>>()
+                    .join("\u{2192}");
+
+                control.record_opportunity(crate::control_service::OpportunityRecord {
+                    captured_at_unix: 0,
+                    slot: current_slot.0,
+                    route: route_label,
+                    protocol: proto_str,
+                    borrow_lamports: o.size_in.0,
+                    expected_output_lamports: o.expected_out.0,
+                    gross_profit_lamports: o.gross_profit.0 as i64,
+                    net_profit_lamports: o.net_profit.0 as i64,
+                    eligible: o.net_profit.0 > 0,
+                    hop_quotes,
+                    reject_reason: None,
+                });
+            }
+        }
+
         let t_ingest_to_quote_us = quote_ingest_time.elapsed().as_micros() as u64;
         self.heartbeat
             .observe_quote(current_slot.0, opportunities.len());

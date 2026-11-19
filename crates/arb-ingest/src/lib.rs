@@ -1,13 +1,9 @@
-//! Market-state ingestion (WebSocket + RPC + Yellowstone gRPC).
+//! Market-state ingestion (WebSocket + RPC).
 //! Per-account snapshots and update-only market state.
-//! Yellowstone gRPC (Dragon's Mouth) provides 5-15ms latency real-time account streaming.
+//! Ingestion is WebSocket-first across Solami Blur/Mirage, Helius WS, and RPC fallbacks.
 
 pub mod gmgn;
-#[cfg(feature = "yellowstone-grpc")]
-pub mod yellowstone_grpc;
 pub use gmgn::{GmgnClient, TrendingToken};
-#[cfg(feature = "yellowstone-grpc")]
-pub use yellowstone_grpc::{YellowstoneClient, YellowstoneConfig, YellowstoneEvent};
 pub mod meteora_data_api;
 pub use meteora_data_api::{DiscoveredMeteoraPool, MeteoraDataApiClient, MeteoraPoolItem};
 pub mod dependency_manifest;

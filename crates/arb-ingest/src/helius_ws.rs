@@ -146,11 +146,19 @@ impl HeliusWsClient {
         F: Fn(&str) -> Option<String>,
     {
         let mut urls = Vec::new();
-        // Priority 1: Role-Separated Endpoints
+        // Priority 1: Multi-provider endpoints prioritizing SOLAMI, SHYFT, and HELIUS
         for key in [
+            "SOLAMI_WS_URL",
+            "SOLAMI_WS",
+            "SHYFT_WS",
+            "SHYFT_WS_URL",
+            "SOLANA_RPC_WS_URL",
+            "HELIUS_WS_URL",
+            "HELIUS_WS",
             "SOLANA_WS_PRIMARY",
             "SOLANA_WS_FALLBACK_1",
             "SOLANA_WS_FALLBACK_2",
+            "SOLANA_WS_URL",
         ] {
             if let Some(u) = lookup(key) {
                 let trimmed = u.trim().to_string();
@@ -377,7 +385,7 @@ impl HeliusWsClient {
     /// Pre-populate authoritative account snapshots using sequential paced RPC
     /// so that WSOL mint (9 decimals) and Kamino reserve are present and verified immediately
     /// without sending concurrent bursts or triggering HTTP 429.
-    pub async fn seed_initial_accounts(&self, yellowstone: &IngestClient) {
+    pub async fn seed_initial_accounts(&self, ingest: &IngestClient) {
         let keys: Vec<Pubkey> = {
             let order = self.tracked_order.read();
             let map = self.tracked_accounts.read();
@@ -487,12 +495,12 @@ impl HeliusWsClient {
                     slot: acct_slot,
                     write_version: 1,
                     is_startup: true,
-                    provider_id: yellowstone.provider_id(),
+                    provider_id: ingest.provider_id(),
                     bank_id: None,
-                    generation: yellowstone.stream_generation(),
+                    generation: ingest.stream_generation(),
                     data: Arc::new(bytes),
                 };
-                yellowstone.account_store().apply(snap);
+                ingest.account_store().apply(snap);
                 seeded_count += 1;
             }
         }
@@ -500,7 +508,7 @@ impl HeliusWsClient {
         if seeded_count > 0 {
             if latest_slot > 0 {
                 self.latest_slot.fetch_max(latest_slot, Ordering::AcqRel);
-                yellowstone.record_helius_slot(latest_slot);
+                ingest.record_helius_slot(latest_slot);
             }
             info!(
                 "Seeded {seeded_count}/{} initial snapshots via batched getMultipleAccounts at slot {latest_slot}",
@@ -558,7 +566,7 @@ impl HeliusWsClient {
     /// directly driving `IngestClient` slots, snapshots, and `MarketStateCache`.
     pub async fn start_stream(
         self: Arc<Self>,
-        yellowstone: Arc<IngestClient>,
+        ingest: Arc<IngestClient>,
         cancel: CancellationToken,
     ) {
         if self.ws_urls.is_empty() {
@@ -569,7 +577,7 @@ impl HeliusWsClient {
             "Starting WebSocket slot & account stream worker (endpoints: {})",
             self.ws_urls.len()
         );
-        self.seed_initial_accounts(&yellowstone).await;
+        self.seed_initial_accounts(&ingest).await;
 
         // Event-driven derived-account hydration worker: drains the queue fed
         // by WS pool updates whose active tick/bin fell outside hydrated
@@ -577,7 +585,7 @@ impl HeliusWsClient {
         // crossing) instead of re-polling every pool's tick/bin arrays.
         {
             let hydration_client = Arc::clone(&self);
-            let hydration_yellowstone = Arc::clone(&yellowstone);
+            let hydration_ingest = Arc::clone(&ingest);
             let hydration_cancel = cancel.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_millis(500));
@@ -587,7 +595,7 @@ impl HeliusWsClient {
                         _ = hydration_cancel.cancelled() => break,
                         _ = tick.tick() => {
                             hydration_client
-                                .hydrate_pending_derived(&hydration_yellowstone)
+                                .hydrate_pending_derived(&hydration_ingest)
                                 .await;
                         }
                     }
@@ -616,8 +624,8 @@ impl HeliusWsClient {
                     self.probe_confirmed.store(false, Ordering::Release);
 
                     self.is_connected.store(true, Ordering::Release);
-                    yellowstone.mark_helius_connected();
-                    yellowstone.mark_stream_connected();
+                    ingest.mark_helius_connected();
+                    ingest.mark_stream_connected();
                     info!(
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
@@ -744,7 +752,7 @@ impl HeliusWsClient {
                                 match msg_res {
                                     Ok(Message::Text(text)) => {
                                         if let Ok(v) = serde_json::from_str::<Value>(&text) {
-                                            match self.handle_message(&v, &yellowstone) {
+                                            match self.handle_message(&v, &ingest) {
                                                 Ok(got_activity) => {
                                                     if got_activity {
                                                         attempt = 0;
@@ -820,7 +828,7 @@ impl HeliusWsClient {
             }
 
             self.is_connected.store(false, Ordering::Release);
-            yellowstone.mark_helius_disconnected();
+            ingest.mark_helius_disconnected();
 
             // Resilient WS connection & cooldown:
             // Apply a 2.5s to 3.0s cooldown when rotating or reconnecting to prevent
@@ -868,7 +876,7 @@ impl HeliusWsClient {
     /// accounts (batched), decode, and apply the refreshed pool state.
     /// Fail-closed: a pool that cannot be decoded or fetched stays unhydrated
     /// and its WS updates keep being rejected until a later attempt succeeds.
-    pub async fn hydrate_pending_derived(&self, yellowstone: &IngestClient) {
+    pub async fn hydrate_pending_derived(&self, ingest: &IngestClient) {
         let batch: Vec<(PoolId, u64)> = {
             let mut q = self.pending_derived.lock();
             if q.is_empty() {
@@ -888,7 +896,7 @@ impl HeliusWsClient {
             let Some(reg) = self.registered_pools.read().get(&pool_id).cloned() else {
                 continue;
             };
-            let Some(snap) = yellowstone.account_store().get(&pool_id.0) else {
+            let Some(snap) = ingest.account_store().get(&pool_id.0) else {
                 continue;
             };
             let pool_bytes: &[u8] = &snap.data;
@@ -942,7 +950,7 @@ impl HeliusWsClient {
                     self.derived_covered
                         .lock()
                         .insert(pool_id, (covered, Instant::now()));
-                    if let Some(mut state) = yellowstone.cache().get_pool(&pool_id)
+                    if let Some(mut state) = ingest.cache().get_pool(&pool_id)
                         && slot >= state.last_update_slot
                         && let Some(dlmm) = state.dlmm.as_mut()
                         && pool_bytes.len() >= 152
@@ -967,7 +975,7 @@ impl HeliusWsClient {
                                 state.slot = Slot(slot);
                                 state.last_update_slot = slot;
                                 state.last_update_ms = now_ms;
-                                let _ = yellowstone.apply_pool_update(state);
+                                let _ = ingest.apply_pool_update(state);
                                 debug!(
                                     "hydration: DLMM {} rehydrated bins at slot {}",
                                     pool_id.0, slot
@@ -1057,7 +1065,7 @@ impl HeliusWsClient {
                             Instant::now(),
                         ),
                     );
-                    if let Some(mut state) = yellowstone.cache().get_pool(&pool_id)
+                    if let Some(mut state) = ingest.cache().get_pool(&pool_id)
                         && slot >= state.last_update_slot
                         && let Some(clmm) = state.clmm.as_mut()
                     {
@@ -1070,7 +1078,7 @@ impl HeliusWsClient {
                             state.last_update_slot = slot;
                             state.last_update_ms = now_ms;
                             let n_arrays = clmm.tick_arrays.len();
-                            let _ = yellowstone.apply_pool_update(state);
+                            let _ = ingest.apply_pool_update(state);
                             debug!(
                                 "hydration: {:?} {} rehydrated {} tick arrays at slot {}",
                                 reg.protocol, pool_id.0, n_arrays, slot
@@ -1088,11 +1096,11 @@ impl HeliusWsClient {
         pk: Pubkey,
         bytes: &[u8],
         slot: u64,
-        yellowstone: &IngestClient,
+        ingest: &IngestClient,
     ) {
         // Enforce strict slot integrity: never upgrade an old notification to a newer slot.
         // Drops updates from dead slots or zero slots immediately.
-        if slot == 0 || yellowstone.slot_is_dead(slot) {
+        if slot == 0 || ingest.slot_is_dead(slot) {
             return;
         }
         let update_slot = Slot(slot);
@@ -1114,7 +1122,7 @@ impl HeliusWsClient {
                 return;
             }
             for (pool_id, is_base) in targets {
-                let Some(mut state) = yellowstone.cache().get_pool(&pool_id) else {
+                let Some(mut state) = ingest.cache().get_pool(&pool_id) else {
                     continue;
                 };
                 // Reject out-of-order notifications where notification slot is older than pool's known slot
@@ -1137,7 +1145,7 @@ impl HeliusWsClient {
                 };
                 state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                let _ = yellowstone.apply_pool_update(state);
+                let _ = ingest.apply_pool_update(state);
             }
             return;
         }
@@ -1148,7 +1156,7 @@ impl HeliusWsClient {
         let Some(reg) = reg_opt else {
             return;
         };
-        let Some(mut state) = yellowstone.cache().get_pool(&pool_id) else {
+        let Some(mut state) = ingest.cache().get_pool(&pool_id) else {
             return;
         };
         // Reject out-of-order notifications
@@ -1197,7 +1205,7 @@ impl HeliusWsClient {
                 };
                 state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                let _ = yellowstone.apply_pool_update(state);
+                let _ = ingest.apply_pool_update(state);
             }
             DexProtocol::MeteoraDlmm => {
                 let Some(mut dlmm) = decode_dlmm_state(bytes) else {
@@ -1247,7 +1255,7 @@ impl HeliusWsClient {
                     };
                     state.last_update_slot = slot;
                     state.last_update_ms = now_ms;
-                    let _ = yellowstone.apply_pool_update(state);
+                    let _ = ingest.apply_pool_update(state);
                 }
             }
             DexProtocol::RaydiumClmm => {
@@ -1287,7 +1295,7 @@ impl HeliusWsClient {
                 };
                 state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                let _ = yellowstone.apply_pool_update(state);
+                let _ = ingest.apply_pool_update(state);
             }
             DexProtocol::PumpFun => {
                 let Ok(pump_state) =
@@ -1311,7 +1319,7 @@ impl HeliusWsClient {
                 };
                 state.last_update_slot = slot;
                 state.last_update_ms = now_ms;
-                let _ = yellowstone.apply_pool_update(state);
+                let _ = ingest.apply_pool_update(state);
             }
             _ => {}
         }
@@ -1320,7 +1328,7 @@ impl HeliusWsClient {
     /// Process an incoming JSON-RPC WebSocket frame.
     /// Returns `Ok(true)` when an update (accountNotification or slotNotification) was received,
     /// `Ok(false)` for other valid frames, or `Err(warning)` for soft subscription rejections.
-    pub fn handle_message(&self, v: &Value, yellowstone: &IngestClient) -> Result<bool, String> {
+    pub fn handle_message(&self, v: &Value, ingest: &IngestClient) -> Result<bool, String> {
         if let Some(err_obj) = v.get("error") {
             let req_id = v.get("id").and_then(|i| i.as_u64());
             let code = err_obj.get("code").and_then(|c| c.as_i64());
@@ -1379,14 +1387,10 @@ impl HeliusWsClient {
                     if let Some(slot) = v.pointer("/params/result/slot").and_then(|s| s.as_u64()) {
                         let parent = v.pointer("/params/result/parent").and_then(|p| p.as_u64());
                         self.latest_slot.store(slot, Ordering::Release);
-                        yellowstone.record_slot_update(
-                            slot,
-                            parent,
-                            slot_integrity::SLOT_PROCESSED,
-                        );
-                        yellowstone.record_helius_slot(slot);
-                        yellowstone.mark_helius_connected();
-                        yellowstone.mark_stream_connected();
+                        ingest.record_slot_update(slot, parent, slot_integrity::SLOT_PROCESSED);
+                        ingest.record_helius_slot(slot);
+                        ingest.mark_helius_connected();
+                        ingest.mark_stream_connected();
                         self.slot_notify.notify_waiters();
                         return Ok(true);
                     }
@@ -1400,9 +1404,9 @@ impl HeliusWsClient {
                     let target_pk =
                         sub_id.and_then(|sid| self.sub_to_account.read().get(&sid).copied());
 
-                    if slot > 0 && !yellowstone.slot_is_dead(slot) {
+                    if slot > 0 && !ingest.slot_is_dead(slot) {
                         self.latest_slot.fetch_max(slot, Ordering::AcqRel);
-                        yellowstone.record_helius_slot(slot);
+                        ingest.record_helius_slot(slot);
                     }
 
                     if let Some(pk) = target_pk {
@@ -1427,19 +1431,19 @@ impl HeliusWsClient {
                                 };
 
                             if let Some(bytes) = data_bytes {
-                                self.apply_live_pool_update_from_ws(pk, &bytes, slot, yellowstone);
+                                self.apply_live_pool_update_from_ws(pk, &bytes, slot, ingest);
                                 let snap = AccountSnapshot {
                                     pubkey: pk,
                                     owner,
                                     slot,
                                     write_version: next_pool_write_version(),
                                     is_startup: false,
-                                    provider_id: yellowstone.provider_id(),
+                                    provider_id: ingest.provider_id(),
                                     bank_id: None,
-                                    generation: yellowstone.stream_generation(),
+                                    generation: ingest.stream_generation(),
                                     data: Arc::new(bytes),
                                 };
-                                yellowstone.account_store().apply(snap);
+                                ingest.account_store().apply(snap);
                                 debug!("WS: Applied live account update for {pk} at slot {slot}");
                             }
                         }
@@ -1504,6 +1508,32 @@ mod tests {
     }
 
     #[test]
+    fn collect_ws_urls_prioritizes_solami_shyft_helius_multi_provider() {
+        let mut vars: HashMap<&str, String> = HashMap::new();
+        vars.insert(
+            "HELIUS_WS_URL",
+            "wss://mainnet.helius-rpc.com/?api-key=test".into(),
+        );
+        vars.insert(
+            "SOLAMI_WS_URL",
+            "wss://ws.solami.dev/data/subscribe?api_key=test".into(),
+        );
+        vars.insert("SHYFT_WS", "wss://rpc.fra.shyft.to?api_key=test".into());
+        vars.insert("SOLANA_WS_PRIMARY", "wss://solana-ws-primary.com".into());
+
+        let urls = HeliusWsClient::collect_ws_urls(|k| vars.get(k).map(|v| v.to_string()));
+        assert_eq!(
+            urls,
+            vec![
+                "wss://ws.solami.dev/data/subscribe?api_key=test",
+                "wss://rpc.fra.shyft.to?api_key=test",
+                "wss://mainnet.helius-rpc.com/?api-key=test",
+                "wss://solana-ws-primary.com",
+            ]
+        );
+    }
+
+    #[test]
     fn collect_ws_urls_resolves_helius_api_when_key_unset() {
         let mut vars = HashMap::new();
         vars.insert("HELIUS_API", "test-helius-key-123");
@@ -1530,13 +1560,13 @@ mod tests {
     #[test]
     fn handle_message_treats_subscription_errors_as_non_fatal() {
         let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
-        let yellowstone = IngestClient::new();
+        let ingest = IngestClient::new();
         let err_frame = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "error": { "code": -32000, "message": "Concurrent websocket subscription limit reached: 1" }
         });
-        let res = client.handle_message(&err_frame, &yellowstone);
+        let res = client.handle_message(&err_frame, &ingest);
         assert_eq!(res, Ok(false));
 
         // Non-slotSubscribe error (accountSubscribe id >= 100) should NOT fail the stream
@@ -1545,7 +1575,7 @@ mod tests {
             "id": 100,
             "error": { "code": -32000, "message": "limit" }
         });
-        assert_eq!(client.handle_message(&acc_err, &yellowstone), Ok(false));
+        assert_eq!(client.handle_message(&acc_err, &ingest), Ok(false));
         assert!(client.account_sub_limited.load(Ordering::Acquire));
         // A limit rejection must NOT be misclassified as a capability failure.
         assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
@@ -1561,13 +1591,13 @@ mod tests {
     #[test]
     fn handle_message_flags_unsupported_method_as_capability_failure() {
         let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
-        let yellowstone = IngestClient::new();
+        let ingest = IngestClient::new();
         let cap_err = json!({
             "jsonrpc": "2.0",
             "id": 100,
             "error": { "code": -32601, "message": "Method 'accountSubscribe' not found" }
         });
-        assert_eq!(client.handle_message(&cap_err, &yellowstone), Ok(false));
+        assert_eq!(client.handle_message(&cap_err, &ingest), Ok(false));
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
         // Orthogonality: a capability failure is not a subscription quota limit.
         assert!(!client.account_sub_limited.load(Ordering::Acquire));
@@ -1577,10 +1607,7 @@ mod tests {
             "id": 101,
             "error": { "code": -32600, "message": "unsupported method" }
         });
-        assert_eq!(
-            client.handle_message(&unsupported_err, &yellowstone),
-            Ok(false)
-        );
+        assert_eq!(client.handle_message(&unsupported_err, &ingest), Ok(false));
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
     }
 
@@ -1589,40 +1616,40 @@ mod tests {
     #[test]
     fn malformed_frames_are_skipped_without_poisoning_state() {
         let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
-        let yellowstone = IngestClient::new();
+        let ingest = IngestClient::new();
         let slot_before = client.latest_slot.load(Ordering::Acquire);
 
         // Structurally valid JSON but semantically empty.
-        assert_eq!(client.handle_message(&json!({}), &yellowstone), Ok(false));
+        assert_eq!(client.handle_message(&json!({}), &ingest), Ok(false));
         assert_eq!(
-            client.handle_message(&json!({"jsonrpc": "2.0"}), &yellowstone),
+            client.handle_message(&json!({"jsonrpc": "2.0"}), &ingest),
             Ok(false)
         );
         // Wrong types for known fields.
         assert_eq!(
-            client.handle_message(&json!({"method": 12345}), &yellowstone),
+            client.handle_message(&json!({"method": 12345}), &ingest),
             Ok(false)
         );
         assert_eq!(
-            client.handle_message(&json!({"id": "not-a-number", "result": {}}), &yellowstone),
+            client.handle_message(&json!({"id": "not-a-number", "result": {}}), &ingest),
             Ok(false)
         );
         // Notifications with missing / malformed payloads.
         assert_eq!(
-            client.handle_message(&json!({"method": "slotNotification"}), &yellowstone),
+            client.handle_message(&json!({"method": "slotNotification"}), &ingest),
             Ok(false)
         );
         assert_eq!(
             client.handle_message(
                 &json!({"method": "slotNotification", "params": {"result": {"slot": "NaN"}}}),
-                &yellowstone
+                &ingest
             ),
             Ok(false)
         );
         assert_eq!(
             client.handle_message(
                 &json!({"method": "accountNotification", "params": {"subscription": null}}),
-                &yellowstone
+                &ingest
             ),
             Ok(false)
         );
@@ -1642,7 +1669,7 @@ mod tests {
                         "result": {"context": {"slot": 123}, "value": {"owner": "not-a-pubkey", "data": ["!!!not-base64!!!", "base64"]}}
                     }
                 }),
-                &yellowstone
+                &ingest
             ),
             Ok(false)
         );
@@ -1660,7 +1687,7 @@ mod tests {
     fn slot_subscribe_rejection_disables_slot_sub_without_failing_endpoint() {
         let client =
             HeliusWsClient::new_with_options(vec!["wss://ws1.example.com".to_string()], true);
-        let yellowstone = IngestClient::new();
+        let ingest = IngestClient::new();
         assert!(client.slot_subscribe_enabled.load(Ordering::Acquire));
 
         let slot_err = json!({
@@ -1668,7 +1695,7 @@ mod tests {
             "id": 1,
             "error": { "code": -32601, "message": "Method 'slotSubscribe' not found" }
         });
-        assert_eq!(client.handle_message(&slot_err, &yellowstone), Ok(false));
+        assert_eq!(client.handle_message(&slot_err, &ingest), Ok(false));
         assert!(!client.slot_subscribe_enabled.load(Ordering::Acquire));
         // The endpoint still streams accounts: it must NOT be torn down.
         assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
@@ -1680,7 +1707,7 @@ mod tests {
             "id": 100,
             "error": { "code": -32601, "message": "Method 'accountSubscribe' not found" }
         });
-        assert_eq!(client.handle_message(&acc_err, &yellowstone), Ok(false));
+        assert_eq!(client.handle_message(&acc_err, &ingest), Ok(false));
         assert!(client.endpoint_unsupported.load(Ordering::Acquire));
     }
 
@@ -1717,7 +1744,7 @@ mod tests {
         let client = Arc::new(HeliusWsClient::new(vec![
             "wss://ws1.example.com".to_string(),
         ]));
-        let yellowstone = IngestClient::new();
+        let ingest = IngestClient::new();
         let notifier = client.slot_notifier();
 
         let waited = tokio::spawn(async move {
@@ -1730,17 +1757,17 @@ mod tests {
             "method": "slotNotification",
             "params": { "result": { "slot": 467_500_010u64, "parent": 467_500_009u64 } }
         });
-        assert_eq!(client.handle_message(&frame, &yellowstone), Ok(true));
+        assert_eq!(client.handle_message(&frame, &ingest), Ok(true));
         assert_eq!(client.current_slot(), 467_500_010);
-        assert_eq!(yellowstone.current_slot(), 467_500_010);
-        assert_eq!(yellowstone.helius_slot(), 467_500_010);
+        assert_eq!(ingest.current_slot(), 467_500_010);
+        assert_eq!(ingest.helius_slot(), 467_500_010);
         assert!(waited.await.unwrap().is_ok());
     }
 
     #[test]
     fn account_notification_updates_raydium_pool_state_in_cache() {
         let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
-        let yellowstone = IngestClient::new();
+        let ingest = IngestClient::new();
 
         let pool_id = PoolId(Pubkey::new_unique());
         let base_vault = Pubkey::new_unique();
@@ -1784,14 +1811,14 @@ mod tests {
             execution_accounts: None,
             transfer_fee_bps: 0,
         };
-        assert!(yellowstone.apply_pool_update(initial).unwrap());
+        assert!(ingest.apply_pool_update(initial).unwrap());
 
         // Map base_vault request id 100 -> sub_id 777
         client.req_to_account.write().insert(100, base_vault);
         assert_eq!(
             client.handle_message(
                 &json!({"jsonrpc": "2.0", "id": 100, "result": 777}),
-                &yellowstone
+                &ingest
             ),
             Ok(false)
         );
@@ -1815,9 +1842,9 @@ mod tests {
                 }
             }
         });
-        assert_eq!(client.handle_message(&notif, &yellowstone), Ok(false));
+        assert_eq!(client.handle_message(&notif, &ingest), Ok(false));
 
-        let updated = yellowstone
+        let updated = ingest
             .cache()
             .get_pool(&pool_id)
             .expect("cached pool updated");

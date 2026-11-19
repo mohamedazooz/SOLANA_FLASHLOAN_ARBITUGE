@@ -43,14 +43,14 @@ jobs:
       - name: Check workspace (default features)
         run: cargo check --workspace --all-targets
 
-      - name: Check workspace (all supported features, incl. yellowstone-grpc)
+      - name: Check workspace (all supported features)
         # Explicit feature matrix, not --all-features: the quarantined
         # legacy pump-raydium builder modules (see BUG_NOTES.md) are
         # default-off features that do not compile yet and must not be
         # promoted by a blanket --all-features gate.
         run: >-
           cargo check --workspace --all-targets
-          --features arb-bot/extra-ingest,arb-ingest/extra-ingest,arb-ingest/yellowstone-grpc,arb-bot/split-routing,arb-engine/split-routing,arb-sim/litesvm
+          --features arb-bot/extra-ingest,arb-ingest/extra-ingest,arb-bot/split-routing,arb-engine/split-routing,arb-sim/litesvm
 
       - name: Run tests
         run: cargo test --workspace --all-targets
@@ -58,7 +58,7 @@ jobs:
       - name: Run Clippy
         run: >-
           cargo clippy --workspace --all-targets
-          --features arb-bot/extra-ingest,arb-ingest/extra-ingest,arb-ingest/yellowstone-grpc,arb-bot/split-routing,arb-engine/split-routing,arb-sim/litesvm
+          --features arb-bot/extra-ingest,arb-ingest/extra-ingest,arb-bot/split-routing,arb-engine/split-routing,arb-sim/litesvm
           -- -D warnings
 
   security:
