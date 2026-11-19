@@ -11,6 +11,7 @@
 //!    - Token output amounts use floor division (`div_floor`) to prevent token fabrication.
 //! 4. Volatility Surge Dynamics: Dynamically scales variable swap fees as trades traverse multiple bins.
 
+mod breakpoints;
 mod capacity;
 mod error;
 mod fee;
@@ -23,6 +24,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use breakpoints::{DlmmDrainBreakpoint, dlmm_breakpoint_seed_sizes, dlmm_drain_breakpoints};
 pub use capacity::{
     dlmm_active_bin_max_input, dlmm_multi_bin_max_input, scale_dlmm_three_hop_input,
 };
