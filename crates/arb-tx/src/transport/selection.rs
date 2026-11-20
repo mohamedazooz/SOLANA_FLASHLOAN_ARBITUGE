@@ -435,6 +435,48 @@ mod tests {
     }
 
     #[test]
+    fn test_transport_packet_boundary_matrix_1232_1248_4095_4096_4097() {
+        let cap = TransportCapability::mainnet_v1_capable("Helius-Sender");
+
+        // 1,232 bytes: Accepted
+        let tx_1232 = dummy_v1_header(28, 1232);
+        let sel_1232 = select_authoritative_transport(&tx_1232, true, true, false, &cap).unwrap();
+        assert_eq!(sel_1232.packet_bytes, 1232);
+        assert_eq!(sel_1232.wire_mtu_limit, 4096);
+
+        // 1,248 bytes: Accepted (Phase 17 cross-DEX transaction size)
+        let tx_1248 = dummy_v1_header(28, 1248);
+        let sel_1248 = select_authoritative_transport(&tx_1248, true, true, false, &cap).unwrap();
+        assert_eq!(sel_1248.packet_bytes, 1248);
+        assert_eq!(sel_1248.wire_mtu_limit, 4096);
+
+        // 4,095 bytes: Accepted
+        let tx_4095 = dummy_v1_header(28, 4095);
+        let sel_4095 = select_authoritative_transport(&tx_4095, true, true, false, &cap).unwrap();
+        assert_eq!(sel_4095.packet_bytes, 4095);
+        assert_eq!(sel_4095.wire_mtu_limit, 4096);
+
+        // 4,096 bytes: Accepted (exact MTU limit)
+        let tx_4096 = dummy_v1_header(28, 4096);
+        let sel_4096 = select_authoritative_transport(&tx_4096, true, true, false, &cap).unwrap();
+        assert_eq!(sel_4096.packet_bytes, 4096);
+        assert_eq!(sel_4096.wire_mtu_limit, 4096);
+
+        // 4,097 bytes: Rejected (exceeds MTU limit by 1 byte)
+        let tx_4097 = dummy_v1_header(28, 4097);
+        let err_4097 =
+            select_authoritative_transport(&tx_4097, true, true, false, &cap).unwrap_err();
+        assert_eq!(
+            err_4097,
+            TransportSelectionError::OversizedTransaction {
+                size: 4097,
+                limit: 4096,
+                version: TransactionVersion::V1,
+            }
+        );
+    }
+
+    #[test]
     fn test_scenario_h_v1_accounts_limit_exceeded() {
         let cap = TransportCapability::mainnet_v1_capable("Helius");
         let tx = dummy_v1_header(65, 2000);

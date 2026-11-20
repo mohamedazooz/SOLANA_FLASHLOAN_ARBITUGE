@@ -26,7 +26,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(400);
 /// evidence (live `getBlockHeight` strictly greater than the persisted
 /// `lastValidBlockHeight`), and anything else — including missing evidence —
 /// stays honestly `unresolved_after_poll`. Never authorizes a resubmit.
-pub(super) fn classify_reconciliation(
+pub fn classify_reconciliation(
     poll: Option<arb_ingest::SignatureStatus>,
     block_height_evidence: Option<(i64, i64)>,
 ) -> &'static str {
@@ -75,7 +75,7 @@ pub(super) fn classify_send_error(
 impl Supervisor {
     /// Reconcile every pending dispatch intent persisted by a previous run.
     /// Called once at startup, before the run loop starts dispatching.
-    pub(super) async fn reconcile_pending_dispatches(&self) {
+    pub async fn reconcile_pending_dispatches(&self) {
         let pending = match self.store.pending_dispatch_intents(MAX_PENDING_INTENTS) {
             Ok(p) => p,
             Err(err) => {

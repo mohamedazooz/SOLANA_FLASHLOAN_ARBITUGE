@@ -5,7 +5,7 @@ impl Supervisor {
     /// Assemble native (Raydium / Orca / real-DLMM-fallback) arbitrage instructions.
     /// Encapsulates the guarded-flash, plain-flash, and non-flash native builders.
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn assemble_native_ixs(
+    pub async fn assemble_native_ixs(
         &self,
         payer: Pubkey,
         tip_account: Pubkey,
@@ -23,6 +23,22 @@ impl Supervisor {
                 graph.min_profit_raw()
             };
             let skip_close = self.preexisting_intermediate_atas(opp, payer).await;
+
+            if arb_tx::cross_dex_flash_arb::is_cross_dex_opportunity(opp) {
+                return arb_tx::cross_dex_flash_arb::assemble_cross_dex_opportunity(
+                    payer,
+                    tip_account,
+                    tip,
+                    cu_limit,
+                    cu_price,
+                    opp,
+                    kamino_params,
+                    flash_loan_fee_sf,
+                    min_profit_raw,
+                    &skip_close,
+                );
+            }
+
             Ok(TxBuilder::assemble_flash_arbitrage(
                 payer,
                 tip_account,
@@ -142,7 +158,7 @@ impl Supervisor {
     /// RPC endpoint in the config (never hardcoded), and takes the current
     /// market Jito tip floor from the oracle. Fail closed: any unreadable or
     /// stale source is an `Err` and the tick is skipped (FIN-01/FIN-04).
-    pub(super) async fn build_verified_inputs(
+    pub async fn build_verified_inputs(
         &self,
         current_slot: Slot,
     ) -> anyhow::Result<VerifiedQuoteInputs> {

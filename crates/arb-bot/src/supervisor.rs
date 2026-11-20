@@ -29,12 +29,12 @@ use tracing::{debug, error, info, warn};
 
 // Supervisor implementation is split by responsibility. The child modules extend the
 // same type and can access its private state without introducing wrapper indirection.
-mod dispatch;
-mod execution;
-mod opportunity;
-mod recovery;
-mod run;
-mod strategy;
+pub mod dispatch;
+pub mod execution;
+pub mod opportunity;
+pub mod recovery;
+pub mod run;
+pub mod strategy;
 
 use execution::max_state_age_slots;
 
@@ -480,6 +480,112 @@ impl Supervisor {
     /// Isolated HTTP Transaction RPC adapter.
     pub fn tx_rpc(&self) -> &Arc<arb_ingest::TransactionRpcAdapter> {
         &self.tx_rpc
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn keypair(&self) -> Option<&KeypairSigner> {
+        self.keypair.as_ref()
+    }
+
+    pub fn registry(&self) -> &Arc<parking_lot::RwLock<arb_ingest::MultiDexRegistry>> {
+        &self.registry
+    }
+
+    pub fn store(&self) -> &Arc<dyn Store> {
+        &self.store
+    }
+
+    pub fn graph(&self) -> &parking_lot::Mutex<MarketGraph> {
+        &self.graph
+    }
+
+    pub fn risk_gate(&self) -> &Arc<RiskGate> {
+        &self.risk_gate
+    }
+
+    pub fn jito_service(&self) -> &Arc<JitoService> {
+        &self.jito_service
+    }
+
+    pub fn set_last_known_live_sol_price(&self, price: f64) {
+        *self.last_known_live_sol_price.write() = price;
+    }
+
+    pub fn set_cached_blockhash(&self, bh: [u8; 32], lvbh: Option<i64>) {
+        *self.blockhash_cache.lock() = Some((bh, Instant::now(), lvbh));
+    }
+
+    pub fn insert_supply_vault_liquidity(&self, slot: Slot, amount: u64) {
+        let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).unwrap();
+        let mut data = vec![0u8; 165];
+        data[..32].copy_from_slice(wsol.as_ref());
+        data[32..64].copy_from_slice(supply_vault.as_ref());
+        data[64..72].copy_from_slice(&amount.to_le_bytes());
+        data[108] = 1;
+        self.ingest
+            .account_store()
+            .apply(arb_ingest::AccountSnapshot {
+                pubkey: supply_vault,
+                owner: spl,
+                slot: slot.0,
+                write_version: arb_ingest::next_pool_write_version(),
+                is_startup: false,
+                provider_id: arb_ingest::ProviderId(1),
+                bank_id: Some(1),
+                generation: self.ingest.stream_generation(),
+                data: std::sync::Arc::new(data),
+            });
+    }
+
+    pub fn insert_verified_economic_snapshots(&self, slot: Slot, flash_fee_sf: u64) {
+        let klend = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID).unwrap();
+        let token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+        let reserve = crate::verified_config::wsol_reserve();
+
+        let mut reserve_data =
+            vec![0u8; arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET + 8];
+        reserve_data[..8].copy_from_slice(&arb_tx::kamino::KAMINO_RESERVE_DISCRIMINATOR);
+        let mint_start = arb_tx::kamino::KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET;
+        reserve_data[mint_start..mint_start + 32].copy_from_slice(wsol.as_ref());
+        reserve_data[arb_tx::kamino::KAMINO_RESERVE_STATUS_OFFSET] =
+            arb_tx::kamino::KAMINO_RESERVE_STATUS_ACTIVE;
+        reserve_data[arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET..][..8]
+            .copy_from_slice(&flash_fee_sf.to_le_bytes());
+
+        let mut mint_data = vec![0u8; 82];
+        mint_data[44] = 9;
+        mint_data[45] = 1;
+
+        let snap_reserve = arb_ingest::AccountSnapshot {
+            pubkey: reserve,
+            owner: klend,
+            slot: slot.0,
+            write_version: arb_ingest::next_pool_write_version(),
+            is_startup: false,
+            provider_id: arb_ingest::ProviderId(1),
+            bank_id: Some(1),
+            generation: self.ingest.stream_generation(),
+            data: std::sync::Arc::new(reserve_data),
+        };
+        let snap_mint = arb_ingest::AccountSnapshot {
+            pubkey: wsol,
+            owner: token_program,
+            slot: slot.0,
+            write_version: arb_ingest::next_pool_write_version(),
+            is_startup: false,
+            provider_id: arb_ingest::ProviderId(1),
+            bank_id: Some(1),
+            generation: self.ingest.stream_generation(),
+            data: std::sync::Arc::new(mint_data),
+        };
+        self.ingest.account_store().apply(snap_reserve);
+        self.ingest.account_store().apply(snap_mint);
     }
 
     /// Access the underlying risk kill-switch for administrative controls.

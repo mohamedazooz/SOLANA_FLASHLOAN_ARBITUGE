@@ -116,7 +116,7 @@ pub(crate) fn extract_pool_mid_price(
 }
 
 impl Supervisor {
-    pub(super) async fn strategy_cycle(
+    pub async fn strategy_cycle(
         &self,
         current_slot: Slot,
         expected_stream_generation: u64,
