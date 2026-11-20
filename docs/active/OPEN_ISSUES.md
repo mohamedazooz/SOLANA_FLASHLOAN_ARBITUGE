@@ -72,6 +72,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
   2. ⏳ Reproduce error `0x1773` using the original signed transaction and exact pool/account snapshot, and record per-hop quote/minimum-output provenance.
   3. ✅ Keep current slippage limits unchanged until the failed assumption is identified and justified.
 - **Regression Test**: Simulation harness verifying proper error categorization and bounded slippage behavior.
+- **Forensic status (2026-11-20)**: The opt-in mainnet diagnostic previously substituted active bin `-6542` when the pool read failed and returned success when `simulateTransaction` reported an RPC error or an on-chain revert. It also hardcodes a `1_500_000` token-unit minimum for the first hop and repeats that amount as the second hop input. The harness now fails closed on missing pool state, RPC errors, missing simulation fields, zero compute units, or a non-null simulation error. This establishes that the old “pass” result was not evidence of successful execution. A same-bank quote and replay are still required to attribute the historical `0x1773` to price movement, fees, account state, or the hardcoded threshold; production slippage was not widened.
 
 ---
 
