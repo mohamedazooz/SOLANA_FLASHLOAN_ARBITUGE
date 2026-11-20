@@ -320,6 +320,11 @@ pub struct ClmmTick {
     pub initialized: bool,
     #[serde(default)]
     pub liquidity_net: i128,
+    /// Raydium CLMM unfilled limit-order amount at this tick
+    /// (`orders_amount + part_filled_orders_remaining`). 0 for Orca pools and
+    /// for legacy snapshots missing the field (serde default).
+    #[serde(default)]
+    pub limit_order_unfilled: u64,
 }
 
 /// A Whirlpool/CLMM tick array (88 ticks per array).

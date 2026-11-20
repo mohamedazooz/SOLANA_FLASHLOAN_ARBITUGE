@@ -65,6 +65,11 @@ pub enum ClmmMathError {
 
     #[error("missing tick-array coverage at start tick {0}")]
     MissingTickArrayCoverage(i32),
+
+    #[error(
+        "Raydium CLMM limit-order tick {0} in swap path; limit-order matching is not implemented - fail-closed"
+    )]
+    LimitOrderTickInSwapPath(i32),
 }
 
 /// Token ordering check: returns true if `mint_in` is Token A (lexicographically smaller).
@@ -796,6 +801,10 @@ pub struct TickFacade {
     pub initialized: bool,
     pub liquidity_net: i128,
     pub liquidity_gross: u128,
+    /// Raydium CLMM limit orders resident at this tick
+    /// (`orders_amount + part_filled_orders_remaining`, official
+    /// `limit_order_unfilled_amount`). Always 0 for Orca Whirlpool arrays.
+    pub limit_order_unfilled: u64,
 }
 
 /// In-memory deserialized representation of a Whirlpool TickArray account.
@@ -950,6 +959,7 @@ pub fn parse_tick_array_account(
             initialized,
             liquidity_net,
             liquidity_gross,
+            limit_order_unfilled: 0,
         });
     }
 
@@ -1007,13 +1017,36 @@ pub fn parse_raydium_clmm_tick_array_account(
             .map_err(|_| ClmmMathError::InvalidAccountData)?;
         let liquidity_gross = u128::from_le_bytes(gross_bytes);
 
-        let initialized = liquidity_gross > 0;
+        // Limit-order fields at the end of TickState (VERIFIED against the
+        // deployed program layout, checked 2026-11-20): order_phase @116,
+        // orders_amount @124, part_filled_orders_remaining @132,
+        // unfilled_ratio_x64 @140, padding [u32;3] @156..168.
+        let orders_u = u64::from_le_bytes(
+            data.get(offset + 124..offset + 132)
+                .ok_or(ClmmMathError::InvalidAccountData)?
+                .try_into()
+                .map_err(|_| ClmmMathError::InvalidAccountData)?,
+        );
+        let part_filled_u = u64::from_le_bytes(
+            data.get(offset + 132..offset + 140)
+                .ok_or(ClmmMathError::InvalidAccountData)?
+                .try_into()
+                .map_err(|_| ClmmMathError::InvalidAccountData)?,
+        );
+        let limit_order_unfilled = orders_u
+            .checked_add(part_filled_u)
+            .ok_or(ClmmMathError::IntegerOverflow)?;
+        // Official `is_initialized()`: has_liquidity() || has_limit_orders() --
+        // a tick holding limit orders must stop the traversal even with zero
+        // liquidity.
+        let initialized = liquidity_gross > 0 || limit_order_unfilled > 0;
 
         ticks.push(TickFacade {
             tick_index,
             initialized,
             liquidity_net,
             liquidity_gross,
+            limit_order_unfilled,
         });
     }
 
@@ -1297,6 +1330,15 @@ pub fn compute_swap_with_ticks_per_array_and_math(
             if let Some(init_tick) = next_initialized_tick
                 && init_tick.tick_index == next_tick
             {
+                // On-chain, a tick holding unfilled Raydium CLMM limit orders
+                // matches those orders at the exact tick price and changes the
+                // swap's tick-advance convention; a pure-AMM traversal must
+                // not silently skip that.
+                if init_tick.limit_order_unfilled != 0 {
+                    return Err(ClmmMathError::LimitOrderTickInSwapPath(
+                        init_tick.tick_index,
+                    ));
+                }
                 liquidity = update_liquidity_on_cross(liquidity, init_tick.liquidity_net, a_to_b)?;
             }
             tick_current_index = if a_to_b {
@@ -1469,6 +1511,7 @@ mod tests {
                     initialized: false,
                     liquidity_net: 0,
                     liquidity_gross: 0,
+                    limit_order_unfilled: 0,
                 })
                 .collect(),
         };
@@ -1478,6 +1521,7 @@ mod tests {
                 initialized: false,
                 liquidity_net: 0,
                 liquidity_gross: 0,
+                limit_order_unfilled: 0,
             })
             .collect();
         // One initialized tick inside the previous array.
@@ -1504,6 +1548,7 @@ mod tests {
                     initialized: false,
                     liquidity_net: 0,
                     liquidity_gross: 0,
+                    limit_order_unfilled: 0,
                 })
                 .collect(),
         };

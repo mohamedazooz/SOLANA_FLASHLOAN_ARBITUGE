@@ -102,6 +102,7 @@ fn zero_liquidity_gap_is_crossed_for_free_not_aborted() {
                 initialized: true,
                 liquidity_net: -(injected as i128),
                 liquidity_gross: injected,
+                limit_order_unfilled: 0,
             }],
         },
     ];

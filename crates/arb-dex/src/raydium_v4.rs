@@ -193,9 +193,16 @@ impl AmmPool for RaydiumV4Pool {
     }
 
     fn execution_accounts(&self) -> Option<PoolExecutionAccounts> {
-        if self.serum_market == Pubkey::default() || self.serum_vault_signer == Pubkey::default() {
+        if self.base_vault == Pubkey::default() || self.quote_vault == Pubkey::default() {
             return None;
         }
+        // SwapBaseInV2 (opcode 16) needs no OpenBook/Serum accounts, so an
+        // unresolved market (bids/asks/event-queue not hydrated from the
+        // post-OpenBook market account) must not make a V2-capable pool
+        // untradable. The injected serum keys stay default-nil in that case;
+        // an explicit V1 build then fails closed in arb-tx
+        // (`build_raydium_v4_swap_instruction_versioned` rejects default serum
+        // accounts instead of dispatching an incomplete matrix).
         Some(PoolExecutionAccounts::RaydiumV4 {
             amm_authority: Self::amm_authority(),
             open_orders: self.open_orders,
