@@ -21,6 +21,7 @@ pub mod metric_names {
     pub const CACHE_CONSISTENCY: &str = "cache_consistency";
     pub const OPPORTUNITIES_TOTAL: &str = "opportunities_total";
     pub const NET_PROFIT_TOTAL: &str = "net_profit_total";
+    pub const ESTIMATED_LANDED_NET_PROFIT_TOTAL: &str = "estimated_landed_net_profit_total";
     pub const TIP_SHARE_BPS: &str = "tip_share_bps";
     pub const BREAKER_STATE: &str = "breaker_state";
     pub const ATTEMPTS_TOTAL: &str = "attempts_total";
@@ -113,13 +114,25 @@ static OPPORTUNITIES_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     let _ = REGISTRY.register(Box::new(counter.clone()));
     counter
 });
-static NET_PROFIT_TOTAL: Lazy<Counter> = Lazy::new(|| {
-    let counter =
-        Counter::new(metric_names::NET_PROFIT_TOTAL, "Net profit total").unwrap_or_else(|_| {
-            Counter::new(metric_names::NET_PROFIT_TOTAL, "").expect("static metric")
-        });
-    let _ = REGISTRY.register(Box::new(counter.clone()));
-    counter
+static NET_PROFIT_TOTAL: Lazy<Gauge> = Lazy::new(|| {
+    let gauge = Gauge::new(
+        metric_names::NET_PROFIT_TOTAL,
+        "Cumulative signed realized net profit in SOL",
+    )
+    .unwrap_or_else(|_| Gauge::new(metric_names::NET_PROFIT_TOTAL, "").expect("static metric"));
+    let _ = REGISTRY.register(Box::new(gauge.clone()));
+    gauge
+});
+static ESTIMATED_LANDED_NET_PROFIT_TOTAL: Lazy<Gauge> = Lazy::new(|| {
+    let gauge = Gauge::new(
+        metric_names::ESTIMATED_LANDED_NET_PROFIT_TOTAL,
+        "Cumulative estimated net profit for landed transactions without balance metadata in SOL",
+    )
+    .unwrap_or_else(|_| {
+        Gauge::new(metric_names::ESTIMATED_LANDED_NET_PROFIT_TOTAL, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(gauge.clone()));
+    gauge
 });
 static SIMULATED_NET_PROFIT_TOTAL: Lazy<Counter> = Lazy::new(|| {
     let counter = Counter::new("simulated_net_profit_total", "Simulated net profit total")
@@ -549,10 +562,16 @@ pub fn set_state_age(v: f64) {
     STATE_AGE_SLOTS.set(v);
 }
 pub fn add_net_profit(v: f64) {
-    NET_PROFIT_TOTAL.inc_by(v);
+    NET_PROFIT_TOTAL.add(v);
 }
 pub fn get_net_profit_total() -> f64 {
     NET_PROFIT_TOTAL.get()
+}
+pub fn add_estimated_landed_net_profit(v: f64) {
+    ESTIMATED_LANDED_NET_PROFIT_TOTAL.add(v);
+}
+pub fn get_estimated_landed_net_profit_total() -> f64 {
+    ESTIMATED_LANDED_NET_PROFIT_TOTAL.get()
 }
 pub fn add_simulated_net_profit(v: f64) {
     SIMULATED_NET_PROFIT_TOTAL.inc_by(v);

@@ -81,8 +81,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ### ISSUE-P1-01: Token-2022 Transfer Fee Double Counting Audit
 
 - **Files**: `crates/arb-math/src/economic.rs`, `crates/arb-dex/`
-- **Current Behavior**: Protocol adapters deduct token-specific transfer fees, while the economic engine also checks transfer fee allowances.
-- **Required Fix**: Audit each DEX adapter's fee semantics (Raydium CPMM vs DLMM) to guarantee Token-2022 transfer fees are deducted exactly once.
+- **Current Behavior**: Quote engines return net output after Token-2022 transfer fees and expose the fee breakdown separately; the router chains the net output and treats the breakdown as telemetry. Production discovery excludes non-base SPL mint owners, and the graph/adapters reject nonzero legacy transfer-fee estimates. Token-2022 is therefore unsupported by the live pilot path.
+- **Status**: Closed for the pilot by fail-closed exclusion; Token-2022 remains unsupported until epoch-aware mint data is wired from ingestion through route quoting and transaction construction. Do not enable it based only on the standalone quote helpers.
 
 ---
 
@@ -91,14 +91,15 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Files**: `crates/arb-bot/src/supervisor/recovery.rs`, `crates/arb-bot/src/supervisor/dispatch.rs`
 - **Current Behavior**: On network submission timeout, transactions may be re-evaluated.
 - **Required Fix**: Strictly enforce invariant: on timeout, reconcile transaction signature against RPC before taking any action. Never re-sign or re-dispatch duplicate transactions. Only mark expired when blockhash progression proves expiration beyond `last_valid_block_height`.
+- **Status**: Implemented in `dispatch.rs` and `recovery.rs`: the signed transaction signature and last-valid block height are persisted before send; transport errors poll that signature, unresolved intents stay pending, and recovery never resubmits. Expiration requires block-height evidence. Runtime soak remains a release gate.
 
 ---
 
 ### ISSUE-P1-03: Realized PnL vs Quoted PnL Metric Separation
 
 - **Files**: `crates/arb-metrics/src/lib.rs`, `crates/arb-store/src/lib.rs`
-- **Current Behavior**: Some metrics aggregate estimated quote profit alongside realized profit.
-- **Required Fix**: Strictly isolate quote estimates, simulation estimates, and confirmed realized balance deltas into disjoint database tables and metric vectors.
+- **Current Behavior**: SQLite stores outcome provenance and the daily PnL query already excludes estimated landed rows from realized PnL. However, estimated landed rows were omitted from the estimate bucket, and the `net_profit_total` metric also received estimates when balance metadata was unavailable. It was a Prometheus counter, which cannot represent signed realized losses.
+- **Status**: Fixed in source: signed realized PnL is a gauge fed only by on-chain balance deltas; estimates for landed transactions have their own gauge and are included in the estimated PnL bucket. Database rows remain in the shared outcomes table with enforced provenance filters; table-level separation is not required for correct aggregation.
 
 ---
 
@@ -107,5 +108,5 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ### ISSUE-P2-01: Unbounded Ingest Memory Allocation During High-Vol Shocks
 
 - **File**: `crates/arb-ingest/src/helius_ws.rs`
-- **Current Behavior**: WebSocket message receiver uses unbounded tokio channel.
-- **Required Fix**: Switch to bounded channels with backpressure drops and latency metrics.
+- **Current Behavior**: The referenced `helius_ws.rs` no longer contains an unbounded Tokio channel (repository search found no `unbounded_channel` or `UnboundedReceiver` usage under `crates/`). This register entry is stale and does not describe the current implementation.
+- **Status**: Closed as not present in current source. Continue to monitor bounded ingestion queues if a channel-based decoder pipeline is introduced.

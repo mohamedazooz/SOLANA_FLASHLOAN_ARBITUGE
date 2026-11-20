@@ -41,8 +41,8 @@ pub struct PnlDaily {
     /// Signed realized net from outcomes with on-chain evidence only
     /// (`status = 'landed'` AND provenance `actual`). Losses are negative.
     pub realized_net: SignedLamports,
-    /// Simulated/canary net (provenance `estimated`) kept in a separate
-    /// bucket. NEVER merged into `realized_net`.
+    /// Estimated net (including landed transactions without balance metadata,
+    /// plus simulated/canary outcomes) kept separate from `realized_net`.
     pub simulated_net: SignedLamports,
     pub attempts: u64,
     pub successful: u64,
@@ -390,7 +390,10 @@ impl Store for SqliteStore {
             "SELECT COUNT(*),
                     SUM(CASE WHEN status = 'landed' THEN 1 ELSE 0 END),
                     COALESCE(SUM(realized_net) FILTER (WHERE status = 'landed' AND provenance = 'actual'), 0),
-                    COALESCE(SUM(realized_net) FILTER (WHERE status IN ('canary', 'simulated')), 0)
+                    COALESCE(SUM(realized_net) FILTER (
+                        WHERE provenance = 'estimated'
+                          AND status IN ('landed', 'canary', 'simulated')
+                    ), 0)
              FROM outcomes WHERE {filter}"
         );
         let mut stmt = conn
@@ -1022,7 +1025,7 @@ impl Store for MemoryStore {
                         realized = realized.saturating_add(v.as_i64());
                     }
                 }
-                ("canary", _) | ("simulated", _) => {
+                ("landed", NetProvenance::Estimated) | ("canary", _) | ("simulated", _) => {
                     if let Some(v) = rn {
                         simulated = simulated.saturating_add(v.as_i64());
                     }
@@ -1266,7 +1269,7 @@ mod tests {
             45_000,
             "estimate-backed landed row must not contaminate realized PnL"
         );
-        assert_eq!(pnl.simulated_net.as_i64(), 15_000);
+        assert_eq!(pnl.simulated_net.as_i64(), 24_999);
         assert_eq!(pnl.attempts, 4);
         assert_eq!(pnl.successful, 2);
     }
