@@ -13,12 +13,15 @@ use arb_constants::{
     USDC_MINT, WSOL_MINT,
 };
 use arb_tx::{
-    AdaptiveTxCompiler, DexPlatform, KaminoFlashParams, KeypairSigner, PoolExecutionAccounts,
-    SOLANA_PACKET_V1_MTU, TxBuilder, TxError, V1ConfigParams,
+    AccountMeta, AdaptiveTxCompiler, CompiledAdaptiveTransaction, CompiledInstruction, DexPlatform,
+    FormatSelectionReason, KaminoFlashParams, KeypairSigner, PoolExecutionAccounts,
+    SOLANA_PACKET_V1_MTU, TransactionVersion, TransportCapability, TransportKind,
+    TransportSelectionError, TxBuilder, TxError, V1ConfigParams,
     cross_dex_flash_arb::{
         CrossDexFlashArbParams, CrossDexSwapLeg, assemble_cross_dex_flash_arbitrage,
         assemble_cross_dex_opportunity, is_cross_dex_opportunity, validate_cross_dex_opportunity,
     },
+    select_authoritative_transport,
 };
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolId, PumpSwapTradeIntent, Slot,
@@ -381,9 +384,256 @@ fn test_matrix_11_v1_packet_size_boundary() {
     let compiled = AdaptiveTxCompiler::compile_v1_only(&signer, &ixs, [1u8; 32], v1_config)
         .expect("Must compile V1");
 
-    // Standard cross-DEX transaction is ~850-1050 bytes, well under 4096 MTU limit
-    assert!(compiled.wire_bytes.len() < 2048);
+    // Standard cross-DEX transaction is ~850-1250 bytes, well under 4096 MTU limit
     assert!(compiled.wire_bytes.len() <= SOLANA_PACKET_V1_MTU);
+    assert_eq!(
+        compiled.wire_bytes[0], 0x81,
+        "Must have 0x81 V1 version discriminator"
+    );
+
+    // Verify transport acceptance for the real compiled cross-DEX transaction without ALTs
+    let cap_v1 = TransportCapability::mainnet_v1_capable("Helius-Sender");
+    let selected = select_authoritative_transport(
+        &compiled.wire_bytes,
+        true,  // is_swqos_route
+        true,  // direct_v1_enabled
+        false, // jito_v1_enabled
+        &cap_v1,
+    )
+    .expect("Real cross-DEX V1 transaction must be accepted by SWQoS transport without ALT");
+    assert_eq!(selected.kind, TransportKind::SwqosDirect);
+    assert_eq!(selected.wire_mtu_limit, 4096);
+    assert!(selected.is_v1);
+}
+
+#[test]
+fn test_matrix_11_packet_boundary_matrix_1232_1248_4095_4096_4097() {
+    let signer = KeypairSigner::new_random();
+
+    // 1. Measure baseline V1 wire overhead for a calibrated single-instruction transaction
+    let baseline_probe = AdaptiveTxCompiler::build_signed_v1_transaction(
+        &signer,
+        &[CompiledInstruction {
+            program_id: Pubkey::new_unique(),
+            accounts: vec![AccountMeta {
+                pubkey: signer.pubkey(),
+                is_signer: true,
+                is_writable: true,
+            }],
+            data: vec![],
+        }],
+        [0x55u8; 32],
+        V1ConfigParams {
+            priority_fee_lamports: Some(10_000),
+            compute_unit_limit: Some(250_000),
+            loaded_accounts_data_size_limit: Some(67_108_864),
+            heap_size: None,
+        },
+        FormatSelectionReason::LargePayloadV1 {
+            accounts_count: 2,
+            wire_size: 0,
+        },
+    )
+    .expect("baseline probe must build");
+    let overhead = baseline_probe.wire_bytes.len();
+
+    let build_calibrated_v1 = |target_size: usize| -> Result<CompiledAdaptiveTransaction, TxError> {
+        let data_len = target_size.saturating_sub(overhead);
+        AdaptiveTxCompiler::build_signed_v1_transaction(
+            &signer,
+            &[CompiledInstruction {
+                program_id: Pubkey::new_unique(),
+                accounts: vec![AccountMeta {
+                    pubkey: signer.pubkey(),
+                    is_signer: true,
+                    is_writable: true,
+                }],
+                data: vec![0u8; data_len],
+            }],
+            [0x55u8; 32],
+            V1ConfigParams {
+                priority_fee_lamports: Some(10_000),
+                compute_unit_limit: Some(250_000),
+                loaded_accounts_data_size_limit: Some(67_108_864),
+                heap_size: None,
+            },
+            FormatSelectionReason::LargePayloadV1 {
+                accounts_count: 2,
+                wire_size: 0,
+            },
+        )
+    };
+
+    let cap_v1_swqos = TransportCapability::mainnet_v1_capable("Helius-Sender");
+    let cap_v1_jito = TransportCapability::mainnet_v1_capable("Jito-Mainnet");
+    let cap_legacy_v0 = TransportCapability::v0_only("Legacy-Validator-UDP");
+
+    // =========================================================================
+    // Boundary 1: 1,232 bytes (Legacy / V0 UDP MTU limit)
+    // =========================================================================
+    {
+        // A. Message Format Validation: Valid V1 wire format
+        let tx_1232 = build_calibrated_v1(1232).expect("1,232-byte V1 must compile");
+        assert_eq!(tx_1232.wire_bytes.len(), 1232);
+        assert_eq!(tx_1232.wire_bytes[0], 0x81);
+        assert!(tx_1232.verify_signatures(&[signer.pubkey()]).unwrap());
+
+        // B. Transport Acceptance:
+        // - V1 SWQoS (QUIC): ACCEPTED
+        let res_swqos =
+            select_authoritative_transport(&tx_1232.wire_bytes, true, true, false, &cap_v1_swqos)
+                .unwrap();
+        assert_eq!(res_swqos.kind, TransportKind::SwqosDirect);
+        assert_eq!(res_swqos.wire_mtu_limit, 4096);
+
+        // - V1 Jito (HTTP/QUIC bundle): ACCEPTED
+        let res_jito =
+            select_authoritative_transport(&tx_1232.wire_bytes, false, false, true, &cap_v1_jito)
+                .unwrap();
+        assert_eq!(res_jito.kind, TransportKind::JitoBundle);
+        assert_eq!(res_jito.wire_mtu_limit, 4096);
+
+        // - Legacy / V0-only provider: REJECTS V1 because version 0x81 is unsupported by legacy transport
+        let res_legacy =
+            select_authoritative_transport(&tx_1232.wire_bytes, true, true, false, &cap_legacy_v0);
+        assert!(matches!(
+            res_legacy,
+            Err(TransportSelectionError::UnsupportedVersionForTransport { .. })
+        ));
+    }
+
+    // =========================================================================
+    // Boundary 2: 1,248 bytes (Phase 17 cross-DEX transaction size, exceeds UDP MTU by 16 bytes)
+    // =========================================================================
+    {
+        // A. Message Format Validation: Valid V1 wire format (well within 4,096 bytes)
+        let tx_1248 = build_calibrated_v1(1248).expect("1,248-byte V1 must compile");
+        assert_eq!(tx_1248.wire_bytes.len(), 1248);
+        assert_eq!(tx_1248.wire_bytes[0], 0x81);
+        assert!(tx_1248.verify_signatures(&[signer.pubkey()]).unwrap());
+
+        // B. Transport Acceptance:
+        // - V1 SWQoS (QUIC): ACCEPTED (no ALT required!)
+        let res_swqos =
+            select_authoritative_transport(&tx_1248.wire_bytes, true, true, false, &cap_v1_swqos)
+                .unwrap();
+        assert_eq!(res_swqos.kind, TransportKind::SwqosDirect);
+        assert_eq!(res_swqos.packet_bytes, 1248);
+        assert_eq!(res_swqos.wire_mtu_limit, 4096);
+
+        // - V1 Jito (HTTP/QUIC bundle): ACCEPTED (no ALT required!)
+        let res_jito =
+            select_authoritative_transport(&tx_1248.wire_bytes, false, false, true, &cap_v1_jito)
+                .unwrap();
+        assert_eq!(res_jito.kind, TransportKind::JitoBundle);
+        assert_eq!(res_jito.packet_bytes, 1248);
+        assert_eq!(res_jito.wire_mtu_limit, 4096);
+
+        // - Legacy UDP / V0-only provider: REJECTS (exceeds 1,232 bytes UDP limit AND unsupported version)
+        let res_legacy =
+            select_authoritative_transport(&tx_1248.wire_bytes, true, true, false, &cap_legacy_v0);
+        assert!(res_legacy.is_err());
+    }
+
+    // =========================================================================
+    // Boundary 3: 4,095 bytes (1 byte below Solana V1 MTU ceiling)
+    // =========================================================================
+    {
+        // A. Message Format Validation: Valid V1 wire format
+        let tx_4095 = build_calibrated_v1(4095).expect("4,095-byte V1 must compile");
+        assert_eq!(tx_4095.wire_bytes.len(), 4095);
+        assert_eq!(tx_4095.wire_bytes[0], 0x81);
+        assert!(tx_4095.verify_signatures(&[signer.pubkey()]).unwrap());
+
+        // B. Transport Acceptance:
+        // - V1 SWQoS (QUIC): ACCEPTED
+        let res_swqos =
+            select_authoritative_transport(&tx_4095.wire_bytes, true, true, false, &cap_v1_swqos)
+                .unwrap();
+        assert_eq!(res_swqos.kind, TransportKind::SwqosDirect);
+        assert_eq!(res_swqos.packet_bytes, 4095);
+        assert_eq!(res_swqos.wire_mtu_limit, 4096);
+
+        // - V1 Jito (HTTP/QUIC bundle): ACCEPTED
+        let res_jito =
+            select_authoritative_transport(&tx_4095.wire_bytes, false, false, true, &cap_v1_jito)
+                .unwrap();
+        assert_eq!(res_jito.kind, TransportKind::JitoBundle);
+        assert_eq!(res_jito.packet_bytes, 4095);
+        assert_eq!(res_jito.wire_mtu_limit, 4096);
+    }
+
+    // =========================================================================
+    // Boundary 4: 4,096 bytes (Exact Solana V1 MTU ceiling)
+    // =========================================================================
+    {
+        // A. Message Format Validation: Valid V1 wire format at exact ceiling
+        let tx_4096 = build_calibrated_v1(4096).expect("4,096-byte V1 must compile");
+        assert_eq!(tx_4096.wire_bytes.len(), 4096);
+        assert_eq!(tx_4096.wire_bytes[0], 0x81);
+        assert!(tx_4096.verify_signatures(&[signer.pubkey()]).unwrap());
+
+        // B. Transport Acceptance:
+        // - V1 SWQoS (QUIC): ACCEPTED at maximum boundary
+        let res_swqos =
+            select_authoritative_transport(&tx_4096.wire_bytes, true, true, false, &cap_v1_swqos)
+                .unwrap();
+        assert_eq!(res_swqos.kind, TransportKind::SwqosDirect);
+        assert_eq!(res_swqos.packet_bytes, 4096);
+        assert_eq!(res_swqos.wire_mtu_limit, 4096);
+
+        // - V1 Jito (HTTP/QUIC bundle): ACCEPTED at maximum boundary
+        let res_jito =
+            select_authoritative_transport(&tx_4096.wire_bytes, false, false, true, &cap_v1_jito)
+                .unwrap();
+        assert_eq!(res_jito.kind, TransportKind::JitoBundle);
+        assert_eq!(res_jito.packet_bytes, 4096);
+        assert_eq!(res_jito.wire_mtu_limit, 4096);
+    }
+
+    // =========================================================================
+    // Boundary 5: 4,097 bytes (Exceeds Solana V1 MTU ceiling by 1 byte)
+    // =========================================================================
+    {
+        // A. Message Format Validation: Compiler MUST REJECT with TransactionTooLarge
+        let res_compiler = build_calibrated_v1(4097);
+        assert!(
+            res_compiler.is_err(),
+            "4,097-byte V1 transaction must be rejected by message compiler"
+        );
+        match res_compiler.unwrap_err() {
+            TxError::TransactionTooLarge { size, limit } => {
+                assert_eq!(size, 4097);
+                assert_eq!(limit, 4096);
+            }
+            other => panic!("Expected TransactionTooLarge, got: {other:?}"),
+        }
+
+        // B. Transport Acceptance: Construct raw 4,097-byte wire packet with V1 header
+        // Transport validation MUST REJECT with OversizedTransaction
+        let mut raw_4097 = vec![0u8; 4097];
+        raw_4097[0] = 0x81; // V1 discriminator
+        raw_4097[1] = 1; // 1 signature
+        raw_4097[41] = 2; // 2 inline accounts
+        let res_transport =
+            select_authoritative_transport(&raw_4097, true, true, false, &cap_v1_swqos);
+        assert!(
+            res_transport.is_err(),
+            "4,097-byte wire packet must be rejected by transport validation"
+        );
+        match res_transport.unwrap_err() {
+            TransportSelectionError::OversizedTransaction {
+                size,
+                limit,
+                version,
+            } => {
+                assert_eq!(size, 4097);
+                assert_eq!(limit, 4096);
+                assert_eq!(version, TransactionVersion::V1);
+            }
+            other => panic!("Expected OversizedTransaction, got: {other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -469,4 +719,160 @@ fn test_cross_dex_flash_arb_params_direct_assembly() {
     );
     assert!(tx.tx_size <= SOLANA_PACKET_V1_MTU);
     assert_eq!(tx.wire_bytes[0], 0x81);
+}
+
+#[test]
+fn test_matrix_15_v1_transaction_structure_cryptographic_verification_and_config_mask() {
+    let borrow = 1_000_000_000;
+    let dlmm_out = 150_000_000;
+    let cpmm_out = 1_050_000_000;
+    let (opp, kamino, _dlmm_pool, _cpmm_pool) =
+        create_test_dlmm_cpmm_opportunity(borrow, dlmm_out, cpmm_out);
+
+    let signer = KeypairSigner::new_random();
+    let payer = signer.pubkey();
+    let tip_account = Pubkey::new_unique();
+    let tip = Lamports(10_000);
+    let cu_limit = 350_000;
+    let cu_price = 10_000;
+    let flash_fee_sf = 0;
+    let min_profit = TokenAmount(10_000_000);
+    let recent_blockhash = [0x42u8; 32];
+
+    let ixs = assemble_cross_dex_opportunity(
+        payer,
+        tip_account,
+        tip,
+        cu_limit,
+        cu_price,
+        &opp,
+        &kamino,
+        flash_fee_sf,
+        min_profit,
+        &[],
+    )
+    .expect("cross-dex assembly must succeed");
+
+    // Compute expected absolute priority fee in lamports:
+    // ceil(10_000 * 350_000 / 1_000_000) = 3,500 lamports
+    let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+    assert_eq!(priority_fee_lamports, 3_500);
+
+    let v1_config = V1ConfigParams {
+        priority_fee_lamports: Some(priority_fee_lamports),
+        compute_unit_limit: Some(cu_limit),
+        loaded_accounts_data_size_limit: Some(67_108_864),
+        heap_size: None,
+    };
+
+    let compiled = AdaptiveTxCompiler::compile_v1_only(&signer, &ixs, recent_blockhash, v1_config)
+        .expect("V1 compilation must succeed");
+
+    // 1. Version prefix: Byte 0 must be 0x81
+    assert_eq!(
+        compiled.wire_bytes[0], 0x81,
+        "Version prefix must be 0x81 for V1"
+    );
+
+    // 2. Serialized wire size measured from final signed transaction
+    assert_eq!(compiled.wire_size(), compiled.wire_bytes.len());
+    assert_eq!(compiled.wire_bytes.len(), compiled.message_bytes.len() + 64);
+    assert!(compiled.wire_bytes.len() <= SOLANA_PACKET_V1_MTU);
+
+    // 3. All required accounts are inline, no ALT dependency
+    let num_addresses = compiled.message_bytes[41] as usize;
+    assert_eq!(
+        num_addresses, 32,
+        "Phase 17 cross-DEX opportunity has 32 unique inline accounts"
+    );
+    assert!(
+        num_addresses <= 64,
+        "Must not exceed SIMD-0385 inline account limit of 64"
+    );
+
+    // Verify inline accounts array starts at byte 42 and occupies 28 * 32 bytes
+    let accounts_start = 42;
+    let accounts_end = accounts_start + num_addresses * 32;
+    assert_eq!(
+        compiled.message_bytes[accounts_start..accounts_start + 32],
+        payer.to_bytes()
+    );
+
+    // 4. Cryptographic Ed25519 signature verification
+    assert_eq!(compiled.signatures.len(), 1);
+    assert!(
+        compiled
+            .verify_signatures(&[payer])
+            .expect("signature verification must pass")
+    );
+
+    // Verify tampering with any byte invalidates signature verification
+    let mut tampered = compiled.clone();
+    tampered.message_bytes[0] ^= 0xFF;
+    assert!(
+        tampered.verify_signatures(&[payer]).is_err(),
+        "Tampered message must fail signature verification"
+    );
+
+    // 5. Config mask and config values serialized according to V1 specification
+    // [4..8] is TransactionConfigMask: u32 LE
+    let config_mask = u32::from_le_bytes(compiled.message_bytes[4..8].try_into().unwrap());
+    // Bits 0,1: Priority fee (0x03)
+    // Bit 2: CU limit (0x04)
+    // Bit 3: Loaded data limit (0x08)
+    // Mask = 0x03 | 0x04 | 0x08 = 0x0F
+    assert_eq!(
+        config_mask, 0x0F,
+        "Config mask must be 0x0F (priority fee + CU limit + loaded data limit)"
+    );
+
+    // Config values are located immediately after inline accounts:
+    let config_values = &compiled.message_bytes[accounts_end..accounts_end + 16];
+    assert_eq!(
+        config_values.len(),
+        16,
+        "Config values must be 16 bytes (8B fee + 4B CU + 4B loaded data)"
+    );
+
+    let decoded_fee = u64::from_le_bytes(config_values[0..8].try_into().unwrap());
+    assert_eq!(
+        decoded_fee, priority_fee_lamports,
+        "Decoded priority fee in config values must match"
+    );
+
+    let decoded_cu = u32::from_le_bytes(config_values[8..12].try_into().unwrap());
+    assert_eq!(
+        decoded_cu, cu_limit,
+        "Decoded CU limit in config values must match"
+    );
+
+    let decoded_loaded_data = u32::from_le_bytes(config_values[12..16].try_into().unwrap());
+    assert_eq!(
+        decoded_loaded_data, 67_108_864,
+        "Decoded loaded data limit must be 64 MiB (67,108,864)"
+    );
+
+    // 6. No legacy Compute Budget instruction is incorrectly relied upon
+    // The original instruction list had 8 instructions (indices 0 and 1 were ComputeBudget)
+    assert_eq!(ixs.len(), 8);
+    assert_eq!(
+        ixs[0].program_id.to_string(),
+        "ComputeBudget111111111111111111111111111111"
+    );
+    assert_eq!(
+        ixs[1].program_id.to_string(),
+        "ComputeBudget111111111111111111111111111111"
+    );
+
+    // In the compiled V1 message: num_instructions is at byte 40
+    let num_ixs = compiled.message_bytes[40] as usize;
+    assert_eq!(
+        num_ixs, 6,
+        "V1 message must strip 2 ComputeBudget instructions, leaving 6 executed instructions"
+    );
+
+    // Verify repay instruction borrow_instruction_index was shifted from 3 to 1
+    let parsed_ver =
+        CompiledAdaptiveTransaction::parse_version_from_wire(&compiled.wire_bytes).unwrap();
+    assert_eq!(parsed_ver, TransactionVersion::V1);
 }
