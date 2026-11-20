@@ -1,0 +1,168 @@
+{
+ "function": "consume_bin_liquidity",
+ "module": "arb_math::dlmm",
+ "vectors": [
+  {
+   "amount_in": 1000000,
+   "bin_x": 1000000000000,
+   "bin_y": 4000000000000,
+   "price_q64": "18594835569443250176",
+   "swap_for_y": true,
+   "fee_rate": 10000000,
+   "protocol_share_bps": 0,
+   "fee_on_input": {
+    "amount_in_consumed": 1000000,
+    "amount_out": 997947,
+    "fee_amount": 10000,
+    "protocol_fee": 0,
+    "drained_bin": false,
+    "bin_x_after": 1000000990000,
+    "bin_y_after": 3999999002053
+   },
+   "fee_on_output": {
+    "amount_in_consumed": 1000000,
+    "amount_out": 997947,
+    "fee_amount": 10081,
+    "protocol_fee": 0,
+    "drained_bin": false,
+    "bin_x_after": 1000001000000,
+    "bin_y_after": 3999998991972
+   }
+  },
+  {
+   "amount_in": 1000000,
+   "bin_x": 1000000000000,
+   "bin_y": 4000000000000,
+   "price_q64": "18594835569443250176",
+   "swap_for_y": false,
+   "fee_rate": 10000000,
+   "protocol_share_bps": 0,
+   "fee_on_input": {
+    "amount_in_consumed": 1000000,
+    "amount_out": 982115,
+    "fee_amount": 10000,
+    "protocol_fee": 0,
+    "drained_bin": false,
+    "bin_x_after": 999999017885,
+    "bin_y_after": 4000000990000
+   },
+   "fee_on_output": {
+    "amount_in_consumed": 1000000,
+    "amount_out": 982114,
+    "fee_amount": 9921,
+    "protocol_fee": 0,
+    "drained_bin": false,
+    "bin_x_after": 999999007965,
+    "bin_y_after": 4000001000000
+   }
+  },
+  {
+   "amount_in": 50000000000000,
+   "bin_x": 1000000000000,
+   "bin_y": 4000000000000,
+   "price_q64": "18594835569443250176",
+   "swap_for_y": true,
+   "fee_rate": 10000000,
+   "protocol_share_bps": 200,
+   "fee_on_input": {
+    "amount_in_consumed": 4008225779109,
+    "amount_out": 4000000000000,
+    "fee_amount": 40082257792,
+    "protocol_fee": 801645155,
+    "drained_bin": true,
+    "bin_x_after": 4968143521317,
+    "bin_y_after": 0
+   },
+   "fee_on_output": {
+    "amount_in_consumed": 3968143521317,
+    "amount_out": 3960000000000,
+    "fee_amount": 40000000000,
+    "protocol_fee": 800000000,
+    "drained_bin": true,
+    "bin_x_after": 4968143521317,
+    "bin_y_after": 0
+   }
+  },
+  {
+   "amount_in": 1000000000,
+   "bin_x": 777,
+   "bin_y": 999,
+   "price_q64": "18594835569443250176",
+   "swap_for_y": false,
+   "fee_rate": 2500000,
+   "protocol_share_bps": 1000,
+   "fee_on_input": {
+    "amount_in_consumed": 786,
+    "amount_out": 777,
+    "fee_amount": 2,
+    "protocol_fee": 0,
+    "drained_bin": true,
+    "bin_x_after": 0,
+    "bin_y_after": 1783
+   },
+   "fee_on_output": {
+    "amount_in_consumed": 784,
+    "amount_out": 775,
+    "fee_amount": 2,
+    "protocol_fee": 0,
+    "drained_bin": true,
+    "bin_x_after": 0,
+    "bin_y_after": 1783
+   }
+  },
+  {
+   "amount_in": 1,
+   "bin_x": 1,
+   "bin_y": 1,
+   "price_q64": "18594835569443250176",
+   "swap_for_y": true,
+   "fee_rate": 1,
+   "protocol_share_bps": 0,
+   "fee_on_input": {
+    "amount_in_consumed": 1,
+    "amount_out": 0,
+    "fee_amount": 1,
+    "protocol_fee": 0,
+    "drained_bin": false,
+    "bin_x_after": 1,
+    "bin_y_after": 1
+   },
+   "fee_on_output": {
+    "amount_in_consumed": 1,
+    "amount_out": 0,
+    "fee_amount": 1,
+    "protocol_fee": 0,
+    "drained_bin": true,
+    "bin_x_after": 2,
+    "bin_y_after": 0
+   }
+  },
+  {
+   "amount_in": 9223372036854775808,
+   "bin_x": 1099511627776,
+   "bin_y": 1099511627776,
+   "price_q64": "18594835569443250176",
+   "swap_for_y": true,
+   "fee_rate": 50000000,
+   "protocol_share_bps": 500,
+   "fee_on_input": {
+    "amount_in_consumed": 1148163142730,
+    "amount_out": 1099511627776,
+    "fee_amount": 57408157137,
+    "protocol_fee": 2870407856,
+    "drained_bin": true,
+    "bin_x_after": 2190266613369,
+    "bin_y_after": 0
+   },
+   "fee_on_output": {
+    "amount_in_consumed": 1090754985593,
+    "amount_out": 1044536046387,
+    "fee_amount": 54975581389,
+    "protocol_fee": 2748779069,
+    "drained_bin": true,
+    "bin_x_after": 2190266613369,
+    "bin_y_after": 0
+   }
+  }
+ ]
+}

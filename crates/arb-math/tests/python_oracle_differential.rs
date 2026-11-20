@@ -16,10 +16,22 @@ use serde_json::Value;
 
 fn vectors_dir() -> std::path::PathBuf {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    std::path::Path::new(manifest)
-        .join("../../audit/test_vectors")
-        .canonicalize()
-        .expect("audit/test_vectors must exist (committed to the repo)")
+    let primary = std::path::Path::new(manifest).join("../../audit/test_vectors");
+    if primary.exists() {
+        return primary
+            .canonicalize()
+            .expect("canonicalize primary audit/test_vectors");
+    }
+    let archive = std::path::Path::new(manifest)
+        .join("../../docs/archive/old_audits/external_audit/test_vectors");
+    if archive.exists() {
+        return archive
+            .canonicalize()
+            .expect("canonicalize archive test_vectors");
+    }
+    panic!(
+        "Neither audit/test_vectors nor docs/archive/old_audits/external_audit/test_vectors exists"
+    );
 }
 
 #[test]
