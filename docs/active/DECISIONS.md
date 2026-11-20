@@ -57,21 +57,21 @@ Autonomous agents are prohibited from altering these safety defaults. Live execu
 
 ## 3. Architecture Decision Records (ADRs) Summary
 
-The complete history of formal ADRs is maintained in [`docs/adr/`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr). The active decisions are summarized below:
+The complete history of formal ADRs is maintained in [`docs/adr/`](../../docs/adr). The active decisions are summarized below:
 
 | ADR ID | Title | Status | Decision Summary |
 |---|---|---|---|
-| [`ADR-0001`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0001-remove-arb-live-gate.md) | Retain ARB_LIVE Safety Gate | **Accepted** | Rejected proposal to remove `ARB_LIVE`; safety gate remains mandatory. |
-| [`ADR-0002`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0002-kill-switch-persistence.md) | Kill Switch Persistence | **Accepted** | Kill switch is evaluated on every tick, reading from persistent local file and authenticated memory state. |
-| [`ADR-0003`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0003-protocol-guards-retention.md) | Protocol Guard Retention | **Accepted** | Retain strict fail-closed guards for pool status, bin arrays, and fee rates across all DEX adapters. |
-| [`ADR-0004`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0004-risk-gate-bypass-config.md) | Disallow Risk Gate Bypass | **Accepted** | Prohibit environment flags from silently bypassing the risk gate or preflight simulation. |
-| [`ADR-0005`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0005-simulation-policy.md) | Mandatory Preflight Simulation | **Accepted** | Mandatory live RPC preflight simulation for all transaction candidates before dispatch. |
-| [`ADR-0006`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0006-stream-readiness-guard.md) | Stream Readiness & Slot Guards | **Accepted** | Pipeline halts opportunity generation until live account streams confirm healthy slot progression. |
-| [`ADR-0007`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0007-enable-pumpswap-adapter.md) | PumpSwap Protocol Adapter | **Accepted** | Enable PumpSwap adapter subject to verified fee config and coherent reserve states. |
-| [`ADR-0008`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0008-enable-jupiter-live.md) | Prohibit Direct Jupiter Routing | **Accepted** | Prohibit third-party routing APIs on latency-sensitive paths; maintain native internal route engine. |
-| [`ADR-0009`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0009-split-routing-implementation.md) | Supervisor Module Split | **Accepted** | Split monolithic supervisor into cohesive submodules (`run`, `strategy`, `opportunity`, `dispatch`, `recovery`). |
-| [`ADR-0010`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0010-guard01-quote-guarded-wiring.md) | Pre-Dispatch State Guard (GUARD-01) | **Accepted** | Revalidate stream generation and pool freshness immediately prior to transaction dispatch. |
-| [`ADR-0011`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0011-durable-execution-state-machine.md) | Durable Execution State Machine | **Accepted** | Persist dispatch intents and reconcile ambiguous transactions on startup or timeout. |
-| [`ADR-0012`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0012-fork-simulation-integration.md) | Simulation Engine Policy | **Accepted** | Use Solana JSON-RPC `simulateTransaction` as authoritative preflight; LiteSVM as optional local test accelerator. |
-| [`ADR-0013`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/0013-dex-account-resolution-and-builders.md) | DEX Account Resolution Architecture | **Accepted** | Require complete account dependency resolution before candidate compute scheduling. |
-| [`ADR-0014`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr/ADR-0014_METEORA_DLMM_0_12_COMPATIBILITY.md) | Meteora DLMM 0.12+ Compatibility | **Accepted** | Adopt Meteora DLMM `swap2` instruction and account layout compatibility standards. |
+| [`ADR-0001`](../../docs/adr/0001-remove-arb-live-gate.md) | Retain ARB_LIVE Safety Gate | **Accepted** | Rejected proposal to remove `ARB_LIVE`; safety gate remains mandatory. |
+| [`ADR-0002`](../../docs/adr/0002-kill-switch-persistence.md) | Kill Switch Persistence | **Accepted** | Kill switch is evaluated on every tick, reading from persistent local file and authenticated memory state. |
+| [`ADR-0003`](../../docs/adr/0003-protocol-guards-retention.md) | Protocol Guard Retention | **Accepted** | Retain strict fail-closed guards for pool status, bin arrays, and fee rates across all DEX adapters. |
+| [`ADR-0004`](../../docs/adr/0004-risk-gate-bypass-config.md) | Disallow Risk Gate Bypass | **Accepted** | Prohibit environment flags from silently bypassing the risk gate or preflight simulation. |
+| [`ADR-0005`](../../docs/adr/0005-simulation-policy.md) | Mandatory Preflight Simulation | **Accepted** | Mandatory live RPC preflight simulation for all transaction candidates before dispatch. |
+| [`ADR-0006`](../../docs/adr/0006-stream-readiness-guard.md) | Stream Readiness & Slot Guards | **Accepted** | Pipeline halts opportunity generation until live account streams confirm healthy slot progression. |
+| [`ADR-0007`](../../docs/adr/0007-enable-pumpswap-adapter.md) | PumpSwap Protocol Adapter | **Accepted** | Enable PumpSwap adapter subject to verified fee config and coherent reserve states. |
+| [`ADR-0008`](../../docs/adr/0008-enable-jupiter-live.md) | Prohibit Direct Jupiter Routing | **Accepted** | Prohibit third-party routing APIs on latency-sensitive paths; maintain native internal route engine. |
+| [`ADR-0009`](../../docs/adr/0009-split-routing-implementation.md) | Supervisor Module Split | **Accepted** | Split monolithic supervisor into cohesive submodules (`run`, `strategy`, `opportunity`, `dispatch`, `recovery`). |
+| [`ADR-0010`](../../docs/adr/0010-guard01-quote-guarded-wiring.md) | Pre-Dispatch State Guard (GUARD-01) | **Accepted** | Revalidate stream generation and pool freshness immediately prior to transaction dispatch. |
+| [`ADR-0011`](../../docs/adr/0011-durable-execution-state-machine.md) | Durable Execution State Machine | **Accepted** | Persist dispatch intents and reconcile ambiguous transactions on startup or timeout. |
+| [`ADR-0012`](../../docs/adr/0012-fork-simulation-integration.md) | Simulation Engine Policy | **Accepted** | Use Solana JSON-RPC `simulateTransaction` as authoritative preflight; LiteSVM as optional local test accelerator. |
+| [`ADR-0013`](../../docs/adr/0013-dex-account-resolution-and-builders.md) | DEX Account Resolution Architecture | **Accepted** | Require complete account dependency resolution before candidate compute scheduling. |
+| [`ADR-0014`](../../docs/adr/ADR-0014_METEORA_DLMM_0_12_COMPATIBILITY.md) | Meteora DLMM 0.12+ Compatibility | **Accepted** | Adopt Meteora DLMM `swap2` instruction and account layout compatibility standards. |

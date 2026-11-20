@@ -36,7 +36,7 @@ NEXT_ACTION: [Immediate next task ID and assigned agent role]
 ## 2. Handoff Verification Checklist
 
 Before accepting a handoff, the receiving agent or Supervisor MUST verify:
-1. `TASK_ID` exists in [`docs/active/MASTER_TASK_REGISTER.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_TASK_REGISTER.md).
+1. `TASK_ID` exists in [`docs/active/MASTER_TASK_REGISTER.md`](../../docs/active/MASTER_TASK_REGISTER.md).
 2. `BASE_COMMIT` matches current git branch head.
 3. Every file listed under `FILES_CHANGED` has been committed to a feature branch.
 4. `TEST_RESULTS` contains copy-pasted reproducible command outputs, not verbal assertions.

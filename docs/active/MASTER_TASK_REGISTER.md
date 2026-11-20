@@ -82,8 +82,8 @@ REQUIRED_CHANGE: Authoritative, bare-metal documentation produced and grounded d
 TEST_PLAN: Review all generated deliverables for code accuracy and link integrity.
 ACCEPTANCE_CRITERIA: All Phase 0 deliverables completed and verified against Rust AST.
 ACTUAL_RESULT: All deliverables produced in `docs/active/` with complete cross-references.
-COMMIT: [Pending Documentation PR]
-PR: [Pending Documentation PR]
+COMMIT: b87f7b9
+PR: #91
 REMAINING_RISKS: None.
 NEXT_TASK: TASK-P1-001
 ```
@@ -106,8 +106,8 @@ REQUIRED_CHANGE: Safely archive historical documents into `docs/archive/` (`lega
 TEST_PLAN: Run `python scripts/reorganize_docs.py` and verify `DOCUMENTATION_INVENTORY.md`.
 ACCEPTANCE_CRITERIA: 100% of historical documents preserved with archive notices; zero deletions.
 ACTUAL_RESULT: 315 items relocated to `docs/archive/` subdirectories with banners applied; complete catalog produced in `docs/active/DOCUMENTATION_INVENTORY.md`.
-COMMIT: [Pending Documentation PR]
-PR: [Pending Documentation PR]
+COMMIT: b87f7b9
+PR: #91
 REMAINING_RISKS: None.
 NEXT_TASK: TASK-P1-002
 ```
@@ -126,8 +126,8 @@ REQUIRED_CHANGE: Create clean, cohesive active suite (`README.md`, `MASTER_ROADM
 TEST_PLAN: Verify Markdown formatting, link resolution, and invariant compliance.
 ACCEPTANCE_CRITERIA: Complete active suite in place; root AGENTS.md updated.
 ACTUAL_RESULT: All active documents and agent instruction files generated and verified.
-COMMIT: [Pending Documentation PR]
-PR: [Pending Documentation PR]
+COMMIT: b87f7b9
+PR: #91
 REMAINING_RISKS: None.
 NEXT_TASK: TASK-P1-003
 ```
@@ -136,25 +136,25 @@ NEXT_TASK: TASK-P1-003
 TASK_ID: TASK-P1-003
 PHASE: Phase 1 — Documentation & Agent Reset
 PRIORITY: P0
-STATUS: IN_PROGRESS
+STATUS: VERIFIED
 OBJECTIVE: Open the documentation-only pull request and await review/acceptance before touching trading logic.
 FILES: docs/**, reports/**, evidence/**, AGENTS.md
 FUNCTIONS: N/A
-CURRENT_BEHAVIOR: Documentation changes staged on feature branch `feat/master-roadmap-documentation-reset`.
+CURRENT_BEHAVIOR: N/A (closed).
 ROOT_CAUSE: Step 6/7 of master engineering roadmap requires isolated documentation PR.
 REQUIRED_CHANGE: Commit documentation suite, push branch, open PR via GitHub CLI, and present summary to operator.
 TEST_PLAN: `git status`, `cargo check --workspace`, `git diff --stat`, `gh pr create`.
 ACCEPTANCE_CRITERIA: Pull request opened containing strictly documentation, zero code/trading logic modifications.
-ACTUAL_RESULT: Preparing PR creation turn.
-COMMIT: [Pending]
-PR: [Pending]
+ACTUAL_RESULT: PR #91 merged 2026-11-20T14:29:23Z into `main`; content was documentation-only. Follow-up: 99 broken `file:///c:/Users/azoozz/...` links in active docs repaired to repo-relative links and verified resolving (2026-11-20).
+COMMIT: b87f7b9
+PR: #91
 REMAINING_RISKS: None.
-NEXT_TASK: TASK-P2-001 (Upon PR acceptance)
+NEXT_TASK: TASK-P2-001
 ```
 
 ---
 
-## Phase 2: Critical Correctness Defects (NOT_STARTED — Next PR Target)
+## Phase 2: Critical Correctness Defects (VERIFIED — PRs #93–#98 merged, gate recorded in #99)
 
 ```markdown
 TASK_ID: TASK-P2-001
@@ -169,9 +169,9 @@ ROOT_CAUSE: `ids.sort_unstable()` used as deduplication key in `seen_pool_sets`.
 REQUIRED_CHANGE: Replace sorted pool list with directional `RouteSignature` incorporating ordered hops, input/output mints, swap direction, and protocol IDs.
 TEST_PLAN: Add unit test verifying that inverted cycles on identical pools both survive deduplication.
 ACCEPTANCE_CRITERIA: Deterministic deduplication preserving full directed route identity with passing regression test.
-ACTUAL_RESULT: NOT_STARTED
-COMMIT: TBD
-PR: TBD
+ACTUAL_RESULT: Implemented in `supervisor/route_dedup.rs` with ordered route identity, keep-best duplicate selection, and direction/hop-order regression tests. Live route profitability remains unproven.
+COMMIT: PR #93 head (merged into `main` 2026-11-20)
+PR: #93
 REMAINING_RISKS: Potential increase in duplicate candidates if signature hashing is flawed.
 NEXT_TASK: TASK-P2-002
 ```
@@ -189,9 +189,9 @@ ROOT_CAUSE: Assumption that net profit increases monotonically up to an inflecti
 REQUIRED_CHANGE: Implement bounded integer optimization with discrete boundary checks at tick/bin liquidity limits.
 TEST_PLAN: Unit test with non-monotonic fee and liquidity profile.
 ACCEPTANCE_CRITERIA: Sizing selects maximum profit point without overshooting available bin liquidity.
-ACTUAL_RESULT: NOT_STARTED
-COMMIT: TBD
-PR: TBD
+ACTUAL_RESULT: DLMM local-peak basin ranking (PR #94) plus bounded joint route-and-size search with per-hop re-quotes and bin/tick boundaries (PR #95). Returns best observed candidate within sample budget, not a proven global optimum. Orca active-tick fixture corrected (PR #97). Live Kamino vault-cap decoding and production differential soak remain required.
+COMMIT: PR #94/#95/#97 heads (merged into `main` 2026-11-20)
+PR: #94, #95, #97
 REMAINING_RISKS: Search compute overhead on large graphs.
 NEXT_TASK: TASK-P2-003
 ```
@@ -209,9 +209,9 @@ ROOT_CAUSE: Missing delta check between maximum and minimum snapshot slots among
 REQUIRED_CHANGE: Reject candidates where `max(hop.slot) - min(hop.slot) > max_snapshot_skew_slots` (default 4 slots).
 TEST_PLAN: Regression test providing skewed pool states and verifying fail-closed rejection.
 ACCEPTANCE_CRITERIA: Skewed multi-hop routes rejected before transaction assembly.
-ACTUAL_RESULT: NOT_STARTED
-COMMIT: TBD
-PR: TBD
+ACTUAL_RESULT: No code change required: runtime dependency validation already passes `max_slot_skew = 0` for all route pools (stricter than the 4-slot ceiling) and `dependency_group_checks_provenance_and_slot_skew` rejects divergent watermarks.
+COMMIT: N/A (existing implementation verified)
+PR: N/A
 REMAINING_RISKS: None.
 NEXT_TASK: TASK-P2-004
 ```
@@ -229,9 +229,33 @@ ROOT_CAUSE: Lack of structured simulation outcome enum; slippage parameters misa
 REQUIRED_CHANGE: Introduce `SimulationOutcome` (`PASSED`, `FAILED`, `UNAVAILABLE`, `TIMEOUT`, `STALE`, `UNSUPPORTED`). Reproduce 0x1773 with live pool balance state.
 TEST_PLAN: Mainnet non-broadcast simulation regression test.
 ACCEPTANCE_CRITERIA: Explicit simulation state mapping; 0x1773 root cause identified and fixed without widening slippage.
-ACTUAL_RESULT: NOT_STARTED
-COMMIT: TBD
-PR: TBD
-REMAINING_RISKS: RPC rate limits during live simulation tests.
+ACTUAL_RESULT: Typed `SimulationOutcome` states with fail-closed dispatch preflight landed (PR #93); fake-bin fallback and simulation-error pass-through removed (PR #96); realized/estimated PnL provenance separated (PR #98). `0x1773` root-cause reproduction with original signed transaction and exact snapshot remains OPEN and blocks live execution (see `OPEN_ISSUES.md` ISSUE-P0-04).
+COMMIT: PR #93/#96/#98 heads (merged into `main` 2026-11-20)
+PR: #93, #96, #98
+REMAINING_RISKS: 0x1773 root cause unreproduced; live execution blocked.
 NEXT_TASK: TASK-P3-001
+```
+
+---
+
+## Phase 3: WebSocket Ingestion & State Integrity (EXIT GATE VERIFIED 2026-11-20)
+
+```markdown
+TASK_ID: TASK-P3-001
+PHASE: Phase 3 — WebSocket Ingestion & State Integrity
+PRIORITY: P0
+STATUS: VERIFIED
+OBJECTIVE: Verify Phase 3 exit gate: automated reconnection, missing-account, stale-state, duplicate-update, and provider-failure tests pass; invalid/incomplete state cannot reach quote/execution path.
+FILES: crates/arb-ingest/src/helius_ws.rs, crates/arb-ingest/src/slot_integrity.rs, crates/arb-ingest/src/quote_readiness.rs, crates/arb-ingest/src/provider_supervisor.rs, crates/arb-ingest/src/dependency_manifest.rs
+FUNCTIONS: SlotIntegrity::observe_with_bank, SnapshotReconciler::record_batch, QuoteReadiness execution guard, ProviderSupervisor::failover
+CURRENT_BEHAVIOR: N/A (verification task; no behavior change).
+ROOT_CAUSE: N/A.
+REQUIRED_CHANGE: Execute the arb-ingest test suite on the verified baseline and map each gate criterion to concrete passing tests.
+TEST_PLAN: `cargo test -p arb-ingest` on commit a4524ba baseline.
+ACCEPTANCE_CRITERIA: Reconnection, missing-account, stale-state, duplicate-update, and provider-failure tests all pass with zero failures.
+ACTUAL_RESULT: 2026-11-20 — `cargo test -p arb-ingest`: 162 passed, 0 failed (145 unit + 3 concurrency + 2 CPMM fixture + 5 Oxylabs mock + 1 pool fetch + 3 quota-exhaustion + 3 RPC telemetry). Gate mapping recorded in `CURRENT_STATUS.md` §3. CI `Rust CI` green on `main` (Run ID 44802369313).
+COMMIT: a4524ba (verification ran on this baseline)
+PR: [Phase 3 gate evidence PR]
+REMAINING_RISKS: In-process tests only; Phase 5 comparative WS-vs-gRPC benchmark and live shadow soak remain open (Phase 18 gate).
+NEXT_TASK: TASK-P4-001
 ```

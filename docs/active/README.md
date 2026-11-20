@@ -12,31 +12,31 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 
 | Document | Purpose |
 |---|---|
-| [`MASTER_ROADMAP.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_ROADMAP.md) | **Single Authoritative Roadmap**: Sequential phases from Phase 0 baseline through Phase 19 production readiness. |
-| [`CURRENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_STATUS.md) | **Current Verified Baseline**: Exact commit, compiler, passing tests, and verified vs pending capabilities. |
-| [`CURRENT_ARCHITECTURE.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_ARCHITECTURE.md) | **Authoritative System Architecture**: Crate breakdown, dataflow, concurrency model, and memory layout. |
-| [`OPEN_ISSUES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/OPEN_ISSUES.md) | **Forensic Defect Register**: Prioritized defect register (P0, P1, P2) covering correctness, sizing, and simulation. |
-| [`DECISIONS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DECISIONS.md) | **Engineering Decisions Register**: Single sources of truth, ADR references, integer economics, and V1 wire rules. |
-| [`MASTER_TASK_REGISTER.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_TASK_REGISTER.md) | **Master Task Register**: Granular task tracking using strict handoff schemas across all phases. |
-| [`TEST_STRATEGY.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/TEST_STRATEGY.md) | **Comprehensive Testing Strategy**: Unit, property, differential, fuzz, integration, and simulation suites. |
-| [`PRODUCTION_READINESS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/PRODUCTION_READINESS.md) | **Production Acceptance Matrix**: Formal verification gates, security audit, and live-arming requirements. |
-| [`BASELINE_AUDIT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/BASELINE_AUDIT.md) | **Phase 0 Baseline Audit**: Complete workspace dependency, environment variable, and compiler audit. |
-| [`COMPONENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/COMPONENT_STATUS.md) | **Component Verification Matrix**: Implemented vs wired vs tested vs simulated vs production-verified. |
-| [`CALL_GRAPH.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CALL_GRAPH.md) | **Runtime Call Graph**: Detailed execution trace from startup through ingestion, quoting, sizing, and dispatch. |
-| [`DOCUMENTATION_INVENTORY.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DOCUMENTATION_INVENTORY.md) | **Repository Documentation Inventory**: Comprehensive classification of all active and archived files. |
+| [`MASTER_ROADMAP.md`](../../docs/active/MASTER_ROADMAP.md) | **Single Authoritative Roadmap**: Sequential phases from Phase 0 baseline through Phase 19 production readiness. |
+| [`CURRENT_STATUS.md`](../../docs/active/CURRENT_STATUS.md) | **Current Verified Baseline**: Exact commit, compiler, passing tests, and verified vs pending capabilities. |
+| [`CURRENT_ARCHITECTURE.md`](../../docs/active/CURRENT_ARCHITECTURE.md) | **Authoritative System Architecture**: Crate breakdown, dataflow, concurrency model, and memory layout. |
+| [`OPEN_ISSUES.md`](../../docs/active/OPEN_ISSUES.md) | **Forensic Defect Register**: Prioritized defect register (P0, P1, P2) covering correctness, sizing, and simulation. |
+| [`DECISIONS.md`](../../docs/active/DECISIONS.md) | **Engineering Decisions Register**: Single sources of truth, ADR references, integer economics, and V1 wire rules. |
+| [`MASTER_TASK_REGISTER.md`](../../docs/active/MASTER_TASK_REGISTER.md) | **Master Task Register**: Granular task tracking using strict handoff schemas across all phases. |
+| [`TEST_STRATEGY.md`](../../docs/active/TEST_STRATEGY.md) | **Comprehensive Testing Strategy**: Unit, property, differential, fuzz, integration, and simulation suites. |
+| [`PRODUCTION_READINESS.md`](../../docs/active/PRODUCTION_READINESS.md) | **Production Acceptance Matrix**: Formal verification gates, security audit, and live-arming requirements. |
+| [`BASELINE_AUDIT.md`](../../docs/active/BASELINE_AUDIT.md) | **Phase 0 Baseline Audit**: Complete workspace dependency, environment variable, and compiler audit. |
+| [`COMPONENT_STATUS.md`](../../docs/active/COMPONENT_STATUS.md) | **Component Verification Matrix**: Implemented vs wired vs tested vs simulated vs production-verified. |
+| [`CALL_GRAPH.md`](../../docs/active/CALL_GRAPH.md) | **Runtime Call Graph**: Detailed execution trace from startup through ingestion, quoting, sizing, and dispatch. |
+| [`DOCUMENTATION_INVENTORY.md`](../../docs/active/DOCUMENTATION_INVENTORY.md) | **Repository Documentation Inventory**: Comprehensive classification of all active and archived files. |
 
 ---
 
 ## 2. Agent Operating System
 
-All autonomous agents and human developers must follow the specialized role definitions and handoff protocols in [`docs/agents/`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/):
-- [`docs/agents/README.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/README.md) — System overview
-- [`docs/agents/AGENT_RULES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/AGENT_RULES.md) — Immutable operational rules
-- [`docs/agents/SUPERVISOR.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/SUPERVISOR.md) — Architecture consistency & verification
-- [`docs/agents/QUANT_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/QUANT_AGENT.md) — Quoting math, fees, and sizing
-- [`docs/agents/INGESTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/INGESTION_AGENT.md) — WebSocket feeds & state integrity
-- [`docs/agents/EXECUTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/EXECUTION_AGENT.md) — Flash loans, V1 compiler, and landing
-- [`docs/agents/HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md) — Mandatory structured handoff schema
+All autonomous agents and human developers must follow the specialized role definitions and handoff protocols in [`docs/agents/`](../../docs/agents/):
+- [`docs/agents/README.md`](../../docs/agents/README.md) — System overview
+- [`docs/agents/AGENT_RULES.md`](../../docs/agents/AGENT_RULES.md) — Immutable operational rules
+- [`docs/agents/SUPERVISOR.md`](../../docs/agents/SUPERVISOR.md) — Architecture consistency & verification
+- [`docs/agents/QUANT_AGENT.md`](../../docs/agents/QUANT_AGENT.md) — Quoting math, fees, and sizing
+- [`docs/agents/INGESTION_AGENT.md`](../../docs/agents/INGESTION_AGENT.md) — WebSocket feeds & state integrity
+- [`docs/agents/EXECUTION_AGENT.md`](../../docs/agents/EXECUTION_AGENT.md) — Flash loans, V1 compiler, and landing
+- [`docs/agents/HANDOFF_PROTOCOL.md`](../../docs/agents/HANDOFF_PROTOCOL.md) — Mandatory structured handoff schema
 
 ---
 

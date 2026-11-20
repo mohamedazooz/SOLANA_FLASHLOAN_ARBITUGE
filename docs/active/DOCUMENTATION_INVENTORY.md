@@ -22,32 +22,32 @@ Every document in the repository is classified into one of four distinct categor
 
 | Document Path | Status | Purpose / Description |
 |---|---|---|
-| [`AGENTS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/AGENTS.md) | **Active** | Root agent operating system, required reading, invariants, and engineering standards |
-| [`CLAUDE.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/CLAUDE.md) | **Active** | Agent instructions and toolchain commands |
-| [`GEMINI.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/GEMINI.md) | **Active** | Core quantitative & HFT operating constitution |
-| [`README.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/README.md) | **Active** | Root repository overview and build instructions |
-| [`SECURITY.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/SECURITY.md) | **Active** | Vulnerability disclosure policy and security boundaries |
-| [`docs/active/README.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/README.md) | **Active** | Active documentation navigation guide |
-| [`docs/active/MASTER_ROADMAP.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_ROADMAP.md) | **Active** | Single authoritative roadmap (Phases 0 to 19) |
-| [`docs/active/CURRENT_ARCHITECTURE.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_ARCHITECTURE.md) | **Active** | Authoritative system architecture, crate map, and concurrency model |
-| [`docs/active/CURRENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_STATUS.md) | **Active** | Verified baseline status as of commit `d090123` |
-| [`docs/active/OPEN_ISSUES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/OPEN_ISSUES.md) | **Active** | Forensic defect register prioritized by criticality (P0, P1, P2) |
-| [`docs/active/DECISIONS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DECISIONS.md) | **Active** | Authoritative architecture decision records and engineering invariants |
-| [`docs/active/MASTER_TASK_REGISTER.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_TASK_REGISTER.md) | **Active** | Complete task register with strict schema across all phases |
-| [`docs/active/TEST_STRATEGY.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/TEST_STRATEGY.md) | **Active** | Multi-tiered testing strategy (unit, property, diff, fuzz, sim) |
-| [`docs/active/PRODUCTION_READINESS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/PRODUCTION_READINESS.md) | **Active** | Production readiness criteria, safety gates, and audit checklist |
-| [`docs/active/BASELINE_AUDIT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/BASELINE_AUDIT.md) | **Active** | Phase 0 baseline forensic audit deliverable |
-| [`docs/active/COMPONENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/COMPONENT_STATUS.md) | **Active** | Detailed component status matrix across pipeline stages |
-| [`docs/active/CALL_GRAPH.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CALL_GRAPH.md) | **Active** | End-to-end runtime call graph and execution tracing |
-| [`docs/active/DOCUMENTATION_INVENTORY.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DOCUMENTATION_INVENTORY.md) | **Active** | Complete repository documentation inventory (this document) |
-| [`docs/agents/README.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/README.md) | **Active** | Agent multi-agent operating system overview |
-| [`docs/agents/AGENT_RULES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/AGENT_RULES.md) | **Active** | Core agent operational rules and invariants |
-| [`docs/agents/SUPERVISOR.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/SUPERVISOR.md) | **Active** | Supervisor agent role specification |
-| [`docs/agents/QUANT_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/QUANT_AGENT.md) | **Active** | Quant & Protocol agent role specification |
-| [`docs/agents/INGESTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/INGESTION_AGENT.md) | **Active** | Ingestion & HFT agent role specification |
-| [`docs/agents/EXECUTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/EXECUTION_AGENT.md) | **Active** | Execution & Transaction agent role specification |
-| [`docs/agents/HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md) | **Active** | Mandatory task handoff protocol and template |
-| [`docs/adr/*`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/adr) | **Active** | Architecture Decision Records (ADR-0001 through ADR-0014) |
+| [`AGENTS.md`](../../AGENTS.md) | **Active** | Root agent operating system, required reading, invariants, and engineering standards |
+| [`CLAUDE.md`](../../CLAUDE.md) | **Active** | Agent instructions and toolchain commands |
+| [`GEMINI.md`](../../GEMINI.md) | **Active** | Core quantitative & HFT operating constitution |
+| [`README.md`](../../README.md) | **Active** | Root repository overview and build instructions |
+| [`SECURITY.md`](../../SECURITY.md) | **Active** | Vulnerability disclosure policy and security boundaries |
+| [`docs/active/README.md`](../../docs/active/README.md) | **Active** | Active documentation navigation guide |
+| [`docs/active/MASTER_ROADMAP.md`](../../docs/active/MASTER_ROADMAP.md) | **Active** | Single authoritative roadmap (Phases 0 to 19) |
+| [`docs/active/CURRENT_ARCHITECTURE.md`](../../docs/active/CURRENT_ARCHITECTURE.md) | **Active** | Authoritative system architecture, crate map, and concurrency model |
+| [`docs/active/CURRENT_STATUS.md`](../../docs/active/CURRENT_STATUS.md) | **Active** | Verified baseline status as of commit `d090123` |
+| [`docs/active/OPEN_ISSUES.md`](../../docs/active/OPEN_ISSUES.md) | **Active** | Forensic defect register prioritized by criticality (P0, P1, P2) |
+| [`docs/active/DECISIONS.md`](../../docs/active/DECISIONS.md) | **Active** | Authoritative architecture decision records and engineering invariants |
+| [`docs/active/MASTER_TASK_REGISTER.md`](../../docs/active/MASTER_TASK_REGISTER.md) | **Active** | Complete task register with strict schema across all phases |
+| [`docs/active/TEST_STRATEGY.md`](../../docs/active/TEST_STRATEGY.md) | **Active** | Multi-tiered testing strategy (unit, property, diff, fuzz, sim) |
+| [`docs/active/PRODUCTION_READINESS.md`](../../docs/active/PRODUCTION_READINESS.md) | **Active** | Production readiness criteria, safety gates, and audit checklist |
+| [`docs/active/BASELINE_AUDIT.md`](../../docs/active/BASELINE_AUDIT.md) | **Active** | Phase 0 baseline forensic audit deliverable |
+| [`docs/active/COMPONENT_STATUS.md`](../../docs/active/COMPONENT_STATUS.md) | **Active** | Detailed component status matrix across pipeline stages |
+| [`docs/active/CALL_GRAPH.md`](../../docs/active/CALL_GRAPH.md) | **Active** | End-to-end runtime call graph and execution tracing |
+| [`docs/active/DOCUMENTATION_INVENTORY.md`](../../docs/active/DOCUMENTATION_INVENTORY.md) | **Active** | Complete repository documentation inventory (this document) |
+| [`docs/agents/README.md`](../../docs/agents/README.md) | **Active** | Agent multi-agent operating system overview |
+| [`docs/agents/AGENT_RULES.md`](../../docs/agents/AGENT_RULES.md) | **Active** | Core agent operational rules and invariants |
+| [`docs/agents/SUPERVISOR.md`](../../docs/agents/SUPERVISOR.md) | **Active** | Supervisor agent role specification |
+| [`docs/agents/QUANT_AGENT.md`](../../docs/agents/QUANT_AGENT.md) | **Active** | Quant & Protocol agent role specification |
+| [`docs/agents/INGESTION_AGENT.md`](../../docs/agents/INGESTION_AGENT.md) | **Active** | Ingestion & HFT agent role specification |
+| [`docs/agents/EXECUTION_AGENT.md`](../../docs/agents/EXECUTION_AGENT.md) | **Active** | Execution & Transaction agent role specification |
+| [`docs/agents/HANDOFF_PROTOCOL.md`](../../docs/agents/HANDOFF_PROTOCOL.md) | **Active** | Mandatory task handoff protocol and template |
+| [`docs/adr/*`](../../docs/adr) | **Active** | Architecture Decision Records (ADR-0001 through ADR-0014) |
 
 ---
 
