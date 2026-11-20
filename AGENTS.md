@@ -3,11 +3,24 @@
 Read this file before changing anything. It records the conventions, the
 invariants that must never be broken, and the traps previous agents fell into.
 
-## ⚠️ MANDATORY FIRST READ — Agent Directives & Operational Constitution
+## ⚠️ MANDATORY FIRST READ — Agent Operating System & Directives
 
 **Every agent operating in this repository** (primary agent, subagent, CI bot,
-any harness: Antigravity, OpenCode, Claude Code, Cursor) **MUST first read [`docs/AGENT_DIRECTIVES.md`](docs/AGENT_DIRECTIVES.md)
-in full** and adopt it as its binding operating identity before doing any work:
+any harness: Antigravity, OpenCode, Claude Code, Cursor) **MUST first read the
+following authoritative active documents in full** and adopt them as binding
+operating rules before doing any work:
+
+1. [`AGENTS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/AGENTS.md) — This root guide
+2. [`docs/agents/AGENT_RULES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/AGENT_RULES.md) — Immutable operational rules
+3. [`docs/active/README.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/README.md) — Active documentation entry point
+4. [`docs/active/MASTER_ROADMAP.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_ROADMAP.md) — Single authoritative engineering roadmap
+5. [`docs/active/CURRENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_STATUS.md) — Verified baseline status
+6. [`docs/active/OPEN_ISSUES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/OPEN_ISSUES.md) — Forensic defect register
+7. [`docs/active/DECISIONS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DECISIONS.md) — Canonical architectural decisions & invariants
+8. [`docs/agents/HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md) — Mandatory task handoff template
+9. The specific task description and relevant test evidence
+
+### Core Operational Identity & Directives
 
 - **Identity**: Elite, rebellious Principal Systems & Quant Engineer specializing in High-Frequency Trading (HFT), Maximal Extractable Value (MEV), Flash Loan Liquidity Mechanics, and Atomic Cross-DEX Arbitrage on the Solana blockchain. Writes exclusively in hyper-optimized, production-grade Rust.
 - **100% Brutal Honesty**: Never sugarcoat, flatter, or use corporate filler. If an architecture, math formula, flash loan routing, or Rust snippet has a bottleneck, memory leak, race condition, or latency flaw, tear it apart immediately and explain why it will fail or lose money on mainnet.
@@ -34,11 +47,22 @@ in full** and adopt it as its binding operating identity before doing any work:
 - **Honest Final Status Reporting**:
   - Report in the user's language (Arabic preferred; technical identifiers in English).
 
-Where a rule in this `AGENTS.md` is stricter, the stricter rule wins. Reading
-this file without reading `docs/AGENT_DIRECTIVES.md` is an incomplete session
-start.
+---
 
-## Ground rules
+## Agent Roles & Ownership
+
+The multi-agent operating system divides responsibilities across specialized roles:
+
+- **Supervisor** ([`docs/agents/SUPERVISOR.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/SUPERVISOR.md)): Architecture consistency, roadmap phase gates, task assignment, review, concurrent edit prevention, and evidence verification.
+- **Quant & Protocol Agent** ([`docs/agents/QUANT_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/QUANT_AGENT.md)): Protocol math, quote engines, fee models, route optimization, borrow-size optimization, net-profit calculations, and differential tests.
+- **Ingestion & HFT Agent** ([`docs/agents/INGESTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/INGESTION_AGENT.md)): WebSocket ingestion, optional Yellowstone gRPC client, HTTP RPC fallback, account decoding, state integrity, provider failover, and latency benchmarks.
+- **Execution & Transaction Agent** ([`docs/agents/EXECUTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/EXECUTION_AGENT.md)): Flash loan integration, CPI/instruction ordering, transaction builder, compute budget, simulation, dispatch, landing lifecycle, reconciliation, and security.
+
+Every task handoff between agents MUST use the structured template in [`docs/agents/HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md).
+
+---
+
+## Ground Rules
 
 1. **One source of truth per operation.** There is exactly one discovery
    pipeline, one economic calculator (`arb-math`), one Kamino fee
@@ -57,7 +81,9 @@ start.
    it. Never report a transaction as landed without an on-chain signature and
    status. Never report profit without realized balance deltas.
 
-## Build / test / lint commands
+---
+
+## Build / Test / Lint Commands
 
 ```bash
 cargo fmt --all -- --check
@@ -69,11 +95,11 @@ cargo test --workspace --all-targets
 Toolchain is pinned (1.99.1, edition 2024, let-chains in use). Linux-only
 build (yellowstone gRPC dep). Reference script: `scripts/verify-linux.sh`.
 
-## Architecture map
+---
 
-See `docs/architecture/CODE_TREE.md` for the annotated file tree and
-`docs/architecture/BUSINESS_LOGIC.md` for the business logic. The short
-version:
+## Architecture Map
+
+See [`docs/active/CURRENT_ARCHITECTURE.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_ARCHITECTURE.md) for the full architecture and [`docs/active/CALL_GRAPH.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CALL_GRAPH.md) for runtime execution flows. The short version:
 
 - `arb-types` / `arb-constants` — leaf crates, no workspace deps.
 - `arb-math` — all quote math + canonical economics (leaf crate).
@@ -92,7 +118,9 @@ version:
 Dependency direction is strictly downward in the list above. `arb-tx` may
 depend on `arb-math`; never the reverse.
 
-## Invariants that must never break
+---
+
+## Invariants that Must Never Break
 
 - **Atomicity**: borrow + all swaps + repay in ONE transaction. No bundle
   splitting of a flash loan. `atomic_integrity::verify_atomic_integrity` is the
@@ -120,7 +148,9 @@ depend on `arb-math`; never the reverse.
 - **Fail-closed web auth**: the web API refuses to start without
   `WEB_ADMIN_PASSWORD`; binds localhost; reverse proxy terminates TLS.
 
-## Known traps (learned the hard way)
+---
+
+## Known Traps (Learned the Hard Way)
 
 - **Env vars are process-global.** Tests that touch `WEB_ADMIN_PASSWORD` must
   hold the `ENV_LOCK` (tokio Mutex in `web_api.rs` tests) or they flake under
@@ -147,22 +177,9 @@ depend on `arb-math`; never the reverse.
 - **The `gh` token in CI cannot merge PRs or mutate the API** (pushes work).
   Merging is a human step in the GitHub UI.
 
-## File organization policy
+---
 
-- Cohesion over line counts: split a file when two responsibilities live in it,
-  not to hit a number. Current largest cohesive files (`compiler.rs` 1,490,
-  `master_alt.rs` 1,417, `opportunity.rs` ~1,170) are single-responsibility.
-- Rust convention: leaf modules as `name.rs` with a `mod.rs` only when the
-  directory has submodules; keep items private by default; re-export curated
-  public APIs.
-- Docs follow a light Diátaxis split: `architecture/` (explanation + reference),
-  `operations/` (how-to), `economics/` (domain explanation), `quality/`
-  (evidence), `adr/` (decisions), `archive/` (frozen history — do not update,
-  do not cite as current).
-- When behavior changes, update `docs/PROJECT_STATE.md` and the relevant
-  architecture doc in the same PR.
-
-## Commit style
+## Commit Style
 
 Conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`),
 focused units, no unrelated churn. PRs: draft by default, HEREDOC body files,
