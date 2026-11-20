@@ -36,6 +36,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### ISSUE-P0-02: Non-Monotonic Profit Assumption in Borrow Sizing
 
+- **Status**: The Meteora size optimizer already samples multiple basins and reports `best_observed_candidate`, not a proven global optimum. This branch fixes a concrete pruning bug where the first local peaks by input size were refined regardless of profit. Joint route-by-size search across the graph-generated DLMM→CPMM and multi-hop paths remains open and is tracked separately; no global-optimum claim is made.
+
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: Coarse-to-fine integer search assumes that profit curves are quasi-concave or monotonic with respect to borrow size.
 - **Root Cause**: In concentrated liquidity (Meteora DLMM bins, Orca Whirlpools), crossing tick boundaries or hitting empty bins introduces non-linear discontinuities and fee cliffs. A coarse sample can miss profitable narrow liquidity bins or overshoot into empty bins.
@@ -45,6 +47,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ---
 
 ### ISSUE-P0-03: Multi-Hop Route State Coherency and Stale Snapshot Skew
+
+- **Status**: Existing runtime validation gathers all route dependency stamps together and enforces `max_slot_skew = 0`, with stale/future/mixed-provider/bank states rejected. The ingestion layer has a regression test for slot skew. This is verified in code; add an end-to-end route test if future dependency aggregation changes.
 
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: A candidate route with 2 or 3 hops can assemble pools whose snapshots were taken at divergent slots (e.g., Hop 1 at slot $S$, Hop 2 at slot $S-50$).
