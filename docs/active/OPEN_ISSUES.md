@@ -61,9 +61,10 @@ This register tracks all identified engineering defects, correctness gaps, and a
   2. Fixed slippage allowances without dynamic quote drift adjustment cause reverts on fast-moving pools.
 - **Required Fix**:
   1. Introduce strongly typed `SimulationOutcome` enum with complete log capture.
-  2. Perform deep forensic reproduction of error `0x1773` to determine exact pool balance drift during simulation.
+  2. Reproduce error `0x1773` with a same-snapshot quote and account state, then record the expected and actual output for each hop.
   3. Never silently widen slippage to mask execution errors.
 - **Regression Test**: Simulation harness verifying proper error categorization and bounded slippage behavior.
+- **Forensic status (2026-11-20)**: The opt-in mainnet diagnostic previously substituted active bin `-6542` when the pool read failed and returned success when `simulateTransaction` reported an RPC error or an on-chain revert. It also hardcodes a `1_500_000` token-unit minimum for the first hop and repeats that amount as the second hop input. The harness now fails closed on missing pool state, RPC errors, missing simulation fields, zero compute units, or a non-null simulation error. This establishes that the old “pass” result was not evidence of successful execution. A same-bank quote and replay are still required to attribute the historical `0x1773` to price movement, fees, account state, or the hardcoded threshold; production slippage was not widened.
 
 ---
 
