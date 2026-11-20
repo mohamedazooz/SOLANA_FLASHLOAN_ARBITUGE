@@ -488,27 +488,33 @@ impl Supervisor {
                     // RPC simulation: fail-closed safety check before dispatch
                     let sim_started = std::time::Instant::now();
                     match self.simulator.simulate_async(tx_bytes.as_slice()).await {
-                        Ok(sim_res) => {
+                        Ok(mut sim_res) => {
+                            sim_res.enforce_quote_freshness(
+                                opp.slot.0,
+                                self.config.strategy.max_state_age_slots,
+                            );
                             let sim_us = sim_started.elapsed().as_micros() as f64;
                             arb_metrics::observe_simulation_latency_us(sim_us);
                             debug!(
                                 "Pre-flight simulation latency: {:.0} µs (CU={:?})",
                                 sim_us, sim_res.units_consumed
                             );
-                            if sim_res.success && sim_res.units_consumed > 0 {
+                            if sim_res.status == arb_sim::SimulationStatus::Passed {
                                 self.measured_cu.lock().insert(
                                     route_sig.to_owned(),
                                     u32::try_from(sim_res.units_consumed).unwrap_or(u32::MAX),
                                 );
                                 preflight_cu = Some(sim_res.units_consumed);
                             }
-                            if !sim_res.success {
+                            if sim_res.status != arb_sim::SimulationStatus::Passed {
                                 warn!(
-                                    "Pre-flight simulation failed ({:?}) - skipping bundle dispatch",
-                                    sim_res.error
+                                    "Pre-flight simulation rejected ({:?}: {:?}) - skipping bundle dispatch; logs={:?}",
+                                    sim_res.status, sim_res.error, sim_res.logs
                                 );
-                                let reason_msg =
-                                    format!("محاكاة المعاملة فشلت على الشبكة: {:?}", sim_res.error);
+                                let reason_msg = format!(
+                                    "محاكاة المعاملة رُفضت ({:?}): {:?}",
+                                    sim_res.status, sim_res.error
+                                );
                                 self.record_rejected_opportunity(
                                     crate::telegram::RejectedTradeSummary {
                                         route: route_label.to_string(),
@@ -552,56 +558,35 @@ impl Supervisor {
                                     arb_metrics::observe_simulation_latency_us(
                                         sim_started.elapsed().as_micros() as f64,
                                     );
-                                    let sim_err = sim_val.get("err").and_then(|ev| {
-                                        if ev.is_null() {
-                                            None
-                                        } else {
-                                            Some(ev.to_string())
+                                    let mut fallback = match arb_sim::parse_simulation_response(
+                                        &sim_val,
+                                    ) {
+                                        Ok(result) => result,
+                                        Err(parse_error) => {
+                                            warn!(
+                                                "Fallback simulation response was incomplete ({parse_error}); failing closed"
+                                            );
+                                            return;
                                         }
-                                    });
-                                    let units_consumed = sim_val
-                                        .get("unitsConsumed")
-                                        .and_then(|u| u.as_u64())
-                                        .unwrap_or(0);
-                                    if sim_err.is_none() && units_consumed > 0 {
+                                    };
+                                    fallback.enforce_quote_freshness(
+                                        opp.slot.0,
+                                        self.config.strategy.max_state_age_slots,
+                                    );
+                                    if fallback.status != arb_sim::SimulationStatus::Passed {
+                                        warn!(
+                                            "Fallback simulation rejected ({:?}: {:?}); failing closed; logs={:?}",
+                                            fallback.status, fallback.error, fallback.logs
+                                        );
+                                        return;
+                                    }
+                                    let units_consumed = fallback.units_consumed;
+                                    if units_consumed > 0 {
                                         self.measured_cu.lock().insert(
                                             route_sig.to_owned(),
                                             u32::try_from(units_consumed).unwrap_or(u32::MAX),
                                         );
                                         preflight_cu = Some(units_consumed);
-                                    }
-                                    if let Some(err_str) = sim_err {
-                                        warn!(
-                                            "Pre-flight fallback simulation failed ({err_str}) - skipping bundle dispatch"
-                                        );
-                                        let reason_msg = format!(
-                                            "محاكاة المعاملة فشلت على الشبكة (Fallback RPC): {err_str}"
-                                        );
-                                        self.record_rejected_opportunity(
-                                            crate::telegram::RejectedTradeSummary {
-                                                route: route_label.to_string(),
-                                                gross_sol,
-                                                stage: "Pre-flight Simulation".to_string(),
-                                                reason: reason_msg.clone(),
-                                                slot: current_slot.0,
-                                                pools_count,
-                                                loan_size_sol,
-                                                net_sol: Some(profit_sol),
-                                            },
-                                        );
-                                        self.telegram
-                                            .alert_opportunity_rejected(
-                                                route_label,
-                                                gross_sol,
-                                                "Pre-flight Simulation",
-                                                &reason_msg,
-                                                current_slot.0,
-                                                pools_count,
-                                                loan_size_sol,
-                                                Some(profit_sol),
-                                            )
-                                            .await;
-                                        return;
                                     }
                                     info!(
                                         "✅ Fallback RpcPool pre-flight simulation succeeded (CU={units_consumed})"

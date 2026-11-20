@@ -1344,7 +1344,8 @@ impl RpcPool {
                 json!([b64_tx, serde_json::Value::Object(config)]),
             )
             .await?;
-        Ok(res["value"].clone())
+        // Keep `context.slot` so callers can enforce quote freshness.
+        Ok(res)
     }
 
     /// Query a transaction signature. This is deliberately separate from Jito bundle IDs.
