@@ -16,6 +16,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### ISSUE-P0-01: Route Deduplication Discards Direction and Hop Sequence
 
+- **Status**: Fixed in `fix/atomic-arb-mvp`; ordered route identity and best-quote retention are implemented in `supervisor/route_dedup.rs`. Regression tests cover direction, hop order, same pool set, and profit selection. The live profitability of any route remains unproven.
+
 - **File**: `crates/arb-bot/src/supervisor/strategy.rs` (Lines 388–400)
 - **Observed Behavior**:
   ```rust
@@ -34,6 +36,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### ISSUE-P0-02: Non-Monotonic Profit Assumption in Borrow Sizing
 
+- **Status**: The Meteora size optimizer already samples multiple basins and reports `best_observed_candidate`, not a proven global optimum. This branch fixes a concrete pruning bug where the first local peaks by input size were refined regardless of profit. Joint route-by-size search across the graph-generated DLMM→CPMM and multi-hop paths remains open and is tracked separately; no global-optimum claim is made.
+
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: Coarse-to-fine integer search assumes that profit curves are quasi-concave or monotonic with respect to borrow size.
 - **Root Cause**: In concentrated liquidity (Meteora DLMM bins, Orca Whirlpools), crossing tick boundaries or hitting empty bins introduces non-linear discontinuities and fee cliffs. A coarse sample can miss profitable narrow liquidity bins or overshoot into empty bins.
@@ -43,6 +47,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ---
 
 ### ISSUE-P0-03: Multi-Hop Route State Coherency and Stale Snapshot Skew
+
+- **Status**: Existing runtime validation gathers all route dependency stamps together and enforces `max_slot_skew = 0`, with stale/future/mixed-provider/bank states rejected. The ingestion layer has a regression test for slot skew. This is verified in code; add an end-to-end route test if future dependency aggregation changes.
 
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: A candidate route with 2 or 3 hops can assemble pools whose snapshots were taken at divergent slots (e.g., Hop 1 at slot $S$, Hop 2 at slot $S-50$).
@@ -54,15 +60,17 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### ISSUE-P0-04: Implicit Simulation Error Mapping & Slippage Revert 0x1773
 
+- **Status**: Simulation fail-open path fixed; `0x1773` root cause remains open pending deterministic replay with the original signed transaction and exact account snapshot. Slippage limits remain unchanged. See `reports/phase17_cross_dex/PHASE17_CORRECTION_2026-11-20.md`.
+
 - **Files**: `crates/arb-sim/src/lib.rs`, `crates/arb-bot/src/supervisor/dispatch.rs`
-- **Observed Behavior**: Simulation errors have occasionally triggered Anchor error `0x1773` (ConstraintRaw / SlippageExceeded) on multi-hop executions.
+- **Observed Behavior**: The independent Phase 17 audit records Meteora `ExceededAmountSlippageTolerance` (`0x1773`) during a non-broadcast simulation. That proves the attempted instruction exceeded its on-chain minimum under that simulated state; it does not identify whether quote drift, quote construction, pool state, or instruction data caused the mismatch.
 - **Root Cause**:
-  1. Simulation outcomes are represented as boolean `success` and string `error` rather than an explicit enum (`PASSED`, `FAILED`, `UNAVAILABLE`, `TIMEOUT`, `STALE`, `UNSUPPORTED`).
-  2. Fixed slippage allowances without dynamic quote drift adjustment cause reverts on fast-moving pools.
+  1. Simulation outcomes were represented as boolean `success` and string `error`, and the fallback path could accept incomplete responses.
+  2. The precise source of the recorded slippage failure is not proven by the available artifacts.
 - **Required Fix**:
-  1. Introduce strongly typed `SimulationOutcome` enum with complete log capture.
-  2. Reproduce error `0x1773` with a same-snapshot quote and account state, then record the expected and actual output for each hop.
-  3. Never silently widen slippage to mask execution errors.
+  1. ✅ Introduce typed simulation statuses and fail closed on missing execution evidence, zero compute units, or stale context.
+  2. ⏳ Reproduce error `0x1773` using the original signed transaction and exact pool/account snapshot, and record per-hop quote/minimum-output provenance.
+  3. ✅ Keep current slippage limits unchanged until the failed assumption is identified and justified.
 - **Regression Test**: Simulation harness verifying proper error categorization and bounded slippage behavior.
 - **Forensic status (2026-11-20)**: The opt-in mainnet diagnostic previously substituted active bin `-6542` when the pool read failed and returned success when `simulateTransaction` reported an RPC error or an on-chain revert. It also hardcodes a `1_500_000` token-unit minimum for the first hop and repeats that amount as the second hop input. The harness now fails closed on missing pool state, RPC errors, missing simulation fields, zero compute units, or a non-null simulation error. This establishes that the old “pass” result was not evidence of successful execution. A same-bank quote and replay are still required to attribute the historical `0x1773` to price movement, fees, account state, or the hardcoded threshold; production slippage was not widened.
 

@@ -999,7 +999,7 @@ async fn test_matrix_06_insufficient_kamino_liquidity_rejected() {
 }
 
 #[tokio::test]
-async fn test_matrix_13_supervisor_duplicate_dispatch_deduplication() {
+async fn test_matrix_13_supervisor_single_route_attempt() {
     let (supervisor, signer) = setup_test_supervisor("sup_matrix_13");
     let slot = unique_test_slot(1_300_000_000);
 
@@ -1091,19 +1091,7 @@ async fn test_matrix_13_supervisor_duplicate_dispatch_deduplication() {
         hop_slippage_bps: 10,
     };
 
-    // Verify discovery level pool deduplication logic
-    let mut seen_pool_sets = std::collections::HashSet::new();
-    let mut opps = vec![opp.clone(), opp.clone()];
-    opps.retain(|o| {
-        let mut ids: Vec<Pubkey> = o.hops.iter().map(|h| h.pool_id.0).collect();
-        ids.sort_unstable();
-        seen_pool_sets.insert(ids)
-    });
-    assert_eq!(
-        opps.len(),
-        1,
-        "Duplicate opportunity pool-set must be deduplicated to exactly 1"
-    );
+    let opps = vec![opp.clone()];
 
     let kamino = KaminoFlashParams::default_wsol();
     let pools = vec![pool_dlmm, pool_cpmm];
@@ -1139,7 +1127,7 @@ async fn test_matrix_13_supervisor_duplicate_dispatch_deduplication() {
     assert_eq!(
         slot_attempts.len(),
         1,
-        "Only a single attempt must be recorded after deduplication"
+        "A single valid opportunity must record exactly one attempt"
     );
 }
 

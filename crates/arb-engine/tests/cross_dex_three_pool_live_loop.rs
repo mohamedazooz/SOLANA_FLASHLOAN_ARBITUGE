@@ -176,8 +176,9 @@ fn meme_c_mint() -> MintId {
     MintId(Pubkey::new_from_array([92u8; 32]))
 }
 
-/// Orca Whirlpool fixture at price 1.0 (sqrt_price = 2^64) with the active-tick
-/// tick arrays supplied, mirroring the adapter-test fixture pattern.
+/// Orca Whirlpool fixture just above price 1.0 with the active tick arrays
+/// supplied. The price must be inside the active tick, not exactly on its lower
+/// boundary, so both directions have nonzero input capacity.
 fn orca_clmm_pool(id: u8, a: MintId, b: MintId) -> PoolState {
     PoolState {
         pool_id: PoolId::new([id; 32]),
@@ -196,9 +197,9 @@ fn orca_clmm_pool(id: u8, a: MintId, b: MintId) -> PoolState {
         has_risky_token: false,
         kind: PoolKind::Clmm,
         clmm: Some(ClmmState {
-            sqrt_price: 1u128 << 64,
+            sqrt_price: arb_math::clmm::tick_index_to_sqrt_price_x64(1).unwrap(),
             liquidity: 1_000_000_000_000,
-            tick_current: 0,
+            tick_current: 1,
             tick_spacing: 4,
             fee_rate: 3_000,
             tick_arrays: vec![
