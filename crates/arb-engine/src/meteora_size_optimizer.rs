@@ -288,61 +288,14 @@ impl MeteoraDlmmTradeSizeOptimizer {
             return None;
         }
 
-        // 2. Multi-Basin Candidate Detection (Rejecting global unimodality)
-        // Find local maxima and high-yield candidate points across the coarse grid
-        let mut candidate_basins: Vec<(u64, u64)> = Vec::new(); // (bracket_lo, bracket_hi)
-        for i in 0..evaluated_sizes.len() {
-            let left_val = if i > 0 {
-                tested_evaluations[i - 1].net_profit_quote_raw
-            } else {
-                i64::MIN
-            };
-            let right_val = if i + 1 < evaluated_sizes.len() {
-                tested_evaluations[i + 1].net_profit_quote_raw
-            } else {
-                i64::MIN
-            };
-            let cur_val = tested_evaluations[i].net_profit_quote_raw;
-
-            // Local maximum or edge boundary peak
-            if cur_val >= left_val && cur_val >= right_val {
-                let b_lo = if i > 0 {
-                    evaluated_sizes[i - 1]
-                } else {
-                    evaluated_sizes[i]
-                };
-                let b_hi = if i + 1 < evaluated_sizes.len() {
-                    evaluated_sizes[i + 1]
-                } else {
-                    evaluated_sizes[i]
-                };
-                candidate_basins.push((b_lo, b_hi));
-            }
-        }
-
-        // If no strict local peaks found, take top candidate points by net profit
-        if candidate_basins.is_empty() {
-            let mut indexed: Vec<(usize, i64)> = tested_evaluations
-                .iter()
-                .enumerate()
-                .map(|(i, e)| (i, e.net_profit_quote_raw))
-                .collect();
-            indexed.sort_by_key(|&(_, p)| std::cmp::Reverse(p));
-            for &(idx, _) in indexed.iter().take(cfg.max_candidate_basins) {
-                let b_lo = if idx > 0 {
-                    evaluated_sizes[idx - 1]
-                } else {
-                    evaluated_sizes[idx]
-                };
-                let b_hi = if idx + 1 < evaluated_sizes.len() {
-                    evaluated_sizes[idx + 1]
-                } else {
-                    evaluated_sizes[idx]
-                };
-                candidate_basins.push((b_lo, b_hi));
-            }
-        }
-        candidate_basins.truncate(cfg.max_candidate_basins);
+        // 2. Multi-basin detection. Rank every discovered basin by its coarse
+        // net profit before applying the work cap; encounter order is size order
+        // and must not decide which profitable regions get refined.
+        let candidate_basins = select_candidate_basins(
+            &evaluated_sizes,
+            &tested_evaluations,
+            cfg.max_candidate_basins,
+        );
 
         // 3. Discrete Fine Search around EACH candidate basin (Integer arithmetic only)
         let mut fine_search_intervals = Vec::new();
@@ -429,5 +382,99 @@ impl MeteoraDlmmTradeSizeOptimizer {
             (None, Some(b)) => Some(b),
             (None, None) => None,
         }
+    }
+}
+
+fn select_candidate_basins(
+    sizes: &[u64],
+    evaluations: &[TestedSizeEvaluation],
+    max_basins: usize,
+) -> Vec<(u64, u64)> {
+    if sizes.is_empty() || sizes.len() != evaluations.len() || max_basins == 0 {
+        return Vec::new();
+    }
+
+    let mut peaks: Vec<usize> = (0..sizes.len())
+        .filter(|&i| {
+            let value = evaluations[i].net_profit_quote_raw;
+            let left = i
+                .checked_sub(1)
+                .map(|j| evaluations[j].net_profit_quote_raw)
+                .unwrap_or(i64::MIN);
+            let right = evaluations
+                .get(i + 1)
+                .map(|next| next.net_profit_quote_raw)
+                .unwrap_or(i64::MIN);
+            value >= left && value >= right
+        })
+        .collect();
+
+    if peaks.is_empty() {
+        peaks.extend(0..sizes.len());
+    }
+
+    peaks.sort_by_key(|&i| {
+        (
+            std::cmp::Reverse(evaluations[i].net_profit_quote_raw),
+            sizes[i],
+        )
+    });
+    peaks.truncate(max_basins);
+    peaks
+        .into_iter()
+        .map(|i| {
+            (
+                sizes[i.saturating_sub(1)],
+                sizes[(i + 1).min(sizes.len() - 1)],
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TestedSizeEvaluation, select_candidate_basins};
+    use crate::meteora_size_optimizer::DlmmArbitrageDirection;
+
+    fn evaluation(size: u64, profit: i64) -> TestedSizeEvaluation {
+        TestedSizeEvaluation {
+            direction: DlmmArbitrageDirection::DirectionA,
+            trade_size: size,
+            hop1_out: 0,
+            hop2_out: 0,
+            fees_hop1_raw: 0,
+            fees_hop2_raw: 0,
+            total_fees_raw: 0,
+            network_costs_quote_raw: 0,
+            net_profit_quote_raw: profit,
+            net_profit_bps: 0,
+            compute_units: 0,
+            required_bin_arrays_hop1: 0,
+            required_bin_arrays_hop2: 0,
+            total_bin_arrays: 0,
+        }
+    }
+
+    #[test]
+    fn refines_highest_profit_basins_even_when_they_appear_late() {
+        let sizes = [10, 20, 30, 40, 50, 60, 70, 80, 90];
+        let profits = [1, 10, 1, 20, 1, 30, 1, 40, 1];
+        let evaluations: Vec<_> = sizes
+            .iter()
+            .zip(profits)
+            .map(|(&size, profit)| evaluation(size, profit))
+            .collect();
+
+        assert_eq!(
+            select_candidate_basins(&sizes, &evaluations, 3),
+            vec![(70, 90), (50, 70), (30, 50)]
+        );
+    }
+
+    #[test]
+    fn invalid_or_empty_coarse_data_has_no_basins() {
+        assert!(select_candidate_basins(&[], &[], 4).is_empty());
+        assert!(select_candidate_basins(&[1], &[], 4).is_empty());
+        assert!(select_candidate_basins(&[1], &[evaluation(1, 2)], 0).is_empty());
     }
 }

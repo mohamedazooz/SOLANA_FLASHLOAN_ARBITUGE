@@ -382,23 +382,12 @@ impl Supervisor {
             let (graph_edges, graph_anchors) =
                 (graph.edges_by_from.len(), graph.base_anchors.len());
 
-            // Merge + dedupe by sorted pool set, then rank by net profit so
-            // the most profitable route is processed first.
+            // Merge candidate sources, preserving route direction and retaining
+            // the best net-profit quote for each exact ordered route.
             let mut merged: Vec<ExecutionOpportunity> = opps;
-            let mut seen_pool_sets: HashSet<Vec<Pubkey>> = Default::default();
-            for o in &merged {
-                let mut ids: Vec<Pubkey> = o.hops.iter().map(|h| h.pool_id.0).collect();
-                ids.sort_unstable();
-                seen_pool_sets.insert(ids);
-            }
-            for mut src in [bf_opps, multi_opps] {
-                src.retain(|o| {
-                    let mut ids: Vec<Pubkey> = o.hops.iter().map(|h| h.pool_id.0).collect();
-                    ids.sort_unstable();
-                    seen_pool_sets.insert(ids)
-                });
-                merged.extend(src);
-            }
+            merged.extend(bf_opps);
+            merged.extend(multi_opps);
+            let merged = super::route_dedup::dedupe_best_by_route(merged);
             let ranked = rank_opportunities_cross_mint(merged);
             info!(
                 "Slot {}: graph discovered {} candidate route(s) after dedupe; graph edges={}, base_anchors={}",
@@ -407,9 +396,9 @@ impl Supervisor {
                 graph_edges,
                 graph_anchors
             );
-            (ranked, seen_pool_sets)
+            ranked
         };
-        let (mut merged, mut seen_pool_sets) = opportunities;
+        let mut merged = opportunities;
         arb_metrics::observe_route_discovery_latency_us(
             discovery_start.elapsed().as_micros() as f64
         );
@@ -487,15 +476,8 @@ impl Supervisor {
             }
         }
 
-        // Merge the 3-leg class with the same sorted-pool-set dedupe, then
-        // rank by net profit so the most profitable route is processed first.
-        let mut three_leg_opps = three_leg_opps;
-        three_leg_opps.retain(|o| {
-            let mut ids: Vec<Pubkey> = o.hops.iter().map(|h| h.pool_id.0).collect();
-            ids.sort_unstable();
-            seen_pool_sets.insert(ids)
-        });
         merged.extend(three_leg_opps);
+        merged = super::route_dedup::dedupe_best_by_route(merged);
 
         // ── Pump.fun BOOST Migration surveillance pass ──
         // Scan active Pump.fun curves nearing completion in the sweet-spot band [40..75 SOL].

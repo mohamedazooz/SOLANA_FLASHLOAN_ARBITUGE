@@ -59,6 +59,7 @@ config/config.toml
 .kilocode/
 .DS_Store
 Thumbs.db
+.vscode/mcp.json
 
 *.zip
 
