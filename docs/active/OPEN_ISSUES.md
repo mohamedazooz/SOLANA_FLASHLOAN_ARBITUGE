@@ -36,7 +36,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### ISSUE-P0-02: Non-Monotonic Profit Assumption in Borrow Sizing
 
-- **Status**: The Meteora size optimizer already samples multiple basins and reports `best_observed_candidate`, not a proven global optimum. This branch fixes a concrete pruning bug where the first local peaks by input size were refined regardless of profit. Joint route-by-size search across the graph-generated DLMM→CPMM and multi-hop paths remains open and is tracked separately; no global-optimum claim is made.
+- **Status**: Graph-generated 2–6 hop paths now use bounded, multi-basin route-by-size search, including exact re-quotes and canonical net-profit evaluation; active bin/tick ceilings seed the search. The dedicated DLMM optimizer also refines the highest-profit basins first. Both report a best observed candidate, not a mathematically proven global optimum. Continue differential sizing tests against exhaustive small ranges and live snapshots before production use.
 
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: Coarse-to-fine integer search assumes that profit curves are quasi-concave or monotonic with respect to borrow size.
