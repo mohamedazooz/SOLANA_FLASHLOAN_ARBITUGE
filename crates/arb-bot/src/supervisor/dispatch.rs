@@ -1119,9 +1119,16 @@ impl Supervisor {
                                     // Phase E: track bundle landed for landing rate
                                     risk_gate.record_bundle_landed(Slot(effective_slot), true);
                                     arb_metrics::inc_fills();
-                                    // MATH-02: metrics consume the on-chain actual
-                                    // when it exists, never the pre-dispatch estimate.
-                                    arb_metrics::add_net_profit(realized_reported_sol);
+                                    // Keep evidence-backed PnL out of the estimate
+                                    // series. A landed transaction without balance
+                                    // metadata is still an estimate, not realized PnL.
+                                    if actual_realized_net.is_some() {
+                                        arb_metrics::add_net_profit(realized_reported_sol);
+                                    } else {
+                                        arb_metrics::add_estimated_landed_net_profit(
+                                            realized_reported_sol,
+                                        );
+                                    }
                                     arb_metrics::set_breaker_state(0);
 
                                     let effective_leader = js
