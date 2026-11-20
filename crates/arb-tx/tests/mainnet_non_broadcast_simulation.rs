@@ -402,7 +402,8 @@ async fn test_mainnet_non_broadcast_simulation_cross_dex_dlmm_cpmm_kamino_v1() {
         .build()
         .unwrap();
 
-    // Query active_bin_id for Meteora DLMM SOL-USDC pool (fallback to recent active_bin_id on RPC timeout)
+    // Query active_bin_id for Meteora DLMM SOL-USDC pool. This diagnostic must
+    // not fabricate an account state when the RPC read fails.
     let dlmm_pool = Pubkey::from_str(arb_constants::METEORA_SOL_USDC_POOL).unwrap();
     let pool_req = json!({
         "jsonrpc": "2.0",
@@ -414,30 +415,42 @@ async fn test_mainnet_non_broadcast_simulation_cross_dex_dlmm_cpmm_kamino_v1() {
         ]
     });
 
-    let active_bin_id = match client.post(&rpc_url).json(&pool_req).send().await {
-        Ok(resp) => {
-            if let Ok(pool_json) = resp.json::<Value>().await {
-                pool_json
-                    .get("result")
-                    .and_then(|r| r.get("value"))
-                    .and_then(|v| v.get("data"))
-                    .and_then(|d| d.get(0))
-                    .and_then(|s| s.as_str())
-                    .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-                    .and_then(|bytes| {
-                        if bytes.len() >= 80 {
-                            Some(i32::from_le_bytes(bytes[76..80].try_into().unwrap()))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(-6542)
-            } else {
-                -6542
-            }
-        }
-        Err(_) => -6542,
-    };
+    let pool_response = client
+        .post(&rpc_url)
+        .json(&pool_req)
+        .send()
+        .await
+        .expect("RPC getAccountInfo POST failed");
+    assert!(
+        pool_response.status().is_success(),
+        "RPC getAccountInfo returned HTTP status {}",
+        pool_response.status()
+    );
+    let pool_json: Value = pool_response
+        .json()
+        .await
+        .expect("RPC getAccountInfo response JSON decode failed");
+    assert!(
+        pool_json.get("error").is_none(),
+        "RPC getAccountInfo returned error: {}",
+        pool_json.get("error").unwrap_or(&Value::Null)
+    );
+    let pool_data = pool_json
+        .get("result")
+        .and_then(|result| result.get("value"))
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.get(0))
+        .and_then(Value::as_str)
+        .expect("RPC getAccountInfo did not return base64 pool account data");
+    let pool_bytes = base64::engine::general_purpose::STANDARD
+        .decode(pool_data)
+        .expect("RPC getAccountInfo returned invalid base64 pool data");
+    assert!(
+        pool_bytes.len() >= 80,
+        "Meteora DLMM pool account is too short to contain active_bin_id: {} bytes",
+        pool_bytes.len()
+    );
+    let active_bin_id = i32::from_le_bytes(pool_bytes[76..80].try_into().unwrap());
 
     println!("Live Meteora DLMM active_bin_id: {active_bin_id}");
 
@@ -573,10 +586,11 @@ async fn test_mainnet_non_broadcast_simulation_cross_dex_dlmm_cpmm_kamino_v1() {
         signed_v1.wire_size()
     );
 
-    if let Some(err) = json_resp.get("error") {
-        println!("RPC returned error: {err}");
-        return;
-    }
+    assert!(
+        json_resp.get("error").is_none(),
+        "RPC simulateTransaction returned error: {}",
+        json_resp.get("error").unwrap_or(&Value::Null)
+    );
 
     let result_val = json_resp
         .get("result")
@@ -585,13 +599,13 @@ async fn test_mainnet_non_broadcast_simulation_cross_dex_dlmm_cpmm_kamino_v1() {
         .get("context")
         .and_then(|c| c.get("slot"))
         .and_then(|s| s.as_u64())
-        .unwrap_or(0);
+        .expect("RPC simulateTransaction response is missing context.slot");
 
     let val = result_val.get("value").expect("Missing result.value");
     let units_consumed = val
         .get("unitsConsumed")
         .and_then(|u| u.as_u64())
-        .unwrap_or(0);
+        .expect("RPC simulateTransaction response is missing unitsConsumed");
 
     let logs: Vec<String> = val
         .get("logs")
@@ -603,18 +617,39 @@ async fn test_mainnet_non_broadcast_simulation_cross_dex_dlmm_cpmm_kamino_v1() {
         })
         .unwrap_or_default();
 
-    let err = val.get("err");
+    let err = val
+        .get("err")
+        .expect("RPC simulateTransaction response is missing value.err");
 
     println!("Context Slot: {}", context_slot);
     println!("Units Consumed: {}", units_consumed);
     println!("Logs Count: {}", logs.len());
     println!("Simulation Execution Error: {:?}", err);
-    for (i, log) in logs.iter().enumerate() {
-        println!("  [{:02}] {}", i, log);
+    for (i, log) in logs
+        .iter()
+        .rev()
+        .take(32)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .enumerate()
+    {
+        let bounded_log: String = log.chars().take(512).collect();
+        println!("  [{:02}] {}", i, bounded_log);
     }
 
     assert!(
         context_slot > 200_000_000,
         "Context slot must be a valid recent Solana mainnet slot"
+    );
+    assert!(units_consumed > 0, "Simulation must consume compute units");
+    assert!(
+        err.is_null(),
+        "Cross-DEX simulation reverted for borrow_amount={} lamports, first_hop_min_out={} token units, second_hop_amount_in={} token units, repayment_floor={} lamports at context_slot={}: err={err}; inspect the bounded logs above. The fixed diagnostic thresholds are not live quotes.",
+        borrow_amount,
+        1_500_000,
+        1_500_000,
+        borrow_amount + flash_fee,
+        context_slot
     );
 }
