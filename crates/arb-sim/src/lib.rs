@@ -3,7 +3,8 @@
 //! Provides Solana RPC simulateTransaction verification, CU estimation,
 //! and slippage validation before private bundle submission.
 
-use arb_types::{ArbError, Lamports, Result};
+use arb_types::Lamports;
+use thiserror::Error;
 
 pub mod fork_sim;
 pub mod litesvm_sim;
@@ -33,13 +34,66 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info};
 
+/// Explicit status for a simulation attempt. Only `Passed` is eligible for dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SimulationStatus {
+    Passed,
+    Failed,
+    Unavailable,
+    Timeout,
+    Stale,
+    Unsupported,
+}
+
+/// Error returned when the RPC could not produce a valid simulation result.
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize)]
+#[error("simulation {status:?}: {message}")]
+pub struct SimulationError {
+    pub status: SimulationStatus,
+    pub message: String,
+}
+
+impl SimulationError {
+    fn new(status: SimulationStatus, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+        }
+    }
+}
+
+pub type SimulationResult<T> = std::result::Result<T, SimulationError>;
+
 /// Structured outcome of a transaction simulation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimResult {
-    pub success: bool,
+    pub status: SimulationStatus,
     pub units_consumed: u64,
     pub logs: Vec<String>,
     pub error: Option<String>,
+    pub context_slot: Option<u64>,
+}
+
+impl SimResult {
+    /// Mark successful output stale when the RPC bank is outside the quote's freshness window.
+    pub fn enforce_quote_freshness(&mut self, quote_slot: u64, max_slot_lag: u64) {
+        if self.status != SimulationStatus::Passed {
+            return;
+        }
+
+        let Some(context_slot) = self.context_slot else {
+            self.status = SimulationStatus::Unavailable;
+            self.error = Some("simulation response omitted context.slot".into());
+            return;
+        };
+
+        if context_slot.abs_diff(quote_slot) > max_slot_lag {
+            self.status = SimulationStatus::Stale;
+            self.error = Some(format!(
+                "simulation context slot {context_slot} differs from quote slot {quote_slot} by more than {max_slot_lag}"
+            ));
+        }
+    }
 }
 
 /// Offline / shadow profit check.
@@ -56,7 +110,7 @@ pub fn shadow_check(expected_net: Lamports, min_profit: Lamports) -> bool {
 
 /// Trait for pre-flight simulators.
 pub trait SimulatorTrait: Send + Sync {
-    fn simulate(&self, tx_bytes: &[u8]) -> Result<SimResult>;
+    fn simulate(&self, tx_bytes: &[u8]) -> SimulationResult<SimResult>;
 }
 
 /// Live Solana RPC Simulator using `simulateTransaction`.
@@ -86,7 +140,7 @@ impl RpcSimulator {
     }
 
     /// Asynchronously simulate a transaction via Solana JSON-RPC.
-    pub async fn simulate_async(&self, tx_bytes: &[u8]) -> Result<SimResult> {
+    pub async fn simulate_async(&self, tx_bytes: &[u8]) -> SimulationResult<SimResult> {
         let b64 = base64_encode(tx_bytes);
         let params = simulate_transaction_params(&b64, tx_bytes);
         let body = json!({
@@ -102,58 +156,137 @@ impl RpcSimulator {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ArbError::Internal(format!("RPC connection error: {e}")))?;
+            .map_err(|e| {
+                let status = if e.is_timeout() {
+                    SimulationStatus::Timeout
+                } else {
+                    SimulationStatus::Unavailable
+                };
+                SimulationError::new(status, format!("RPC connection error: {e}"))
+            })?;
 
-        let val: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ArbError::Internal(format!("RPC JSON parse error: {e}")))?;
-
-        if let Some(err_val) = val.get("error") {
-            return Err(ArbError::SimulationFailed(err_val.to_string()));
+        if !resp.status().is_success() {
+            return Err(SimulationError::new(
+                SimulationStatus::Unavailable,
+                format!("RPC returned HTTP status {}", resp.status()),
+            ));
         }
 
-        let result_val = val
-            .get("result")
-            .and_then(|r| r.get("value"))
-            .ok_or_else(|| ArbError::SimulationFailed("Missing simulation result value".into()))?;
+        let val: serde_json::Value = resp.json().await.map_err(|e| {
+            SimulationError::new(
+                SimulationStatus::Unavailable,
+                format!("RPC JSON parse error: {e}"),
+            )
+        })?;
 
-        let err = result_val.get("err").and_then(|e| {
-            if e.is_null() {
-                None
+        if let Some(err_val) = val.get("error") {
+            let error = err_val.to_string();
+            let status = if error
+                .to_ascii_lowercase()
+                .contains("unsupported transaction version")
+                || error
+                    .to_ascii_lowercase()
+                    .contains("maxsupportedtransactionversion")
+            {
+                SimulationStatus::Unsupported
             } else {
-                Some(e.to_string())
-            }
-        });
+                SimulationStatus::Unavailable
+            };
+            return Err(SimulationError::new(status, error));
+        }
 
-        let units_consumed = result_val
-            .get("unitsConsumed")
-            .and_then(|u| u.as_u64())
-            .unwrap_or(0);
+        let result = val.get("result").ok_or_else(|| {
+            SimulationError::new(SimulationStatus::Unavailable, "missing simulation result")
+        })?;
 
-        let logs = result_val
-            .get("logs")
-            .and_then(|l| l.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let success = err.is_none();
-        debug!(
-            "Simulation completed: success={} units={} error={:?}",
-            success, units_consumed, err
-        );
-
-        Ok(SimResult {
-            success,
-            units_consumed,
-            logs,
-            error: err,
-        })
+        parse_simulation_response(result)
     }
+}
+
+/// Parse a Solana `simulateTransaction` result object (`result`, including `context` and `value`).
+/// Missing execution evidence is classified as unavailable and can never pass the gate.
+pub fn parse_simulation_response(value: &serde_json::Value) -> SimulationResult<SimResult> {
+    let result_value = value.get("value").ok_or_else(|| {
+        SimulationError::new(
+            SimulationStatus::Unavailable,
+            "missing simulation result value",
+        )
+    })?;
+
+    let err_value = result_value.get("err").ok_or_else(|| {
+        SimulationError::new(
+            SimulationStatus::Unavailable,
+            "simulation result omitted err field",
+        )
+    })?;
+
+    let error = (!err_value.is_null()).then(|| err_value.to_string());
+
+    let units_consumed = result_value
+        .get("unitsConsumed")
+        .and_then(|u| u.as_u64())
+        .ok_or_else(|| {
+            SimulationError::new(
+                SimulationStatus::Unavailable,
+                "simulation result omitted unitsConsumed",
+            )
+        })?;
+
+    let context_slot = value
+        .get("context")
+        .and_then(|context| context.get("slot"))
+        .and_then(serde_json::Value::as_u64);
+
+    let logs = result_value
+        .get("logs")
+        .and_then(|l| l.as_array())
+        .map(|arr| {
+            const MAX_SIMULATION_LOG_LINES: usize = 64;
+            const MAX_SIMULATION_LOG_BYTES: usize = 512;
+            arr.iter()
+                .filter_map(|item| item.as_str())
+                .take(MAX_SIMULATION_LOG_LINES)
+                .map(|line| {
+                    if line.len() <= MAX_SIMULATION_LOG_BYTES {
+                        line.to_owned()
+                    } else {
+                        let mut end = MAX_SIMULATION_LOG_BYTES;
+                        while !line.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}…[truncated]", &line[..end])
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if error.is_none() && units_consumed == 0 {
+        return Err(SimulationError::new(
+            SimulationStatus::Unavailable,
+            "simulation reported success without positive unitsConsumed",
+        ));
+    }
+
+    let status = if error.is_some() {
+        SimulationStatus::Failed
+    } else if context_slot.is_none() {
+        SimulationStatus::Unavailable
+    } else {
+        SimulationStatus::Passed
+    };
+
+    debug!(
+        "Simulation completed: status={status:?} slot={context_slot:?} units={units_consumed} error={error:?}"
+    );
+
+    Ok(SimResult {
+        status,
+        units_consumed,
+        logs,
+        error,
+        context_slot,
+    })
 }
 
 /// Pre-Flight Transaction Simulator with Live RPC support.
@@ -177,17 +310,18 @@ impl Simulator {
     }
 
     /// Simulate transaction asynchronously using live Solana JSON-RPC `simulateTransaction`.
-    pub async fn simulate_async(&self, tx_bytes: &[u8]) -> Result<SimResult> {
+    pub async fn simulate_async(&self, tx_bytes: &[u8]) -> SimulationResult<SimResult> {
         match self.rpc_sim {
             Some(ref rpc) => rpc.simulate_async(tx_bytes).await,
-            None => Err(ArbError::Internal(
-                "simulation requested but no RPC endpoint is configured".into(),
+            None => Err(SimulationError::new(
+                SimulationStatus::Unavailable,
+                "no RPC endpoint is configured",
             )),
         }
     }
 
     /// Synchronous simulation entry point.
-    pub fn simulate(&self, tx_bytes: &[u8]) -> Result<SimResult> {
+    pub fn simulate(&self, tx_bytes: &[u8]) -> SimulationResult<SimResult> {
         if let Some(ref rpc) = self.rpc_sim {
             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                 tokio::task::block_in_place(|| handle.block_on(rpc.simulate_async(tx_bytes)))
@@ -195,12 +329,15 @@ impl Simulator {
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(|e| ArbError::Internal(e.to_string()))?;
+                    .map_err(|e| {
+                        SimulationError::new(SimulationStatus::Unavailable, e.to_string())
+                    })?;
                 rt.block_on(rpc.simulate_async(tx_bytes))
             }
         } else {
-            Err(ArbError::Internal(
-                "simulation requested but no RPC endpoint is configured".into(),
+            Err(SimulationError::new(
+                SimulationStatus::Unavailable,
+                "no RPC endpoint is configured",
             ))
         }
     }
@@ -210,13 +347,13 @@ impl Simulator {
         simulate_locally(tx_bytes)
     }
 
-    pub fn simulate_bundle(&self, txs: &[Vec<u8>]) -> Result<Vec<SimResult>> {
+    pub fn simulate_bundle(&self, txs: &[Vec<u8>]) -> SimulationResult<Vec<SimResult>> {
         txs.iter().map(|tx| self.simulate(tx)).collect()
     }
 }
 
 impl SimulatorTrait for Simulator {
-    fn simulate(&self, tx_bytes: &[u8]) -> Result<SimResult> {
+    fn simulate(&self, tx_bytes: &[u8]) -> SimulationResult<SimResult> {
         self.simulate(tx_bytes)
     }
 }
@@ -255,6 +392,69 @@ mod tests {
             res.is_err(),
             "missing RPC endpoint was reported as a successful simulation"
         );
+        assert_eq!(res.unwrap_err().status, SimulationStatus::Unavailable);
+    }
+
+    fn rpc_result(err: serde_json::Value, units: u64, slot: Option<u64>) -> serde_json::Value {
+        let mut result = json!({ "value": { "err": err, "unitsConsumed": units, "logs": [] } });
+        if let Some(slot) = slot {
+            result["context"] = json!({ "slot": slot });
+        }
+        result
+    }
+
+    #[test]
+    fn simulation_parser_requires_execution_and_context_evidence() {
+        let passed = parse_simulation_response(&rpc_result(serde_json::Value::Null, 10, Some(100)))
+            .expect("valid RPC result");
+        assert_eq!(passed.status, SimulationStatus::Passed);
+        assert_eq!(passed.context_slot, Some(100));
+
+        let failed = parse_simulation_response(&rpc_result(
+            json!({"InstructionError": [0, "x"]}),
+            10,
+            Some(100),
+        ))
+        .expect("on-chain simulation failure is structured output");
+        assert_eq!(failed.status, SimulationStatus::Failed);
+
+        assert_eq!(
+            parse_simulation_response(&json!({"value": {"unitsConsumed": 10}}))
+                .unwrap_err()
+                .status,
+            SimulationStatus::Unavailable
+        );
+        assert_eq!(
+            parse_simulation_response(&json!({"value": {"err": null}}))
+                .unwrap_err()
+                .status,
+            SimulationStatus::Unavailable
+        );
+        assert_eq!(
+            parse_simulation_response(&rpc_result(serde_json::Value::Null, 10, None))
+                .unwrap()
+                .status,
+            SimulationStatus::Unavailable
+        );
+        assert_eq!(
+            parse_simulation_response(&rpc_result(serde_json::Value::Null, 0, Some(100)))
+                .unwrap_err()
+                .status,
+            SimulationStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn simulation_quote_freshness_is_enforced() {
+        let mut within_window =
+            parse_simulation_response(&rpc_result(serde_json::Value::Null, 10, Some(99))).unwrap();
+        within_window.enforce_quote_freshness(100, 2);
+        assert_eq!(within_window.status, SimulationStatus::Passed);
+
+        let mut stale =
+            parse_simulation_response(&rpc_result(serde_json::Value::Null, 10, Some(103))).unwrap();
+        stale.enforce_quote_freshness(100, 2);
+        assert_eq!(stale.status, SimulationStatus::Stale);
     }
 
     #[test]
