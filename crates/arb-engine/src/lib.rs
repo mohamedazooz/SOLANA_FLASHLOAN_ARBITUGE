@@ -59,15 +59,15 @@ pub use three_leg_meme_pipeline::{
 };
 pub mod three_pool_router;
 pub use three_pool_router::*;
+mod route_sizing;
 
 use arb_math::{
-    DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters, Leg,
-    cpmm::clamp_at_marginal_ceiling_two_pool,
-    cpmm_out, cpmm_price_impact_bps,
+    DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters, cpmm_out,
+    cpmm_price_impact_bps,
     economic::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
     },
-    optimal_three_pool, optimal_two_pool, quote_clmm, quote_dlmm_view,
+    quote_clmm, quote_dlmm_view,
 };
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolExecutionAccounts, PoolId,
@@ -361,6 +361,11 @@ pub struct BaseCycleScanStats {
     pub opportunities: u64,
 }
 
+struct RouteOptimizationOutcome {
+    opportunity: Option<ExecutionOpportunity>,
+    had_gross_profitable_sample: bool,
+}
+
 impl MarketGraph {
     pub fn new(base_anchors: Vec<MintId>) -> Self {
         Self {
@@ -469,6 +474,175 @@ impl MarketGraph {
 
             expected_min_final_output: 0,
         })
+    }
+
+    /// Jointly quote and size one concrete directed route using the canonical
+    /// economic gate. Liquidity boundaries from each hop become explicit search
+    /// seeds, and every sampled size is re-quoted through the complete path.
+    fn optimize_route_candidate(
+        &self,
+        base_mint: MintId,
+        current_slot: Slot,
+        route_id: RouteId,
+        max_trade_size: u64,
+        edges: &[&MarketEdge],
+    ) -> Option<RouteOptimizationOutcome> {
+        if edges.len() < 2 || edges.len() > 6 || max_trade_size == 0 {
+            return None;
+        }
+
+        let capacities: Vec<Option<u64>> = edges
+            .iter()
+            .map(|edge| Self::edge_max_input_capacity(edge))
+            .collect();
+        let mut upper = max_trade_size;
+        let mut boundary_seeds = Vec::new();
+
+        // Back-propagate each hop's input ceiling to the route's initial input.
+        // Swap output is monotone in input for supported adapters; the final
+        // candidate is always re-quoted exactly before eligibility is evaluated.
+        for (hop_index, capacity) in capacities.iter().enumerate() {
+            let Some(capacity) = capacity else {
+                continue;
+            };
+            if *capacity == 0 {
+                return None;
+            }
+            let mut low = 0u64;
+            let mut high = upper;
+            while low < high {
+                let mid = low + (high - low).div_ceil(2);
+                let amount = Self::amount_before_hop(edges, mid, hop_index);
+                if amount.is_some_and(|value| value <= u128::from(*capacity)) {
+                    low = mid;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            upper = low;
+            if upper > 0 {
+                boundary_seeds.push(upper);
+                boundary_seeds.push(upper.saturating_sub(1));
+            }
+        }
+        if upper == 0 {
+            return None;
+        }
+        boundary_seeds.push(upper);
+
+        let had_gross_profitable_sample = std::cell::Cell::new(false);
+        let result = route_sizing::optimize_bounded_non_monotonic(
+            upper,
+            32,
+            4,
+            8,
+            &boundary_seeds,
+            |size_in| {
+                let hop_inputs = Self::quote_route_input_ladder(edges, size_in, &capacities)?;
+                let final_out = u128::from(*hop_inputs.last()?);
+                if final_out <= u128::from(size_in) {
+                    return None;
+                }
+                had_gross_profitable_sample.set(true);
+
+                let first = edges.first()?;
+                let impact = cpmm_price_impact_bps(
+                    u128::from(size_in),
+                    first.reserve_in,
+                    first.reserve_out,
+                    10_000u128.saturating_sub(u128::from(first.fee_bps)),
+                );
+                let hops = edges
+                    .iter()
+                    .map(|edge| SwapHop {
+                        pool_id: edge.pool_id,
+                        protocol: edge.protocol,
+                        mint_in: edge.from_mint,
+                        mint_out: edge.to_mint,
+                        fee_bps: edge.fee_bps,
+                        active_bin_id: edge.active_bin_id,
+                        token_programs: edge.token_programs,
+                        trade_intent: Default::default(),
+                        execution_accounts: edge.execution_accounts.clone(),
+                    })
+                    .collect();
+                let opportunity = self.make_economic_opportunity(
+                    base_mint,
+                    current_slot,
+                    route_id,
+                    size_in,
+                    final_out,
+                    hop_inputs,
+                    impact,
+                    hops,
+                )?;
+                Some((opportunity.clone(), i128::from(opportunity.net_profit.0)))
+            },
+        );
+        let opportunity = result.map(|result| {
+            debug_assert!(result.evaluated_count > 0);
+            debug_assert_eq!(result.input, result.candidate.size_in.as_u64());
+            debug_assert_eq!(result.score, i128::from(result.candidate.net_profit.0));
+            result.candidate
+        });
+        Some(RouteOptimizationOutcome {
+            opportunity,
+            had_gross_profitable_sample: had_gross_profitable_sample.get(),
+        })
+    }
+
+    fn amount_before_hop(edges: &[&MarketEdge], size_in: u64, hop_index: usize) -> Option<u128> {
+        let mut amount = u128::from(size_in);
+        for edge in edges.iter().take(hop_index) {
+            let gamma = 10_000u128.saturating_sub(u128::from(edge.fee_bps));
+            amount = quote_pool(
+                edge.kind,
+                amount,
+                edge.reserve_in,
+                edge.reserve_out,
+                gamma,
+                Some(edge),
+            );
+        }
+        Some(amount)
+    }
+
+    /// Return per-hop inputs followed by the final output, rejecting any
+    /// candidate that exceeds a hop's active tick/bin input capacity.
+    fn quote_route_input_ladder(
+        edges: &[&MarketEdge],
+        size_in: u64,
+        capacities: &[Option<u64>],
+    ) -> Option<Vec<u64>> {
+        let mut amount = u128::from(size_in);
+        let mut ladder = Vec::with_capacity(edges.len() + 1);
+        ladder.push(size_in);
+
+        for (index, edge) in edges.iter().enumerate() {
+            let amount_u64 = u64::try_from(amount).ok()?;
+            if capacities
+                .get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|capacity| amount_u64 > capacity)
+            {
+                return None;
+            }
+            let gamma = 10_000u128.saturating_sub(u128::from(edge.fee_bps));
+            amount = quote_pool(
+                edge.kind,
+                amount,
+                edge.reserve_in,
+                edge.reserve_out,
+                gamma,
+                Some(edge),
+            );
+            if amount == 0 {
+                return None;
+            }
+            ladder.push(u64::try_from(amount).ok()?);
+        }
+        Some(ladder)
     }
 
     /// Rebuild graph from active pool states.
@@ -668,115 +842,23 @@ impl MarketGraph {
                 for e2 in second_hops {
                     // Case 1: 2-Hop Arbitrage (Base -> inter1 -> Base) across different pools
                     if e2.to_mint == base && e1.pool_id != e2.pool_id {
-                        let l1 = Leg {
-                            r_in: e1.reserve_in,
-                            r_out: e1.reserve_out,
-                            gamma: 10_000u128.saturating_sub(e1.fee_bps as u128),
-                        };
-                        let l2 = Leg {
-                            r_in: e2.reserve_in,
-                            r_out: e2.reserve_out,
-                            gamma: 10_000u128.saturating_sub(e2.fee_bps as u128),
-                        };
-
-                        let non_cpmm_hops = (e1.kind != PoolKind::Cpmm) as usize
-                            + (e2.kind != PoolKind::Cpmm) as usize;
-                        let initial_size = optimal_two_pool(&l1, &l2).or(if non_cpmm_hops > 0 {
-                            Some(100_000)
-                        } else {
-                            None
-                        });
-
-                        if let Some(opt_size) = initial_size {
-                            let mut size_in = opt_size.min(max_trade_size);
-                            // Two-sided CLMM & DLMM active tick/bin capacity clamping (Hop 1)
-                            if let Some(c1) = Self::edge_max_input_capacity(e1) {
-                                if c1 > 0 {
-                                    size_in = size_in.min(c1);
-                                }
+                        let route_id = RouteId(route_counter);
+                        let route_edges = [e1, e2];
+                        if let Some(outcome) = self.optimize_route_candidate(
+                            base,
+                            current_slot,
+                            route_id,
+                            max_trade_size,
+                            &route_edges,
+                        ) {
+                            if outcome.had_gross_profitable_sample {
+                                stats.two_hop_gross_profitable += 1;
                             }
-                            if size_in > 0 {
-                                let mut out1 = quote_pool(
-                                    e1.kind,
-                                    size_in as u128,
-                                    l1.r_in,
-                                    l1.r_out,
-                                    l1.gamma,
-                                    Some(e1),
-                                );
-                                // Two-sided CLMM & DLMM active tick/bin capacity clamping (Hop 2)
-                                if let Some(c2) = Self::edge_max_input_capacity(e2) {
-                                    if c2 > 0 && out1 > c2 as u128 {
-                                        size_in = ((size_in as u128 * c2 as u128) / out1) as u64;
-                                        out1 = quote_pool(
-                                            e1.kind,
-                                            size_in as u128,
-                                            l1.r_in,
-                                            l1.r_out,
-                                            l1.gamma,
-                                            Some(e1),
-                                        );
-                                    }
-                                }
-                                if size_in > 0 {
-                                    let out2 = quote_pool(
-                                        e2.kind,
-                                        out1,
-                                        l2.r_in,
-                                        l2.r_out,
-                                        l2.gamma,
-                                        Some(e2),
-                                    );
-                                    if out2 > size_in as u128 {
-                                        stats.two_hop_gross_profitable += 1;
-                                        let impact = cpmm_price_impact_bps(
-                                            size_in as u128,
-                                            l1.r_in,
-                                            l1.r_out,
-                                            l1.gamma,
-                                        );
-                                        let hop_inputs = vec![size_in, out1 as u64, out2 as u64];
-                                        let hops = vec![
-                                            SwapHop {
-                                                pool_id: e1.pool_id,
-                                                protocol: e1.protocol,
-                                                mint_in: e1.from_mint,
-                                                mint_out: e1.to_mint,
-                                                fee_bps: e1.fee_bps,
-                                                active_bin_id: e1.active_bin_id,
-                                                token_programs: e1.token_programs,
-                                                trade_intent: Default::default(),
-                                                execution_accounts: e1.execution_accounts.clone(),
-                                            },
-                                            SwapHop {
-                                                pool_id: e2.pool_id,
-                                                protocol: e2.protocol,
-                                                mint_in: e2.from_mint,
-                                                mint_out: e2.to_mint,
-                                                fee_bps: e2.fee_bps,
-                                                active_bin_id: e2.active_bin_id,
-                                                token_programs: e2.token_programs,
-                                                trade_intent: Default::default(),
-                                                execution_accounts: e2.execution_accounts.clone(),
-                                            },
-                                        ];
-                                        if let Some(opp) = self.make_economic_opportunity(
-                                            base,
-                                            current_slot,
-                                            RouteId(route_counter),
-                                            size_in,
-                                            out2,
-                                            hop_inputs,
-                                            impact,
-                                            hops,
-                                        ) {
-                                            opportunities.push(opp);
-                                            route_counter += 1;
-                                        } else {
-                                            stats.gate_rejected += 1;
-                                        }
-                                    }
-                                }
+                            if let Some(opportunity) = outcome.opportunity {
+                                opportunities.push(opportunity);
+                                route_counter = route_counter.saturating_add(1);
+                            } else if outcome.had_gross_profitable_sample {
+                                stats.gate_rejected += 1;
                             }
                         }
                         continue;
@@ -803,241 +885,23 @@ impl MarketGraph {
                             continue;
                         }
 
-                        let l1 = Leg {
-                            r_in: e1.reserve_in,
-                            r_out: e1.reserve_out,
-                            gamma: 10_000u128.saturating_sub(e1.fee_bps as u128),
-                        };
-                        let l2 = Leg {
-                            r_in: e2.reserve_in,
-                            r_out: e2.reserve_out,
-                            gamma: 10_000u128.saturating_sub(e2.fee_bps as u128),
-                        };
-                        let l3 = Leg {
-                            r_in: e3.reserve_in,
-                            r_out: e3.reserve_out,
-                            gamma: 10_000u128.saturating_sub(e3.fee_bps as u128),
-                        };
-
-                        let dlmm_hops = (e1.kind == PoolKind::Dlmm) as usize
-                            + (e2.kind == PoolKind::Dlmm) as usize
-                            + (e3.kind == PoolKind::Dlmm) as usize;
-                        let initial_size = optimal_three_pool(&l1, &l2, &l3).or(if dlmm_hops > 0 {
-                            Some(100_000)
-                        } else {
-                            None
-                        });
-
-                        if let Some(opt_size) = initial_size {
-                            let mut size_in = opt_size.min(max_trade_size);
-
-                            // Active-bin bottleneck expansion for Meteora DLMM routes
-                            if dlmm_hops >= 2 {
-                                if let (Some(c1), Some(c2), Some(c3)) = (
-                                    Self::edge_max_input_capacity(e1),
-                                    Self::edge_max_input_capacity(e2),
-                                    Self::edge_max_input_capacity(e3),
-                                ) {
-                                    if c1 > 0 && c2 > 0 && c3 > 0 {
-                                        let probe_in = 100_000u64.min(c1).min(max_trade_size);
-                                        if probe_in > 0 {
-                                            let p_out1 = quote_pool(
-                                                e1.kind,
-                                                probe_in as u128,
-                                                l1.r_in,
-                                                l1.r_out,
-                                                l1.gamma,
-                                                Some(e1),
-                                            );
-                                            let p_out2 = quote_pool(
-                                                e2.kind,
-                                                p_out1,
-                                                l2.r_in,
-                                                l2.r_out,
-                                                l2.gamma,
-                                                Some(e2),
-                                            );
-                                            let p_out3 = quote_pool(
-                                                e3.kind,
-                                                p_out2,
-                                                l3.r_in,
-                                                l3.r_out,
-                                                l3.gamma,
-                                                Some(e3),
-                                            );
-                                            if p_out3 > probe_in as u128 {
-                                                let probe_profit =
-                                                    (p_out3 - probe_in as u128) as u64;
-                                                let hop2_in_equiv = (probe_in as u128 * c2 as u128)
-                                                    .checked_div(p_out1)
-                                                    .unwrap_or(0)
-                                                    as u64;
-                                                let hop3_in_equiv = (probe_in as u128 * c3 as u128)
-                                                    .checked_div(p_out2)
-                                                    .unwrap_or(0)
-                                                    as u64;
-                                                let (scaled_in, _) =
-                                                    arb_math::dlmm::scale_dlmm_three_hop_input(
-                                                        probe_in,
-                                                        probe_profit,
-                                                        c1,
-                                                        hop2_in_equiv,
-                                                        hop3_in_equiv,
-                                                        max_trade_size,
-                                                    );
-                                                if scaled_in > size_in {
-                                                    size_in = scaled_in;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                        let route_id = RouteId(route_counter);
+                        let route_edges = [e1, e2, e3];
+                        if let Some(outcome) = self.optimize_route_candidate(
+                            base,
+                            current_slot,
+                            route_id,
+                            max_trade_size,
+                            &route_edges,
+                        ) {
+                            if outcome.had_gross_profitable_sample {
+                                stats.three_hop_gross_profitable += 1;
                             }
-
-                            // Two-sided CLMM & DLMM active tick/bin capacity clamping (Hop 1)
-                            if let Some(c1) = Self::edge_max_input_capacity(e1) {
-                                if c1 > 0 {
-                                    size_in = size_in.min(c1);
-                                }
-                            }
-                            if size_in > 0 {
-                                let mut out1 = quote_pool(
-                                    e1.kind,
-                                    size_in as u128,
-                                    l1.r_in,
-                                    l1.r_out,
-                                    l1.gamma,
-                                    Some(e1),
-                                );
-                                // Two-sided CLMM & DLMM active tick/bin capacity clamping (Hop 2)
-                                if let Some(c2) = Self::edge_max_input_capacity(e2) {
-                                    if c2 > 0 && out1 > c2 as u128 {
-                                        size_in = ((size_in as u128 * c2 as u128) / out1) as u64;
-                                        out1 = quote_pool(
-                                            e1.kind,
-                                            size_in as u128,
-                                            l1.r_in,
-                                            l1.r_out,
-                                            l1.gamma,
-                                            Some(e1),
-                                        );
-                                    }
-                                }
-                                if size_in > 0 {
-                                    let mut out2 = quote_pool(
-                                        e2.kind,
-                                        out1,
-                                        l2.r_in,
-                                        l2.r_out,
-                                        l2.gamma,
-                                        Some(e2),
-                                    );
-                                    // Two-sided CLMM & DLMM active tick/bin capacity clamping (Hop 3)
-                                    if let Some(c3) = Self::edge_max_input_capacity(e3) {
-                                        if c3 > 0 && out2 > c3 as u128 {
-                                            size_in =
-                                                ((size_in as u128 * c3 as u128) / out2) as u64;
-                                            out1 = quote_pool(
-                                                e1.kind,
-                                                size_in as u128,
-                                                l1.r_in,
-                                                l1.r_out,
-                                                l1.gamma,
-                                                Some(e1),
-                                            );
-                                            out2 = quote_pool(
-                                                e2.kind,
-                                                out1,
-                                                l2.r_in,
-                                                l2.r_out,
-                                                l2.gamma,
-                                                Some(e2),
-                                            );
-                                        }
-                                    }
-                                    if size_in > 0 {
-                                        let out3 = quote_pool(
-                                            e3.kind,
-                                            out2,
-                                            l3.r_in,
-                                            l3.r_out,
-                                            l3.gamma,
-                                            Some(e3),
-                                        );
-
-                                        if out3 > size_in as u128 {
-                                            stats.three_hop_gross_profitable += 1;
-                                            let impact = cpmm_price_impact_bps(
-                                                size_in as u128,
-                                                l1.r_in,
-                                                l1.r_out,
-                                                l1.gamma,
-                                            );
-                                            let hop_inputs = vec![
-                                                size_in,
-                                                out1 as u64,
-                                                out2 as u64,
-                                                out3 as u64,
-                                            ];
-                                            let hops = vec![
-                                                SwapHop {
-                                                    pool_id: e1.pool_id,
-                                                    protocol: e1.protocol,
-                                                    mint_in: e1.from_mint,
-                                                    mint_out: e1.to_mint,
-                                                    fee_bps: e1.fee_bps,
-                                                    active_bin_id: e1.active_bin_id,
-                                                    token_programs: e1.token_programs,
-                                                    trade_intent: Default::default(),
-                                                    execution_accounts: e1
-                                                        .execution_accounts
-                                                        .clone(),
-                                                },
-                                                SwapHop {
-                                                    pool_id: e2.pool_id,
-                                                    protocol: e2.protocol,
-                                                    mint_in: e2.from_mint,
-                                                    mint_out: e2.to_mint,
-                                                    fee_bps: e2.fee_bps,
-                                                    active_bin_id: e2.active_bin_id,
-                                                    token_programs: e2.token_programs,
-                                                    trade_intent: Default::default(),
-                                                    execution_accounts: e2
-                                                        .execution_accounts
-                                                        .clone(),
-                                                },
-                                                SwapHop {
-                                                    pool_id: e3.pool_id,
-                                                    protocol: e3.protocol,
-                                                    mint_in: e3.from_mint,
-                                                    mint_out: e3.to_mint,
-                                                    fee_bps: e3.fee_bps,
-                                                    active_bin_id: e3.active_bin_id,
-                                                    token_programs: e3.token_programs,
-                                                    trade_intent: Default::default(),
-                                                    execution_accounts: e3
-                                                        .execution_accounts
-                                                        .clone(),
-                                                },
-                                            ];
-                                            if let Some(opp) = self.make_economic_opportunity(
-                                                base,
-                                                current_slot,
-                                                RouteId(route_counter),
-                                                size_in,
-                                                out3,
-                                                hop_inputs,
-                                                impact,
-                                                hops,
-                                            ) {
-                                                opportunities.push(opp);
-                                                route_counter += 1;
-                                            } else {
-                                                stats.gate_rejected += 1;
-                                            }
-                                        }
-                                    }
-                                }
+                            if let Some(opportunity) = outcome.opportunity {
+                                opportunities.push(opportunity);
+                                route_counter = route_counter.saturating_add(1);
+                            } else if outcome.had_gross_profitable_sample {
+                                stats.gate_rejected += 1;
                             }
                         }
                     }
@@ -1161,137 +1025,15 @@ impl MarketGraph {
         max_trade_size: u64,
         route_id: u32,
     ) -> Option<ExecutionOpportunity> {
-        // 1. Marginal rate check
-        let mut marginal_product = 1.0f64;
-        for e in path {
-            let gamma = (10_000u32.saturating_sub(e.fee_bps as u32)) as f64 / 10_000.0;
-            let rate = (e.reserve_out as f64 / e.reserve_in as f64) * gamma;
-            marginal_product *= rate;
-        }
-
-        if marginal_product <= 1.0010 {
-            return None;
-        }
-
-        // P1 #11: golden-section search for the peak (not the breakeven edge).
-        let low = 1_000u64;
-        let mut high = max_trade_size;
-        if high <= low {
-            high = low + 1;
-        }
-        let best_size = golden_section_size(path, low, high, 48);
-        let best_profit = cycle_profit_at(path, best_size);
-        // recompute final output at best_size
-        let mut curr = best_size as u128;
-        for e in path {
-            let gamma = 10_000u128.saturating_sub(e.fee_bps as u128);
-            curr = quote_pool(e.kind, curr, e.reserve_in, e.reserve_out, gamma, Some(e));
-        }
-
-        if best_profit == 0 || best_size == 0 {
-            return None;
-        }
-
-        // Clamp at marginal degradation ceiling if economic config is available.
-        let clamped_size = if let Some(config) = &self.economic_config {
-            // Compute flash fee in bps for the best_size
-            let flash_fee_raw =
-                calculate_flash_fee_raw(best_size, config.flash_loan_fee_sf).ok()?;
-            let flash_fee_bps = if best_size > 0 {
-                ((flash_fee_raw as u128 * 10_000) / best_size as u128) as u64
-            } else {
-                0
-            };
-
-            // For 2-hop CPMM cycles, use the analytical clamp.
-            if path.len() == 2 && path[0].kind == PoolKind::Cpmm && path[1].kind == PoolKind::Cpmm {
-                let l1 = Leg {
-                    r_in: path[0].reserve_in,
-                    r_out: path[0].reserve_out,
-                    gamma: 10_000u128.saturating_sub(path[0].fee_bps as u128),
-                };
-                let l2 = Leg {
-                    r_in: path[1].reserve_in,
-                    r_out: path[1].reserve_out,
-                    gamma: 10_000u128.saturating_sub(path[1].fee_bps as u128),
-                };
-                clamp_at_marginal_ceiling_two_pool(best_size, &l1, &l2, flash_fee_bps)
-                    .unwrap_or(best_size)
-            } else {
-                // For mixed/3+ hop cycles: general clamp using marginal derivative.
-                // If the marginal profit derivative at best_size is negative, reduce size.
-                // Use a simple heuristic: if flash fee exceeds 50% of gross profit, halve the size.
-                let gross_profit = best_profit;
-                if flash_fee_raw * 2 > gross_profit && best_size > low {
-                    best_size / 2
-                } else {
-                    best_size
-                }
-            }
-        } else {
-            best_size
-        };
-
-        // Recompute final output at clamped_size
-        let mut curr = clamped_size as u128;
-        for e in path {
-            let gamma = 10_000u128.saturating_sub(e.fee_bps as u128);
-            curr = quote_pool(e.kind, curr, e.reserve_in, e.reserve_out, gamma, Some(e));
-        }
-        let final_out = curr as u64;
-
-        // Recompute profit at clamped size (verify it's still positive)
-        if u128::from(final_out) <= clamped_size as u128 {
-            return None;
-        };
-
-        let first_edge = path[0];
-        let gamma1 = 10_000u128.saturating_sub(first_edge.fee_bps as u128);
-        let impact = cpmm_price_impact_bps(
-            clamped_size as u128,
-            first_edge.reserve_in,
-            first_edge.reserve_out,
-            gamma1,
-        );
-
-        let hops = path
-            .iter()
-            .map(|e| SwapHop {
-                pool_id: e.pool_id,
-                protocol: e.protocol,
-                mint_in: e.from_mint,
-                mint_out: e.to_mint,
-                fee_bps: e.fee_bps,
-                active_bin_id: e.active_bin_id,
-                token_programs: e.token_programs,
-                trade_intent: Default::default(),
-                execution_accounts: e.execution_accounts.clone(),
-            })
-            .collect();
-
-        // Compute per-hop expected outputs for correct min_amount_out derivation.
-        let mut hop_inputs = vec![clamped_size];
-        let mut curr = clamped_size as u128;
-        for e in path {
-            let gamma = 10_000u128.saturating_sub(e.fee_bps as u128);
-            curr = quote_pool(e.kind, curr, e.reserve_in, e.reserve_out, gamma, Some(e));
-            hop_inputs.push(curr as u64);
-        }
-
-        // Authoritative economic calculation: no hardcoded flash loan fee,
-        // no fabricated tip fraction, no hardcoded decimals. Fail closed when
-        // no economic config is set or the profit floor is not met.
-        let base_mint = path[0].from_mint;
-        self.make_economic_opportunity(
+        let base_mint = path.first()?.from_mint;
+        self.optimize_route_candidate(
             base_mint,
             current_slot,
             RouteId(route_id),
-            clamped_size,
-            final_out as u128,
-            hop_inputs,
-            impact,
-            hops,
-        )
+            max_trade_size,
+            path,
+        )?
+        .opportunity
     }
 }
 
@@ -1378,6 +1120,12 @@ mod tests {
         assert!(!opps.is_empty());
         assert!(opps[0].gross_profit.as_u64() > 0);
         assert_eq!(opps[0].hops.len(), 2);
+        assert!(opps[0].size_in.as_u64() <= 100_000);
+        assert_eq!(opps[0].hop_inputs.len(), opps[0].hops.len() + 1);
+        assert_eq!(
+            opps[0].hop_inputs.last().copied(),
+            Some(opps[0].expected_out.as_u64())
+        );
     }
 
     #[test]
@@ -1398,7 +1146,14 @@ mod tests {
         assert!(!opps.is_empty(), "Must detect 4-hop profitable cycle");
         let four_hop = opps.iter().find(|o| o.hops.len() == 4);
         assert!(four_hop.is_some(), "Found 4-hop opportunity");
-        assert!(four_hop.unwrap().gross_profit.as_u64() > 0);
+        let four_hop = four_hop.unwrap();
+        assert!(four_hop.gross_profit.as_u64() > 0);
+        assert!(four_hop.size_in.as_u64() <= 100_000);
+        assert_eq!(four_hop.hop_inputs.len(), four_hop.hops.len() + 1);
+        assert_eq!(
+            four_hop.hop_inputs.last().copied(),
+            Some(four_hop.expected_out.as_u64())
+        );
     }
 
     #[test]

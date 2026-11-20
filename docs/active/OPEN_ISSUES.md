@@ -34,6 +34,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### ISSUE-P0-02: Non-Monotonic Profit Assumption in Borrow Sizing
 
+- **Status**: Graph-generated 2–6 hop paths now use bounded, multi-basin route-by-size search, including exact re-quotes and canonical net-profit evaluation; active bin/tick ceilings seed the search. The dedicated DLMM optimizer also refines the highest-profit basins first. Both report a best observed candidate, not a mathematically proven global optimum. Continue differential sizing tests against exhaustive small ranges and live snapshots before production use.
+
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: Coarse-to-fine integer search assumes that profit curves are quasi-concave or monotonic with respect to borrow size.
 - **Root Cause**: In concentrated liquidity (Meteora DLMM bins, Orca Whirlpools), crossing tick boundaries or hitting empty bins introduces non-linear discontinuities and fee cliffs. A coarse sample can miss profitable narrow liquidity bins or overshoot into empty bins.
@@ -43,6 +45,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ---
 
 ### ISSUE-P0-03: Multi-Hop Route State Coherency and Stale Snapshot Skew
+
+- **Status**: Runtime validation gathers route dependency stamps together and enforces `max_slot_skew = 0`, rejecting stale, future, mixed-provider, and mixed-bank state. The ingestion layer has a regression test for slot skew. This is verified in code; add an end-to-end route test if dependency aggregation changes.
 
 - **Files**: `crates/arb-engine/src/graph.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`
 - **Observed Behavior**: A candidate route with 2 or 3 hops can assemble pools whose snapshots were taken at divergent slots (e.g., Hop 1 at slot $S$, Hop 2 at slot $S-50$).
