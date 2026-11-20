@@ -29,6 +29,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Root Cause**: Sorting pool public keys alone strips out the directed sequence of hops, intermediate tokens, and swap direction. If an opportunity evaluates $A \rightarrow B \rightarrow A$ and another evaluates $B \rightarrow A \rightarrow B$ over the same pool set, the second route is erroneously discarded as a duplicate.
 - **Required Fix**: Implement a comprehensive `RouteSignature` preserving ordered hops, pool addresses, input mints, output mints, swap directions, and protocol IDs.
 - **Regression Test**: Test verifying that forward and reverse cycles over identical pool sets are both preserved and evaluated independently.
+- **Status (2026-11-20)**: Implemented in PR #93 with ordered route identity and keep-best duplicate selection. PR #93 CI is green; `main` remains blocked until review and merge.
 
 ---
 
@@ -39,6 +40,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Root Cause**: In concentrated liquidity (Meteora DLMM bins, Orca Whirlpools), crossing tick boundaries or hitting empty bins introduces non-linear discontinuities and fee cliffs. A coarse sample can miss profitable narrow liquidity bins or overshoot into empty bins.
 - **Required Fix**: Implement joint evaluation of $\text{Route} \times \text{Borrow Size}$ with boundary checks at active bin / tick liquidity limits. Always clamp maximum sizing by decoded live Kamino supply-vault balance.
 - **Regression Test**: Multi-bin traversal test verifying that optimal size selection finds maximum net profit even when intermediate bins have zero liquidity.
+- **Status (2026-11-20)**: DLMM local-peak ranking is in PR #94; bounded joint route-and-size search with per-hop re-quotes and bin/tick input boundaries is in PR #95. It returns the best observed candidate within its sample budget, not a proven global optimum. PR #95's CI exposed an Orca fixture exactly on a zero-capacity tick boundary; PR #97 corrects that fixture and has green CI. Live Kamino vault-cap decoding and production differential soak remain required.
 
 ---
 
@@ -49,6 +51,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Root Cause**: While each individual pool satisfies `slot <= max_state_age_slots`, the inter-pool slot delta within a single candidate route was not strictly bounded. This creates phantom arbitrage opportunities from price divergence across time.
 - **Required Fix**: Enforce route-level slot coherency: $\max_{h \in \text{hops}}(\text{slot}_h) - \min_{h \in \text{hops}}(\text{slot}_h) \le \Delta_{\text{max\_skew}}$ (default $\le 4$ slots).
 - **Regression Test**: Reject opportunities where hop snapshots have divergent slot watermarks.
+- **Status (2026-11-20)**: Runtime dependency validation passes `max_slot_skew = 0` for all route pools, stricter than the four-slot ceiling, and the ingest dependency-group test rejects divergent watermarks. No additional code change is pending.
 
 ---
 
@@ -64,6 +67,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
   2. Perform deep forensic reproduction of error `0x1773` to determine exact pool balance drift during simulation.
   3. Never silently widen slippage to mask execution errors.
 - **Regression Test**: Simulation harness verifying proper error categorization and bounded slippage behavior.
+- **Status (2026-11-20)**: Typed outcomes and fail-closed dispatch preflight are in PR #93; the Phase 17 diagnostic's fake-bin fallback and simulation-error pass-through are removed in PR #96 (green CI). Historical evidence shows the harness could report a revert as a pass while using a hardcoded first-hop minimum; it does not identify the exact on-chain price, fee, or state cause. Same-snapshot quote and replay remain outstanding, so this issue still blocks live execution.
 
 ---
 
