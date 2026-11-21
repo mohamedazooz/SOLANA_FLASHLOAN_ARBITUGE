@@ -83,10 +83,17 @@ Source: [docs.jito.wtf/lowlatencytxnsend](https://docs.jito.wtf/lowlatencytxnsen
 
 **Implementation decision**: Defect found by differential capture (array-edge-by-edge traversal vs official sequence-wide targeting) fixed via new `arb_math::clmm::compute_whirlpool_swap` — a verbatim checked-arithmetic port of the official traversal over the repo's proven CLMM primitives; the Whirlpool adapter routes to it, Raydium CLMM keeps the previous shared engine. No code copied from any third-party arbitrage implementation.
 
-### 5.2 Raydium CLMM
+### 5.2 Raydium CLMM (VERIFIED 2026-11-21)
+
+| Item | Finding | Checked |
+|---|---|---|
+| Official traversal | `swap_internal` searches for the next initialized tick **inside the current tick array first**; only when none survives it advances to the next tick array (bitmap/extension decides the index) and uses `first_initialized_tick(direction)`. Array-edge stepping is therefore official Raydium semantics — unlike Orca's single-sequence view (§5.1) | [programs/amm/src/instructions/swap.rs](https://github.com/raydium-io/raydium-clmm/blob/master/programs/amm/src/instructions/swap.rs), 2026-11-21 |
+| Fee recomputation | `state.get_total_fee_rate()` runs **every inner step**: base + dynamic (quadratic in volatility accumulator, ceiling division, `MAX_FEE_RATE` clamp); fee side via `is_fee_on_input(zero_for_one)` (0=FromInput, 1=Token0Only, 2=Token1Only) | same source, 2026-11-21 |
+| Tick advance + limit orders | zero_for_one: `tick = next−1` (no limits) but `tick = next` with unfilled limit orders; mirrored for !zero_for_one. Unfilled limit-order fills execute at the boundary price before advancing | same source, 2026-11-21 |
+| Spec-derived defect fixed | Both general-engine consumers (`quote_pool` CLMM branch and `quote_clmm_hop` Raydium branch) previously forced the Whirlpool shape (88-tick span, Orca tick rounding). Raydium arrays start on 60·spacing multiples, so any hydrated Raydium CLMM hop whose active tick sits in the second 60-spaced array aligned down to a never-hydrated array start and failed closed (`MissingTickArrayCoverage`) — Raydium CLMM liquidity was invisible to route discovery. Both consumers now render the 60-tick span + `ClmmTickMath::Raydium` (the shape already verified inside `arb_dex::raydium_clmm`) | repo diff vs official source, 2026-11-21 |
 
 - Step-level parity against the official `raydium-clmm` `compute_swap` swap-math remains green (`crates/arb-math/tests/raydium_clmm_swap_math_parity_tests.rs`); repo oracle vectors still the binding check for fee/rounding.
-- Standing rule remains: multi-array end-to-end parity for Raydium CLMM may only be claimed with a fresh mainnet SDK capture (same method as §5.1) — recorded as an open coverage gap in `QUOTE_PARITY_REPORT.md` §4.3.
+- Standing rule remains: multi-array end-to-end parity for Raydium CLMM may only be claimed with a fresh mainnet SDK capture against `@raydium-io/raydium-sdk-v2` `PoolUtils.computeAmountOutFormat` (needs `ComputeClmmPoolInfo` + `tickarrayBitmapExtension` + `blockTimestamp`) — still an open coverage gap in `QUOTE_PARITY_REPORT.md` §4.3.
 
 ## 6. Testing Infrastructure
 
