@@ -124,6 +124,8 @@ pub struct StatusSnapshot {
     pub execution_enabled: bool,
     pub paused: bool,
     pub emergency_stopped: bool,
+    pub kill_switch_marker_present: bool,
+    pub kill_switch_persistence_error: Option<String>,
     pub slot: u64,
     pub pools_tracked: usize,
     pub stream_connected: bool,
@@ -417,6 +419,8 @@ impl ControlService {
             execution_enabled: self.inner.execution_enabled.load(Ordering::Acquire),
             paused: self.inner.kill_switch.is_blocked(),
             emergency_stopped: self.inner.emergency_stopped.load(Ordering::Acquire),
+            kill_switch_marker_present: self.inner.kill_switch.is_durably_blocked(),
+            kill_switch_persistence_error: self.inner.kill_switch.persistence_error(),
             slot: deps.slot,
             pools_tracked: deps.pools_tracked,
             stream_connected: deps.stream_connected,
@@ -687,7 +691,9 @@ impl ControlService {
                 "emergency stop is active — clear it explicitly before starting".into(),
             ));
         }
-        self.inner.kill_switch.deactivate();
+        self.inner.kill_switch.deactivate().map_err(|error| {
+            ControlError(format!("cannot start: kill-switch marker could not be removed; execution remains blocked: {error}"))
+        })?;
         self.inner.execution_enabled.store(true, Ordering::Release);
         self.audit("start", "execution enabled, kill switch deactivated");
         self.emit("control", serde_json::json!({"action": "start"}));
@@ -695,20 +701,36 @@ impl ControlService {
     }
 
     pub fn stop(&self) -> ControlResult<&'static str> {
-        self.inner.kill_switch.activate();
         self.inner.execution_enabled.store(false, Ordering::Release);
-        self.audit("stop", "execution paused via kill switch");
+        match self.inner.kill_switch.activate() {
+            Ok(true) => {}
+            Ok(false) => return Err(ControlError(
+                "execution is blocked in memory, but durable kill-switch storage is not configured"
+                    .into(),
+            )),
+            Err(error) => {
+                return Err(ControlError(format!(
+                    "execution is blocked in memory, but kill-switch persistence failed: {error}"
+                )));
+            }
+        }
+        self.audit("stop", "execution paused via durably persisted kill switch");
         self.emit("control", serde_json::json!({"action": "stop"}));
         Ok("execution paused")
     }
 
     pub fn emergency_stop(&self) -> ControlResult<&'static str> {
-        self.inner.kill_switch.activate();
+        // Engage all in-memory execution barriers before touching the filesystem.
         self.inner.emergency_stopped.store(true, Ordering::Release);
         self.inner.execution_enabled.store(false, Ordering::Release);
+        match self.inner.kill_switch.activate() {
+            Ok(true) => {}
+            Ok(false) => return Err(ControlError("emergency stop is active in memory, but durable kill-switch storage is not configured".into())),
+            Err(error) => return Err(ControlError(format!("emergency stop is active in memory, but kill-switch persistence failed: {error}"))),
+        }
         self.audit(
             "emergency_stop",
-            "latch engaged; start blocked until cleared",
+            "latch engaged; durable kill-switch marker persisted; start blocked until cleared",
         );
         self.emit("control", serde_json::json!({"action": "emergency_stop"}));
         Ok("emergency stop engaged")
@@ -866,7 +888,22 @@ mod tests {
 
     fn service() -> ControlService {
         let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
-        ControlService::new(mode, Arc::new(KillSwitch::new()), "/tmp/arb_audit_test.log")
+        let marker = std::env::temp_dir().join(format!(
+            "arb_ks_test_{}_{}.marker",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        ControlService::new(
+            mode,
+            Arc::new(KillSwitch::with_file(marker.to_string_lossy())),
+            std::env::temp_dir()
+                .join(format!("arb_audit_test_{}.log", std::process::id()))
+                .display()
+                .to_string(),
+        )
     }
 
     #[test]
@@ -892,6 +929,44 @@ mod tests {
             svc.status().paused,
             "start must remain explicit after the latch clears"
         );
+    }
+
+    #[test]
+    fn stop_and_emergency_stop_report_persistence_failure_but_remain_blocked() {
+        let dir = std::env::temp_dir().join(format!(
+            "arb_control_ks_failure_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker_path = dir.join("marker");
+        std::fs::create_dir_all(&marker_path).unwrap();
+        let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let svc = ControlService::new(
+            mode,
+            Arc::new(KillSwitch::with_file(marker_path.to_string_lossy())),
+            dir.join("audit.log").display().to_string(),
+        );
+
+        assert!(svc.stop().is_err());
+        let stopped = svc.status();
+        assert!(!stopped.execution_enabled);
+        assert!(stopped.paused);
+        assert!(!stopped.kill_switch_marker_present);
+        assert!(stopped.kill_switch_persistence_error.is_some());
+
+        assert!(svc.emergency_stop().is_err());
+        let emergency = svc.status();
+        assert!(!emergency.execution_enabled);
+        assert!(emergency.paused);
+        assert!(emergency.emergency_stopped);
+        assert!(emergency.kill_switch_persistence_error.is_some());
+
+        assert!(svc.start().is_err(), "start must not clear emergency latch");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -988,7 +1063,9 @@ mod tests {
         let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
         let svc = ControlService::new(
             mode,
-            Arc::new(KillSwitch::new()),
+            Arc::new(KillSwitch::with_file(
+                path.with_extension("marker").to_string_lossy(),
+            )),
             path.display().to_string(),
         );
         let _ = svc.stop();

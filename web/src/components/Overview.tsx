@@ -155,6 +155,16 @@ export const Overview: React.FC<OverviewProps> = ({
               <p className="text-xs text-slate-400 mt-0.5">
                 حالة التنفيذ: {status.paused ? 'متوقف مؤقتاً (PAUSED)' : status.execution_enabled ? 'مفعل وجاهز لاقتناص الفرص' : 'معطل'}
               </p>
+              {status.kill_switch_persistence_error && (
+                <p className="text-xs text-rose-400 mt-1" role="alert">
+                  Kill-switch persistence error: {status.kill_switch_persistence_error}
+                </p>
+              )}
+              {status.kill_switch_marker_present && (
+                <p className="text-xs text-amber-400 mt-1">
+                  Durable kill-switch marker is present on disk
+                </p>
+              )}
             </div>
           </div>
 
