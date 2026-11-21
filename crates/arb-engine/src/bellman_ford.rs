@@ -27,6 +27,7 @@ use arb_math::{
     cpmm::clamp_at_marginal_ceiling_two_pool,
     economic::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
+        slippage_haircut_min_final,
     },
     optimal_four_pool, optimal_three_pool, optimal_two_pool,
 };
@@ -484,12 +485,18 @@ impl BellmanFordEngine {
         let base_mint = cycle[0].from_mint;
         let flash_fee_raw =
             calculate_flash_fee_raw(best_size, config.flash_loan_fee_sf).unwrap_or(0);
+        // ECON-002: gate on a compounded per-hop slippage haircut of the
+        // expected final output, not `expected_out` itself; fail closed when
+        // the haircut arithmetic fails.
+        let minimum_final_out =
+            slippage_haircut_min_final(final_out, hops.len(), arb_types::DEFAULT_HOP_SLIPPAGE_BPS)
+                .ok()?;
         let quote = match build_economic_quote(
             base_mint,
             config.base_decimals,
             TokenAmount(best_size),
             TokenAmount(final_out),
-            TokenAmount(final_out),
+            TokenAmount(minimum_final_out),
             TokenAmount(flash_fee_raw),
             TokenAmount(0),
             TokenAmount(0),
@@ -541,7 +548,7 @@ impl BellmanFordEngine {
             price_impact_bps: impact,
             hops,
 
-            expected_min_final_output: 0,
+            expected_min_final_output: minimum_final_out,
         })
     }
 }
