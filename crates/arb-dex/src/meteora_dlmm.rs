@@ -409,6 +409,8 @@ impl AmmPool for MeteoraDlmmPool {
         self.active_id = i32::from_le_bytes(data[76..80].try_into().unwrap());
         self.bin_step = u16::from_le_bytes(data[80..82].try_into().unwrap()).max(1);
         self.status = data[82];
+        self.function_type = function_type;
+        self.collect_fee_mode = collect_fee_mode;
         // `is_support_limit_order` (official SDK): LimitOrder (2) => true;
         // LiquidityMining (1) => false; Undetermined (0) => true only when every
         // reward mint is the default pubkey; any other value fails closed to false.
@@ -442,7 +444,11 @@ impl AmmPool for MeteoraDlmmPool {
             .fee_params
             .as_ref()
             .ok_or_else(|| ArbError::InvalidInput("Meteora DLMM missing fee params".into()))?;
-        if params.function_type > 2 || params.collect_fee_mode > 1 {
+        // ConcreteFunctionType 1 (LiquidityMining) is quote-equivalent to 0
+        // (supportLimitOrder=false => market-maker-only fill); 2 (LimitOrder)
+        // has no differential-parity evidence and is rejected fail-closed,
+        // matching the LbPair-validation gate.
+        if params.function_type > 1 || params.collect_fee_mode > 1 {
             return Err(ArbError::InvalidInput(
                 "Meteora DLMM function/fee mode is not supported by the accepted quote adapter"
                     .into(),

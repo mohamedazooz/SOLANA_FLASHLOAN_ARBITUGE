@@ -94,7 +94,7 @@ pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPO
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<(DlmmPoolState, Vec<ArbDlmmBin>)> {
     let d = edge.dlmm.as_ref()?;
     let params = d.params.as_ref()?;
-    if d.status != 0 || params.function_type > 2 || params.collect_fee_mode > 1 {
+    if d.status != 0 || params.function_type > 1 || params.collect_fee_mode > 1 {
         return None;
     }
     let pool = DlmmPoolState {

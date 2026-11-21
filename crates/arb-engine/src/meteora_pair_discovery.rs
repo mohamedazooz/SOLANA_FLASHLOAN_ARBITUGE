@@ -142,7 +142,9 @@ impl MeteoraDlmmPoolPairDiscovery {
                 .dlmm
                 .as_ref()
                 .and_then(|d| d.params.as_ref())
-                .is_none_or(|params| params.function_type != 0)
+                // 1 (LiquidityMining) is quote-equivalent to 0; 2+ fail-closed,
+                // matching the LbPair-validation gate in arb-dex.
+                .is_none_or(|params| params.function_type > 1)
             {
                 *report
                     .rejections_by_reason

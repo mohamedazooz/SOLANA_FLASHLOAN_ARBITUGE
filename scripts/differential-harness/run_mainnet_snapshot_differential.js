@@ -58,11 +58,50 @@ const {
 const BASIS_POINT_MAX = 10000;
 const SLIPPAGE_BPS = new BN(100); // only affects minOutAmount / maxInAmount, not compared fields
 const PROBE_INPUT = new BN('1000000');
-const DEEP_MIN_CROSSED_IN = 60;
-const DEEP_MIN_CROSSED_OUT = 100;
-const DEEP_MIN_FALLBACK_CROSSED = 10;
+const DEEP_MIN_CROSSED_IN = Number(process.env.DEEP_MIN_CROSSED_IN || 60);
+const DEEP_MIN_CROSSED_OUT = Number(process.env.DEEP_MIN_CROSSED_OUT || 100);
+// Deep fallback floor: launch-style OnlyY pools (thin liquidity) may not have
+// ten bins of depth; a liquidity-limited "deep" case is still recorded when it
+// crosses at least this many bins (kept honest via bins_crossed + notes).
+const DEEP_MIN_FALLBACK_CROSSED = Number(process.env.DEEP_MIN_FALLBACK_CROSSED || 10);
 const SMALL_MAX_CROSSED = 1;
 const MAX_ITERATIONS = 48;
+
+function refusal(direction, kind, reason, detail) {
+  return { mode: null, direction, case: kind, reason, detail: detail || null };
+}
+
+/** Serves one quote case, turning servability failures into recorded refusals.
+ *  `pool` must ALREADY carry the fee mode the case is driven under. */
+function serveCase(pool, swapForY, mode, direction, kind, build) {
+  try {
+    return build();
+  } catch (e) {
+    const msg = String(e.message || e);
+    const servErr =
+      msg.includes('INSUFFICIENT_LIQUIDITY') ||
+      msg.includes('Insufficient liquidity') ||
+      msg.includes('TRACED_INSUFFICIENT_LIQUIDITY') ||
+      msg.includes('captured arrays cannot serve even the smallest deep probe') ||
+      msg.includes('deepest feasible input crosses only') ||
+      msg.includes('could not calibrate a small') ||
+      msg.includes('calibration did not converge');
+    if (!servErr) throw e;
+    console.warn(
+      '  refusal: ' + (mode === 0 ? 'mode_0' : 'mode_1') + ' ' + direction + ' ' + kind + ': ' + msg
+    );
+    lastRefusals.push({
+      mode,
+      direction,
+      case: kind,
+      reason: 'insufficient_liquidity',
+      detail: msg,
+    });
+    return null;
+  }
+}
+
+let lastRefusals = [];
 
 function defaultQuotesPath() {
   return process.env.QUOTES_OUT
@@ -380,7 +419,8 @@ function firstLiquidBinOutAmount(pool, swapForY) {
   return null;
 }
 
-function buildDirectionCases(pool, swapForY, activeBin) {
+function buildDirectionCases(pool, swapForY, activeBin, mode) {
+  const direction = swapForY ? 'x_to_y' : 'y_to_x';
   const activeBinOutAmount = swapForY ? activeBin.yAmount : activeBin.xAmount;
   if (activeBinOutAmount === undefined || activeBinOutAmount === null) {
     throw new Error('active bin carries no output-side amount');
@@ -389,83 +429,92 @@ function buildDirectionCases(pool, swapForY, activeBin) {
   const baseOutAmount = liquid ? liquid.amount : activeBinOutAmount;
   if (baseOutAmount.isZero()) {
     throw new Error(
-      'no output-side liquidity found in the captured arrays for ' +
-        (swapForY ? 'x_to_y' : 'y_to_x')
+      'no output-side liquidity found in the captured arrays for ' + direction
     );
   }
   const smallCap = SMALL_MAX_CROSSED + (liquid ? liquid.distance : 0);
 
-  const smallInput = calibrateSmallInput(pool, swapForY, baseOutAmount, smallCap);
-  const deepIn = calibrateDeepInput(pool, swapForY, 'exact_in', DEEP_MIN_CROSSED_IN);
-  if (deepIn.liquidity_limited) {
+  const baseOut = baseOutAmount;
+  const smallInput = serveCase(pool, swapForY, mode, direction, 'exact_in_small',
+    () => calibrateSmallInput(pool, swapForY, baseOut, smallCap));
+  const deepIn = serveCase(pool, swapForY, mode, direction, 'exact_in_deep',
+    () => calibrateDeepInput(pool, swapForY, 'exact_in', DEEP_MIN_CROSSED_IN));
+  if (deepIn && deepIn.liquidity_limited) {
     console.warn(
-      '  note: ' +
-        (swapForY ? 'x_to_y' : 'y_to_x') +
-        ' deep exact-in is liquidity-limited at ' +
-        deepIn.crossed +
-        ' bins crossed'
+      '  note: ' + direction + ' deep exact-in is liquidity-limited at ' +
+        deepIn.crossed + ' bins crossed'
     );
   }
-  const deepInput = deepIn.amount;
+  const deepInput = deepIn ? deepIn.amount : null;
 
-  const smallDesired = baseOutAmount.muln(40).divn(100);
-  let smallOut = null;
-  let desired = smallDesired;
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
-    const r = crossedFor(pool, swapForY, 'exact_out', desired);
-    if (!r.insufficient && r.crossed <= smallCap) {
-      smallOut = desired;
-      break;
+  let smallOut = serveCase(
+    pool,
+    swapForY,
+    mode,
+    direction,
+    'exact_out_small',
+    () => {
+      const smallDesired = baseOut.muln(40).divn(100);
+      let desired = smallDesired;
+      for (let i = 0; i < MAX_ITERATIONS; i++) {
+        const r = crossedFor(pool, swapForY, 'exact_out', desired);
+        if (!r.insufficient && r.crossed <= smallCap) {
+          return desired;
+        }
+        desired = desired.divn(2);
+        if (desired.lten(1)) {
+          throw new Error('could not calibrate a small exact-out amount');
+        }
+      }
+      throw new Error('small exact-out calibration did not converge');
     }
-    desired = desired.divn(2);
-    if (desired.lten(1)) {
-      throw new Error('could not calibrate a small exact-out amount');
-    }
-  }
-  if (smallOut === null) {
-    throw new Error('small exact-out calibration did not converge');
-  }
+  );
 
-  const deepOutCal = calibrateDeepInput(pool, swapForY, 'exact_out', DEEP_MIN_CROSSED_OUT);
-  if (deepOutCal.liquidity_limited) {
+  const deepOutCal = serveCase(pool, swapForY, mode, direction, 'exact_out_deep',
+    () => calibrateDeepInput(pool, swapForY, 'exact_out', DEEP_MIN_CROSSED_OUT));
+  if (deepOutCal && deepOutCal.liquidity_limited) {
     console.warn(
-      '  note: ' +
-        (swapForY ? 'x_to_y' : 'y_to_x') +
-        ' deep exact-out is liquidity-limited at ' +
-        deepOutCal.crossed +
-        ' bins crossed'
+      '  note: ' + direction + ' deep exact-out is liquidity-limited at ' +
+        deepOutCal.crossed + ' bins crossed'
     );
   }
-  const deepOut = deepOutCal.amount;
+
+  const fin = (kind, rawAmount, kindName, useTraced) => {
+    if (rawAmount === null || rawAmount === undefined) return null;
+    const traced = useTraced ? tracedExactOut(pool, swapForY, rawAmount) : null;
+    return finalizeCase(
+      quoteCase(pool, binArraysRef.value, swapForY, kindName, rawAmount),
+      pool.lbPair,
+      swapForY,
+      kindName,
+      traced
+    );
+  };
 
   return {
-    exact_in_small: finalizeCase(
-      quoteCase(pool, binArraysRef.value, swapForY, 'exact_in', smallInput),
-      pool.lbPair,
-      swapForY,
+    exact_in_small: fin(
+      'exact_in_small',
+      smallInput,
       'exact_in',
-      null
+      false
     ),
-    exact_in_deep: finalizeCase(
-      quoteCase(pool, binArraysRef.value, swapForY, 'exact_in', deepInput),
-      pool.lbPair,
-      swapForY,
+    exact_in_deep: fin(
+      'exact_in_deep',
+      deepIn ? deepIn.amount : null,
       'exact_in',
-      null
+      false
     ),
-    exact_out_small: finalizeCase(
-      quoteCase(pool, binArraysRef.value, swapForY, 'exact_out', smallOut),
-      pool.lbPair,
-      swapForY,
+    exact_out_small: fin(
+      'exact_out_small',
+      smallOut,
       'exact_out',
-      tracedExactOut(pool, swapForY, smallOut)
+      true
     ),
-    exact_out_deep: finalizeCase(
-      quoteCase(pool, binArraysRef.value, swapForY, 'exact_out', deepOut),
-      pool.lbPair,
-      swapForY,
+    exact_out_deep: fin(
+      'exact_out_deep',
+      deepOutCal ? deepOutCal.amount : null,
       'exact_out',
-      tracedExactOut(pool, swapForY, deepOut)
+      true
     ),
   };
 }
@@ -499,7 +548,28 @@ async function main() {
   const captured = await captureSnapshot({ rpcUrl, poolAddress, binArraysPerSide });
   const { snapshot, pool, activeBin } = captured;
 
+  // Fail-closed mint gate, mirroring the Raydium CLMM capture policy: the
+  // engine rejects Token-2022 fail-closed (unsupported extensions), so any
+  // pool carrying a Token-2022 mint is refused as a whole instead of being
+  // quoted against SDK totals that silently fold transfer fees in.
+  const SPL_TOKEN = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const probe = new (require('@solana/web3.js').Connection)(rpcUrl, 'confirmed');
+  const mintInfos = await probe.getMultipleAccountsInfo([
+    new PublicKey(snapshot.pair.tokenXMint),
+    new PublicKey(snapshot.pair.tokenYMint),
+  ]);
+  const offOwner = ['tokenXMint', 'tokenYMint']
+    .map((label, i) => ({ label, owner: mintInfos[i] && mintInfos[i].owner.toString() }))
+    .filter((m) => m.owner !== SPL_TOKEN.toString());
+  if (offOwner.length > 0) {
+    throw new Error(
+      'TOKEN_2022_MINT_REFUSED: pool mints are not all classic SPL Token: ' +
+        JSON.stringify(offOwner)
+    );
+  }
+
   binArraysRef.value = captured.binArrays;
+  lastRefusals = [];
 
   // Pin the SDK clock to the snapshot's own variable-fee timestamp so the
   // internal reference update is a no-op — the same timestamp the Rust
@@ -522,8 +592,8 @@ async function main() {
       }
       try {
         return {
-          x_to_y: buildDirectionCases(pool, true, activeBin),
-          y_to_x: buildDirectionCases(pool, false, activeBin),
+          x_to_y: buildDirectionCases(pool, true, activeBin, mode),
+          y_to_x: buildDirectionCases(pool, false, activeBin, mode),
         };
       } finally {
         pool.lbPair.parameters.collectFeeMode = real;
@@ -576,16 +646,33 @@ async function main() {
       quotes,
     };
 
-    // Fee-split sanity on every recorded case before anything is written.
+    fixture.refusals = lastRefusals.slice();
+
+    // Fee-split sanity on every recorded (servable) case before anything is
+    // written; refused cases must carry an entry in fixture.refusals.
     const allCases = [
-      ['mode_0_input_only', fixture.quotes.mode_0_input_only],
-      ['mode_1_only_y', fixture.quotes.mode_1_only_y],
+      ['mode_0_input_only', 0, fixture.quotes.mode_0_input_only],
+      ['mode_1_only_y', 1, fixture.quotes.mode_1_only_y],
     ];
-    for (const [modeName, block] of allCases) {
+    let servedCount = 0;
+    for (const [modeName, modeNum, block] of allCases) {
       if (!block) continue;
       for (const dir of ['x_to_y', 'y_to_x']) {
         for (const kind of ['exact_in_small', 'exact_in_deep', 'exact_out_small', 'exact_out_deep']) {
           const c = block[dir][kind];
+          if (c === null || c === undefined) {
+            if (
+              !fixture.refusals.some(
+                (r) => r.mode === modeNum && r.direction === dir && r.case === kind
+              )
+            ) {
+              throw new Error(
+                modeName + '/' + dir + '/' + kind + ': absent without a refusal entry'
+              );
+            }
+            continue;
+          }
+          servedCount += 1;
           const splitSum = BigInt(c.fee) + BigInt(c.protocol_fee);
           if (splitSum !== BigInt(c.total_fee)) {
             throw new Error(
@@ -594,6 +681,9 @@ async function main() {
           }
         }
       }
+    }
+    if (servedCount === 0) {
+      throw new Error('no servable comparable case for pool ' + poolAddress);
     }
 
     const snapPath = defaultSnapshotPath();
@@ -611,11 +701,12 @@ async function main() {
         ' sdk=' + fixture.sdk_version +
         ' captured_range=[' + capturedBinRange[0] + ',' + capturedBinRange[1] + ']'
     );
-    for (const [modeName, block] of allCases) {
+    for (const [modeName, _modeNum, block] of allCases) {
       if (!block) continue;
       for (const dir of ['x_to_y', 'y_to_x']) {
         for (const kind of ['exact_in_small', 'exact_in_deep', 'exact_out_small', 'exact_out_deep']) {
           const c = block[dir][kind];
+          if (!c) continue;
           console.log(
             '  ' + modeName + ' ' + dir + ' ' + kind +
               ': in=' + c.amount_in + ' out=' + c.amount_out +

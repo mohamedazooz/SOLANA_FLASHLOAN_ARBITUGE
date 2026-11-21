@@ -363,9 +363,21 @@ pub fn validate_lb_pair_account(
     if decoded.token_x_mint.0 == decoded.token_y_mint.0 {
         return Err(DlmmValidationError::IdenticalMints { pool: *pool_id });
     }
-    // ConcreteFunctionType: 0 = Spot, 1 = Concentrated, 2 = Percentile. Only Spot
-    // (0) is supported by the discrete-bin quote engine.
-    if decoded.function_type != 0 {
+    // ConcreteFunctionType — deployed `LbPair.parameters.function_type`
+    // semantics, verified against `@meteora-ag/dlmm@1.9.14` SDK source
+    // (`isSupportLimitOrder`, dist/index.js):
+    //   0 = Undetermined (legacy classic pools; limit-orderable iff no reward
+    //       mints are configured — for those accounts the per-bin order-amount
+    //       fields verified zero during mainnet captures),
+    //   1 = LiquidityMining (farming only; `supportLimitOrder = false`, i.e.
+    //       `getLimitOrderLiquidity` returns {0,0} and the exact-in fill path
+    //       is byte-identical to the classic traversal),
+    //   2 = LimitOrder (`supportLimitOrder = true`; binaries of open and
+    //       processed orders participate in the fill — NOT modelled by the
+    //       discrete-bin quote engine).
+    // 1 is therefore quote-equivalent to 0 and accepted; 2+ is rejected
+    // fail-closed.
+    if decoded.function_type > 1 {
         return Err(DlmmValidationError::UnsupportedFunctionType {
             pool: *pool_id,
             function_type: decoded.function_type,
@@ -689,6 +701,42 @@ mod tests {
         );
         assert_ne!(derive_bin_array_pda(&p, 0), derive_bin_array_pda(&p, 1));
         assert_ne!(derive_bitmap_extension_pda(&p), derive_event_authority());
+    }
+
+    /// Regression for the ConcreteFunctionType gate: 1 (LiquidityMining) is
+    /// quote-equivalent to 0 and must NOT be rejected; 2+ (LimitOrder+) must be
+    /// rejected unconditionally. Other validation follows later in the flow, so
+    /// a zero account only needs the gate bytes patched (584 bytes so the
+    /// decoder reaches the oracle slot without panicking): the ft=1 pair
+    /// falls through to a later error (empty bin-id range), the ft=2 pair is
+    /// stopped by this gate.
+    #[test]
+    fn liquidity_mining_function_type_passes_gate_but_limit_order_is_rejected() {
+        // Distinct mints so the identical-mints rejection (checked earlier in
+        // the flow) does not shadow this gate.
+        let with_ft = |ft: u8| {
+            let mut data = vec![0u8; 584];
+            data[35] = ft;
+            data[88..120].copy_from_slice(wsol().as_ref());
+            data[120..152].copy_from_slice(usdc().as_ref());
+            data
+        };
+
+        let err =
+            validate_lb_pair_account(&pool_a(), &METEORA_DLMM_PROGRAM, &with_ft(1)).unwrap_err();
+        assert!(!matches!(
+            err,
+            DlmmValidationError::UnsupportedFunctionType { .. }
+        ));
+
+        for ft in [2u8, 3u8, 255u8] {
+            let err = validate_lb_pair_account(&pool_a(), &METEORA_DLMM_PROGRAM, &with_ft(ft))
+                .unwrap_err();
+            assert!(
+                matches!(err, DlmmValidationError::UnsupportedFunctionType { .. }),
+                "function_type {ft} must be rejected fail-closed"
+            );
+        }
     }
 
     #[test]

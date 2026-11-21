@@ -53,10 +53,12 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
     pub fn build_dlmm_pool_and_bins(pool: &PoolState) -> Option<(DlmmPoolState, Vec<ArbDlmmBin>)> {
         let dlmm = pool.dlmm.as_ref()?;
         let fp = dlmm.params.as_ref()?;
-        // The local math implementation currently models the Spot function type.
-        // Unknown/future function types must not be priced with the wrong curve.
+        // The local math implementation models Spot (0) and the
+        // quote-equivalent LiquidityMining (1); LimitOrder (2) has no
+        // differential-parity evidence and must not be priced with the wrong
+        // curve (fail-closed, matching the LbPair-validation gate in arb-dex).
         if dlmm.status != 0
-            || fp.function_type > 2
+            || fp.function_type > 1
             || fp.collect_fee_mode > 1
             || pool.has_risky_token
             || pool.transfer_fee_bps != 0

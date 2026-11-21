@@ -795,7 +795,10 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     let params = d0.params.clone().ok_or(ArbError::InvalidInput(
         "DLMM fee config not ingested".into(),
     ))?;
-    if params.function_type > 2 {
+    // ConcreteFunctionType 1 (LiquidityMining) is quote-equivalent to 0;
+    // 2 (LimitOrder) has no differential-parity evidence and is rejected
+    // fail-closed, matching the LbPair-validation gate in arb-dex.
+    if params.function_type > 1 {
         return Err(ArbError::InvalidInput(
             "unsupported Meteora DLMM function type; spot-only quote engine cannot price it".into(),
         ));

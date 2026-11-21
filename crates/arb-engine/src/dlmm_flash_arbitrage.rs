@@ -216,7 +216,7 @@ impl DlmmFlashArbPool {
         let dlmm = self.state.dlmm.as_ref()?;
         let fp = dlmm.params.as_ref()?;
         if dlmm.status != 0
-            || fp.function_type > 2
+            || fp.function_type > 1
             || fp.collect_fee_mode > 1
             || self.state.has_risky_token
             || self.state.transfer_fee_bps != 0
