@@ -50,6 +50,8 @@ pub enum FlashArb3LegError {
     PoolsNotDistinct,
     #[error("zero borrow amount")]
     ZeroBorrowAmount,
+    #[error("flash repayment overflow: borrow {borrow} + fee {fee} exceeds u64")]
+    RepaymentOverflow { borrow: u64, fee: u64 },
     #[error("flash repayment {repay} does not cover borrow {borrow} + fee {fee}")]
     InsufficientRepayment { borrow: u64, repay: u64, fee: u64 },
     #[error("mint chain mismatch: {detail}")]
@@ -239,8 +241,13 @@ impl FlashArb3LegParams {
     /// enforces `liquidity_amount == borrow amount`; the fee is debited
     /// separately, on top, by the handler).
     #[inline]
-    pub fn repay_amount(&self) -> u64 {
-        self.borrow_amount.saturating_add(self.flash_fee)
+    pub fn repay_amount(&self) -> Result<u64, FlashArb3LegError> {
+        self.borrow_amount
+            .checked_add(self.flash_fee)
+            .ok_or(FlashArb3LegError::RepaymentOverflow {
+                borrow: self.borrow_amount,
+                fee: self.flash_fee,
+            })
     }
 }
 
@@ -294,8 +301,16 @@ pub(crate) fn validate_flash_funded_three_pool_params(
     if params.borrow_amount == 0 {
         return Err(FlashArb3LegError::ZeroBorrowAmount);
     }
-    let repay_amount = params.repay_amount();
-    if repay_amount < params.borrow_amount.saturating_add(params.flash_fee) {
+    // Repayment arithmetic must fail on overflow; never saturate a borrow
+    // plus fee into a seemingly valid u64::MAX amount.
+    let repay_amount = params.repay_amount()?;
+    let minimum_repay = params.borrow_amount.checked_add(params.flash_fee).ok_or(
+        FlashArb3LegError::RepaymentOverflow {
+            borrow: params.borrow_amount,
+            fee: params.flash_fee,
+        },
+    )?;
+    if repay_amount < minimum_repay {
         return Err(FlashArb3LegError::InsufficientRepayment {
             borrow: params.borrow_amount,
             repay: repay_amount,
@@ -498,7 +513,7 @@ pub fn build_flash_funded_three_pool_transaction(
         Some(borrow_idx),
         Some(repay_idx),
         params.borrow_amount,
-        params.repay_amount(),
+        params.repay_amount()?,
         params.flash_fee,
     )
     .map_err(|e| FlashArb3LegError::AltCompilation(e.to_string()))?;
@@ -612,7 +627,7 @@ pub fn build_flash_funded_three_pool_transaction(
         (borrow_idx, repay_idx)
     };
 
-    let repay = params.repay_amount();
+    let repay = params.repay_amount()?;
     Ok(FlashThreeLegArbitrageTx {
         wire_bytes,
         tx_size,
@@ -775,7 +790,7 @@ mod tests {
         p.leg_2.amount_in = 1_000_000;
         p.leg_2.min_amount_out = 1_000_000;
         p.leg_3.amount_in = 1_000_000;
-        p.leg_3.min_amount_out = p.repay_amount();
+        p.leg_3.min_amount_out = p.repay_amount().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool(&p).unwrap();
         assert_eq!(ixs.len(), 11);
         assert_eq!(borrow_idx, 5);
@@ -799,7 +814,7 @@ mod tests {
         p.leg_2.amount_in = 1_000_000;
         p.leg_2.min_amount_out = 1_000_000;
         p.leg_3.amount_in = 1_000_000;
-        p.leg_3.min_amount_out = p.repay_amount();
+        p.leg_3.min_amount_out = p.repay_amount().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool(&p).unwrap();
         let v = verify_atomic_integrity(
             ExecutionMode::SingleTransaction,
@@ -807,7 +822,7 @@ mod tests {
             Some(borrow_idx),
             Some(repay_idx),
             p.borrow_amount,
-            p.repay_amount(),
+            p.repay_amount().unwrap(),
             p.flash_fee,
         )
         .unwrap();
@@ -827,7 +842,7 @@ mod tests {
         p.leg_2.amount_in = 1_000_000;
         p.leg_2.min_amount_out = 1_000_000;
         p.leg_3.amount_in = 1_000_000;
-        p.leg_3.min_amount_out = p.repay_amount();
+        p.leg_3.min_amount_out = p.repay_amount().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool(&p).unwrap();
         assert_eq!(borrow_idx, 5);
         assert_eq!(repay_idx, 9);
