@@ -67,8 +67,26 @@ Source: [docs.jito.wtf/lowlatencytxnsend](https://docs.jito.wtf/lowlatencytxnsen
 
 ## 5. Raydium / Orca
 
-- **NOT INSPECTED in depth this session** (points consumed by the release that were revalidated only at the math level via repository oracle vectors).
-- Standing rule remains: Raydium CPMM fee rounding (`ceil` fee upfront, `floor` output), CLMM Q64.64 tick math, and Orca Whirlpool account ordering may only be modified with a fresh differential capture against `raydium-io/raydium-clmm`/`orca-so/whirlpools` program logic — capture requires network egress (BLOCKED here; command in `QUOTE_PARITY_REPORT.md`).
+### 5.1 Orca Whirlpool (VERIFIED 2026-11-21)
+
+| Item | Finding | Checked |
+|---|---|---|
+| Program ID | `whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc`; classic config `2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ` | [whirlpools-sdk@0.22.0 `dist/types/public/constants.js`](https://github.com/orca-so/whirlpools), 2026-11-21 |
+| Official quote oracle | `@orca-so/whirlpools-core` **v3.1.1** wasm: `swapQuoteByInputToken` → `ExactInSwapQuote{tokenIn, tokenEstOut, tokenMinOut, tradeFee}`, `swapQuoteByOutputToken` → `ExactOutSwapQuote{tokenOut, tokenEstIn, tokenMaxIn, tradeFee}`; also exports `getTickArrayStartTickIndex`, `getPrev/NextInitializableTickIndex`, `tickIndexToSqrtPrice`, `sqrtPriceToTickIndex`, `tryGetAmountDeltaA/B`, `tryGetNextSqrtPriceFromA/B`, `tryApplySwapFee` | [npm @orca-so/whirlpools-core](https://www.npmjs.com/package/@orca-so/whirlpools-core), 2026-11-21 |
+| Exact-in token flag | `swap_quote_by_input_token(..., a_to_b)` bool = **input token is A**; `swap_quote_by_output_token(..., a_to_b)` bool = **OUTPUT token is A** (inverted). Harness must invert the flag for exact-out | [rust-sdk/core/src/quote/swap.rs](https://github.com/orca-so/whirlpools/tree/main/rust-sdk/core/src/quote/swap.rs), 2026-11-21 |
+| Traversal semantics | `compute_swap` targets the next/prev **initialized tick over the whole loaded `TickArraySequence`** (boundary = sequence start for a_to_b / end for b_to_a when no initialized tick survives); inner step: `calc = remaining·(D−fee)/D` (floor), reach target iff `initial ≤ calc`, `unfixed_out = Δ(cur→next, round_down)`, `fee = ceil(inter·fee/(D−fee))` at initialization boundaries else `remaining − inter`; liquidity update only when landing exactly on the boundary tick | same source, 2026-11-21 |
+| Fee scope | Full trade fee charged on the INPUT token each step; SDK `tradeFee` maps 1:1 to engine `fee_paid` | same source, 2026-11-21 |
+| TickArray PDA | Seed = `Buffer.from(startTickIndex.toString())` — **ASCII decimal string**, NOT i32 LE (classic silent-corruption trap) | [whirlpools-sdk `pda-utils.js`](https://github.com/orca-so/whirlpools), 2026-11-21 |
+| Adaptive-fee detection | `feeTierIndexSeed` = 2 raw account bytes @43; `feeTierIndex = seed[0] + seed[1]·256`; pool is **classic iff `seed == tick_spacing`** — adaptive-fee pools are fail-closed-rejected in the capture harness | whirlpools-sdk 0.22.0 IDL `artifacts/whirlpool.json` + core facade rules, 2026-11-21 |
+| Account layouts | Whirlpool: 8-byte discriminator + 645 B (`tick_spacing`@41 u16, `fee_tier_index_seed`@43, `fee_rate`@45, `protocol_fee_rate`@47, `liquidity`@49 u128 LE, `sqrt_price`@65 u128 LE, `tick_current_index`@81 i32 LE). TickArray: 8 B disc + `start_tick_index` i32@8 + 88 ticks @ `12 + i·113` (`initialized` bool@0, `liquidity_net` i128@1, `liquidity_gross` u128@17), total 9,988 B. Facade rules: exactly 3 `rewardInfos`, each tick `rewardGrowthsOutside` length 3 | whirlpools-sdk@0.22.0 IDL artifacts, 2026-11-21 |
+| Step math source | `get_next_sqrt_price_from_a_round_up` / `_from_b_round_down` verified in `programs/whirlpool/src/math/swap_math.rs` + `token_math.rs` | [orca-so/whirlpools `programs/whirlpool/src/math`](https://github.com/orca-so/whirlpools), 2026-11-21 |
+
+**Implementation decision**: Defect found by differential capture (array-edge-by-edge traversal vs official sequence-wide targeting) fixed via new `arb_math::clmm::compute_whirlpool_swap` — a verbatim checked-arithmetic port of the official traversal over the repo's proven CLMM primitives; the Whirlpool adapter routes to it, Raydium CLMM keeps the previous shared engine. No code copied from any third-party arbitrage implementation.
+
+### 5.2 Raydium CLMM
+
+- Step-level parity against the official `raydium-clmm` `compute_swap` swap-math remains green (`crates/arb-math/tests/raydium_clmm_swap_math_parity_tests.rs`); repo oracle vectors still the binding check for fee/rounding.
+- Standing rule remains: multi-array end-to-end parity for Raydium CLMM may only be claimed with a fresh mainnet SDK capture (same method as §5.1) — recorded as an open coverage gap in `QUOTE_PARITY_REPORT.md` §4.3.
 
 ## 6. Testing Infrastructure
 

@@ -1,0 +1,130 @@
+{
+  "captured_at_utc": "2026-11-21T16:40:30.903Z",
+  "rpc_slot": 472209372,
+  "pool_address": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
+  "program_id": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+  "sdk_core_version": "3.1.1",
+  "tick_spacing": 4,
+  "fee_tier_index_seed": "0400",
+  "fee_rate": 400,
+  "protocol_fee_rate": 1300,
+  "liquidity": "373724700708292",
+  "sqrt_price": "4894024099465421422",
+  "tick_current_index": -26539,
+  "token_mint_a": "So11111111111111111111111111111111111111112",
+  "token_mint_b": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "reward_last_updated_timestamp": "1795279228",
+  "captured_arrays": 5,
+  "cases": {
+    "a_to_b": {
+      "exact_in_small": {
+        "class": "in-current-array",
+        "input": "13883051593767",
+        "amount_in": "13883051593767",
+        "amount_out": "966929741233",
+        "trade_fee": "5553220664"
+      },
+      "exact_in_deep": {
+        "class": "max-feasible",
+        "input": "30153838189772",
+        "amount_in": "30153838189772",
+        "amount_out": "2061726523537",
+        "trade_fee": "12061535382"
+      },
+      "exact_out_small": {
+        "class": "in-current-array-provenance",
+        "desired_out": "2061726523",
+        "amount_in": "29303606848",
+        "amount_out": "2061726523",
+        "trade_fee": "11721443"
+      },
+      "exact_out_deep": {
+        "class": "max-feasible-provenance",
+        "desired_out": "2061726523537",
+        "amount_in": "30153838189772",
+        "amount_out": "2061726523537",
+        "trade_fee": "12061535382"
+      }
+    },
+    "b_to_a": {
+      "exact_in_small": {
+        "class": "in-current-array",
+        "input": "543794277365",
+        "amount_in": "543794277365",
+        "amount_out": "7672936733502",
+        "trade_fee": "217517731"
+      },
+      "exact_in_deep": {
+        "class": "max-feasible",
+        "input": "2064327625675",
+        "amount_in": "2064327625675",
+        "amount_out": "28350080237695",
+        "trade_fee": "825731154"
+      },
+      "exact_out_small": {
+        "class": "in-current-array-provenance",
+        "desired_out": "7087520059",
+        "amount_in": "499071766",
+        "amount_out": "7087520059",
+        "trade_fee": "199629"
+      },
+      "exact_out_deep": {
+        "class": "max-feasible-provenance",
+        "desired_out": "28350080237695",
+        "amount_in": "2064327625675",
+        "amount_out": "28350080237695",
+        "trade_fee": "825731154"
+      }
+    }
+  },
+  "tick_math_probes": [
+    {
+      "tick_index": -27456,
+      "sdk_start_tick": -27456,
+      "sdk_next_initializable": -27452,
+      "sdk_prev_initializable": -27460
+    },
+    {
+      "tick_index": -27104,
+      "sdk_start_tick": -27104,
+      "sdk_next_initializable": -27100,
+      "sdk_prev_initializable": -27108
+    },
+    {
+      "tick_index": -26752,
+      "sdk_start_tick": -26752,
+      "sdk_next_initializable": -26748,
+      "sdk_prev_initializable": -26756
+    },
+    {
+      "tick_index": -26540,
+      "sdk_start_tick": -26752,
+      "sdk_next_initializable": -26536,
+      "sdk_prev_initializable": -26544
+    },
+    {
+      "tick_index": -26539,
+      "sdk_start_tick": -26752,
+      "sdk_next_initializable": -26536,
+      "sdk_prev_initializable": -26540
+    },
+    {
+      "tick_index": -26538,
+      "sdk_start_tick": -26752,
+      "sdk_next_initializable": -26536,
+      "sdk_prev_initializable": -26540
+    },
+    {
+      "tick_index": -26400,
+      "sdk_start_tick": -26400,
+      "sdk_next_initializable": -26396,
+      "sdk_prev_initializable": -26404
+    },
+    {
+      "tick_index": -26048,
+      "sdk_start_tick": -26048,
+      "sdk_next_initializable": -26044,
+      "sdk_prev_initializable": -26052
+    }
+  ]
+}

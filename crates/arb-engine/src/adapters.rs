@@ -718,17 +718,34 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
             .collect()
     };
 
-    let q = clmm::compute_swap(
-        sqrt_price,
-        tick_current,
-        liquidity,
-        tick_spacing,
-        fee_rate,
-        amount_in,
-        a_to_b,
-        &arrays,
-    )
-    .map_err(|e| ArbError::InvalidInput(format!("CLMM quote failed: {e}")))?;
+    let quote_fn = |fee_rate: u16, amount_in: u64| {
+        if pool.protocol == DexProtocol::OrcaWhirlpool {
+            clmm::compute_whirlpool_swap(
+                sqrt_price,
+                tick_current,
+                liquidity,
+                tick_spacing,
+                fee_rate,
+                amount_in,
+                a_to_b,
+                &arrays,
+            )
+        } else {
+            clmm::compute_swap(
+                sqrt_price,
+                tick_current,
+                liquidity,
+                tick_spacing,
+                fee_rate,
+                amount_in,
+                a_to_b,
+                &arrays,
+            )
+        }
+    };
+
+    let q = quote_fn(fee_rate, amount_in)
+        .map_err(|e| ArbError::InvalidInput(format!("CLMM quote failed: {e}")))?;
 
     if q.amount_in_consumed != amount_in {
         return Err(ArbError::InvalidInput(
@@ -736,17 +753,8 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
         ));
     }
 
-    let q0 = clmm::compute_swap(
-        sqrt_price,
-        tick_current,
-        liquidity,
-        tick_spacing,
-        0,
-        amount_in,
-        a_to_b,
-        &arrays,
-    )
-    .map_err(|e| ArbError::InvalidInput(format!("CLMM baseline failed: {e}")))?;
+    let q0 = quote_fn(0, amount_in)
+        .map_err(|e| ArbError::InvalidInput(format!("CLMM baseline failed: {e}")))?;
 
     if let Some(c) = pool.clmm.as_mut() {
         c.sqrt_price = q.final_sqrt_price_x64;

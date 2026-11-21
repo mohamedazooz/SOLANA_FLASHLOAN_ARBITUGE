@@ -12,7 +12,8 @@
 |---|---|---|---|
 | Raydium CPMM / AMM v4 / DAMM v2 constant-product accounting | `arb-math::cpmm` | Independent Python oracle over protocol spec (`audit/math_oracle/oracle.py`), vectors `audit/test_vectors/cpmm_vectors.json` | Specification-derived |
 | Meteora DLMM | `arb-math::dlmm` (multi-bin exact-in, exact-out, view-quote) | (a) Python oracle, `dlmm_single_bin_vectors.json`; (b) **official `@meteora-ag/dlmm@1.9.14`** over a byte-identical captured mainnet snapshot (`fixtures/meteora_mainnet_snapshot.json`, pool `5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6`) | Spec-derived + official SDK |
-| Raydium CLMM / Orca Whirlpool | `arb-math::clmm` + `arb-dex::raydium_clmm` / `orca_whirlpool` | In-repo unit + property tests only (no captured SDK oracle) | Property/invariant |
+| Raydium CLMM | `arb-math::clmm` + `arb-dex::raydium_clmm` | In-repo unit + property tests + official raydium-clmm swap-step parity vectors (`raydium_clmm_swap_math_parity_tests.rs`) | Property/invariant + step parity oracle |
+| Orca Whirlpool | `arb_math::clmm::compute_whirlpool_swap` | **official `@orca-so/whirlpools-core` v3.1.1 (wasm)** over byte-identical captured mainnet snapshots (`fixtures/whirlpool_mainnet_pools/`, 4 classic pools, tick spacings 1/4/8/64) | Official SDK |
 | Pump.fun / PumpSwap / LaunchLab / DBC / DLMM-Pro | dedicated adapters | unit tests incl. fee-mode fail-closed guards | Property/invariant |
 
 ## 2. Executed evidence (this session)
@@ -34,8 +35,9 @@ Results:
 | `mainnet_snapshot_prices_match_official_sdk` | ✅ PASS |
 | `mainnet_snapshot_quotes_match_official_sdk` (exact-in/exact-out × small/deep × both directions × both `CollectFeeMode`s; deep cases cross 45–121 bins incl. bin-array boundaries) | ✅ PASS |
 | `mainnet_pool_batch_quotes_match_official_sdk` (added 2026-11-21: 4 new mainnet pools — bin steps 1/10/50 + TRUMP/USDC pair, deep probes up to 511 bins crossed; every integer field and every Q64.64 price check exact) | ✅ PASS |
+| `whirlpool_mainnet_batch_quotes_match_official_sdk` (added 2026-11-21: 4 classic mainnet whirlpools — tick spacings 1/4/8/64; both directions × exact-in small/deep = 16 deep-quote comparisons over captured tick-array sets; engine `compute_whirlpool_swap` matches `swapQuoteByInputToken` exactly: amount_in_consumed, amount_out, trade_fee tolerance 0; adaptive-fee pools fail-closed-rejected at capture; tick-array PDA re-derivation + raw-byte field re-verification per case; start-tick probes on `get_start_tick_index` exact) | ✅ PASS |
 | `phase15_2_sdk_differential_manifest` | ✅ PASS |
-| Full workspace suite | ✅ 1,398 passed / 0 failed / 2 ignored (109 suites) — same run as QUOTE/economic/V1 suites below |
+| Full workspace suite | ✅ 1,444 passed / 0 failed / 2 ignored (112 suites) — includes the whirlpool differential batch above |
 
 Fee-scope note (SDK parity): the official DLMM client returns `fee` as the LP share and `protocolFee` separately; total trading fee = `fee + protocolFee`. The Rust engine's `fee_amount` is the **total** trading fee and `protocol_fee` its protocol part. This mapping is asserted in the harness and is an *explained* representation difference, not a math difference.
 
@@ -89,11 +91,66 @@ node run_mainnet_snapshot_differential.js
 cargo test -p arb-engine --test meteora_mainnet_sdk_differential
 ```
 
-### 4.2 Remaining gaps (open)
+### 4.2 Closed: Orca Whirlpool official-SDK differential capture (was: no captured SDK oracle)
+
+**Status: CLOSED — executed, exact parity.** Official oracle: `@orca-so/whirlpools-core`
+v3.1.1 wasm (`swapQuoteByInputToken`/`swapQuoteByOutputToken`) driven by
+`whirlpools-sdk@0.22.0` account fetches, against the deployed Whirlpool program
+`whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc`. Captured 4 classic mainnet pools
+(adaptive-fee pools fail-closed-rejected at capture: `feeTierIndexSeed` decoded from
+account bytes at offset 43; a pool is classic iff `seed == tick_spacing`):
+
+| Snapshot | Pool | tick_spacing | fee_rate | capture slots (range) |
+|---|---|---|---|---|
+| `wp_ts1_usdcusdt.{snapshot,quotes}.json` | `4fuUiYxT…y4T4` | 1 | 100 | 472209118–472209372 |
+| `wp_ts4_solusdc.{snapshot,quotes}.json` | `Czfq3xZZ…44zE` | 4 | 400 | 472209118–472209372 |
+| `wp_ts8_solusdc.{snapshot,quotes}.json` | `7qbRF6Ys…VNUJnm` | 8 | 500 | 472209044–472209372 |
+| `wp_ts64_solusdc.{snapshot,quotes}.json` | `HJPjoWU…8ngndJ` | 64 | 3000 | 472209092–472209372 |
+
+Each pool: raw pool account (base64, size 8+645) + full captured tick-array set (9988-byte
+accounts) + SDK quotes for both directions × exact-in small/deep (+ exact-out provenance
+cases). Assertion test
+`crates/arb-engine/tests/whirlpool_mainnet_sdk_differential.rs` replays every pool on the
+Rust side and additionally re-verifies: raw-byte field decode at official IDL offsets,
+tick-array PDA derivation (ASCII-decimal-string seed, VERIFIED from `pda-utils.js` — not
+i32 LE), adaptive-fee classic re-check, and engine-parser agreement on every captured
+array; only arrays capturing the account bytes after SDK confirmation are accepted.
+
+**Defect found and fixed by this capture** (this is why differential capture matters): the
+previous shared CLMM engine stepped array-edge to array-edge; on deep traversals across
+tick arrays with sparse/empty initialized ranges it diverged from the official
+whirlpools-core traversal (ts-64 SOL/USDC b_to_a deep: output off by 9,135,518,347 of
+~28.35e9 ≈ 0.032%; ts-1 deep cases off by 1–2 base units) and rejected a
+SDK-quotable ts-64 deep case as missing coverage. Fix: new
+`arb_math::clmm::compute_whirlpool_swap` ports the official traversal semantics verbatim
+(`rust-sdk/core/src/quote/swap.rs` — sequence-wide next/prev initialized-tick targeting,
+`calc = remaining·(D−fee)/D`, ceiling fee extraction at initialization boundaries,
+round-down output; the `swap_quote_by_output_token` inverted token-A flag honored in the
+harness) with fully checked arithmetic; the Whirlpool production adapter now routes to it
+while Raydium CLMM keeps the previous shared engine. Low-level primitives (amount deltas,
+next-sqrt, tick↔sqrt) were already exact; the official-loop port over them reproduced the
+SDK bit-for-bit on all previously divergent cases, localizing the defect precisely to the
+traversal loop. `compute_swap_with_ticks_per_array_and_math` semantics were **not**
+modified.
+
+Reproduction (network-enabled host, from repo root):
+
+```bash
+cd scripts/differential-harness && npm ci
+# default pool (wp_ts8_solusdc):
+node capture_mainnet_whirlpool.js && node run_mainnet_whirlpool_differential.js
+# remaining pools (outputs land in fixtures/whirlpool_mainnet_pools/<slug> by slug):
+POOL_ADDRESS=Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE node capture_mainnet_whirlpool.js && \
+  POOL_ADDRESS=Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE node run_mainnet_whirlpool_differential.js
+# … repeat for 4fuUiYxTQ6QCrdSq9ouBYcTM7bqSwYTSyLueGZLTy4T4 and HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ
+cargo test -p arb-engine --test whirlpool_mainnet_sdk_differential
+```
+
+### 4.3 Remaining gaps (open)
 
 | Gap | Class | Remediation path |
 |---|---|---|
-| CLMM/Whirlpool have no captured official-SDK differential fixture | Coverage gap (not a known defect) | Capture mainnet snapshot + SDK quotes for Raydium CLMM and Orca Whirlpools via a harness analogous to `scripts/differential-harness/` |
+| Raydium CLMM multi-array mainnet SDK differential (same class as the whirlpool capture; step-level parity already covered by `raydium_clmm_swap_math_parity_tests.rs`) | Coverage gap | Capture mainnet snapshots + official `@raydium-io/clmm-sdk` quotes via a harness analogous to `scripts/differential-harness/` |
 | All batch-captured DLMM pools have `collect_fee_mode = 0` (InputOnly); mode 1 (OnlyY) blocks are SDK-side overrides marked SIMULATED_ONLY | Coverage gap | Discover a live mainnet pool with `collect_fee_mode = 1` (decode `LbPair` per `fixtures/dlmm.json` IDL + 8-byte account discriminator) and run the same harness |
 | Variable-fee volatility state depends on `last_update_timestamp` handling; re-quotes on live snapshots exercise decay paths only in unit tests | Coverage gap | Capture timestamped snapshots; add timestamp-drift vectors |
 | Transient-capture hazard: one step-1 capture attempt failed at the active bin ("no bin consumed output") and succeeded on re-capture at a later slot | Environment | Re-run with a higher commitment or slot-pinned capture when transient emptiness matters |
