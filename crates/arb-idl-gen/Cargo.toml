@@ -1,0 +1,21 @@
+[package]
+name = "arb-idl-gen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+solana-pubkey = { workspace = true }
+solana-account-info = "3.1"
+solana-instruction = { version = "3.5", features = [] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+sha2 = "0.11"
+anchor-gen = "0.4.1"
+
+[dev-dependencies]
+arb-constants = { path = "../arb-constants" }
