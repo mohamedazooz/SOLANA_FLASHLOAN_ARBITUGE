@@ -12,12 +12,16 @@
 
 use std::path::PathBuf;
 
-use crate::{GenConfig, IdlProcessor, presets, generate_cpi_crate};
+use crate::{GenConfig, IdlProcessor, generate_cpi_crate, presets};
 use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "arb-idl-gen", version, about = "Generate Rust helpers from Solana program IDLs")]
+#[command(
+    name = "arb-idl-gen",
+    version,
+    about = "Generate Rust helpers from Solana program IDLs"
+)]
 struct Args {
     /// Path to IDL JSON file
     #[arg(short, long)]
@@ -63,7 +67,11 @@ fn main() -> Result<()> {
         println!("Generating all major DEX IDL helpers...");
         let configs = presets::all_dex(&args.all_dex_base);
         for config in configs {
-            println!("Processing {} -> {:?}", config.idl_path.display(), config.output_dir);
+            println!(
+                "Processing {} -> {:?}",
+                config.idl_path.display(),
+                config.output_dir
+            );
             let processor = IdlProcessor::new(config);
             processor.generate_helpers()?;
         }
@@ -73,7 +81,11 @@ fn main() -> Result<()> {
 
     if let Some(idl_path) = args.gen_build_rs {
         if let Some(program_id) = args.program_id {
-            let crate_name = idl_path.file_stem().unwrap().to_string_lossy().replace('-', "_");
+            let crate_name = idl_path
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .replace('-', "_");
             generate_cpi_crate(idl_path.to_str().unwrap(), &program_id, &crate_name)?;
         } else {
             anyhow::bail!("--program-id required with --gen-build-rs");
@@ -108,9 +120,15 @@ fn main() -> Result<()> {
     let processor = IdlProcessor::new(config);
     processor.generate_helpers()?;
 
-    println!("Done! Generated helpers in {:?}", processor.config.output_dir);
+    println!(
+        "Done! Generated helpers in {:?}",
+        processor.config.output_dir
+    );
     println!("\nFor full CPI crate generation, add to build.rs:");
-    println!("  anchor_gen::generate_cpi_crate!(\"../../{}\");", processor.config.idl_path.display());
+    println!(
+        "  anchor_gen::generate_cpi_crate!(\"../../{}\");",
+        processor.config.idl_path.display()
+    );
     println!("  (requires anchor-gen in build-dependencies)");
 
     Ok(())
