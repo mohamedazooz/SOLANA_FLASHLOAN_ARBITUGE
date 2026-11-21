@@ -115,6 +115,7 @@ impl Default for CircuitBreaker {
 pub struct KillSwitch {
     enabled: Mutex<bool>,
     file_path: Mutex<Option<String>>,
+    persistence_error: Mutex<Option<String>>,
 }
 
 /// True when the mainnet master switch `ARB_LIVE` is enabled. While false,
@@ -134,60 +135,103 @@ impl KillSwitch {
         Self {
             enabled: Mutex::new(false),
             file_path: Mutex::new(None),
+            persistence_error: Mutex::new(None),
         }
     }
 
-    /// Durable kill switch: the marker file is the source of truth across
-    /// restarts. Starts UNBLOCKED by default; operator must explicitly pause
-    /// via `/pause` endpoint. The `KILL_SWITCH_DISABLED=1` env bypass applies
-    /// in non-live modes only (see [`live_master_switch_enabled`]).
+    /// Durable kill switch. An existing marker is loaded as BLOCKED so a
+    /// restart cannot silently re-arm execution.
     pub fn with_file(path: impl Into<String>) -> Self {
         let path = path.into();
-        // Start unblocked regardless of marker file presence.
-        let blocked = false;
-        if std::path::Path::new(&path).exists() {
-            warn!(path = %path, "kill-switch marker exists at startup; ignoring (start unblocked)");
+        let blocked = std::path::Path::new(&path).exists();
+        if blocked {
+            warn!(path = %path, "kill-switch marker found at startup; restoring blocked state");
         }
         Self {
             enabled: Mutex::new(blocked),
             file_path: Mutex::new(Some(path)),
+            persistence_error: Mutex::new(None),
         }
     }
 
-    pub fn activate(&self) {
-        // Lock ordering: file_path then enabled, consistent with is_blocked().
+    /// Engage the in-memory block first, then persist it. Returns true only
+    /// when the durable marker is confirmed written. False means this instance
+    /// has no persistence path; Err means persistence failed. In every case
+    /// the in-memory block remains engaged.
+    pub fn activate(&self) -> std::io::Result<bool> {
+        // Lock ordering: file_path, enabled, persistence_error.
         let file_path = self.file_path.lock().clone();
         let mut enabled = self.enabled.lock();
         *enabled = true;
-        if let Some(path) = file_path {
-            if let Some(parent) = std::path::Path::new(&path).parent()
-                && !parent.as_os_str().is_empty()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                error!(path = %path, error = %e, "failed to create kill-switch marker directory");
-            }
-            if let Err(e) = std::fs::write(&path, b"paused\n") {
-                // Fail safe: the in-memory flag stays set, and the operator is
-                // told durability failed so a restart cannot silently re-arm.
-                error!(path = %path, error = %e, "failed to persist kill-switch marker");
-            }
+
+        let Some(path) = file_path else {
+            *self.persistence_error.lock() =
+                Some("kill-switch persistence path is not configured".to_string());
+            error!("kill switch activated in memory only; no persistence path configured");
+            return Ok(false);
+        };
+
+        if let Some(parent) = std::path::Path::new(&path).parent()
+            && !parent.as_os_str().is_empty()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            *self.persistence_error.lock() = Some(error.to_string());
+            error!(path = %path, error = %error, "failed to create kill-switch marker directory");
+            return Err(error);
         }
-        error!("kill switch activated");
+
+        let persist_result = (|| -> std::io::Result<()> {
+            let mut marker = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&path)?;
+            std::io::Write::write_all(&mut marker, b"paused\n")?;
+            marker.sync_all()
+        })();
+        if let Err(error) = persist_result {
+            *self.persistence_error.lock() = Some(error.to_string());
+            error!(path = %path, error = %error, "failed to persist kill-switch marker");
+            return Err(error);
+        }
+
+        *self.persistence_error.lock() = None;
+        error!("kill switch activated and durably persisted");
+        Ok(true)
     }
 
-    pub fn deactivate(&self) {
+    /// Clear the block only after the durable marker has been removed. A
+    /// filesystem failure leaves the in-memory block engaged and is returned.
+    pub fn deactivate(&self) -> std::io::Result<()> {
         let file_path = self.file_path.lock().clone();
         let mut enabled = self.enabled.lock();
         if let Some(path) = file_path
-            && let Err(e) = std::fs::remove_file(&path)
-            && e.kind() != std::io::ErrorKind::NotFound
+            && let Err(error) = std::fs::remove_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
         {
-            // Keep the in-memory state cleared but warn: the marker survives,
-            // so a restart will re-block (fail safe).
-            error!(path = %path, error = %e, "failed to remove kill-switch marker; restart will re-block");
+            *self.persistence_error.lock() = Some(error.to_string());
+            *enabled = true;
+            error!(path = %path, error = %error, "failed to remove kill-switch marker; remaining blocked");
+            return Err(error);
         }
+
         *enabled = false;
+        *self.persistence_error.lock() = None;
         warn!("kill switch deactivated by operator");
+        Ok(())
+    }
+
+    /// True only when a durable marker currently exists on disk.
+    pub fn is_durably_blocked(&self) -> bool {
+        self.file_path
+            .lock()
+            .as_ref()
+            .is_some_and(|path| std::path::Path::new(path).is_file())
+    }
+
+    /// Last persistence error, or None when no error is currently recorded.
+    pub fn persistence_error(&self) -> Option<String> {
+        self.persistence_error.lock().clone()
     }
 
     pub fn is_blocked(&self) -> bool {
@@ -218,14 +262,18 @@ impl KillSwitch {
     }
     pub fn check_file(&self, path: &str) -> bool {
         if std::path::Path::new(path).exists() {
-            self.activate();
+            if let Err(error) = self.activate() {
+                error!(path = %path, error = %error, "kill switch blocked in memory but persistence failed");
+            }
             true
         } else {
             false
         }
     }
     pub fn activate_from_signal(&self) {
-        self.activate();
+        if let Err(error) = self.activate() {
+            error!(error = %error, "signal activated in-memory kill switch but persistence failed");
+        }
     }
 }
 
@@ -796,9 +844,9 @@ mod tests {
         let _env_lock = ENV_LOCK.lock();
         let ks = KillSwitch::new();
         assert!(!ks.is_blocked());
-        ks.activate();
+        ks.activate().unwrap();
         assert!(ks.is_blocked());
-        ks.deactivate();
+        ks.deactivate().unwrap();
         assert!(!ks.is_blocked());
     }
     // Env-touching tests serialize behind ENV_LOCK because env::set_var is
@@ -812,7 +860,7 @@ mod tests {
         // read or write these vars while held.
         unsafe { std::env::remove_var("KILL_SWITCH_DISABLED") };
         let ks = KillSwitch::new();
-        ks.activate();
+        ks.activate().unwrap();
 
         // Bypass honored while ARB_LIVE is not enabled.
         unsafe { std::env::set_var("KILL_SWITCH_DISABLED", "1") };
@@ -840,9 +888,65 @@ mod tests {
             std::env::remove_var("ARB_LIVE");
         }
         assert!(ks.is_blocked(), "without the bypass the switch enforces");
-        ks.deactivate();
+        ks.deactivate().unwrap();
         assert!(!ks.is_blocked());
     }
+    #[test]
+    fn kill_switch_without_persistence_path_is_explicitly_memory_only() {
+        let ks = KillSwitch::new();
+        assert_eq!(ks.activate().unwrap(), false);
+        assert!(ks.is_blocked());
+        assert!(!ks.is_durably_blocked());
+        assert!(ks.persistence_error().is_some());
+    }
+
+    #[test]
+    fn kill_switch_write_failure_keeps_memory_block_engaged() {
+        let _env_lock = ENV_LOCK.lock();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("arb-risk-ks-fail-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A directory at the marker path forces the marker write to fail.
+        let marker_path = dir.join("marker");
+        std::fs::create_dir_all(&marker_path).unwrap();
+        let ks = KillSwitch::with_file(marker_path.to_string_lossy());
+        assert!(ks.activate().is_err());
+        assert!(
+            ks.is_blocked(),
+            "failed persistence must never clear in-memory block"
+        );
+        assert!(ks.persistence_error().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn kill_switch_remove_failure_keeps_memory_block_engaged() {
+        let _env_lock = ENV_LOCK.lock();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("arb-risk-ks-remove-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("marker");
+        let ks = KillSwitch::with_file(marker.to_string_lossy());
+        assert!(ks.activate().unwrap());
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::create_dir(&marker).unwrap();
+        assert!(ks.deactivate().is_err());
+        assert!(
+            ks.is_blocked(),
+            "failed marker removal must keep the in-memory block"
+        );
+        assert!(ks.persistence_error().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn kill_switch_marker_survives_restart() {
         let _env_lock = ENV_LOCK.lock();
@@ -856,7 +960,7 @@ mod tests {
 
         let ks = KillSwitch::with_file(&path_str);
         assert!(!ks.is_blocked(), "fresh path must start unblocked");
-        ks.activate();
+        ks.activate().unwrap();
         assert!(ks.is_blocked());
         assert!(path.exists(), "activation must persist a marker file");
         drop(ks);
@@ -866,7 +970,7 @@ mod tests {
             restarted.is_blocked(),
             "kill switch must remain blocked after a restart"
         );
-        restarted.deactivate();
+        restarted.deactivate().unwrap();
         assert!(!restarted.is_blocked());
         assert!(!path.exists(), "deactivation must remove the marker");
         let _ = std::fs::remove_dir_all(&dir);
@@ -949,7 +1053,7 @@ mod tests {
         let _env_lock = ENV_LOCK.lock();
         let ks = KillSwitch::new();
         let start = std::time::Instant::now();
-        ks.activate();
+        ks.activate().unwrap();
         assert!(ks.is_blocked());
         assert!(start.elapsed().as_millis() < 1000);
     }
