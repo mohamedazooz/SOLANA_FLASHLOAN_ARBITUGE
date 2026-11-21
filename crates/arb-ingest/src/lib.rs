@@ -28,6 +28,9 @@ pub use provider_supervisor::{
     CoherenceError, DependencyStamp, ProviderHealth, ProviderId, ProviderStatus,
     ProviderSupervisor, SupervisorPolicy, validate_dependency_group,
 };
+/// Provider identities shared by snapshot stamping and the runtime health gate.
+pub const HTTP_RPC_PROVIDER_ID: ProviderId = ProviderId(0);
+pub const ACCOUNT_WEBSOCKET_PROVIDER_ID: ProviderId = ProviderId(1);
 pub use quote_readiness::{
     ExecutionReadinessError, QuoteReadinessContext, QuoteReadinessError,
     build_quote_dependency_set, validate_execution_readiness,
@@ -135,7 +138,8 @@ pub struct AccountSnapshot {
     pub slot: u64,
     pub write_version: u64,
     pub is_startup: bool,
-    /// Helius WebSocket stream uses ProviderId(1); HTTP RPC bootstrap uses ProviderId(0).
+    /// Account WebSocket stream uses `ACCOUNT_WEBSOCKET_PROVIDER_ID`; HTTP RPC
+    /// bootstrap snapshots use `HTTP_RPC_PROVIDER_ID`.
     pub provider_id: ProviderId,
     /// Bank identity supplied by Yellowstone; unavailable for HTTP RPC snapshots.
     pub bank_id: Option<u64>,
@@ -446,7 +450,7 @@ impl IngestClient {
             stream_connected: std::sync::atomic::AtomicBool::new(false),
             helius_connected: std::sync::atomic::AtomicBool::new(false),
             helius_slot: Arc::new(AtomicU64::new(0)),
-            provider_id: ProviderId(1),
+            provider_id: ACCOUNT_WEBSOCKET_PROVIDER_ID,
             provider_supplies_bank_ids: std::sync::atomic::AtomicBool::new(false),
             #[cfg(feature = "extra-ingest")]
             streaming_cache: parking_lot::Mutex::new(None),
@@ -472,8 +476,9 @@ impl IngestClient {
         self.stream_generation.load(Ordering::Acquire)
     }
     pub fn stream_connected(&self) -> bool {
+        // This is the single readiness flag. Provider-specific status remains
+        // observable through `helius_connected`, but cannot override it.
         self.stream_connected.load(Ordering::Acquire)
-            || self.helius_connected.load(Ordering::Acquire)
     }
 
     pub fn helius_connected(&self) -> bool {
@@ -481,14 +486,25 @@ impl IngestClient {
     }
 
     pub fn mark_helius_connected(&self) {
-        self.helius_connected.store(true, Ordering::Release);
-        if self.stream_generation.load(Ordering::Acquire) == 0 {
-            self.stream_generation.store(1, Ordering::Release);
+        let was_connected = self.helius_connected.swap(true, Ordering::AcqRel);
+        if !was_connected {
+            // Every reconnect starts a new data epoch. Keep the pool cache so
+            // account notifications can update existing decoders, while quote
+            // readiness rejects account snapshots from the previous epoch.
+            let _ = self.stream_generation.fetch_update(
+                Ordering::AcqRel,
+                Ordering::Acquire,
+                |generation| Some(generation.saturating_add(1).max(1)),
+            );
         }
+        self.stream_connected.store(true, Ordering::Release);
     }
 
     pub fn mark_helius_disconnected(&self) {
         self.helius_connected.store(false, Ordering::Release);
+        // `stream_connected()` is consulted by quote readiness. Leaving its
+        // independent flag set here made a dead WebSocket look healthy forever.
+        self.stream_connected.store(false, Ordering::Release);
     }
 
     pub fn helius_slot(&self) -> u64 {

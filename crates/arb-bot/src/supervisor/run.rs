@@ -798,7 +798,7 @@ impl Supervisor {
                                 // HTTP account reads are bootstrap/reconciliation
                                 // evidence, never a live stream dependency.
                                 is_startup: true,
-                                provider_id: arb_ingest::ProviderId(0),
+                                provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
                                 bank_id: None,
                                 generation: self.ingest.stream_generation(),
                                 data: Arc::new(bytes),
@@ -919,7 +919,7 @@ impl Supervisor {
                                                 // snapshot, but cannot masquerade as
                                                 // live WebSocket state.
                                                 is_startup: true,
-                                                provider_id: arb_ingest::ProviderId(0),
+                                                provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
                                                 bank_id: None,
                                                 generation: ingest_worker_res.stream_generation(),
                                                 data: Arc::new(bytes),
@@ -1015,8 +1015,9 @@ impl Supervisor {
         // account stream; provider 0 is the HTTP RPC slot fallback. When no
         // provider is healthy and fresh, new opportunity cycles stop (fail
         // closed, no stale fallback).
-        const WS_STREAM_PROVIDER: arb_ingest::ProviderId = arb_ingest::ProviderId(1);
-        const RPC_FALLBACK_PROVIDER: arb_ingest::ProviderId = arb_ingest::ProviderId(0);
+        const WS_STREAM_PROVIDER: arb_ingest::ProviderId =
+            arb_ingest::ACCOUNT_WEBSOCKET_PROVIDER_ID;
+        const RPC_FALLBACK_PROVIDER: arb_ingest::ProviderId = arb_ingest::HTTP_RPC_PROVIDER_ID;
         let provider_supervisor = parking_lot::Mutex::new(arb_ingest::ProviderSupervisor::new(
             vec![
                 arb_ingest::ProviderHealth::new(WS_STREAM_PROVIDER, 0),

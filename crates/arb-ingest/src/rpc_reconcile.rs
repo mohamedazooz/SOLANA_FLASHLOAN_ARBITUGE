@@ -188,7 +188,7 @@ impl RpcSnapshotClient {
                 // RPC bootstrap is not a live Geyser write. Keep it explicitly non-tradeable
                 // until a live stream update replaces it.
                 is_startup: true,
-                provider_id: crate::ProviderId(0),
+                provider_id: crate::HTTP_RPC_PROVIDER_ID,
                 bank_id: None,
                 generation: 0,
                 data: Arc::new(data),

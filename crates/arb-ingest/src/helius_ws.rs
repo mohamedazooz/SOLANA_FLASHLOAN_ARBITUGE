@@ -504,7 +504,7 @@ impl HeliusWsClient {
                     slot: acct_slot,
                     write_version: 1,
                     is_startup: true,
-                    provider_id: ingest.provider_id(),
+                    provider_id: crate::HTTP_RPC_PROVIDER_ID,
                     bank_id: None,
                     generation: ingest.stream_generation(),
                     data: Arc::new(bytes),
@@ -634,7 +634,6 @@ impl HeliusWsClient {
 
                     self.is_connected.store(true, Ordering::Release);
                     ingest.mark_helius_connected();
-                    ingest.mark_stream_connected();
                     info!(
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
@@ -1407,7 +1406,6 @@ impl HeliusWsClient {
                         ingest.record_slot_update(slot, parent, slot_integrity::SLOT_PROCESSED);
                         ingest.record_helius_slot(slot);
                         ingest.mark_helius_connected();
-                        ingest.mark_stream_connected();
                         self.slot_notify.notify_waiters();
                         return Ok(true);
                     }
