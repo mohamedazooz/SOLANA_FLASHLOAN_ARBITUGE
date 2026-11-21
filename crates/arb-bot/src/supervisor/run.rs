@@ -1026,6 +1026,7 @@ impl Supervisor {
             arb_ingest::SupervisorPolicy::default(),
         ));
         let mut last_ws_slot: u64 = 0;
+        let mut last_ws_generation = self.ingest.stream_generation();
         let mut last_ws_advance_at = Instant::now();
         let ws_stale_after = arb_ingest::SupervisorPolicy::default().stale_after;
 
@@ -1097,6 +1098,12 @@ impl Supervisor {
             // healthy while its slot watermark advances; a stall beyond the
             // stale-after window trips the circuit breaker.
             let now = Instant::now();
+            let ws_generation = self.ingest.stream_generation();
+            if ws_generation != last_ws_generation {
+                last_ws_generation = ws_generation;
+                last_ws_slot = 0;
+                last_ws_advance_at = now;
+            }
             if helius_slot > last_ws_slot {
                 last_ws_slot = helius_slot;
                 last_ws_advance_at = now;
@@ -1146,17 +1153,16 @@ impl Supervisor {
             adaptive_delay_ms = 50;
             current_slot = Slot(stream_slot);
 
-            // Fail-closed provider gate (G2): when no provider is healthy,
-            // fresh and close to the cluster slot, no new opportunity cycles
-            // are generated (no stale-fallback trading).
-            if provider_supervisor
+            // Only the healthy account WebSocket can authorize trading. HTTP
+            // RPC is a cluster-clock fallback; accepting it here could let
+            // stale WS snapshots pass while their socket is stalled.
+            let selected_provider = provider_supervisor
                 .lock()
-                .select(current_slot.0, Instant::now())
-                .is_none()
-            {
+                .select(current_slot.0, Instant::now());
+            if selected_provider != Some(WS_STREAM_PROVIDER) || !self.ingest.stream_connected() {
                 debug!(
-                    "No healthy data provider at slot {}; skipping opportunity cycle (fail closed)",
-                    current_slot.0
+                    "No healthy account WebSocket at slot {} (selected provider: {:?}); skipping opportunity cycle (fail closed)",
+                    current_slot.0, selected_provider
                 );
                 continue;
             }

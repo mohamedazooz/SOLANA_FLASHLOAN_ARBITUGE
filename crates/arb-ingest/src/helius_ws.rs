@@ -516,8 +516,9 @@ impl HeliusWsClient {
 
         if seeded_count > 0 {
             if latest_slot > 0 {
-                self.latest_slot.fetch_max(latest_slot, Ordering::AcqRel);
-                ingest.record_helius_slot(latest_slot);
+                // The account batch came from HTTP RPC. It may pace the
+                // cluster clock, but must not count as WebSocket liveness.
+                ingest.record_slot(latest_slot);
             }
             info!(
                 "Seeded {seeded_count}/{} initial snapshots via batched getMultipleAccounts at slot {latest_slot}",
@@ -633,6 +634,7 @@ impl HeliusWsClient {
                     self.probe_confirmed.store(false, Ordering::Release);
 
                     self.is_connected.store(true, Ordering::Release);
+                    self.latest_slot.store(0, Ordering::Release);
                     ingest.mark_helius_connected();
                     info!(
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
@@ -843,6 +845,7 @@ impl HeliusWsClient {
             }
 
             self.is_connected.store(false, Ordering::Release);
+            self.latest_slot.store(0, Ordering::Release);
             ingest.mark_helius_disconnected();
 
             // Resilient WS connection & cooldown:

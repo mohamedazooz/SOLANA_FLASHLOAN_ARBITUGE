@@ -193,7 +193,10 @@ impl AccountSnapshotStore {
                 // SLOT_DEAD invalidation or a coherent fresh dependency set.
                 return false;
             }
-            if (update.slot, update.write_version) <= (current.slot, current.write_version) {
+            let live_replaces_bootstrap = current.is_startup && !update.is_startup;
+            if !live_replaces_bootstrap
+                && (update.slot, update.write_version) <= (current.slot, current.write_version)
+            {
                 return false;
             }
         }
@@ -243,7 +246,8 @@ impl AccountSnapshotStore {
                         && !u.is_startup
                         && old.slot == u.slot
                         && old.bank_id != u.bank_id)
-                    || (u.slot, u.write_version) <= (old.slot, old.write_version)
+                    || (!(old.is_startup && !u.is_startup)
+                        && (u.slot, u.write_version) <= (old.slot, old.write_version))
             })
         }) {
             return false;
@@ -496,6 +500,10 @@ impl IngestClient {
                 Ordering::Acquire,
                 |generation| Some(generation.saturating_add(1).max(1)),
             );
+            // Drop old dependencies so a lagging endpoint or competing fork
+            // cannot block fresh updates by tuple ordering. Keep decoded pools
+            // so the account stream can refresh their existing state.
+            self.account_store.clear();
         }
         self.stream_connected.store(true, Ordering::Release);
     }
@@ -505,6 +513,9 @@ impl IngestClient {
         // `stream_connected()` is consulted by quote readiness. Leaving its
         // independent flag set here made a dead WebSocket look healthy forever.
         self.stream_connected.store(false, Ordering::Release);
+        // The slot watermark is per WebSocket epoch; RPC cluster-clock updates
+        // live in `latest_slot` and must not masquerade as stream progress.
+        self.helius_slot.store(0, Ordering::Release);
     }
 
     pub fn helius_slot(&self) -> u64 {
@@ -740,7 +751,7 @@ impl IngestClient {
         self.latest_slot.fetch_max(slot, Ordering::Relaxed);
     }
 
-    /// Read the latest slot observed from the Yellowstone stream (atomic read).
+    /// Read the latest cluster slot observed by any configured slot source.
     pub fn current_slot(&self) -> u64 {
         self.latest_slot.load(Ordering::Relaxed)
     }
