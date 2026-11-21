@@ -441,8 +441,8 @@ impl AppConfig {
             },
             strategy: StrategyConfig {
                 base_tokens: vec![
-                    "So11111111111111111111111111111111111111112".to_string(), // WSOL
-                    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(), // USDC
+                    arb_constants::WSOL_MINT.to_string(), // WSOL
+                    arb_constants::USDC_MINT.to_string(), // USDC
                 ],
                 min_net_profit_abs: Lamports(50_000),
                 min_net_profit_bps: Bps(5),

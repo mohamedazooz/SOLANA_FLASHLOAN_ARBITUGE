@@ -116,7 +116,7 @@ impl ProgramRegistry {
         let raydium_amm_v4_mainnet = Pubkey::from_str(arb_constants::RAYDIUM_V4_PROGRAM_ID)
             .expect("Invalid Raydium AMM V4 Mainnet Program ID");
         let raydium_amm_v4_devnet =
-            Pubkey::from_str("C8npZJQ9Knqy6Q81ic4TqnFd3JX6A4qg1aXQY5sJX6eY").ok();
+            Pubkey::from_str(arb_constants::RAYDIUM_V4_DEVNET_PROGRAM_ID).ok();
 
         self.programs.insert(
             raydium_amm_v4_mainnet,

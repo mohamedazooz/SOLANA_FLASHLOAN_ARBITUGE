@@ -4,6 +4,10 @@ name = "arb-land"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+jito = ["dep:jito-client", "dep:jito-searcher-client", "dep:jito-sdk-rust"]
+
 [dependencies]
 arb-types = { path = "../arb-types" }
 arb-constants = { path = "../arb-constants" }
@@ -19,7 +23,11 @@ parking_lot = { workspace = true }
 base64 = { version = "0.22", features = ["alloc"] }
 tokio-tungstenite = { version = "0.24", features = ["connect", "url", "rustls-tls-webpki-roots"] }
 url = "2.5"
+# Jito landing helpers (optional; cached in registry).
+jito-client = { version = "0.3.5", optional = true }
+jito-searcher-client = { version = "0.0.1", optional = true }
+# Modern Jito SDK (bundles/tips; Solana 2.2).
+jito-sdk-rust = { version = "0.3.2", optional = true }
 
 [lints]
 workspace = true
-

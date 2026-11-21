@@ -369,11 +369,9 @@ impl BellmanFordEngine {
             }
 
             // Rotate cycle so that if WSOL or USDC is present, borrow starts and ends with it
-            const WSOL_STR: &str = "So11111111111111111111111111111111111111112";
-            const USDC_STR: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
             if let Some(pos) = cycle_edges.iter().position(|e| {
-                let s = e.from_mint.0.to_string();
-                s == WSOL_STR || s == USDC_STR
+                e.from_mint.0 == arb_constants::wsol_mint()
+                    || e.from_mint.0 == arb_constants::usdc_mint()
             }) {
                 cycle_edges.rotate_left(pos);
             }

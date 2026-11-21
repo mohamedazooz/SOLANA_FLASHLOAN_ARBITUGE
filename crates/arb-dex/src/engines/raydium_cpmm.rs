@@ -167,6 +167,11 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
     }
 
     fn quote_exact_out(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
+        // Explicitly validate the output mint against the pool's two mints; reject
+        // unsupported mints instead of silently treating them as the base side.
+        if request.output_mint != state.base_mint && request.output_mint != state.quote_mint {
+            return Err(ArbError::InvalidInput("output mint not in pool".into()));
+        }
         let a_to_b = request.output_mint == state.quote_mint;
         let (r_in, r_out) = if a_to_b {
             (state.reserve_in, state.reserve_out)
@@ -200,13 +205,23 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         let req_in = u64::try_from(dx)
             .map_err(|_| ArbError::CalculationError("Overflow in exact out".into()))?;
 
+        // Fee portion in input terms = dx - dx' (the markup over the fee-free input).
+        let total_fee = u64::try_from(dx.saturating_sub(dx_prime)).unwrap_or(u64::MAX);
+
         Ok(QuoteResult {
             protocol: DexProtocol::RaydiumCpmm,
             pool_id: state.pool_id,
             amount_in_raw: req_in,
             amount_out_raw: request.amount,
             minimum_amount_out_raw: request.amount,
-            fees_breakdown: FeesBreakdown::default(),
+            fees_breakdown: FeesBreakdown {
+                lp_fee: total_fee,
+                protocol_fee: 0,
+                fund_fee: 0,
+                creator_fee: 0,
+                dynamic_fee: 0,
+                total_fee,
+            },
             transfer_fee_breakdown: HopTransferFeeBreakdown::default(),
             price_impact: Bps(0),
             unfilled_input_raw: 0,

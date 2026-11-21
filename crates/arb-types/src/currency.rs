@@ -17,9 +17,9 @@ use std::str::FromStr;
 use thiserror::Error;
 
 /// Canonical Mainnet WSOL mint.
-pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+pub const WSOL_MINT: &str = arb_constants::WSOL_MINT;
 /// Canonical Mainnet USDC mint.
-pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub const USDC_MINT: &str = arb_constants::USDC_MINT;
 
 /// Dimensional arithmetic errors.
 #[derive(Debug, Error, Clone, PartialEq, Eq, Serialize, Deserialize)]

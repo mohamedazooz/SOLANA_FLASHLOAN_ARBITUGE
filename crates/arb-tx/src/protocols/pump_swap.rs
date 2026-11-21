@@ -56,7 +56,7 @@ pub fn build_pump_swap_instruction_v2(
         .map_err(|e| TxError::InstructionError(e.to_string()))?;
 
     let system_program = Pubkey::new_from_array(SYSTEM_PROGRAM_ID);
-    let spl_ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap();
+    let spl_ata_program = Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap();
 
     let user_base_token = get_associated_token_address_with_program_id(
         &user_authority,

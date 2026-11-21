@@ -53,13 +53,13 @@ pub enum SizingMethod {
 /// Kelly Criterion parameters for position sizing
 #[derive(Debug, Clone)]
 pub struct KellyParams {
-    /// Estimated win probability (0.0 - 1.0). Derived from historical landing rate.
-    pub win_probability: f64,
-    /// Reward-to-risk ratio (R = avg_win / avg_loss). Derived from historical PnL.
-    pub reward_risk_ratio: f64,
-    /// Fractional Kelly multiplier (0.0 - 1.0). 0.5 = half-Kelly, 0.25 = quarter-Kelly.
+    /// Estimated win probability in basis points (0 - 10_000). Derived from historical landing rate.
+    pub win_probability_bps: u64,
+    /// Reward-to-risk ratio scaled by 1000 (e.g. 2000 = 2.0). Derived from historical PnL.
+    pub reward_risk_ratio_scaled: u64,
+    /// Fractional Kelly multiplier in basis points (0 - 10_000). 5000 = half-Kelly.
     /// Reduces volatility and drawdowns while preserving ~75% of peak compounding speed.
-    pub fractional_kelly: f64,
+    pub fractional_kelly_bps: u64,
     /// Minimum position size floor (lamports) - Kelly can suggest very small sizes
     pub min_position_lamports: u64,
     /// Maximum position size cap (lamports) - hard limit regardless of Kelly
@@ -69,10 +69,10 @@ pub struct KellyParams {
 impl Default for KellyParams {
     fn default() -> Self {
         Self {
-            win_probability: 0.65,                // Conservative estimate from landing rate
-            reward_risk_ratio: 2.0,               // Conservative R:R
-            fractional_kelly: 0.5,                // Half-Kelly (recommended by practitioners)
-            min_position_lamports: 100_000,       // 0.0001 WSOL
+            win_probability_bps: 6500,      // Conservative estimate from landing rate
+            reward_risk_ratio_scaled: 2000, // Conservative R:R
+            fractional_kelly_bps: 5000,     // Half-Kelly (recommended by practitioners)
+            min_position_lamports: 100_000, // 0.0001 WSOL
             max_position_lamports: 5_000_000_000, // 5 WSOL
         }
     }
@@ -142,22 +142,24 @@ fn calculate_kelly_optimal_size(
     min_position: u64,
     max_position: u64,
 ) -> u64 {
-    // Kelly fraction: f* = p - (1-p)/R
-    let kelly_fraction =
-        kelly.win_probability - (1.0 - kelly.win_probability) / kelly.reward_risk_ratio;
+    // Kelly fraction: f* = p - (1-p)/R, computed in fixed-point (x10_000).
+    let p_bps = kelly.win_probability_bps.min(10_000) as u128;
+    let r_scaled = kelly.reward_risk_ratio_scaled.max(1) as u128;
+    let one_minus_p_over_r = (10_000u128 - p_bps) * 1000 / r_scaled;
+    let kelly_fraction_scaled = p_bps.saturating_sub(one_minus_p_over_r);
 
-    // Apply fractional Kelly (half-Kelly = 0.5, quarter-Kelly = 0.25)
-    let fractional_kelly = kelly.fractional_kelly.clamp(0.0, 1.0);
-    let adjusted_fraction = (kelly_fraction * fractional_kelly).max(0.0);
+    // Apply fractional Kelly (basis points)
+    let fractional_bps = kelly.fractional_kelly_bps.min(10_000) as u128;
+    let adjusted_scaled = kelly_fraction_scaled * fractional_bps / 10_000;
 
     // If Kelly suggests negative or zero, use minimum
-    if adjusted_fraction <= 0.0 {
+    if adjusted_scaled == 0 {
         return min_position;
     }
 
     // Position size = fraction * capacity (or max_position, whichever is smaller)
     let capacity = capacity_based_size.min(max_position);
-    let kelly_size = (capacity as f64 * adjusted_fraction) as u64;
+    let kelly_size = (capacity as u128 * adjusted_scaled / 10_000) as u64;
 
     // Clamp to [min_position, max_position]
     kelly_size.clamp(min_position, max_position)
