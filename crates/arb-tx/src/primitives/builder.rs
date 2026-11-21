@@ -989,7 +989,7 @@ impl TxBuilder {
     /// Create a standard Address Lookup Table containing well-known static program, pool,
     /// vault, and sysvar pubkeys for Raydium, Orca, Kamino, and SPL Token programs on Solana Mainnet.
     pub fn create_default_mainnet_alt() -> AddressLookupTable {
-        let alt_key = Pubkey::from_str("ALT1111111111111111111111111111111111111111").unwrap();
+        let alt_key = Pubkey::from_str(arb_constants::DEFAULT_MAINNET_ALT_KEY).unwrap();
         let addresses = vec![
             Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
             Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap(),

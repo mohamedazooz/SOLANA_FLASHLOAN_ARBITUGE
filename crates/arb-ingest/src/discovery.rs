@@ -103,23 +103,23 @@ impl Default for DiscoveryConfig {
             // addresses silently kill discovery for that token — see the
             // regression test `default_hubs_are_verified_mints`.
             // POPCAT — high volatility memecoin
-            "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+            arb_constants::POPCAT_MINT,
             // WIF — high volatility memecoin
-            "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
+            arb_constants::WIF_MINT,
             // BONK — popular memecoin (verified: SPL mint, 5 decimals)
-            "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+            arb_constants::BONK_MINT,
             // BOME — Book of Meme (verified: SPL mint, 6 decimals)
-            "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82",
+            arb_constants::BOME_MINT,
             // TRUMP — high volume political meme (verified: SPL mint, 6 decimals)
-            "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN",
+            arb_constants::TRUMP_MINT,
             // FARTCOIN — high volume meme
-            "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump",
+            arb_constants::FARTCOIN_MINT,
             // PENGU — Pudgy Penguins token
-            "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv",
+            arb_constants::PENGU_MINT,
             // FWOG — high volume meme
-            "A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump",
+            arb_constants::FWOG_MINT,
             // MOODENG — viral meme
-            "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY",
+            arb_constants::MOODENG_MINT,
         ] {
             if let Ok(pk) = Pubkey::from_str(s) {
                 hubs.push(MintId(pk));

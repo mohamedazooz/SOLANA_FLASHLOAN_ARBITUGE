@@ -30,15 +30,15 @@ use std::str::FromStr;
 pub const MAX_ALT_ADDRESSES: usize = 256;
 
 /// Meteora DLMM program ID on Mainnet.
-const METEORA_DLMM_PROGRAM_ID_STR: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+const METEORA_DLMM_PROGRAM_ID_STR: &str = arb_constants::METEORA_DLMM_PROGRAM_ID;
 
 /// Memo Program ID (required by DLMM swap2 instructions).
-const MEMO_PROGRAM_ID_STR: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+const MEMO_PROGRAM_ID_STR: &str = arb_constants::MEMO_PROGRAM_ID;
 
 /// Expected mainnet DLMM event authority PDA.
 /// Derived from `[b"__event_authority"]` under the Meteora DLMM program.
 /// Expected: D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6
-pub const EXPECTED_DLMM_EVENT_AUTHORITY: &str = "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6";
+pub const EXPECTED_DLMM_EVENT_AUTHORITY: &str = arb_constants::METEORA_DLMM_EVENT_AUTHORITY;
 
 /// Result of provisioning: how many addresses were added vs skipped (already present).
 #[derive(Debug, Clone, PartialEq, Eq)]

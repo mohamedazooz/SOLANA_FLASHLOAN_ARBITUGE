@@ -24,16 +24,16 @@ use std::str::FromStr;
 pub const MAX_BIN_PER_ARRAY: i64 = METEORA_BINS_PER_BIN_ARRAY;
 
 /// DLMM program ID on Mainnet.
-pub const DLMM_PROGRAM_ID_STR: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+pub const DLMM_PROGRAM_ID_STR: &str = arb_constants::METEORA_DLMM_PROGRAM_ID;
 
 /// Memo Program ID required by DLMM swap2 instructions.
-pub const MEMO_PROGRAM_ID_STR: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+pub const MEMO_PROGRAM_ID_STR: &str = arb_constants::MEMO_PROGRAM_ID;
 
 /// SPL Token Program ID.
-pub const SPL_TOKEN_PROGRAM_ID_STR: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+pub const SPL_TOKEN_PROGRAM_ID_STR: &str = arb_constants::TOKEN_PROGRAM_ID;
 
 /// Token-2022 Program ID.
-pub const TOKEN_2022_PROGRAM_ID_STR: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+pub const TOKEN_2022_PROGRAM_ID_STR: &str = arb_constants::TOKEN_2022_PROGRAM_ID;
 
 /// Canonical program-ID sentinel used for absent optional Anchor accounts.
 /// When an optional account (e.g. host fee) is not configured, the official Meteora
@@ -41,7 +41,7 @@ pub const TOKEN_2022_PROGRAM_ID_STR: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqC
 /// The placeholder meta is always `readonly, non-signer` per the official TS SDK
 /// (`derivePlaceHolderAccountMeta`): passing an executable program account as
 /// writable would fail at the runtime.
-pub const OPTIONAL_ACCOUNT_SENTINEL: &str = "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo";
+pub const OPTIONAL_ACCOUNT_SENTINEL: &str = arb_constants::METEORA_DLMM_PROGRAM_ID;
 
 /// Default DLMM bitmap covers Bin Array indices `-512..=511`
 /// (`BIN_ARRAY_BITMAP_SIZE = 512` in the official IDL; `internalBitmapRange()`

@@ -30,6 +30,8 @@ pub const ADDRESS_LOOKUP_TABLE_PROGRAM_ID: &str = "AddressLookupTab1e11111111111
 pub const SYSVAR_INSTRUCTIONS_ID: &str = "Sysvar1nstructions1111111111111111111111111";
 /// Sysvar Rent account.
 pub const SYSVAR_RENT_ID: &str = "SysvarRent111111111111111111111111111111111";
+/// SPL Memo Program ID.
+pub const MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 /// System Program (zero address).
 pub const SYSTEM_PROGRAM_ID: [u8; 32] = [0; 32];
 /// Compute Budget Program ID (`ComputeBudget111111111111111111111111111111`).
@@ -64,6 +66,26 @@ pub const RAY_MINT: &str = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R";
 pub const JUP_MINT: &str = "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN";
 /// PYTH mint on Solana.
 pub const PYTH_MINT: &str = "HZ1JovNiRvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3";
+/// TRUMP mint on Solana.
+pub const TRUMP_MINT: &str = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN";
+/// BOME mint on Solana.
+pub const BOME_MINT: &str = "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82";
+/// PENGU mint on Solana.
+pub const PENGU_MINT: &str = "2zMMhcVQEXDtdE6vsFS7S7D5oUodfJHE8vd1gnBouauv";
+/// FWOG mint on Solana.
+pub const FWOG_MINT: &str = "A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump";
+/// MOODENG mint on Solana.
+pub const MOODENG_MINT: &str = "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY";
+
+/// Resolve the canonical WSOL mint Pubkey.
+pub fn wsol_mint() -> Pubkey {
+    Pubkey::from_str(WSOL_MINT).expect("Valid WSOL mint pubkey")
+}
+
+/// Resolve the canonical USDC mint Pubkey.
+pub fn usdc_mint() -> Pubkey {
+    Pubkey::from_str(USDC_MINT).expect("Valid USDC mint pubkey")
+}
 
 // ============================================================================
 // Jito Tip Accounts (Mainnet)
@@ -163,6 +185,8 @@ pub fn jitodontfront_marker() -> Pubkey {
 
 /// Raydium AMM v4 Program ID.
 pub const RAYDIUM_V4_PROGRAM_ID: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
+/// Raydium AMM v4 Devnet Program ID.
+pub const RAYDIUM_V4_DEVNET_PROGRAM_ID: &str = "C8npZJQ9Knqy6Q81ic4TqnFd3JX6A4qg1aXQY5sJX6eY";
 /// Raydium AMM v4 Authority PDA.
 pub const RAYDIUM_V4_AUTHORITY: &str = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1";
 /// OpenBook (Serum v3 successor) DEX Program ID.
@@ -265,6 +289,12 @@ pub const ORCA_SOL_USDC_POOL: &str = "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44
 pub const ORCA_SOL_VAULT: &str = "EUuUbDcafPrmVTD5M6qoJAoyyNbihBhugADAxRMn5he9";
 /// Orca USDC vault address.
 pub const ORCA_USDC_VAULT: &str = "2WLWEuKDgkDUccTpbwYp1GToYktiSB1cXvreHUwiSUVP";
+/// Orca SOL-USDC 1 bps pool address.
+pub const ORCA_SOL_USDC_1BPS_POOL: &str = "83v8iPyZihDEjDdY8RdZddyZNyUtXngz69Lgo9Kt5d6d";
+/// Orca SOL-USDC 2 bps pool address.
+pub const ORCA_SOL_USDC_2BPS_POOL: &str = "FpCMFDFGYotvufJ7HrFHsWEiiQCGbkLCtwHiDnh7o28Q";
+/// Orca SOL-USDC 8 bps pool address.
+pub const ORCA_SOL_USDC_8BPS_POOL: &str = "7qbRF6YsyGuLUVs6Y1q64bdVrfe4ZcUUz1JRdoVNUJnm";
 
 // ============================================================================
 // Meteora DLMM — SOL-USDC Pool & Reserves (Mainnet)
@@ -272,12 +302,18 @@ pub const ORCA_USDC_VAULT: &str = "2WLWEuKDgkDUccTpbwYp1GToYktiSB1cXvreHUwiSUVP"
 
 /// Meteora SOL-USDC pool address (bin_step 4, highest TVL SOL-USDC DLMM).
 pub const METEORA_SOL_USDC_POOL: &str = "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6";
+/// Meteora SOL-USDC pool 2 (bin_step 10, deep liquidity).
+pub const METEORA_SOL_USDC_POOL_2: &str = "BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh";
+/// Meteora SOL-USDC pool 3 (bin_step 20).
+pub const METEORA_SOL_USDC_POOL_3: &str = "CgqwPLSFfht89pF5RSKGUUMFj5zRxoUt4861w2SkXaqY";
 /// Meteora SOL reserve vault address.
 pub const METEORA_SOL_RESERVE: &str = "EYj9xKw6ZszwpyNibHY7JD5o3QgTVrSdcBp1fMJhrR9o";
 /// Meteora USDC reserve vault address.
 pub const METEORA_USDC_RESERVE: &str = "CoaxzEh8p5YyGLcj36Eo3cUThVJxeKCs7qvLAGDYwBcz";
 /// Meteora DLMM bin step (basis points) for SOL-USDC pool.
 pub const METEORA_SOL_USDC_BIN_STEP: u16 = 4;
+/// Expected mainnet DLMM event authority PDA.
+pub const METEORA_DLMM_EVENT_AUTHORITY: &str = "D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6";
 /// Number of liquidity bins per `BinArray` account.
 ///
 /// Meteora `lb_clmm::state::bin_array::BINS_PER_ARRAY` is 70 — NOT 64. The
@@ -380,8 +416,8 @@ pub const RAYDIUM_CLMM_TICK_ARRAY_SEED: &[u8] = b"tick_array";
 pub const RAYDIUM_CLMM_OBSERVATION_SEED: &[u8] = b"observation";
 /// Anchor discriminator for Raydium CLMM `swap_v2`: sha256("global:swap_v2")[..8].
 pub const RAYDIUM_CLMM_SWAP_V2_DISCRIMINATOR: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
-/// SPL Memo v2 Program ID (required by Raydium CLMM swap_v2).
-pub const MEMO_PROGRAM_ID: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+/// SPL Memo v2 Program ID (required by Raydium CLMM swap_v2) - alias to canonical `MEMO_PROGRAM_ID`.
+pub const SPL_MEMO_V2_PROGRAM_ID: &str = MEMO_PROGRAM_ID;
 
 // ============================================================================
 // Meteora DAMM v2 (cp_amm) — Program, Authority & Discriminators
@@ -607,6 +643,22 @@ pub const DEFAULT_WS_ENCODING: &str = "base64";
 pub const DEFAULT_RPC_MAX_CONCURRENT_REQUESTS: usize = 1;
 pub const DEFAULT_RPC_MIN_INTERVAL_MS: u64 = 200;
 
+// ============================================================================
+// Local Network Binding Defaults
+// ============================================================================
+
+/// Default local binding address for the Web API and dashboard.
+pub const DEFAULT_WEB_BIND_ADDR: &str = "127.0.0.1:8080";
+/// Default local binding address for Prometheus metrics scraping.
+pub const DEFAULT_METRICS_BIND_ADDR: &str = "127.0.0.1:9100";
+/// Default local binding address for the Administrative control server.
+pub const DEFAULT_ADMIN_BIND_ADDR: &str = "127.0.0.1:9101";
+
+/// Arbitrage on-chain executor program ID.
+pub const ARB_EXECUTOR_PROGRAM_ID: &str = "ArbExec1111111111111111111111111111111111111";
+/// Default mainnet Address Lookup Table key.
+pub const DEFAULT_MAINNET_ALT_KEY: &str = "ALT1111111111111111111111111111111111111111";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -694,5 +746,19 @@ mod tests {
         assert!(Pubkey::from_str(ADDRESS_LOOKUP_TABLE_PROGRAM_ID).is_ok());
         assert!(Pubkey::from_str(SYSVAR_RENT_ID).is_ok());
         assert!(Pubkey::from_str(PUMP_FUN_FEE_RECIPIENT).is_ok());
+        assert!(Pubkey::from_str(MEMO_PROGRAM_ID).is_ok());
+        assert!(Pubkey::from_str(TRUMP_MINT).is_ok());
+        assert!(Pubkey::from_str(BOME_MINT).is_ok());
+        assert!(Pubkey::from_str(PENGU_MINT).is_ok());
+        assert!(Pubkey::from_str(FWOG_MINT).is_ok());
+        assert!(Pubkey::from_str(MOODENG_MINT).is_ok());
+        assert!(Pubkey::from_str(ORCA_SOL_USDC_1BPS_POOL).is_ok());
+        assert!(Pubkey::from_str(ORCA_SOL_USDC_2BPS_POOL).is_ok());
+        assert!(Pubkey::from_str(ORCA_SOL_USDC_8BPS_POOL).is_ok());
+        assert!(Pubkey::from_str(METEORA_SOL_USDC_POOL_2).is_ok());
+        assert!(Pubkey::from_str(METEORA_SOL_USDC_POOL_3).is_ok());
+        assert!(Pubkey::from_str(RAYDIUM_V4_DEVNET_PROGRAM_ID).is_ok());
+        assert!(Pubkey::from_str(ARB_EXECUTOR_PROGRAM_ID).is_ok());
+        assert!(Pubkey::from_str(DEFAULT_MAINNET_ALT_KEY).is_ok());
     }
 }

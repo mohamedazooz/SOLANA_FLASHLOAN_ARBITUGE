@@ -32,7 +32,7 @@ use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
 /// Arbitrage Executor Program ID on Solana.
-pub const ARB_EXECUTOR_PROGRAM_ID_STR: &str = "ArbExec1111111111111111111111111111111111111";
+pub const ARB_EXECUTOR_PROGRAM_ID_STR: &str = arb_constants::ARB_EXECUTOR_PROGRAM_ID;
 
 /// Discriminator for `execute_three_leg` (sha256("arb_executor:execute_three_leg")[..8]).
 pub const EXECUTE_THREE_LEG_DISCRIMINATOR: [u8; 8] = [173, 221, 98, 44, 189, 21, 102, 184];

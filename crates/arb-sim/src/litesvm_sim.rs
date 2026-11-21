@@ -52,8 +52,8 @@ pub fn simulate_locally(tx_bytes: &[u8]) -> LocalSimResult {
         // explicitly deployed in the VM before the result may count as
         // evidence; otherwise the result is reported as unverified.
         const NATIVE_BUILTIN_BYTES: [[u8; 32]; 2] = [
-            solana_pubkey::pubkey!("11111111111111111111111111111111").to_bytes(),
-            solana_pubkey::pubkey!("ComputeBudget111111111111111111111111111111").to_bytes(),
+            arb_constants::SYSTEM_PROGRAM_ID,
+            arb_constants::COMPUTE_BUDGET_PROGRAM_ID,
         ];
         let mut missing_programs: Vec<String> = Vec::new();
         for ix in tx.message.instructions() {

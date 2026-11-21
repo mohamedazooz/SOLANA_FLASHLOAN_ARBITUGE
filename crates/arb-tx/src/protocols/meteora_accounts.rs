@@ -188,8 +188,8 @@ pub fn build_meteora_dlmm_swap_instruction(
     data.extend_from_slice(&min_amount_out.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes()); // RemainingAccountsInfo { slices: vec![] }
 
-    let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
-    let memo_program = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
+    let token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+    let memo_program = Pubkey::from_str(arb_constants::MEMO_PROGRAM_ID).unwrap();
 
     // Bin array PDAs — i64 index, per official SDK pda.rs.
     // Resolve bin arrays dynamically in the swap direction, covering the bins the
@@ -280,7 +280,7 @@ pub fn build_meteora_dlmm_swap_instruction_with_bin_arrays(
     data.extend_from_slice(&min_amount_out.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes()); // RemainingAccountsInfo { slices: vec![] }
 
-    let memo_program = Pubkey::from_str("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr").unwrap();
+    let memo_program = Pubkey::from_str(arb_constants::MEMO_PROGRAM_ID).unwrap();
 
     let bitmap_ext_meta = if let Some(ext) = bitmap_extension {
         AccountMeta::new(ext, false)
