@@ -264,7 +264,7 @@ NEXT_TASK: TASK-P4-001
 TASK_ID: TASK-P3-002
 PHASE: Phase 3 — WebSocket Ingestion and State Integrity
 PRIORITY: P0
-STATUS: PARTIALLY_COMPLETED
+STATUS: COMPLETED (lifecycle verification delivered in TASK-P3-003)
 OBJECTIVE: Unify WebSocket/RPC provider identities and make WebSocket disconnect/reconnect invalidate stale quote dependencies.
 FILES: crates/arb-ingest/src/lib.rs, crates/arb-ingest/src/helius_ws.rs, crates/arb-ingest/src/rpc_reconcile.rs, crates/arb-bot/src/supervisor/run.rs, crates/arb-bot/src/supervisor/execution.rs, crates/arb-bot/src/supervisor.rs, crates/arb-bot/src/verified_config.rs, crates/arb-bot/src/bin/validate.rs
 FUNCTIONS: AccountSnapshotStore::apply, AccountSnapshotStore::apply_batch, IngestClient::stream_connected, IngestClient::mark_helius_connected, IngestClient::mark_helius_disconnected, HeliusWsClient::seed_initial_accounts, Supervisor::run
@@ -276,7 +276,25 @@ ACCEPTANCE_CRITERIA: RPC cannot authorize trading without a healthy account WebS
 ACTUAL_RESULT: Implemented provider identity constants and a fail-closed WS-only health gate; RPC bootstrap no longer advances WS liveness; disconnect resets WS watermarks; reconnect resets the run-loop slot baseline, advances generation, and clears old account snapshots while preserving pool cache; live data can replace bootstrap state independent of slot ordering. Fixed the `i64::MIN` fee-sentinel route selection exposed by CI and replaced deprecated `AtomicU64::fetch_update`. Focused suite: 9 passed; targeted ingest Clippy passed; full Rust CI is running on replacement PR #104.
 COMMIT: 99e5389
 PR: #104 (supersedes #102)
-REMAINING_RISKS: Reconnection, provider-selection, and snapshot replacement behavior still needs focused regression tests and a compile run. Routes require fresh snapshots for every dependency before becoming eligible again.
+REMAINING_RISKS: Live WS-server integration for the full reconnect handshake (dial → upgrade → drop → redial) is exercised only in-process via `reset_connection_state` and the epoch pair; no networked CI run of the real dial loop exists yet.
 
-NEXT_TASK: Phase 3 task 3 — verify reconnection, backoff, and resubscription lifecycle with focused regression tests.
+NEXT_TASK: Phase 4 (TASK-P4-001).
+```
+
+```markdown
+TASK_ID: TASK-P3-003
+PHASE: Phase 3 — WebSocket Ingestion and State Integrity
+PRIORITY: P0
+STATUS: VERIFIED
+OBJECTIVE: Verify reconnection, backoff, and resubscription lifecycle with focused regression tests (Phase 3 task 3).
+FILES: crates/arb-ingest/src/helius_ws.rs
+FUNCTIONS: HeliusWsClient::record_connect_backoff, HeliusWsClient::select_active_endpoint_index, HeliusWsClient::reset_connection_state (new, verbatim extraction from start_stream), IngestClient::mark_helius_connected, IngestClient::mark_helius_disconnected, AccountSnapshotStore::apply
+CURRENT_BEHAVIOR: The reconnect-reset block was inline inside `start_stream` (untestable without a live WS server); no focused regression tests covered backoff classification, endpoint selection under backoff, and the epoch boundary semantics.
+ROOT_CAUSE: N/A (verification + behavior-preserving extraction task).
+REQUIRED_CHANGE: Extract the per-connection reset verbatim into `reset_connection_state` and add focused regression tests for (a) provider-error backoff classification (429/4xx/transient), (b) endpoint selection skipping non-expired backoffs, (c) reconnect reset clearing subscription/flag/watermark state while preserving the decoded pool cache, (d) epoch generation advancing only across a disconnect boundary (idempotency while connected), (e) bootstrap-vs-live snapshot supersede semantics at the epoch boundary.
+TEST_PLAN: `cargo test -p arb-ingest`; `cargo test -p arb-engine --test three_leg_net_economics_tests`; `cargo clippy -p arb-ingest --all-targets -- -D warnings`; `cargo fmt --all -- --check`.
+ACCEPTANCE_CRITERIA: All five focused tests pass; no existing test regresses; clippy clean.
+ACTUAL_RESULT: 2026-11-21 — `cargo test -p arb-ingest`: 150 passed, 0 failed (was 145; +5 new: record_connect_backoff_classifies_provider_error_classes, select_active_endpoint_skips_non_expired_backoffs, reconnect_reset_clears_subscription_state_and_flags_preserving_pool_cache, reconnect_epoch_advances_only_across_disconnect_boundary, account_store_accepts_live_and_refuses_prev_epoch_bootstrap). Focused three-leg suite: 9 passed. Clippy `-D warnings` clean, fmt clean.
+REMAINING_RISKS: Real-network reconnect handshake (TLS dial, upgrade, mid-stream drop, redial) is not covered by in-process tests; gate while live-WS infrastructure is unavailable.
+NEXT_TASK: Phase 4 (TASK-P4-001).
 ```
