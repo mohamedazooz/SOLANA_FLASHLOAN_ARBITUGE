@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn kill_switch_without_persistence_path_is_explicitly_memory_only() {
         let ks = KillSwitch::new();
-        assert_eq!(ks.activate().unwrap(), false);
+        assert!(!ks.activate().unwrap());
         assert!(ks.is_blocked());
         assert!(!ks.is_durably_blocked());
         assert!(ks.persistence_error().is_some());
