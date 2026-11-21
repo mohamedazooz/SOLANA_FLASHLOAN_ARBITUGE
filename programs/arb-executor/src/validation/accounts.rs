@@ -56,7 +56,9 @@ pub fn validate_user_token_account(
     }
 
     let data = account.try_borrow_data()?;
-    if data.len() < 72 {
+    // SPL Token and Token-2022 share the 165-byte base account layout.
+    // State is byte 108: 1 = initialized, 2 = frozen, 0 = uninitialized.
+    if data.len() < 165 || data[108] != 1 {
         return Err(ExecutorError::InvalidTokenAccount.into());
     }
 
@@ -76,6 +78,23 @@ pub fn validate_user_token_account(
         .try_into()
         .map_err(|_| ExecutorError::InvalidTokenAccount)?;
     Ok(u64::from_le_bytes(balance_bytes))
+}
+
+/// Validate a user token account against the actual mint account, including
+/// the token program that owns the mint. This prevents accepting an account
+/// owned by Token-2022 when the mint is owned by SPL Token (or vice versa).
+pub fn validate_user_token_account_for_mint(
+    account: &AccountInfo,
+    expected_user: &Address,
+    expected_mint: &AccountInfo,
+) -> Result<u64, ProgramError> {
+    if account.owner != expected_mint.owner
+        || (*expected_mint.owner != SPL_TOKEN_PROGRAM_ID
+            && *expected_mint.owner != TOKEN_2022_PROGRAM_ID)
+    {
+        return Err(ExecutorError::InvalidTokenAccount.into());
+    }
+    validate_user_token_account(account, expected_user, Some(expected_mint.key))
 }
 
 /// Validate protocol programs, authority PDAs, and signer privileges.
@@ -153,6 +172,7 @@ mod tests {
         data[32..64].copy_from_slice(user.as_ref());
         let balance: u64 = 5_000_000_000;
         data[64..72].copy_from_slice(&balance.to_le_bytes());
+        data[108] = 1; // initialized, not frozen
 
         let account_key = Address::from([5u8; 32]);
         let mut lamports = 1_000_000;
@@ -194,7 +214,44 @@ mod tests {
             ))
         );
 
-        // 5. Fails when owner is not token program
+        // 5. Frozen and uninitialized token accounts are not accepted.
+        acc.try_borrow_mut_data().unwrap()[108] = 2;
+        assert!(validate_user_token_account(&acc, &user, Some(&mint)).is_err());
+        acc.try_borrow_mut_data().unwrap()[108] = 0;
+        assert!(validate_user_token_account(&acc, &user, Some(&mint)).is_err());
+        acc.try_borrow_mut_data().unwrap()[108] = 1;
+
+        // 6. Mint owner must match the token account's token program.
+        let mint_key = mint;
+        let mut mint_lamports = 1;
+        let mut mint_data = vec![0u8; 82];
+        let mint_owner = SPL_TOKEN_PROGRAM_ID;
+        let mint_account = AccountInfo::new(
+            &mint_key,
+            false,
+            false,
+            &mut mint_lamports,
+            &mut mint_data,
+            &mint_owner,
+            false,
+        );
+        assert_eq!(
+            validate_user_token_account_for_mint(&acc, &user, &mint_account).unwrap(),
+            balance
+        );
+        let token_2022_owner = TOKEN_2022_PROGRAM_ID;
+        let token_2022_mint = AccountInfo::new(
+            &mint_key,
+            false,
+            false,
+            &mut mint_lamports,
+            &mut mint_data,
+            &token_2022_owner,
+            false,
+        );
+        assert!(validate_user_token_account_for_mint(&acc, &user, &token_2022_mint).is_err());
+
+        // 7. Fails when owner is not token program
         let fake_owner = Address::from_str_const("11111111111111111111111111111111");
         let fake_acc = AccountInfo::new(
             &account_key,
