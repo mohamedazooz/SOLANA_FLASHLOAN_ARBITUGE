@@ -381,7 +381,7 @@ pub fn assemble_flash_funded_three_pool_cpi(
     }
 
     let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool_cpi_instructions(params)?;
-    let repay_amount = params.repay_amount();
+    let repay_amount = params.repay_amount()?;
     let flash_mint = params.leg_1.token_in();
     let flash_program = params.leg_1.token_in_program();
     let mint_a = params.leg_1.token_out();

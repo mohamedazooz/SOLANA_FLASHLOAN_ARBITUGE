@@ -20,6 +20,7 @@ use arb_tx::dlmm_3leg_flash_arb::{
     FlashArb3LegError, FlashArb3LegParams, FlashArb3LegPoolLeg, assemble_flash_funded_three_pool,
     build_flash_funded_three_pool_transaction,
 };
+use arb_tx::flash::arb_executor::assemble_flash_funded_three_pool_cpi_instructions;
 use arb_tx::{AddressLookupTable, KaminoFlashParams, KeypairSigner};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -142,6 +143,28 @@ fn valid_params_with_payer(payer: Pubkey) -> FlashArb3LegParams {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn repay_amount_rejects_u64_overflow() {
+    let mut p = params(1_000_000, 1_010_000, 1_020_000, 1_100_000);
+    p.borrow_amount = u64::MAX;
+    p.flash_fee = 1;
+    assert!(matches!(
+        p.repay_amount(),
+        Err(FlashArb3LegError::RepaymentOverflow {
+            borrow: u64::MAX,
+            fee: 1
+        })
+    ));
+    assert!(matches!(
+        assemble_flash_funded_three_pool(&p),
+        Err(FlashArb3LegError::RepaymentOverflow { .. })
+    ));
+    assert!(matches!(
+        assemble_flash_funded_three_pool_cpi_instructions(&p),
+        Err(FlashArb3LegError::RepaymentOverflow { .. })
+    ));
+}
+
+#[test]
 fn assembly_order_borrow_swaps_repay() {
     let p = valid_params();
     let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_three_pool(&p).unwrap();
@@ -159,7 +182,7 @@ fn assembly_order_borrow_swaps_repay() {
 
     // Repay amount = borrow + fee, and the repay instruction carries the real
     // borrow instruction index in its u8 argument.
-    let repay = p.repay_amount();
+    let repay = p.repay_amount().unwrap();
     assert_eq!(repay, p.borrow_amount + p.flash_fee);
     let repay_ix = &ixs[repay_idx];
     let idx_byte = *repay_ix.data.last().unwrap();
