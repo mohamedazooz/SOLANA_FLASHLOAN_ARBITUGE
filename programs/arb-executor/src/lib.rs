@@ -19,7 +19,8 @@ use solana_program_error::{ProgramError, ProgramResult};
 
 pub use error::ExecutorError;
 pub use instructions::{
-    ExecuteThreeLegArgs, process_execute_three_leg, verify_sequential_balance_transitions,
+    ExecuteThreeLegArgs, ExecuteThreeLegWithTipArgs, process_execute_three_leg,
+    process_execute_three_leg_with_tip, verify_sequential_balance_transitions,
 };
 pub use validation::*;
 
@@ -29,6 +30,10 @@ pub const ARB_EXECUTOR_PROGRAM_ID: Address =
 
 /// 8-byte instruction discriminator for `execute_three_leg` (sha256("arb_executor:execute_three_leg")[..8]).
 pub const EXECUTE_THREE_LEG_DISCRIMINATOR: [u8; 8] = [173, 221, 98, 44, 189, 21, 102, 184];
+
+/// 8-byte instruction discriminator for `execute_three_leg_with_tip`
+/// (sha256("arb_executor:execute_three_leg_with_tip")[..8]).
+pub const EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR: [u8; 8] = [124, 34, 60, 60, 78, 94, 133, 177];
 
 #[cfg(all(target_os = "solana", not(feature = "no-entrypoint")))]
 solana_program_entrypoint::entrypoint!(process_instruction);
@@ -44,14 +49,20 @@ pub fn process_instruction<'a>(
     }
 
     let (disc, data) = instruction_data.split_at(8);
-    if disc != EXECUTE_THREE_LEG_DISCRIMINATOR {
-        return Err(ExecutorError::InvalidInstructionData.into());
+
+    if disc == EXECUTE_THREE_LEG_DISCRIMINATOR {
+        let args = ExecuteThreeLegArgs::try_from_slice(data)
+            .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
+        return process_execute_three_leg(accounts, args);
     }
 
-    let args = ExecuteThreeLegArgs::try_from_slice(data)
-        .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
+    if disc == EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR {
+        let args = ExecuteThreeLegWithTipArgs::try_from_slice(data)
+            .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
+        return process_execute_three_leg_with_tip(accounts, args);
+    }
 
-    process_execute_three_leg(accounts, args)
+    Err(ExecutorError::InvalidInstructionData.into())
 }
 
 #[cfg(test)]
@@ -328,5 +339,86 @@ mod tests {
             &args,
         );
         assert_eq!(res, Err(ExecutorError::Leg3OutputBelowMinimum));
+    }
+
+    #[test]
+    fn test_execute_three_leg_with_tip_args_serialization_roundtrip() {
+        let args = ExecuteThreeLegWithTipArgs {
+            leg1_amount_in: 1_000_000_000,
+            leg1_min_amount_out: 25_000_000,
+            leg2_amount_in: 25_000_000,
+            leg2_min_amount_out: 50_000_000_000,
+            leg3_amount_in: 50_000_000_000,
+            leg3_min_amount_out: 1_050_000_000,
+            min_final_wsol_delta: 1_010_000_000,
+            leg1_bin_array_count: 2,
+            leg2_bin_array_count: 3,
+            leg3_bin_array_count: 2,
+            tip_bps: 7_000,
+        };
+
+        let mut buf = Vec::new();
+        args.serialize(&mut buf).expect("serialization succeeds");
+        let deserialized =
+            ExecuteThreeLegWithTipArgs::try_from_slice(&buf).expect("deserialization succeeds");
+        assert_eq!(args, deserialized);
+    }
+
+    #[test]
+    fn test_process_instruction_rejects_over_limit_tip_bps() {
+        let args = ExecuteThreeLegWithTipArgs {
+            leg1_amount_in: 1_000,
+            leg1_min_amount_out: 1_000,
+            leg2_amount_in: 1_000,
+            leg2_min_amount_out: 1_000,
+            leg3_amount_in: 1_000,
+            leg3_min_amount_out: 1_000,
+            min_final_wsol_delta: 1_000,
+            leg1_bin_array_count: 0,
+            leg2_bin_array_count: 0,
+            leg3_bin_array_count: 0,
+            tip_bps: 10_001, // valid borsh, invalid business rule
+        };
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR);
+        args.serialize(&mut data).unwrap();
+
+        let res = process_instruction(&ARB_EXECUTOR_PROGRAM_ID, &[], &data);
+        assert_eq!(
+            res,
+            Err(ProgramError::Custom(
+                ExecutorError::TipDenominatorInvalid as u32
+            ))
+        );
+    }
+
+    #[test]
+    fn test_process_instruction_rejects_missing_tip_account() {
+        let args = ExecuteThreeLegWithTipArgs {
+            leg1_amount_in: 1_000,
+            leg1_min_amount_out: 1_000,
+            leg2_amount_in: 1_000,
+            leg2_min_amount_out: 1_000,
+            leg3_amount_in: 1_000,
+            leg3_min_amount_out: 1_000,
+            min_final_wsol_delta: 1_000,
+            leg1_bin_array_count: 0,
+            leg2_bin_array_count: 0,
+            leg3_bin_array_count: 0,
+            tip_bps: 7_000,
+        };
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR);
+        args.serialize(&mut data).unwrap();
+
+        let res = process_instruction(&ARB_EXECUTOR_PROGRAM_ID, &[], &data);
+        assert_eq!(
+            res,
+            Err(ProgramError::Custom(
+                ExecutorError::NotEnoughAccountInfos as u32
+            ))
+        );
     }
 }

@@ -64,6 +64,20 @@ pub enum ExecutorError {
 
     #[error("Invalid or empty bin arrays")]
     InvalidBinArray = 6018,
+
+    #[error("Tip account is not a canonical Jito block-engine tip account")]
+    InvalidJitoTipAccount = 6019,
+
+    #[error("Tip basis points exceed the 10_000 denominator")]
+    TipDenominatorInvalid = 6020,
+
+    #[error(
+        "Configured tip share would consume the flash-loan cost headroom or the minimum retained profit"
+    )]
+    TipExceedsNetProfit = 6021,
+
+    #[error("Settlement account must be a user-owned WSOL token account for tip computation")]
+    TipRequiresWsolMint = 6022,
 }
 
 impl From<ExecutorError> for ProgramError {

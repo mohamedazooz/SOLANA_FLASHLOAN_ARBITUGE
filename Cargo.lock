@@ -400,6 +400,7 @@ dependencies = [
 name = "arb-executor"
 version = "0.1.0"
 dependencies = [
+ "arb-constants",
  "borsh",
  "solana-account-info",
  "solana-address 2.7.0",
