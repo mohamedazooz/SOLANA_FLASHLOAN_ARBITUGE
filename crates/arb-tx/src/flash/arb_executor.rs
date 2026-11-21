@@ -569,3 +569,149 @@ mod cpi_stack_depth_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod wire_parity_tests {
+    //! Cross-layer parity: the off-chain assembled instruction bytes must
+    //! decode byte-exactly into the on-chain `arb-executor` argument structs.
+    use super::*;
+    use arb_executor::{ExecuteThreeLegArgs, ExecuteThreeLegWithTipArgs};
+    use borsh::BorshDeserialize;
+
+    fn key(id: u8, variant: u8) -> Pubkey {
+        let mut bytes = [0u8; 32];
+        bytes[0] = id;
+        bytes[1] = variant;
+        Pubkey::from(bytes)
+    }
+
+    fn fixture_leg(id: u8, bin_count: usize) -> DlmmSwapAccountSet {
+        DlmmSwapAccountSet {
+            lb_pair: key(id, 1),
+            bin_array_bitmap_extension: None,
+            reserve_x: key(id, 2),
+            reserve_y: key(id, 3),
+            user_token_in: key(id, 4),
+            user_token_out: key(id, 5),
+            token_x_mint: key(id, 6),
+            token_y_mint: key(id, 7),
+            oracle: key(id, 8),
+            host_fee_in: None,
+            user: key(9, id),
+            token_x_program: key(id, 10),
+            token_y_program: key(id, 11),
+            memo_program: key(id, 12),
+            event_authority: key(id, 13),
+            bin_arrays: (0..bin_count).map(|i| key(id, 20 + i as u8)).collect(),
+        }
+    }
+
+    fn fixture_accounts() -> Pubkey {
+        key(42, 42)
+    }
+
+    #[test]
+    fn base_builder_bytes_decode_into_on_chain_args() {
+        let (l1, l2, l3) = (fixture_leg(1, 2), fixture_leg(2, 3), fixture_leg(3, 2));
+        let ix = build_arb_executor_three_leg_instruction(
+            fixture_accounts(),
+            key(0, 1),
+            key(0, 2),
+            key(0, 3),
+            key(0, 4),
+            key(0, 5),
+            key(0, 6),
+            key(0, 7),
+            key(0, 8),
+            &l1,
+            &l2,
+            &l3,
+            1_000_000_000,
+            25_000_000,
+            25_000_000,
+            50_000_000_000,
+            50_000_000_000,
+            1_050_000_000,
+            1_010_000_000,
+        );
+
+        assert_eq!(ix.data[0..8], EXECUTE_THREE_LEG_DISCRIMINATOR);
+        let args = ExecuteThreeLegArgs::try_from_slice(&ix.data[8..])
+            .expect("base variant args must decode on-chain");
+        assert_eq!(args.leg1_amount_in, 1_000_000_000);
+        assert_eq!(args.min_final_wsol_delta, 1_010_000_000);
+        assert_eq!(
+            args.leg1_bin_array_count, 2,
+            "bin-array counts must round-trip through the wire"
+        );
+        assert_eq!(ix.accounts.len(), 33 + 2 + 3 + 2);
+    }
+
+    #[test]
+    fn with_tip_builder_bytes_decode_into_on_chain_args() {
+        let (l1, l2, l3) = (fixture_leg(1, 1), fixture_leg(2, 1), fixture_leg(3, 1));
+        let tip_account = Pubkey::from_str("ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49")
+            .expect("canonical jito tip account");
+        let ix = build_arb_executor_three_leg_with_tip_instruction(
+            fixture_accounts(),
+            key(0, 1),
+            key(0, 2),
+            key(0, 3),
+            key(0, 4),
+            key(0, 5),
+            key(0, 6),
+            key(0, 7),
+            key(0, 8),
+            &l1,
+            &l2,
+            &l3,
+            1_000_000_000,
+            25_000_000,
+            25_000_000,
+            50_000_000_000,
+            50_000_000_000,
+            1_050_000_000,
+            1_010_000_000,
+            7_000,
+            tip_account,
+        );
+
+        assert_eq!(ix.data[0..8], EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR);
+        assert_eq!(ix.data.len(), 8 + 67, "7 u64 + 3 u8 + tip_bps u64 payload");
+        let args = ExecuteThreeLegWithTipArgs::try_from_slice(&ix.data[8..])
+            .expect("tip variant args must decode on-chain");
+        assert_eq!(args.tip_bps, 7_000);
+        assert_eq!(args.leg1_amount_in, 1_000_000_000);
+        assert_eq!(args.leg2_bin_array_count, 1);
+
+        // Tip account is the final, writable, non-signer account;
+        // the body accounts are untouched relative to the base variant.
+        let last = ix.accounts.last().expect("tip account present");
+        assert_eq!(last.pubkey, tip_account);
+        assert!(last.is_writable);
+        assert!(!last.is_signer);
+        assert_eq!(ix.accounts.len(), 33 + 1 + 1 + 1 + 1);
+    }
+
+    #[test]
+    fn tip_derivative_boundary_sweep_invariants() {
+        // Off-chain mirror of the on-chain sizing contract: any candidate
+        // (edge, bps) the assembler could ever choose must produce a tip that
+        // never exceeds the edge and never exceeds the retained floor needs.
+        for &edge in &[0u64, 1, 999, 10_000, 1_000_000_000, u64::MAX] {
+            for &bps in &[0u64, 1, 7_000, 8_500, 10_000] {
+                let tip = tip_amount_for_bps(edge, bps).expect("valid domain always sizes");
+                assert!(tip <= edge, "tip must never exceed the realized edge");
+                let expected = (edge as u128 * bps as u128 / 10_000) as u64;
+                assert_eq!(
+                    tip, expected,
+                    "floor semantics: tip = floor(edge * bps / 10_000) in checked u128"
+                );
+            }
+        }
+    }
+
+    fn tip_amount_for_bps(edge: u64, bps: u64) -> Result<u64, arb_executor::ExecutorError> {
+        arb_executor::tip_amount_for_bps(edge, bps)
+    }
+}

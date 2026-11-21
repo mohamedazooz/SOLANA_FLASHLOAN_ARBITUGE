@@ -546,10 +546,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arb-constants",
+ "arb-executor",
  "arb-math",
  "arb-types",
  "base64 0.22.1",
  "bincode",
+ "borsh",
  "bs58",
  "ed25519-dalek",
  "proptest",
