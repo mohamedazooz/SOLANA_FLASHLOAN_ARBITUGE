@@ -532,6 +532,26 @@ impl HeliusWsClient {
         }
     }
 
+    /// Reset per-connection state when a WebSocket (re)connection is accepted.
+    /// Verbatim extraction from `start_stream` (behavior-preserving) so the
+    /// reconnect lifecycle is regression-testable: subscription request/response
+    /// maps are cleared before resubscription, capability/quota flags reset, the
+    /// per-epoch slot watermark restarts at 0, and the ingest side marks the new
+    /// stream epoch (generation bump + stale account snapshot eviction, pool
+    /// cache preserved).
+    fn reset_connection_state(&self, idx: usize, ingest: &IngestClient) {
+        self.ws_backoffs.write().remove(&idx);
+        self.req_to_account.write().clear();
+        self.sub_to_account.write().clear();
+        self.account_sub_limited.store(false, Ordering::Release);
+        self.endpoint_unsupported.store(false, Ordering::Release);
+        self.probe_confirmed.store(false, Ordering::Release);
+
+        self.is_connected.store(true, Ordering::Release);
+        self.latest_slot.store(0, Ordering::Release);
+        ingest.mark_helius_connected();
+    }
+
     fn record_connect_backoff(&self, idx: usize, err_text: &str) {
         let lower = err_text.to_ascii_lowercase();
         let secs = if lower.contains("429") || lower.contains("too many") {
@@ -626,16 +646,7 @@ impl HeliusWsClient {
 
             match connect_async(&url_str).await {
                 Ok((mut ws_stream, _)) => {
-                    self.ws_backoffs.write().remove(&idx);
-                    self.req_to_account.write().clear();
-                    self.sub_to_account.write().clear();
-                    self.account_sub_limited.store(false, Ordering::Release);
-                    self.endpoint_unsupported.store(false, Ordering::Release);
-                    self.probe_confirmed.store(false, Ordering::Release);
-
-                    self.is_connected.store(true, Ordering::Release);
-                    self.latest_slot.store(0, Ordering::Release);
-                    ingest.mark_helius_connected();
+                    self.reset_connection_state(idx, &ingest);
                     info!(
                         "⚡ WebSocket [{endpoint_num}/{total_endpoints}] connected to mainnet via {safe_url}"
                     );
@@ -2030,5 +2041,278 @@ mod tests {
         }
         assert_eq!(client.select_active_endpoint_index(), 1);
         assert_eq!(client.current_idx.load(Ordering::Acquire), 1);
+    }
+
+    /// Phase 3 task 3 — reconnection/backoff lifecycle. `record_connect_backoff`
+    /// classifies provider failure text into escalating cooldowns: 429/"too many"
+    /// → 60s, 4xx auth/capability codes → 120s, transient errors → 5s.
+    #[test]
+    fn record_connect_backoff_classifies_provider_error_classes() {
+        let client = HeliusWsClient::new(vec![
+            "wss://ws1.example.com".to_string(),
+            "wss://ws2.example.com".to_string(),
+            "wss://ws3.example.com".to_string(),
+        ]);
+        client.record_connect_backoff(0, "429 rate limited: too many requests");
+        client.record_connect_backoff(1, "401 Unauthorized");
+        client.record_connect_backoff(2, "connection refused");
+        let now = Instant::now();
+        let remaining = |idx: usize| {
+            client
+                .ws_backoffs
+                .read()
+                .get(&idx)
+                .copied()
+                .unwrap()
+                .saturating_duration_since(now)
+        };
+        // Band, not exact value: wall-clock advances between insert and read.
+        assert!(
+            remaining(0) > Duration::from_secs(58) && remaining(0) <= Duration::from_secs(60),
+            "429 cooldown must be 60s, got {:?}",
+            remaining(0)
+        );
+        assert!(
+            remaining(1) > Duration::from_secs(118) && remaining(1) <= Duration::from_secs(120),
+            "4xx cooldown must be 120s, got {:?}",
+            remaining(1)
+        );
+        assert!(
+            remaining(2) > Duration::from_secs(3) && remaining(2) <= Duration::from_secs(5),
+            "transient cooldown must be 5s, got {:?}",
+            remaining(2)
+        );
+    }
+
+    /// Phase 3 task 3 — provider selection must skip non-expired backoffs and
+    /// prefer a healthy endpoint over the rotation cursor; with a single
+    /// endpoint no rotation is possible, so it is always returned.
+    #[test]
+    fn select_active_endpoint_skips_non_expired_backoffs() {
+        let client = HeliusWsClient::new(vec![
+            "wss://ws1.example.com".to_string(),
+            "wss://ws2.example.com".to_string(),
+            "wss://ws3.example.com".to_string(),
+        ]);
+        assert_eq!(client.current_idx.load(Ordering::Acquire), 0);
+        client.record_connect_backoff(0, "429 too many");
+        client.record_connect_backoff(1, "401 unauthorized");
+        assert_eq!(client.select_active_endpoint_index(), 2);
+        assert_eq!(client.current_idx.load(Ordering::Acquire), 2);
+
+        let single = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        single.record_connect_backoff(0, "429 too many");
+        assert_eq!(single.select_active_endpoint_index(), 0);
+    }
+
+    /// Phase 3 task 3 — the reconnect boundary must reset per-connection
+    /// subscription state (req/response maps, probe confirmation, capability
+    /// flags), restart the per-epoch slot watermark, clear the WS backoff that
+    /// preceded the successful connect, and push the ingest side into a new
+    /// stream epoch — WITHOUT discarding the decoded pool cache, so live
+    /// notifications can refresh existing pools after reconnect.
+    #[test]
+    fn reconnect_reset_clears_subscription_state_and_flags_preserving_pool_cache() {
+        let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        let ingest = Arc::new(IngestClient::new());
+
+        let pool_id = PoolId(Pubkey::new_unique());
+        client.register_pool(&RegisteredPool {
+            pool_id,
+            protocol: DexProtocol::RaydiumV4,
+            base_mint: MintId(Pubkey::new_unique()),
+            quote_mint: MintId(Pubkey::new_unique()),
+            decimals_a: 9,
+            decimals_b: 6,
+            base_vault: Pubkey::new_unique(),
+            quote_vault: Pubkey::new_unique(),
+            fee_bps: 25,
+        });
+        let mut state = test_pool_state(pool_id);
+        state.slot = Slot(100);
+        state.last_update_slot = 100;
+        assert!(ingest.apply_pool_update(state.clone()).unwrap());
+        let snapshot_key = Pubkey::new_unique();
+        assert!(ingest.account_store().apply(crate::AccountSnapshot {
+            pubkey: snapshot_key,
+            owner: Pubkey::new_unique(),
+            slot: 100,
+            write_version: 1,
+            is_startup: true,
+            provider_id: crate::HTTP_RPC_PROVIDER_ID,
+            bank_id: None,
+            generation: ingest.stream_generation(),
+            data: std::sync::Arc::new(vec![0u8; 165]),
+        }));
+
+        // Stale per-connection state from the previous attempt.
+        client.req_to_account.write().insert(100, snapshot_key);
+        client.sub_to_account.write().insert(777, snapshot_key);
+        client.probe_confirmed.store(true, Ordering::Release);
+        client.endpoint_unsupported.store(true, Ordering::Release);
+        client.account_sub_limited.store(true, Ordering::Release);
+        client.record_connect_backoff(0, "429 too many");
+        client.is_connected.store(false, Ordering::Release);
+        client.latest_slot.store(123, Ordering::Release);
+        ingest.mark_helius_disconnected();
+
+        client.reset_connection_state(0, &ingest);
+
+        // Resubscription will start from a clean subscription ledger.
+        assert!(client.req_to_account.read().is_empty());
+        assert!(client.sub_to_account.read().is_empty());
+        assert!(!client.probe_confirmed.load(Ordering::Acquire));
+        // Capability/quota flags clear so both capabilities are re-attempted.
+        assert!(!client.account_sub_limited.load(Ordering::Acquire));
+        assert!(!client.endpoint_unsupported.load(Ordering::Acquire));
+        // The preceding failed attempt's cooldown is gone.
+        assert!(
+            client.ws_backoffs.read().get(&0).is_none(),
+            "successful connect must clear the endpoint backoff"
+        );
+        // Per-epoch watermark restarts; the connection is live again.
+        assert!(client.is_connected.load(Ordering::Acquire));
+        assert_eq!(client.latest_slot.load(Ordering::Acquire), 0);
+        // Ingest side entered a new fail-closed epoch.
+        assert!(ingest.stream_connected());
+        assert_eq!(ingest.stream_generation(), 1);
+        // Previous-epoch snapshots are evicted; decoded pool state is preserved.
+        assert!(ingest.account_store().get(&snapshot_key).is_none());
+        let preserved = ingest
+            .cache()
+            .get_pool(&pool_id)
+            .expect("pool cache must survive reconnect");
+        assert_eq!(preserved.slot, Slot(100));
+        assert_eq!(preserved.reserve_in, state.reserve_in);
+    }
+
+    /// Phase 3 task 3 — epoch accounting: repeated `connected` marks while the
+    /// stream stays up are idempotent; only a reconnect after a disconnect
+    /// advances the generation, evicts stale account snapshots, and clears the
+    /// per-epoch slot watermark.
+    #[test]
+    fn reconnect_epoch_advances_only_across_disconnect_boundary() {
+        let ingest = Arc::new(IngestClient::new());
+        let pool_id = PoolId(Pubkey::new_unique());
+        let mut state = test_pool_state(pool_id);
+        state.slot = Slot(100);
+        state.last_update_slot = 100;
+        assert!(ingest.apply_pool_update(state).unwrap());
+        let snapshot_key = Pubkey::new_unique();
+
+        ingest.mark_helius_connected();
+        let generation = ingest.stream_generation();
+        assert!(ingest.stream_connected());
+        assert!(ingest.account_store().apply(crate::AccountSnapshot {
+            pubkey: snapshot_key,
+            owner: Pubkey::new_unique(),
+            slot: 100,
+            write_version: 1,
+            is_startup: false,
+            provider_id: crate::ACCOUNT_WEBSOCKET_PROVIDER_ID,
+            bank_id: None,
+            generation,
+            data: std::sync::Arc::new(vec![1, 2]),
+        }));
+
+        // Idempotent while connected: no generation bump, no snapshot eviction.
+        ingest.mark_helius_connected();
+        assert_eq!(ingest.stream_generation(), generation);
+        assert!(ingest.account_store().get(&snapshot_key).is_some());
+
+        ingest.record_helius_slot(150);
+        ingest.mark_helius_disconnected();
+        assert!(!ingest.stream_connected());
+        assert!(!ingest.helius_connected());
+        assert_eq!(ingest.helius_slot(), 0);
+
+        ingest.mark_helius_connected();
+        assert_eq!(ingest.stream_generation(), generation + 1);
+        assert!(
+            ingest.account_store().get(&snapshot_key).is_none(),
+            "previous-epoch snapshot must not survive a reconnect"
+        );
+        assert!(
+            ingest.cache().get_pool(&pool_id).is_some(),
+            "decoded pool cache must survive a reconnect"
+        );
+        assert!(ingest.stream_connected());
+    }
+
+    fn test_pool_state(pool_id: PoolId) -> arb_types::PoolState {
+        PoolState {
+            pool_id,
+            protocol: DexProtocol::RaydiumV4,
+            slot: Slot(0),
+            write_version: 1,
+            base_mint: MintId(Pubkey::new_unique()),
+            quote_mint: MintId(Pubkey::new_unique()),
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 1_000_000,
+            reserve_out: 2_000_000,
+            fee_numerator: 25,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            last_update_slot: 0,
+            last_update_ms: 0,
+            kind: arb_types::PoolKind::Cpmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            transfer_fee_bps: 0,
+        }
+    }
+
+    /// Regression for the P3-002 rectification: bootstrap (startup) snapshots
+    /// from a previous epoch are refused after a reconnect, while live writes
+    /// whose generation matches the current epoch are accepted.
+    #[test]
+    fn account_store_accepts_live_and_refuses_prev_epoch_bootstrap() {
+        let ingest = Arc::new(IngestClient::new());
+        let key = Pubkey::new_unique();
+
+        // Bootstrap seed before any connect: generation 0.
+        assert!(ingest.account_store().apply(crate::AccountSnapshot {
+            pubkey: key,
+            owner: Pubkey::new_unique(),
+            slot: 100,
+            write_version: 1,
+            is_startup: true,
+            provider_id: crate::HTTP_RPC_PROVIDER_ID,
+            bank_id: None,
+            generation: 0,
+            data: std::sync::Arc::new(vec![0u8; 165]),
+        }));
+        ingest.mark_helius_connected();
+        let generation = ingest.stream_generation();
+
+        // Same-epoch live write replaces bootstrap even with an older slot.
+        assert!(ingest.account_store().apply(crate::AccountSnapshot {
+            pubkey: key,
+            owner: Pubkey::new_unique(),
+            slot: 90,
+            write_version: 1,
+            is_startup: false,
+            provider_id: crate::ACCOUNT_WEBSOCKET_PROVIDER_ID,
+            bank_id: None,
+            generation,
+            data: std::sync::Arc::new(vec![1u8; 165]),
+        }));
+        // Bootstrap from the new generation still cannot overwrite live state.
+        assert!(!ingest.account_store().apply(crate::AccountSnapshot {
+            pubkey: key,
+            owner: Pubkey::new_unique(),
+            slot: 100,
+            write_version: 1,
+            is_startup: true,
+            provider_id: crate::HTTP_RPC_PROVIDER_ID,
+            bank_id: None,
+            generation,
+            data: std::sync::Arc::new(vec![2u8; 165]),
+        }));
     }
 }
