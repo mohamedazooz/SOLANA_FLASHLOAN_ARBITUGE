@@ -16,6 +16,7 @@
 | Phase 1B | OPS-001, RISK-001 | To be created from verified base | Not started |
 | Phase 1C | CPI-001, CPI-002, CPI-003, ARCH-001, TOKEN-003 | To be created from verified base | Not started |
 | Phase 2 | ECON-002, SIZE-001, QUOTE-001, QUOTE-002 | Pending | Not started |
+| Phase 2.5 | S2.5 toolchain unblock, LiteSVM e2e harness milestone A, ISSUE-P0-04 forensic capture | `vibe/blocked-unblocks-a9e0e5` | Implemented; verified locally (arb-sim 39 lib tests + 4 e2e tests, arb-bot 84 tests, clippy `-D warnings` clean); PR pending |
 | Phase 3 | DLMM and Token-2022 findings | Pending | Not started |
 | Phase 4 | Transaction compiler conformance | Pending | Not started |
 | Phase 5 | Supervisor recovery and control consistency | Pending | Not started |
