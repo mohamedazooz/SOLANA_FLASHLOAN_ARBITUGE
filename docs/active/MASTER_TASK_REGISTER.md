@@ -259,3 +259,23 @@ PR: [Phase 3 gate evidence PR]
 REMAINING_RISKS: In-process tests only; Phase 5 comparative WS-vs-gRPC benchmark and live shadow soak remain open (Phase 18 gate).
 NEXT_TASK: TASK-P4-001
 ```
+
+```markdown
+TASK_ID: TASK-P3-002
+PHASE: Phase 3 — WebSocket Ingestion and State Integrity
+PRIORITY: P0
+STATUS: PARTIALLY_COMPLETED
+OBJECTIVE: Unify WebSocket/RPC provider identities and make WebSocket disconnect/reconnect invalidate stale quote dependencies.
+FILES: crates/arb-ingest/src/lib.rs, crates/arb-ingest/src/helius_ws.rs, crates/arb-ingest/src/rpc_reconcile.rs, crates/arb-bot/src/supervisor/run.rs, crates/arb-bot/src/supervisor/execution.rs, crates/arb-bot/src/supervisor.rs, crates/arb-bot/src/verified_config.rs, crates/arb-bot/src/bin/validate.rs
+FUNCTIONS: AccountSnapshotStore::apply, AccountSnapshotStore::apply_batch, IngestClient::stream_connected, IngestClient::mark_helius_connected, IngestClient::mark_helius_disconnected, HeliusWsClient::seed_initial_accounts, Supervisor::run
+CURRENT_BEHAVIOR: The run-loop health gate used reversed provider IDs. Its readiness flag combined two connection booleans, the run-loop accepted any healthy provider, and HTTP account seeding advanced the WebSocket slot watermark. Reconnects reused the previous stream generation; older snapshots could also block updates from a lagging endpoint.
+ROOT_CAUSE: Provider identities and health mappings were independently hard-coded; RPC bootstrap and WebSocket liveness shared a watermark; readiness did not require the account-data provider; and reconnects did not reset account snapshots.
+REQUIRED_CHANGE: Centralize provider IDs; require the healthy account WebSocket to authorize trading; isolate RPC clock/bootstrap observations; advance generation and clear old account snapshots on reconnect while preserving decoded pool state; let live stream data supersede bootstrap snapshots regardless of slot ordering.
+TEST_PLAN: Add regression tests for provider identity, RPC-only health rejection, disconnect readiness, reconnect generation invalidation, and live-over-bootstrap replacement; run focused arb-ingest and arb-bot suites.
+ACCEPTANCE_CRITERIA: RPC cannot authorize trading without a healthy account WebSocket; disconnected and prior-generation data fail readiness; live updates replace bootstrap snapshots; tests pass.
+ACTUAL_RESULT: Implemented provider identity constants and fail-closed WS-only health gate; RPC bootstrap no longer advances WS liveness; reconnect resets WS watermarks and account snapshots while preserving pool cache; live data can replace bootstrap state. Formatting and `git diff --check` completed; no build or tests were run.
+COMMIT: follow-up commits
+PR: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/102
+REMAINING_RISKS: Reconnection, provider-selection, and snapshot replacement behavior still needs focused regression tests and a compile run. Routes require fresh snapshots for every dependency before becoming eligible again.
+NEXT_TASK: Phase 3 task 3 — verify reconnection, backoff, and resubscription lifecycle with focused regression tests.
+```
