@@ -1,0 +1,68 @@
+{
+  "provenance": {
+    "kind": "raydium_clmm_mainnet_sdk_quotes",
+    "sdk": {
+      "package": "@raydium-io/raydium-sdk-v2",
+      "version": "0.2.85-alpha",
+      "oracle": "PoolUtils.getOutputAmountAndRemainAccounts (src/raydium/clmm/libraries/pool.ts over swapSimulator.swapInternal)",
+      "layouts": "PoolInfoLayout/TickArrayLayout/TickArrayBitmapExtensionLayout/ClmmConfigLayout (SDK decodes)"
+    },
+    "snapshot": {
+      "pool_address": "D7HU4rLQjmboCAWGa1upQuGFmncPgzufoVW6avE9F6qU",
+      "slot": 472254160,
+      "block_timestamp": 1795288867,
+      "sdk_version": "0.2.85-alpha"
+    },
+    "captured_at_utc": "2026-11-21T19:21:08.510Z",
+    "comparability_notes": [
+      "dynamic-fee pools refused at capture; fee amounts derive from AmmConfig.tradeFeeRate alone",
+      "fee_on=1/2 fee-on-output directions are recorded as SDK provenance only; the Rust engine refuses them fail-closed",
+      "remaining_accounts is the official swap account-dependency manifest (tick arrays + bitmap extension walk order)"
+    ]
+  },
+  "pair": {
+    "tick_spacing": 60,
+    "fee_on": 0,
+    "trade_fee_rate": 2500,
+    "mint_0": "So11111111111111111111111111111111111111112",
+    "mint_1": "DZQZ2sViJjyVn4pQVTX4qwe3aAcpQPSnveTWgpbETG8D",
+    "decimals_0": 9,
+    "decimals_1": 6
+  },
+  "cases": [
+    {
+      "case_id": "a_to_b_small",
+      "zero_for_one": true,
+      "amount_in": "1000000",
+      "all_trade": true,
+      "amount_out": "5131586",
+      "fee_amount": "2500",
+      "execution_price_x64": "41839751598634147132",
+      "remaining_accounts": [
+        "FQ1UgktXyM5reVwegiwu9rEacK3menU8TtcBoBNqkiFS",
+        "7k7iPTFoxHBwcTBfu5mzEjjB5u2YKjnBftdbcwtFvLUH"
+      ]
+    },
+    {
+      "case_id": "a_to_b_deep",
+      "deep_probe_candidate": "24935391263510",
+      "zero_for_one": true,
+      "amount_in": "24935391263510",
+      "all_trade": true,
+      "amount_out": "56415506108087",
+      "fee_amount": "62338478159",
+      "execution_price_x64": "18446744073709551616",
+      "remaining_accounts": [
+        "FQ1UgktXyM5reVwegiwu9rEacK3menU8TtcBoBNqkiFS",
+        "7k7iPTFoxHBwcTBfu5mzEjjB5u2YKjnBftdbcwtFvLUH"
+      ]
+    }
+  ],
+  "refusals": [
+    {
+      "direction": "b_to_a",
+      "reason": "small_probe_partial",
+      "detail": "out=19856 fee=257"
+    }
+  ]
+}

@@ -2,6 +2,7 @@
   "dependencies": {
     "@meteora-ag/dlmm": "^1.9.14",
     "@orca-so/whirlpools-core": "^3.1.1",
+    "@raydium-io/raydium-sdk-v2": "^0.2.85-alpha",
     "bs58": "^6.0.0"
   }
 }

@@ -1,0 +1,538 @@
+{
+  "provenance": {
+    "kind": "dlmm_timestamp_drift_vectors",
+    "description": "Variable-fee volatility state-machine parity vectors: elapsed-time decay of volatility_reference, volatility_accumulator rebuild, and downstream fee rates/amounts. Expected values computed by official SDK code paths, not the engine under test.",
+    "sdk": {
+      "package": "@meteora-ag/dlmm",
+      "version": "1.9.14",
+      "decay_statics_source": "dist/index.mjs DLMM.updateReference / DLMM.updateVolatilityAccumulator statics (transcribed verbatim in the generator; call sites on the SDK swap path: getDynamicFee, swapQuoteExactOut, swapQuoteByInputToken)",
+      "fee_helpers_source": "officially exported getBaseFee/getVariableFee/getTotalFee/computeFee/computeFeeFromAmount/computeProtocolFee",
+      "spec_cross_check": "https://docs.meteora.ag/core-products/dlmm/formulas (Variable Fee decay table, verified 2026-11-21)"
+    },
+    "engine_under_test": "arb_math::dlmm::fee::update_references_with_decay + update_volatility_accumulator + compute_base_fee/compute_variable_fee/compute_total_fee_rate/compute_fee_to_add/compute_fee_from_amount/compute_protocol_fee",
+    "deterministic_rng": "LCG (Numerical Recipes constants), seed 20261121",
+    "parity_policy": "docs/quality/QUOTE_PARITY_REPORT.md §1 — unexplained discrepancies are a hard failure"
+  },
+  "scenarios": [
+    {
+      "name": "before_filter_period_reference_unchanged",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000029,
+        "active_id": 823
+      },
+      "expected": {
+        "index_reference": 818,
+        "volatility_reference": 40000,
+        "volatility_accumulator": 90000,
+        "base_fee": "10000",
+        "variable_fee": "32400000",
+        "total_fee": "32410000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "4826878561",
+        "probe_fee_for_input": "161679156",
+        "probe_included_amount": "2396940503",
+        "probe_fee_from_amount": "77684842",
+        "probe_protocol_fee": "16167915"
+      }
+    },
+    {
+      "name": "elapsed_equals_filter_period_exactly_decays",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000030,
+        "active_id": 818
+      },
+      "expected": {
+        "index_reference": 818,
+        "volatility_reference": 25000,
+        "volatility_accumulator": 25000,
+        "base_fee": "10000",
+        "variable_fee": "2500000",
+        "total_fee": "2510000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "9751109178",
+        "probe_fee_for_input": "24536872",
+        "probe_included_amount": "7365486484",
+        "probe_fee_from_amount": "18487372",
+        "probe_protocol_fee": "2453687"
+      }
+    },
+    {
+      "name": "inside_decay_window_decays",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000095,
+        "active_id": 811
+      },
+      "expected": {
+        "index_reference": 811,
+        "volatility_reference": 25000,
+        "volatility_accumulator": 25000,
+        "base_fee": "10000",
+        "variable_fee": "2500000",
+        "total_fee": "2510000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "8751269802",
+        "probe_fee_for_input": "22020960",
+        "probe_included_amount": "9728604701",
+        "probe_fee_from_amount": "24418798",
+        "probe_protocol_fee": "2202096"
+      }
+    },
+    {
+      "name": "elapsed_equals_decay_period_exactly_resets",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000120,
+        "active_id": 818
+      },
+      "expected": {
+        "index_reference": 818,
+        "volatility_reference": 0,
+        "volatility_accumulator": 0,
+        "base_fee": "10000",
+        "variable_fee": "0",
+        "total_fee": "10000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "8101965529",
+        "probe_fee_for_input": "81021",
+        "probe_included_amount": "6532693377",
+        "probe_fee_from_amount": "65327",
+        "probe_protocol_fee": "8102"
+      }
+    },
+    {
+      "name": "beyond_decay_period_resets_zero",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000600,
+        "active_id": 840
+      },
+      "expected": {
+        "index_reference": 840,
+        "volatility_reference": 0,
+        "volatility_accumulator": 0,
+        "base_fee": "10000",
+        "variable_fee": "0",
+        "total_fee": "10000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "3804414021",
+        "probe_fee_for_input": "38045",
+        "probe_included_amount": "4608737163",
+        "probe_fee_from_amount": "46088",
+        "probe_protocol_fee": "3804"
+      }
+    },
+    {
+      "name": "pre_filter_large_price_move_accumulates_from_old_reference",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 1000000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000010,
+        "active_id": 840
+      },
+      "expected": {
+        "index_reference": 818,
+        "volatility_reference": 40000,
+        "volatility_accumulator": 260000,
+        "base_fee": "10000",
+        "variable_fee": "270400000",
+        "total_fee": "100000000",
+        "total_fee_clamped": true,
+        "probe_excluded_amount": "586556136",
+        "probe_fee_for_input": "65172904",
+        "probe_included_amount": "9712417155",
+        "probe_fee_from_amount": "971241716",
+        "probe_protocol_fee": "6517290"
+      }
+    },
+    {
+      "name": "accumulator_clamped_at_max_volatility_accumulator",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000600,
+        "active_id": 900
+      },
+      "expected": {
+        "index_reference": 900,
+        "volatility_reference": 0,
+        "volatility_accumulator": 0,
+        "base_fee": "10000",
+        "variable_fee": "0",
+        "total_fee": "10000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "3527220506",
+        "probe_fee_for_input": "35273",
+        "probe_included_amount": "9073797331",
+        "probe_fee_from_amount": "90738",
+        "probe_protocol_fee": "3527"
+      }
+    },
+    {
+      "name": "reduction_factor_zero_decays_to_zero_within_decay_window",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 0,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000050,
+        "active_id": 815
+      },
+      "expected": {
+        "index_reference": 815,
+        "volatility_reference": 0,
+        "volatility_accumulator": 0,
+        "base_fee": "10000",
+        "variable_fee": "0",
+        "total_fee": "10000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "4864156530",
+        "probe_fee_for_input": "48643",
+        "probe_included_amount": "2509175281",
+        "probe_fee_from_amount": "25092",
+        "probe_protocol_fee": "4864"
+      }
+    },
+    {
+      "name": "variable_fee_control_zero_yields_zero_variable_fee",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 0,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000050,
+        "active_id": 830
+      },
+      "expected": {
+        "index_reference": 830,
+        "volatility_reference": 25000,
+        "volatility_accumulator": 25000,
+        "base_fee": "10000",
+        "variable_fee": "0",
+        "total_fee": "10000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "7344578346",
+        "probe_fee_for_input": "73447",
+        "probe_included_amount": "6632450770",
+        "probe_fee_from_amount": "66325",
+        "probe_protocol_fee": "7344"
+      }
+    },
+    {
+      "name": "total_fee_clamped_at_max_fee_rate",
+      "parameters": {
+        "bin_step": 200,
+        "base_factor": 800,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 400000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 200000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 120000,
+        "volatility_reference": 100000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000050,
+        "active_id": 860
+      },
+      "expected": {
+        "index_reference": 860,
+        "volatility_reference": 60000,
+        "volatility_accumulator": 60000,
+        "base_fee": "1600000",
+        "variable_fee": "576000000000",
+        "total_fee": "100000000",
+        "total_fee_clamped": true,
+        "probe_excluded_amount": "2478815499",
+        "probe_fee_for_input": "275423945",
+        "probe_included_amount": "2728756268",
+        "probe_fee_from_amount": "272875627",
+        "probe_protocol_fee": "27542394"
+      }
+    },
+    {
+      "name": "backward_timestamp_is_noop",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 999000,
+        "active_id": 830
+      },
+      "expected": {
+        "index_reference": 818,
+        "volatility_reference": 40000,
+        "volatility_accumulator": 150000,
+        "base_fee": "10000",
+        "variable_fee": "90000000",
+        "total_fee": "90010000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "5387744121",
+        "probe_fee_for_input": "532918877",
+        "probe_included_amount": "7144109194",
+        "probe_fee_from_amount": "643041269",
+        "probe_protocol_fee": "53291887"
+      }
+    },
+    {
+      "name": "chained_post_swap_state_pre_filter_move",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 30,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 65000,
+        "volatility_reference": 25000,
+        "index_reference": 771,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000040,
+        "active_id": 765
+      },
+      "expected": {
+        "index_reference": 765,
+        "volatility_reference": 32500,
+        "volatility_accumulator": 32500,
+        "base_fee": "10000",
+        "variable_fee": "4225000",
+        "total_fee": "4235000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "717875590",
+        "probe_fee_for_input": "3053134",
+        "probe_included_amount": "4226486294",
+        "probe_fee_from_amount": "17899170",
+        "probe_protocol_fee": "305313"
+      }
+    },
+    {
+      "name": "zero_filter_period_immediately_references",
+      "parameters": {
+        "bin_step": 10,
+        "base_factor": 100,
+        "base_fee_power_factor": 0,
+        "variable_fee_control": 4000000,
+        "protocol_share": 1000,
+        "filter_period": 0,
+        "decay_period": 120,
+        "reduction_factor": 5000,
+        "max_volatility_accumulator": 150000,
+        "min_bin_id": -69875,
+        "max_bin_id": 69875
+      },
+      "initial_v_parameters": {
+        "volatility_accumulator": 50000,
+        "volatility_reference": 40000,
+        "index_reference": 818,
+        "last_update_timestamp": 1000000
+      },
+      "step": {
+        "current_timestamp": 1000000,
+        "active_id": 818
+      },
+      "expected": {
+        "index_reference": 818,
+        "volatility_reference": 25000,
+        "volatility_accumulator": 25000,
+        "base_fee": "10000",
+        "variable_fee": "2500000",
+        "total_fee": "2510000",
+        "total_fee_clamped": false,
+        "probe_excluded_amount": "4459307725",
+        "probe_fee_for_input": "11221028",
+        "probe_included_amount": "1550986141",
+        "probe_fee_from_amount": "3892976",
+        "probe_protocol_fee": "1122102"
+      }
+    }
+  ]
+}
