@@ -730,6 +730,19 @@ fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
                 a_to_b,
                 &arrays,
             )
+        } else if pool.protocol == DexProtocol::RaydiumClmm {
+            clmm::compute_swap_with_ticks_per_array_and_math(
+                sqrt_price,
+                tick_current,
+                liquidity,
+                tick_spacing,
+                fee_rate,
+                amount_in,
+                a_to_b,
+                &arrays,
+                clmm::RAYDIUM_CLMM_TICK_ARRAY_SIZE,
+                clmm::ClmmTickMath::Raydium,
+            )
         } else {
             clmm::compute_swap(
                 sqrt_price,
@@ -942,6 +955,101 @@ mod tests {
             last_update_slot: 1,
             last_update_ms: 0,
         }
+    }
+
+    fn raydium_clmm_pool(
+        id: u8,
+        sqrt_price: u128,
+        liquidity: u128,
+        tick: i32,
+        spacing: u16,
+    ) -> PoolState {
+        // Raydium CLMM tick arrays start on 60*spacing multiples (not the
+        // Whirlpool 88), and hydration derives the array containing the
+        // active tick: around tick 7@ts 1 that array starts at 60.
+        PoolState {
+            pool_id: PoolId::new([id; 32]),
+            protocol: DexProtocol::RaydiumClmm,
+            slot: Slot(1),
+            write_version: 1,
+            base_mint: MintId(Pubkey::new_from_array([1; 32])),
+            quote_mint: MintId(Pubkey::new_from_array([2; 32])),
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: liquidity,
+            reserve_out: sqrt_price,
+            fee_numerator: 30,
+            fee_denominator: 10_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Clmm,
+            clmm: Some(arb_types::ClmmState {
+                sqrt_price,
+                liquidity,
+                tick_current: tick,
+                tick_spacing: spacing,
+                fee_rate: 2_500,
+                tick_arrays: vec![
+                    ClmmTickArray {
+                        start_tick_index: 60 * i32::from(spacing),
+                        ticks: vec![],
+                    },
+                    ClmmTickArray {
+                        start_tick_index: 120 * i32::from(spacing),
+                        ticks: vec![],
+                    },
+                ],
+            }),
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            last_update_slot: 1,
+            last_update_ms: 0,
+        }
+    }
+
+    #[test]
+    fn raydium_clmm_route_quotes_whose_active_tick_sits_in_a_60_spaced_array() {
+        // Regression: both engine consumers defaulted to the Whirlpool
+        // 88-tick span and Orca tick rounding. With the active tick inside
+        // the second 60-spaced array (start 60), the 88-span lookup aligned
+        // down to array start 0, which was never hydrated, so every Raydium
+        // CLMM hop through this engine failed closed and Raydium liquidity
+        // was invisible to route discovery.
+        let legacy = clmm::compute_swap(
+            1u128 << 64,
+            70,
+            1_000_000_000_000,
+            1,
+            2_500,
+            10_000,
+            true,
+            &[
+                TickArrayFacade {
+                    start_tick_index: 60,
+                    ticks: vec![],
+                },
+                TickArrayFacade {
+                    start_tick_index: 120,
+                    ticks: vec![],
+                },
+            ],
+        );
+        assert_eq!(
+            legacy.unwrap_err(),
+            arb_math::clmm::ClmmMathError::MissingTickArrayCoverage(0)
+        );
+
+        let mut pools = vec![raydium_clmm_pool(3, 1u128 << 64, 1_000_000_000_000, 70, 1)];
+        let hops = vec![HopRequest {
+            pool_id: PoolId::new([3; 32]),
+            mint_in: MintId(Pubkey::new_from_array([1; 32])),
+        }];
+        let q = quote_route(&mut pools, &hops, 10_000).unwrap();
+        assert!(q.amount_out > 0);
+        assert_eq!(q.cu_estimate, cu_estimate(DexProtocol::RaydiumClmm));
     }
 
     #[test]

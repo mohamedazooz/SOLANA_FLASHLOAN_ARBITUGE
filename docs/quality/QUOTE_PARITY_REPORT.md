@@ -37,7 +37,7 @@ Results:
 | `mainnet_pool_batch_quotes_match_official_sdk` (added 2026-11-21: 4 new mainnet pools — bin steps 1/10/50 + TRUMP/USDC pair, deep probes up to 511 bins crossed; every integer field and every Q64.64 price check exact) | ✅ PASS |
 | `whirlpool_mainnet_batch_quotes_match_official_sdk` (added 2026-11-21: 4 classic mainnet whirlpools — tick spacings 1/4/8/64; both directions × exact-in small/deep = 16 deep-quote comparisons over captured tick-array sets; engine `compute_whirlpool_swap` matches `swapQuoteByInputToken` exactly: amount_in_consumed, amount_out, trade_fee tolerance 0; adaptive-fee pools fail-closed-rejected at capture; tick-array PDA re-derivation + raw-byte field re-verification per case; start-tick probes on `get_start_tick_index` exact) | ✅ PASS |
 | `phase15_2_sdk_differential_manifest` | ✅ PASS |
-| Full workspace suite | ✅ 1,444 passed / 0 failed / 2 ignored (112 suites) — includes the whirlpool differential batch above |
+| Full workspace suite | ✅ 1,446 passed / 0 failed / 2 ignored (112 suites) — includes the whirlpool differential batch and the Raydium CLMM 60-tick-span route-discovery regression pair |
 
 Fee-scope note (SDK parity): the official DLMM client returns `fee` as the LP share and `protocolFee` separately; total trading fee = `fee + protocolFee`. The Rust engine's `fee_amount` is the **total** trading fee and `protocol_fee` its protocol part. This mapping is asserted in the harness and is an *explained* representation difference, not a math difference.
 
@@ -150,7 +150,7 @@ cargo test -p arb-engine --test whirlpool_mainnet_sdk_differential
 
 | Gap | Class | Remediation path |
 |---|---|---|
-| Raydium CLMM multi-array mainnet SDK differential (same class as the whirlpool capture; step-level parity already covered by `raydium_clmm_swap_math_parity_tests.rs`) | Coverage gap | Capture mainnet snapshots + official `@raydium-io/clmm-sdk` quotes via a harness analogous to `scripts/differential-harness/` |
+| Raydium CLMM multi-array mainnet SDK differential (same class as the whirlpool capture; step-level parity already covered by `raydium_clmm_swap_math_parity_tests.rs`, and the 60-tick-span defect that made hydrated Raydium hops fail closed in the general engine is fixed — see `EXTERNAL_BEST_PRACTICES.md` §5.2) | Coverage gap | Capture mainnet snapshots + official `@raydium-io/raydium-sdk-v2` `PoolUtils.computeAmountOutFormat` quotes (requires `ComputeClmmPoolInfo` + `tickarrayBitmapExtension` + `blockTimestamp`) via a harness analogous to `scripts/differential-harness/` |
 | All batch-captured DLMM pools have `collect_fee_mode = 0` (InputOnly); mode 1 (OnlyY) blocks are SDK-side overrides marked SIMULATED_ONLY | Coverage gap | Discover a live mainnet pool with `collect_fee_mode = 1` (decode `LbPair` per `fixtures/dlmm.json` IDL + 8-byte account discriminator) and run the same harness |
 | Variable-fee volatility state depends on `last_update_timestamp` handling; re-quotes on live snapshots exercise decay paths only in unit tests | Coverage gap | Capture timestamped snapshots; add timestamp-drift vectors |
 | Transient-capture hazard: one step-1 capture attempt failed at the active bin ("no bin consumed output") and succeeded on re-capture at a later slot | Environment | Re-run with a higher commitment or slot-pinned capture when transient emptiness matters |

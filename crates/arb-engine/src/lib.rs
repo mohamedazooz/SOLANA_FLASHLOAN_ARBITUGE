@@ -62,13 +62,14 @@ pub use three_pool_router::*;
 mod route_sizing;
 
 use arb_math::{
-    DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters, cpmm_out,
-    cpmm_price_impact_bps,
+    DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
+    clmm::ClmmTickMath,
+    cpmm_out, cpmm_price_impact_bps,
     economic::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
         slippage_haircut_min_final,
     },
-    quote_clmm, quote_dlmm_view,
+    quote_clmm, quote_clmm_with_ticks_per_array_and_math, quote_dlmm_view,
 };
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolExecutionAccounts, PoolId,
@@ -188,16 +189,32 @@ pub fn quote_pool(
                                     .collect(),
                             })
                             .collect();
-                        if let Ok(out) = quote_clmm(
-                            amount,
-                            c.sqrt_price,
-                            c.tick_current,
-                            c.liquidity,
-                            c.tick_spacing,
-                            fee_rate,
-                            a_to_b,
-                            &arrays,
-                        ) {
+                        let quote = if e.protocol == DexProtocol::RaydiumClmm {
+                            quote_clmm_with_ticks_per_array_and_math(
+                                amount,
+                                c.sqrt_price,
+                                c.tick_current,
+                                c.liquidity,
+                                c.tick_spacing,
+                                fee_rate,
+                                a_to_b,
+                                &arrays,
+                                arb_math::clmm::RAYDIUM_CLMM_TICK_ARRAY_SIZE,
+                                ClmmTickMath::Raydium,
+                            )
+                        } else {
+                            quote_clmm(
+                                amount,
+                                c.sqrt_price,
+                                c.tick_current,
+                                c.liquidity,
+                                c.tick_spacing,
+                                fee_rate,
+                                a_to_b,
+                                &arrays,
+                            )
+                        };
+                        if let Ok(out) = quote {
                             return out as u128;
                         }
                     }
@@ -1057,6 +1074,60 @@ mod tests {
         let risk_term = beta_risk * hops_count;
 
         profit_term + temporal_term + risk_term
+    }
+
+    #[test]
+    fn raydium_clmm_edge_quotes_with_60_tick_span_in_graph_quoting() {
+        // Regression for the discovery path: quote_pool previously routed
+        // every CLMM edge through the Whirlpool-shaped `quote_clmm` (88-tick
+        // span, Orca tick rounding). Raydium arrays start on 60*spacing
+        // multiples, so any hydrated Raydium CLMM edge whose active tick sits
+        // in such an array failed closed and Raydium liquidity never entered
+        // cycle discovery.
+        let edge = MarketEdge {
+            pool_id: PoolId::new([9; 32]),
+            protocol: DexProtocol::RaydiumClmm,
+            kind: PoolKind::Clmm,
+            from_mint: MintId::new([1; 32]),
+            to_mint: MintId::new([2; 32]),
+            pool_base: MintId::new([1; 32]),
+            pool_quote: MintId::new([2; 32]),
+            reserve_in: 1_000_000_000_000,
+            reserve_out: 1_000_000,
+            fee_bps: 25,
+            clmm: Some(arb_types::ClmmState {
+                sqrt_price: 1u128 << 64,
+                liquidity: 1_000_000_000_000,
+                tick_current: 70,
+                tick_spacing: 1,
+                fee_rate: 2_500,
+                tick_arrays: vec![
+                    arb_types::ClmmTickArray {
+                        start_tick_index: 60,
+                        ticks: vec![],
+                    },
+                    arb_types::ClmmTickArray {
+                        start_tick_index: 120,
+                        ticks: vec![],
+                    },
+                ],
+            }),
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            execution_accounts: None,
+            active_bin_id: None,
+        };
+        let out = quote_pool(
+            PoolKind::Clmm,
+            10_000,
+            edge.reserve_in,
+            edge.reserve_out,
+            9_970,
+            Some(&edge),
+        );
+        assert!(out > 0, "Raydium CLMM edge must quote, got 0 (fail-closed)");
     }
 
     fn make_pool(id: u8, base: u8, quote: u8, r_in: u128, r_out: u128) -> PoolState {
