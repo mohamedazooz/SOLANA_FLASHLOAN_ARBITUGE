@@ -194,22 +194,34 @@ impl TxBuilder {
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
 
         // Identify any intermediate tokens (from 40 trending tokens) needing ephemeral ATAs
-        let mut intermediate_atas = Vec::new();
+        let mut intermediate_atas: Vec<(Pubkey, Pubkey, Pubkey)> = Vec::new();
         for hop in &opportunity.hops {
-            for mint in [hop.mint_in.0, hop.mint_out.0] {
+            for (mint, token_program) in [
+                (hop.mint_in.0, hop.token_programs[0].program_id()),
+                (hop.mint_out.0, hop.token_programs[1].program_id()),
+            ] {
                 if mint != wsol
                     && mint != usdc
-                    && !intermediate_atas.iter().any(|(m, _)| *m == mint)
+                    && !intermediate_atas
+                        .iter()
+                        .any(|(known_mint, _, _)| *known_mint == mint)
                 {
-                    let ata = get_associated_token_address(&payer, &mint);
-                    intermediate_atas.push((mint, ata));
+                    let ata =
+                        get_associated_token_address_with_program_id(&payer, &mint, &token_program);
+                    intermediate_atas.push((mint, ata, token_program));
                 }
             }
         }
 
-        // Ephemeral ATA Creation (Idempotent: safe if already exists, creates if missing)
-        for (mint, ata) in &intermediate_atas {
-            ixs.push(build_create_ata_idempotent(payer, payer, *mint, *ata));
+        // Each intermediate ATA must use the token program declared for its mint.
+        for (mint, ata, token_program) in &intermediate_atas {
+            ixs.push(build_create_ata_idempotent_for_program(
+                payer,
+                payer,
+                *mint,
+                *ata,
+                *token_program,
+            ));
         }
 
         // 2. Arbitrage Swap Hops (Injected after Compute Budget and ATA creation)
@@ -263,8 +275,13 @@ impl TxBuilder {
         }
 
         // 3. Close Ephemeral ATAs to reclaim 100% of the rent deposit (0.00203928 SOL) directly to payer
-        for (_, ata) in &intermediate_atas {
-            ixs.push(build_close_token_account(*ata, payer, payer));
+        for (_, ata, token_program) in &intermediate_atas {
+            ixs.push(build_close_token_account_for_program(
+                *ata,
+                payer,
+                payer,
+                *token_program,
+            ));
         }
 
         // 4. Jito Tip at the end of the atomic transaction

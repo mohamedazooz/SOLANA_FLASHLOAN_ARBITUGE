@@ -14,9 +14,13 @@
 //! 5. Meteora DLMM passed `mint_in` as `token_x_mint`; the program validates
 //!    x/y mints against the LbPair, so every Y->X hop failed on-chain.
 
-use arb_tx::{TxError, build_swap_hop_instruction, get_associated_token_address};
+use arb_tx::{
+    TxError, build_swap_hop_instruction, get_associated_token_address,
+    get_associated_token_address_with_program_id,
+};
 use arb_types::{DexProtocol, MintId, PoolExecutionAccounts, PoolId, SwapHop, TokenProgramKind};
 use solana_pubkey::Pubkey;
+use std::str::FromStr;
 
 fn hop(
     pool_id: Pubkey,
@@ -222,6 +226,66 @@ fn orca_direction_uses_pool_mint_a_not_wsol() {
         ix_rev.data[41], 0,
         "a_to_b must be false when mint_in != pool_mint_a"
     );
+}
+
+/// Token-2022 ATA derivation must follow the hop's per-mint token program.
+#[test]
+fn orca_user_atas_use_each_mints_declared_token_program() {
+    let user = Pubkey::new_unique();
+    let mint_a = Pubkey::new_unique();
+    let mint_b = Pubkey::new_unique();
+    let mut swap = hop(
+        Pubkey::new_unique(),
+        DexProtocol::OrcaWhirlpool,
+        mint_a,
+        mint_b,
+        Some(orca_exec(
+            mint_a,
+            vec![
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+            ],
+        )),
+    );
+    swap.token_programs = [TokenProgramKind::Token2022; 2];
+
+    let ix = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
+        .expect("Token-2022 Orca hop must build");
+    let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+    assert_eq!(
+        ix.accounts[3].pubkey,
+        get_associated_token_address_with_program_id(&user, &mint_a, &token_2022)
+    );
+    assert_eq!(
+        ix.accounts[5].pubkey,
+        get_associated_token_address_with_program_id(&user, &mint_b, &token_2022)
+    );
+}
+
+#[test]
+fn orca_mixed_token_program_pair_fails_closed() {
+    let user = Pubkey::new_unique();
+    let mint_a = Pubkey::new_unique();
+    let mint_b = Pubkey::new_unique();
+    let mut swap = hop(
+        Pubkey::new_unique(),
+        DexProtocol::OrcaWhirlpool,
+        mint_a,
+        mint_b,
+        Some(orca_exec(
+            mint_a,
+            vec![
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+                Pubkey::new_unique(),
+            ],
+        )),
+    );
+    swap.token_programs = [TokenProgramKind::Token2022, TokenProgramKind::SplToken];
+    let error = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
+        .expect_err("Orca's single token-program account cannot represent mixed token programs");
+    assert!(matches!(error, TxError::InvalidExecutionAccounts { .. }));
 }
 
 /// Regression: empty Orca tick arrays must fail closed.

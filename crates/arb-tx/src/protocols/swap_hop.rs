@@ -254,7 +254,17 @@ pub fn build_swap_hop_instruction(
                     reason: "Orca tick_array_pdas resolved to the zero pubkey".into(),
                 });
             }
-            let accounts = OrcaWhirlpoolAccounts::with_tick_arrays(
+            // Orca Whirlpool's swap instruction has a single token-program
+            // account for both sides. Mixed SPL/Token-2022 pools cannot be
+            // represented by this instruction layout and must fail closed.
+            if token_program_in != token_program_out {
+                return Err(TxError::InvalidExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Orca Whirlpool requires one shared token program for both mints"
+                        .into(),
+                });
+            }
+            let mut accounts = OrcaWhirlpoolAccounts::with_tick_arrays(
                 hop.pool_id.0,
                 *vault_a,
                 *vault_b,
@@ -263,17 +273,34 @@ pub fn build_swap_hop_instruction(
                 ta1,
                 ta2,
             );
+            accounts.token_program = token_program_in;
             let is_adaptive_fee = false;
 
             let (token_owner_a, token_owner_b) = if a_to_b {
                 (
-                    get_associated_token_address(&user_authority, &hop.mint_in.0),
-                    get_associated_token_address(&user_authority, &hop.mint_out.0),
+                    get_associated_token_address_with_program_id(
+                        &user_authority,
+                        &hop.mint_in.0,
+                        &token_program_in,
+                    ),
+                    get_associated_token_address_with_program_id(
+                        &user_authority,
+                        &hop.mint_out.0,
+                        &token_program_out,
+                    ),
                 )
             } else {
                 (
-                    get_associated_token_address(&user_authority, &hop.mint_out.0),
-                    get_associated_token_address(&user_authority, &hop.mint_in.0),
+                    get_associated_token_address_with_program_id(
+                        &user_authority,
+                        &hop.mint_out.0,
+                        &token_program_out,
+                    ),
+                    get_associated_token_address_with_program_id(
+                        &user_authority,
+                        &hop.mint_in.0,
+                        &token_program_in,
+                    ),
                 )
             };
             build_orca_whirlpool_swap_instruction_11(
@@ -358,8 +385,16 @@ pub fn build_swap_hop_instruction(
                 Ok(build_meteora_dlmm_swap_instruction_with_bin_arrays(
                     &accounts,
                     user_authority,
-                    get_associated_token_address(&user_authority, &hop.mint_in.0),
-                    get_associated_token_address(&user_authority, &hop.mint_out.0),
+                    get_associated_token_address_with_program_id(
+                        &user_authority,
+                        &hop.mint_in.0,
+                        &token_program_in,
+                    ),
+                    get_associated_token_address_with_program_id(
+                        &user_authority,
+                        &hop.mint_out.0,
+                        &token_program_out,
+                    ),
                     token_x_program,
                     token_y_program,
                     amount_in,
@@ -375,8 +410,16 @@ pub fn build_swap_hop_instruction(
             }
         }
         DexProtocol::RaydiumCpmm => {
-            let user_token_in = get_associated_token_address(&user_authority, &hop.mint_in.0);
-            let user_token_out = get_associated_token_address(&user_authority, &hop.mint_out.0);
+            let user_token_in = get_associated_token_address_with_program_id(
+                &user_authority,
+                &hop.mint_in.0,
+                &token_program_in,
+            );
+            let user_token_out = get_associated_token_address_with_program_id(
+                &user_authority,
+                &hop.mint_out.0,
+                &token_program_out,
+            );
 
             let accounts = if let Some(PoolExecutionAccounts::RaydiumCpmm {
                 amm_config,
@@ -421,8 +464,16 @@ pub fn build_swap_hop_instruction(
         }
         DexProtocol::RaydiumClmm => {
             let pool = hop.pool_id.0;
-            let user_token_in = get_associated_token_address(&user_authority, &hop.mint_in.0);
-            let user_token_out = get_associated_token_address(&user_authority, &hop.mint_out.0);
+            let user_token_in = get_associated_token_address_with_program_id(
+                &user_authority,
+                &hop.mint_in.0,
+                &token_program_in,
+            );
+            let user_token_out = get_associated_token_address_with_program_id(
+                &user_authority,
+                &hop.mint_out.0,
+                &token_program_out,
+            );
 
             let Some(PoolExecutionAccounts::RaydiumClmm {
                 amm_config,
@@ -528,9 +579,16 @@ pub fn build_swap_hop_instruction(
             {
                 let program_id = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID)
                     .map_err(|e| TxError::Serialization(e.to_string()))?;
-                let user_source = get_associated_token_address(&user_authority, &hop.mint_in.0);
-                let user_destination =
-                    get_associated_token_address(&user_authority, &hop.mint_out.0);
+                let user_source = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_in.0,
+                    &token_program_in,
+                );
+                let user_destination = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_out.0,
+                    &token_program_out,
+                );
                 let a_to_b = hop.mint_in.0.to_bytes() < hop.mint_out.0.to_bytes();
                 let (token_a_mint, token_b_mint) = if a_to_b {
                     (hop.mint_in.0, hop.mint_out.0)
@@ -605,9 +663,16 @@ pub fn build_swap_hop_instruction(
             {
                 let program_id = Pubkey::from_str(arb_constants::RAYDIUM_LAUNCHLAB_PROGRAM_ID)
                     .map_err(|e| TxError::Serialization(e.to_string()))?;
-                let user_source = get_associated_token_address(&user_authority, &hop.mint_in.0);
-                let user_destination =
-                    get_associated_token_address(&user_authority, &hop.mint_out.0);
+                let user_source = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_in.0,
+                    &token_program_in,
+                );
+                let user_destination = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_out.0,
+                    &token_program_out,
+                );
                 let is_buy = hop.mint_in.0 == Pubkey::from_str(WSOL_MINT).unwrap_or(hop.mint_in.0);
 
                 let mut data = Vec::with_capacity(24);
@@ -676,9 +741,16 @@ pub fn build_swap_hop_instruction(
             {
                 let program_id = Pubkey::from_str(arb_constants::METEORA_DBC_PROGRAM_ID)
                     .map_err(|e| TxError::Serialization(e.to_string()))?;
-                let user_source = get_associated_token_address(&user_authority, &hop.mint_in.0);
-                let user_destination =
-                    get_associated_token_address(&user_authority, &hop.mint_out.0);
+                let user_source = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_in.0,
+                    &token_program_in,
+                );
+                let user_destination = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_out.0,
+                    &token_program_out,
+                );
                 let token_program_in = match hop.token_programs[0] {
                     arb_types::TokenProgramKind::Token2022 => {
                         Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
@@ -741,9 +813,16 @@ pub fn build_swap_hop_instruction(
             {
                 let program_id = Pubkey::from_str(arb_constants::METEORA_DLMM_PRO_PROGRAM_ID)
                     .map_err(|e| TxError::Serialization(e.to_string()))?;
-                let user_source = get_associated_token_address(&user_authority, &hop.mint_in.0);
-                let user_destination =
-                    get_associated_token_address(&user_authority, &hop.mint_out.0);
+                let user_source = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_in.0,
+                    &token_program_in,
+                );
+                let user_destination = get_associated_token_address_with_program_id(
+                    &user_authority,
+                    &hop.mint_out.0,
+                    &token_program_out,
+                );
                 let token_program_in = match hop.token_programs[0] {
                     arb_types::TokenProgramKind::Token2022 => {
                         Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()

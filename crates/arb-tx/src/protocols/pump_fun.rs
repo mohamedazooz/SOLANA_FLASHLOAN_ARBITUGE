@@ -33,6 +33,8 @@ impl PumpFunAccounts {
         let (event_authority, _) =
             Pubkey::find_program_address(&[PUMP_FUN_EVENT_AUTHORITY_SEED], &program);
 
+        // Legacy Pump.fun bonding-curve accounts use the SPL Token program.
+        // Token-2022 routes must use the generic program-aware swap path.
         let associated_bonding_curve = get_associated_token_address(&bonding_curve, &mint);
         let associated_user = get_associated_token_address(&user, &mint);
 

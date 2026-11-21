@@ -173,6 +173,8 @@ impl PumpFunRaydiumArbitrageBuilder {
         ixs.push(build_compute_unit_price(self.priority_fee_microlamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap_or_default();
+        // This legacy Pump.fun/Raydium V4 builder is SPL Token-only; it does
+        // not carry a mint-owner program selection for the meme token.
         let user_wsol = get_associated_token_address(&self.payer, &wsol);
         let user_meme = get_associated_token_address(&self.payer, &self.meme_mint);
 
