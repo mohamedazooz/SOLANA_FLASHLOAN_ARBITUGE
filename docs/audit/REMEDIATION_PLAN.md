@@ -15,7 +15,7 @@
 | Phase 1A | WEB-001, CTRL-001, AUTH-002 | `fix/hft-phase-1-safety-controls` | Implemented; validation passed; PR pending |
 | Phase 1B | OPS-001, RISK-001 | To be created from verified base | Not started |
 | Phase 1C | CPI-001, CPI-002, CPI-003, ARCH-001, TOKEN-003 | To be created from verified base | Not started |
-| Phase 2 | ECON-002, SIZE-001, QUOTE-001, QUOTE-002 | Pending | Not started |
+| Phase 2 | ECON-002, SIZE-001, QUOTE-001, QUOTE-002 | Implemented at HEAD `a5f0c20` verification + fixes | Fixed; PR pending |
 | Phase 3 | DLMM and Token-2022 findings | Pending | Not started |
 | Phase 4 | Transaction compiler conformance | Pending | Not started |
 | Phase 5 | Supervisor recovery and control consistency | Pending | Not started |

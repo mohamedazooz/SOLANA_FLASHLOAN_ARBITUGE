@@ -286,6 +286,50 @@ pub fn base_raw_to_lamports(
     Ok(Lamports(val_u64))
 }
 
+/// Ceiling share of `amount` at `per_hop_bps`, rounded up so any remainder
+/// reduces the returned floor rather than inflating it.
+fn ceil_bps_share(amount: u128, per_hop_bps: u64) -> Result<u128> {
+    let product = U256::from(amount)
+        .checked_mul(U256::from(u128::from(per_hop_bps)))
+        .ok_or(ArbError::Overflow)?;
+    let (quotient, remainder) = product.div_rem(U256::from(10_000_u128));
+    let share = if remainder.is_zero() {
+        quotient
+    } else {
+        quotient
+            .checked_add(U256::from(1))
+            .ok_or(ArbError::Overflow)?
+    };
+    u128::try_from(share).map_err(|_| ArbError::Overflow)
+}
+
+/// Compounded per-hop slippage haircut on a validated final output.
+///
+/// Starting from `expected_final_raw`, deducts the ceiling share
+/// `ceil(running * per_hop_bps / 10_000)` once per hop, mirroring the
+/// per-hop `min_amount_out` floors the transaction builders enforce, so every
+/// stage errs toward a lower (safer) floor. Integer-only and fully checked:
+/// any overflow is `Err(ArbError::Overflow)` and `per_hop_bps > 10_000` is
+/// `Err(ArbError::InvalidInput)`. With `hops == 0` or `per_hop_bps == 0` the
+/// input is returned unchanged.
+pub fn slippage_haircut_min_final(
+    expected_final_raw: u64,
+    hops: usize,
+    per_hop_bps: u64,
+) -> Result<u64> {
+    if per_hop_bps > 10_000 {
+        return Err(ArbError::InvalidInput(
+            "per-hop slippage bps exceeds the 10_000 denominator".into(),
+        ));
+    }
+    let mut running = u128::from(expected_final_raw);
+    for _ in 0..hops {
+        let share = ceil_bps_share(running, per_hop_bps)?;
+        running = running.checked_sub(share).ok_or(ArbError::Overflow)?;
+    }
+    u64::try_from(running).map_err(|_| ArbError::Overflow)
+}
+
 /// Build an authoritative EconomicQuote from component values.
 ///
 /// All token amounts are in the base mint's raw atomic units. SOL-denominated
@@ -1014,5 +1058,47 @@ mod tests {
     fn conversion_rejects_zero_denominator_and_rounds_liabilities_up() {
         assert!(lamports_to_base_raw(Lamports(1), 1, 0).is_err());
         assert_eq!(lamports_to_base_raw(Lamports(1), 1, 3).unwrap(), 1);
+    }
+
+    // ECON-002: the compounded per-hop slippage haircut floor.
+    //
+    // Golden vector: 2 hops at 500 bps (5%) from 1_000_000. Each hop deducts
+    // the CEILING share, so the compound floor is strictly below the naive
+    // one-shot discount and every hop's result is exact:
+    //   hop 1: ceil(1_000_000*500/10_000)=50_000 -> 950_000
+    //   hop 2: ceil(950_000*500/10_000)=47_500   -> 902_500
+    #[test]
+    fn haircut_compounds_per_hop_and_stays_below_expected() {
+        let expected = 1_000_000_u64;
+        let min = slippage_haircut_min_final(expected, 2, 500).unwrap();
+        assert_eq!(min, 902_500);
+        assert!(min < expected, "regression: min haircut must be < expected");
+
+        // One hop = exactly the builder's final-hop floor derivation.
+        assert_eq!(
+            slippage_haircut_min_final(expected, 1, 500).unwrap(),
+            950_000
+        );
+
+        // Identity cases.
+        assert_eq!(
+            slippage_haircut_min_final(expected, 0, 500).unwrap(),
+            expected
+        );
+        assert_eq!(
+            slippage_haircut_min_final(expected, 3, 0).unwrap(),
+            expected
+        );
+        assert_eq!(slippage_haircut_min_final(0, 3, 500).unwrap(), 0);
+
+        // 10_000 bps removes the whole amount in one hop and stays at 0.
+        assert_eq!(slippage_haircut_min_final(expected, 2, 10_000).unwrap(), 0);
+
+        // Ceiling rounding: a fractional share still deducts one unit.
+        assert_eq!(slippage_haircut_min_final(1_234, 1, 1).unwrap(), 1_233);
+        assert_eq!(slippage_haircut_min_final(10_000, 3, 1).unwrap(), 9_997);
+
+        // Bounds are hard errors, never saturated.
+        assert!(slippage_haircut_min_final(expected, 1, 10_001).is_err());
     }
 }
