@@ -135,7 +135,7 @@ pub struct AccountSnapshot {
     pub slot: u64,
     pub write_version: u64,
     pub is_startup: bool,
-    /// Yellowstone source identity; RPC bootstrap uses ProviderId(0).
+    /// Helius WebSocket stream uses ProviderId(1); HTTP RPC bootstrap uses ProviderId(0).
     pub provider_id: ProviderId,
     /// Bank identity supplied by Yellowstone; unavailable for HTTP RPC snapshots.
     pub bank_id: Option<u64>,

@@ -575,11 +575,11 @@ pub const MAX_LOADED_ACCOUNTS_DATA_SIZE_BYTES: u64 = 64 * 1024 * 1024;
 /// evaluation (`supervisor/execution.rs`). ~1000 slots covers normal stream jitter
 /// without letting truly stale snapshots into quote math.
 pub const KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS: u64 = 1_000;
-/// Relaxed freshness bound (slots) for the Kamino supply-vault snapshot used to
-/// size available flash liquidity: network jitter/polling gaps must not spuriously
-/// drop verified reserve liquidity, while preventing stale unverified states
-/// (~5000 slots ≈ 30 min at 400 ms/slot).
-pub const KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS: u64 = 5_000;
+/// Maximum age (slots) for the Kamino supply-vault balance used to size flash
+/// liquidity. The vault is reconciled every ~30 seconds; 150 slots allow one
+/// missed refresh while preventing a long-stale balance from inflating borrow
+/// capacity.
+pub const KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS: u64 = 150;
 /// Freshness bound (slots) for a raw RPC snapshot of the Kamino fallback sources:
 /// only snapshots read this recently may substitute for an unavailable stream state.
 pub const KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS: u64 = 1_500;

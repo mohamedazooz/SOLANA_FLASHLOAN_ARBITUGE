@@ -167,7 +167,7 @@ impl Supervisor {
 
         // Ensure Kamino reserve & WSOL mint snapshots exist and stay fresh.
         // Note: `AccountSnapshotStore::apply` refuses `is_startup: true` overwrites
-        // once a live WS write (`ProviderId(2)`, `is_startup: false`) exists, so we
+        // once a live WS write (`ProviderId(1)`, `is_startup: false`) exists, so we
         // evaluate fresh RPC reads against `self.kamino_fallback_store` if needed
         // while preserving `store`'s stream provenance invariants.
         let store = self.ingest.account_store();

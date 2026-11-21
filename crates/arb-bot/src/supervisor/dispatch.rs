@@ -221,47 +221,63 @@ impl Supervisor {
                 let max_version = arb_tx::rpc_max_supported_version_from_wire(tx_bytes)
                     .ok()
                     .flatten();
-                match self.tx_rpc.simulate_transaction(&b64, max_version).await {
-                    Ok(sim_val) => {
-                        let sim_err = sim_val.get("err").and_then(|ev| {
-                            if ev.is_null() {
-                                None
-                            } else {
-                                Some(ev.to_string())
-                            }
-                        });
-                        let units_consumed = sim_val
-                            .get("unitsConsumed")
-                            .and_then(|u| u.as_u64())
-                            .unwrap_or(0);
-                        if let Some(err) = sim_err {
-                            tracing::warn!(
-                                target: "arb_events",
-                                "SIMULATION_FAILED: error={}",
-                                err
-                            );
-                            warn!("Simulation failed: {err}");
-                        } else {
-                            tracing::info!(
-                                target: "arb_events",
-                                "SIMULATION_PASSED: cu_consumed={} fee_payer_delta=0",
-                                units_consumed
-                            );
-                            info!(
-                                "✅ Simulation passed via HTTP Transaction RPC adapter (CU={})",
-                                units_consumed
-                            );
-                        }
-                    }
-                    Err(e) => {
+                let sim_result = self
+                    .tx_rpc
+                    .simulate_transaction(&b64, max_version)
+                    .await
+                    .and_then(|value| {
+                        arb_sim::parse_simulation_response(&value)
+                            .map_err(|error| anyhow::anyhow!(error))
+                    });
+                let mut sim = match sim_result {
+                    Ok(sim) => sim,
+                    Err(error) => {
                         tracing::warn!(
                             target: "arb_events",
-                            "SIMULATION_FAILED: error={}",
-                            e
+                            "SIMULATION_UNAVAILABLE: error={}",
+                            error
                         );
-                        warn!("Simulation RPC call failed: {e}");
+                        warn!("Simulation did not produce valid execution evidence: {error}");
+                        let _ = self.store.record_outcome(
+                            record.id,
+                            "simulation_unavailable",
+                            None,
+                            NetProvenance::Estimated,
+                        );
+                        return;
                     }
+                };
+                sim.enforce_quote_freshness(opp.slot.0, self.config.strategy.max_state_age_slots);
+                if sim.status != arb_sim::SimulationStatus::Passed {
+                    let error = sim.error.as_deref().unwrap_or("simulation not passed");
+                    tracing::warn!(
+                        target: "arb_events",
+                        "SIMULATION_REJECTED: status={:?} error={}",
+                        sim.status,
+                        error
+                    );
+                    warn!(
+                        "Simulation rejected opportunity ({:?}): {error}",
+                        sim.status
+                    );
+                    let _ = self.store.record_outcome(
+                        record.id,
+                        "simulation_rejected",
+                        None,
+                        NetProvenance::Estimated,
+                    );
+                    return;
                 }
+                tracing::info!(
+                    target: "arb_events",
+                    "SIMULATION_PASSED: cu_consumed={} context_slot={:?}",
+                    sim.units_consumed,
+                    sim.context_slot
+                );
+                info!(
+                    "✅ Simulation passed via HTTP Transaction RPC adapter (CU={})",
+                    sim.units_consumed
+                );
                 arb_metrics::add_simulated_net_profit(profit_sol);
                 let _ = self.store.record_outcome(
                     record.id,

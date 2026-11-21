@@ -300,7 +300,7 @@ fn valid_meteora_pools(pools: &[PoolState]) -> Vec<PoolState> {
         .collect()
 }
 
-/// Internal representation of the selected chain (pool indexes into `candidates`).
+/// Internal representation of a route candidate (pool indexes into `candidates`).
 #[derive(Clone, Copy)]
 struct Chain {
     i: usize,
@@ -308,7 +308,6 @@ struct Chain {
     k: usize,
     a: MintId,
     b: MintId,
-    profit: i128,
 }
 
 /// One fully-evaluated 3-leg orientation at a given input size.
@@ -326,12 +325,6 @@ struct ChainQuote {
     fee: [u64; 3],
     bins: [u32; 3],
     swap_for_y: [bool; 3],
-}
-
-impl ChainQuote {
-    fn gross(&self, input: u64) -> i64 {
-        self.out[2] as i64 - input as i64
-    }
 }
 
 /// Chain a quote through the three pools of `chain` at `input` size using
@@ -476,18 +469,7 @@ fn enumerate_cycles(
                 else {
                     continue;
                 };
-                let profit = quote.gross(input_size) as i128;
-                out.push((
-                    Chain {
-                        i,
-                        j,
-                        k,
-                        a,
-                        b,
-                        profit,
-                    },
-                    quote,
-                ));
+                out.push((Chain { i, j, k, a, b }, quote));
             }
         }
     }
@@ -496,9 +478,9 @@ fn enumerate_cycles(
 
 /// Run the integrated pipeline.
 ///
-/// 1. Scans the provided pools and finds the best distinct 3-leg
-///    `WSOL -> A -> B -> WSOL` cycle by chained quote profitability.
-/// 2. Re-sizes the route across `params.size_search_sizes` (default: `[input_size]`).
+/// 1. Scans distinct 3-leg `WSOL -> A -> B -> WSOL` cycles at each candidate
+///    borrow size.
+/// 2. Selects the route-size pair with the highest canonical net profit.
 /// 3. Resolves per-leg execution accounts into `ThreeLegMemeArbitrageContext`.
 pub fn build_three_leg_meme_pipeline(
     pools: &[PoolState],
@@ -517,25 +499,11 @@ pub fn build_three_leg_meme_pipeline(
     // Discovery report (kept for journaling).
     let discovery = MeteoraDlmmPoolPairDiscovery::discover_pairs(&candidates);
 
-    // Route graph: pick the most profitable feasible triple at the discovery size.
+    // Candidate borrow sizes are bounded by verified Kamino vault liquidity.
+    // Route selection must be evaluated at each size: DLMM bin boundaries can
+    // change both route feasibility and the best route as input changes.
     let wsol = wsol_mint();
     let discovery_size = params.input_size;
-    let cycles = enumerate_cycles(&candidates, discovery_size, params.slippage_bps);
-    if cycles.is_empty() {
-        return Err(ThreeLegMemePipelineError::NoCycleFound {
-            pools: candidates.len(),
-        });
-    }
-    let best_chain = cycles
-        .iter()
-        .max_by_key(|(chain, _)| chain.profit)
-        .map(|(chain, _)| *chain)
-        .expect("cycles is non-empty");
-
-    // Trade size optimizer: 3-leg-native evaluation over the candidate set.
-    // The objective is NET profit (gross - Kamino flash fee - network cost),
-    // never gross output. Candidates above the actual available flash
-    // liquidity (when known) are dropped, not silently clamped.
     let sizes: Vec<u64> = {
         let all: Vec<u64> = if params.size_search_sizes.is_empty() {
             vec![discovery_size]
@@ -544,7 +512,10 @@ pub fn build_three_leg_meme_pipeline(
         };
         match params.kamino_available_liquidity {
             Some(available) => {
-                let filtered: Vec<u64> = all.into_iter().filter(|s| *s <= available).collect();
+                let filtered: Vec<u64> = all
+                    .into_iter()
+                    .filter(|s| *s > 0 && *s <= available)
+                    .collect();
                 if filtered.is_empty() {
                     return Err(ThreeLegMemePipelineError::InsufficientFlashLiquidity {
                         available,
@@ -552,48 +523,51 @@ pub fn build_three_leg_meme_pipeline(
                 }
                 filtered
             }
-            None => all,
+            None => all.into_iter().filter(|s| *s > 0).collect(),
         }
     };
 
     let mut tested: Vec<(u64, i64)> = Vec::with_capacity(sizes.len());
-    let mut best_size = discovery_size;
     let mut best_profit: i64 = i64::MIN;
-    let mut best_quote: Option<ChainQuote> = None;
+    let mut best_size = 0;
+    let mut best_candidate: Option<(Chain, ChainQuote)> = None;
     for size in &sizes {
-        let quote = quote_chain(
-            &candidates,
-            (best_chain.i, best_chain.j, best_chain.k),
-            best_chain.a,
-            best_chain.b,
-            *size,
-            params.slippage_bps,
-        );
-        let profit = quote.map_or(i64::MIN, |q| net_profit_of(q, *size, params));
-        tested.push((*size, profit));
-        if profit > best_profit {
-            best_profit = profit;
+        let cycles = enumerate_cycles(&candidates, *size, params.slippage_bps);
+        let mut best_at_size: Option<(Chain, ChainQuote, i64)> = None;
+        for (chain, quote) in cycles {
+            let net_profit = net_profit_of(quote, *size, params);
+            if best_at_size
+                .as_ref()
+                .is_none_or(|(_, _, current)| net_profit > *current)
+            {
+                best_at_size = Some((chain, quote, net_profit));
+            }
+        }
+
+        let net_at_size = best_at_size
+            .as_ref()
+            .map(|(_, _, profit)| *profit)
+            .unwrap_or(i64::MIN);
+        tested.push((*size, net_at_size));
+        if let Some((chain, quote, net_profit)) = best_at_size
+            && net_profit > best_profit
+        {
+            best_profit = net_profit;
             best_size = *size;
-            best_quote = quote;
+            best_candidate = Some((chain, quote));
         }
     }
+    let Some((best_chain, chosen_quote)) = best_candidate else {
+        return Err(ThreeLegMemePipelineError::NoCycleFound {
+            pools: candidates.len(),
+        });
+    };
     if best_profit < params.min_profit_lamports as i64 {
         return Err(ThreeLegMemePipelineError::BelowNetProfitFloor {
             best_net: best_profit,
             floor: params.min_profit_lamports,
         });
     }
-    let chosen_quote = best_quote.unwrap_or_else(|| {
-        quote_chain(
-            &candidates,
-            (best_chain.i, best_chain.j, best_chain.k),
-            best_chain.a,
-            best_chain.b,
-            best_size,
-            params.slippage_bps,
-        )
-        .expect("discovery size must quote")
-    });
     let size_search = ThreeLegMemeSizeSearchResult {
         tested_sizes: tested,
         best_input: best_size,
