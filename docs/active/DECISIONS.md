@@ -32,13 +32,20 @@ Flash loans must follow strict intra-transaction instruction ordering:
 $$\text{FlashBorrow} \longrightarrow \text{Swap}_1 \longrightarrow \dots \longrightarrow \text{Swap}_N \longrightarrow \text{ProfitGuard} \longrightarrow \text{FlashRepay}$$
 Borrow, swaps, and repayment must execute in a single Solana transaction. Splitting a flash loan across multiple transactions or bundles is prohibited.
 
-### Invariant 4: Solana V1 Wire Standard
-All transactions must adhere to the V1 envelope:
+### Invariant 4: Solana V1 Wire Standard (SIMD-0385, Activated 2026-09-15)
+All transactions must adhere to the V1 envelope, verified against the activated
+SIMD-0385 specification:
 - 0x81 wire discriminator.
 - Maximum wire ceiling of 4,096 bytes.
 - Up to 64 inline accounts without relying on Address Lookup Tables (ALTs).
-- Explicit Compute Budget instructions (`SetComputeUnitLimit`, `SetComputeUnitPrice`).
-- Explicit `SetLoadedAccountsDataSizeLimit` set to 16 MiB.
+- Resource limits live in the message config (TransactionConfigMask), NOT in
+  ComputeBudget instructions: priority fee as an absolute total in lamports
+  (mask bits [0,1]), compute-unit limit (bit 2), loaded-accounts-data limit
+  (bit 3), heap size (bit 4). ComputeBudget instructions are no-ops in V1 and
+  are stripped at compile time (klend `borrow_instruction_index` is rewritten
+  accordingly). See `crates/arb-tx/src/transport/adaptive.rs`.
+- Explicit loaded-accounts data limit in 1..=64 MiB (flash routes request the
+  64 MiB maximum; see `V1_MAX_LOADED_ACCOUNTS_DATA_SIZE_LIMIT`).
 
 ### Invariant 5: Canonical Kamino Repayment Formula
 Repayment is defined as:
