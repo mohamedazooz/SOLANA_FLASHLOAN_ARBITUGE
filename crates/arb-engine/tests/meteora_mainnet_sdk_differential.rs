@@ -196,6 +196,54 @@ fn find_fixture(name: &str) -> String {
     panic!("{name} not found; run the capture + SDK harness first");
 }
 
+/// Directory holding the batch-captured pool set under
+/// `fixtures/meteora_dlmm_pools/` (one `*.snapshot.json` + `*.quotes.json`
+/// pair per pool, produced by `run_mainnet_snapshot_differential.js`).
+fn find_pool_fixture_dir() -> String {
+    for p in &[
+        "fixtures/meteora_dlmm_pools",
+        "../../fixtures/meteora_dlmm_pools",
+        "../fixtures/meteora_dlmm_pools",
+    ] {
+        if Path::new(p).is_dir() {
+            return p.to_string();
+        }
+    }
+    panic!("fixtures/meteora_dlmm_pools not found; run the batch capture first");
+}
+
+/// Load a (snapshot, quotes) pair from an arbitrary fixture directory and
+/// derive the engine-side bin list from the snapshot's raw captured bins.
+fn load_pair(snapshot_path: &str, quotes_path: &str) -> (SdkFixture, Vec<DlmmBin>, Snapshot) {
+    let s = fs::read_to_string(quotes_path).expect("read SDK quotes fixture");
+    let f: SdkFixture = serde_json::from_str(&s).expect("parse SDK quotes fixture");
+    let s = fs::read_to_string(snapshot_path).expect("read Mainnet snapshot");
+    let snap: Snapshot = serde_json::from_str(&s).expect("parse Mainnet snapshot");
+    let mut bins = Vec::new();
+    for arr in &snap.bin_arrays {
+        if !arr.exists {
+            continue;
+        }
+        for b in &arr.bins {
+            bins.push(DlmmBin {
+                id: b.bin_id,
+                amount_x: b.amount_x.parse().expect("amount_x"),
+                amount_y: b.amount_y.parse().expect("amount_y"),
+                // 0 => the engine must derive the price itself.
+                price_q64: 0,
+                open_order_amount: b.open_order_amount.parse().unwrap_or(0),
+                processed_order_remaining_amount: b
+                    .processed_order_remaining_amount
+                    .parse()
+                    .unwrap_or(0),
+                limit_order_ask_side: b.limit_order_ask_side,
+            });
+        }
+    }
+    bins.sort_by_key(|b| b.id);
+    (f, bins, snap)
+}
+
 fn load() -> SdkFixture {
     let s = fs::read_to_string(find_fixture("meteora_mainnet_sdk_quotes.json"))
         .expect("read SDK quotes fixture");
@@ -422,6 +470,92 @@ fn check_case(f: &SdkFixture, bins: &[DlmmBin], label: &str, mode: u8, q: &SdkQu
         e.bins_crossed as i128,
         q.bins_crossed as i128,
     );
+}
+
+/// Multi-pool batch differential over the batch-captured Mainnet pool set in
+/// `fixtures/meteora_dlmm_pools/`: pools across bin steps 1 / 4 / 10 / 50 and
+/// multiple mint pairs (SOL/USDC, TRUMP/USDC), each captured from Mainnet at a
+/// distinct slot by `run_mainnet_snapshot_differential.js` with the official
+/// `@meteora-ag/dlmm` SDK as quote oracle over a frozen in-process cache.
+/// A difference here is an engine difference, not a data difference.
+#[test]
+fn mainnet_pool_batch_quotes_match_official_sdk() {
+    let dir = find_pool_fixture_dir();
+    let mut quotes_files: Vec<String> = fs::read_dir(&dir)
+        .expect("read pool fixture dir")
+        .filter_map(|e| {
+            let n = e.ok()?.file_name().to_string_lossy().to_string();
+            n.ends_with(".quotes.json").then_some(n)
+        })
+        .collect();
+    quotes_files.sort();
+    assert!(
+        quotes_files.len() >= 4,
+        "expected the batch-captured pool set (>=4 pools), found {quotes_files:?}"
+    );
+
+    for qname in &quotes_files {
+        let stem = qname
+            .strip_suffix(".quotes.json")
+            .expect("quotes file stem");
+        let sname = format!("{stem}.snapshot.json");
+        let (f, bins, _snap) = load_pair(
+            &Path::new(&dir).join(&sname).to_string_lossy(),
+            &Path::new(&dir).join(qname).to_string_lossy(),
+        );
+        // Q64.64 price identity for every captured bin-array boundary and
+        // around the active bin, recomputed from bin_step alone.
+        for p in &f.price_checks {
+            let rust = get_price_from_id(p.bin_id, f.bin_step)
+                .unwrap_or_else(|_| panic!("{stem}: price for bin {}", p.bin_id));
+            let sdk: u128 = p.price_q64.parse().expect("sdk price");
+            assert_eq!(rust, sdk, "{stem}: price mismatch at bin {}", p.bin_id);
+        }
+
+        // Full comparison against this pool's SDK-generated quotes.
+        for (mode, m) in [
+            (0u8, &f.quotes.mode_0_input_only),
+            (1u8, &f.quotes.mode_1_only_y),
+        ] {
+            for (dirn, set) in [("x_to_y", &m.x_to_y), ("y_to_x", &m.y_to_x)] {
+                check_case(
+                    &f,
+                    &bins,
+                    &format!("{stem} mode{mode} {dirn} exact_in_small"),
+                    mode,
+                    &set.exact_in_small,
+                );
+                check_case(
+                    &f,
+                    &bins,
+                    &format!("{stem} mode{mode} {dirn} exact_in_deep"),
+                    mode,
+                    &set.exact_in_deep,
+                );
+                check_case(
+                    &f,
+                    &bins,
+                    &format!("{stem} mode{mode} {dirn} exact_out_small"),
+                    mode,
+                    &set.exact_out_small,
+                );
+                check_case(
+                    &f,
+                    &bins,
+                    &format!("{stem} mode{mode} {dirn} exact_out_deep"),
+                    mode,
+                    &set.exact_out_deep,
+                );
+            }
+        }
+        println!(
+            "{stem}: slot={} active_id={} bin_step={} price_checks={} — all exact",
+            f.rpc_slot,
+            f.active_id,
+            f.bin_step,
+            f.price_checks.len()
+        );
+    }
 }
 
 #[test]

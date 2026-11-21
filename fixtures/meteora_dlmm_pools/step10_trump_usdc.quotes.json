@@ -1,0 +1,387 @@
+{
+  "source_snapshot": "fixtures/meteora_mainnet_snapshot.json",
+  "captured_at_utc": "2026-11-21T15:39:59.613Z",
+  "rpc_slot": 472192517,
+  "pool_address": "3C5YE97HADPDxZehYq9Cis8AXr9aNyrUsczKzE1nDbW9",
+  "program_id": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "sdk_version": "1.9.14",
+  "active_id": -139,
+  "bin_step": 10,
+  "volatility_update_timestamp": "1795275496",
+  "captured_bin_range": [
+    -630,
+    419
+  ],
+  "price_checks": [
+    {
+      "bin_id": -630,
+      "price_q64": "9827677818302143500"
+    },
+    {
+      "bin_id": -561,
+      "price_q64": "10529366838952929847"
+    },
+    {
+      "bin_id": -560,
+      "price_q64": "10539896205791882777"
+    },
+    {
+      "bin_id": -491,
+      "price_q64": "11292437099290643359"
+    },
+    {
+      "bin_id": -490,
+      "price_q64": "11303729536389934001"
+    },
+    {
+      "bin_id": -421,
+      "price_q64": "12110807571988492388"
+    },
+    {
+      "bin_id": -420,
+      "price_q64": "12122918379560480881"
+    },
+    {
+      "bin_id": -351,
+      "price_q64": "12988485900439265759"
+    },
+    {
+      "bin_id": -350,
+      "price_q64": "13001474386339705027"
+    },
+    {
+      "bin_id": -281,
+      "price_q64": "13929770164634063485"
+    },
+    {
+      "bin_id": -280,
+      "price_q64": "13943699934798697550"
+    },
+    {
+      "bin_id": -211,
+      "price_q64": "14939269929296916308"
+    },
+    {
+      "bin_id": -210,
+      "price_q64": "14954209199226213225"
+    },
+    {
+      "bin_id": -141,
+      "price_q64": "16021928817391805083"
+    },
+    {
+      "bin_id": -140,
+      "price_q64": "16037950746209196888"
+    },
+    {
+      "bin_id": -139,
+      "price_q64": "16053988696955406085"
+    },
+    {
+      "bin_id": -138,
+      "price_q64": "16070042685652361492"
+    },
+    {
+      "bin_id": -71,
+      "price_q64": "17183048719546838466"
+    },
+    {
+      "bin_id": -70,
+      "price_q64": "17200231768266385305"
+    },
+    {
+      "bin_id": -1,
+      "price_q64": "18428315757951600016"
+    },
+    {
+      "bin_id": 0,
+      "price_q64": "18446744073709551616"
+    },
+    {
+      "bin_id": 69,
+      "price_q64": "19763828131875509275"
+    },
+    {
+      "bin_id": 70,
+      "price_q64": "19783591960007384784"
+    },
+    {
+      "bin_id": 139,
+      "price_q64": "21196125981169530762"
+    },
+    {
+      "bin_id": 140,
+      "price_q64": "21217322107150700293"
+    },
+    {
+      "bin_id": 209,
+      "price_q64": "22732223413995834382"
+    },
+    {
+      "bin_id": 210,
+      "price_q64": "22754955637409830216"
+    },
+    {
+      "bin_id": 279,
+      "price_q64": "24379642855628455066"
+    },
+    {
+      "bin_id": 280,
+      "price_q64": "24404022498484083520"
+    },
+    {
+      "bin_id": 349,
+      "price_q64": "26146451886534520018"
+    },
+    {
+      "bin_id": 350,
+      "price_q64": "26172598338421054536"
+    },
+    {
+      "bin_id": 419,
+      "price_q64": "28041302750135871996"
+    }
+  ],
+  "parameters": {
+    "baseFactor": 10000,
+    "filterPeriod": 30,
+    "decayPeriod": 600,
+    "reductionFactor": 5000,
+    "variableFeeControl": 40000,
+    "maxVolatilityAccumulator": 350000,
+    "minBinId": -43690,
+    "maxBinId": 43690,
+    "protocolShare": 1000,
+    "baseFeePowerFactor": 0,
+    "functionType": 0,
+    "collectFeeMode": 0
+  },
+  "variable_parameters": {
+    "volatilityAccumulator": 14739,
+    "volatilityReference": 14739,
+    "indexReference": -139,
+    "lastUpdateTimestamp": "1795275496"
+  },
+  "quotes": {
+    "mode_0_input_only": {
+      "x_to_y": {
+        "exact_in_small": {
+          "swap_for_y": true,
+          "fee_on_input": true,
+          "input": "36681",
+          "amount_in": "36681",
+          "amount_out": "31890",
+          "fee": "34",
+          "protocol_fee": "3",
+          "total_fee": "37",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_in_deep": {
+          "swap_for_y": true,
+          "fee_on_input": true,
+          "input": "256000000000",
+          "amount_in": "256000000000",
+          "amount_out": "204871751006",
+          "fee": "1244927968",
+          "protocol_fee": "138325258",
+          "total_fee": "1383253226",
+          "end_bin_id": -276,
+          "bins_crossed": 137,
+          "volatility_accumulator": null
+        },
+        "exact_out_small": {
+          "swap_for_y": true,
+          "fee_on_input": true,
+          "desired_out": "31862",
+          "amount_in": "36648",
+          "amount_out": "31862",
+          "fee": "34",
+          "protocol_fee": "3",
+          "total_fee": "37",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_out_deep": {
+          "swap_for_y": true,
+          "fee_on_input": true,
+          "desired_out": "256000000000",
+          "amount_in": "324582428838",
+          "amount_out": "256000000000",
+          "fee": "1609100687",
+          "protocol_fee": "178788881",
+          "total_fee": "1787889568",
+          "end_bin_id": -300,
+          "bins_crossed": 161,
+          "volatility_accumulator": null
+        }
+      },
+      "y_to_x": {
+        "exact_in_small": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "input": "417520865",
+          "amount_in": "417520865",
+          "amount_out": "479266046",
+          "fee": "379035",
+          "protocol_fee": "42115",
+          "total_fee": "421150",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_in_deep": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "input": "256000000000",
+          "amount_in": "256000000000",
+          "amount_out": "267363753877",
+          "fee": "1252384792",
+          "protocol_fee": "139153786",
+          "total_fee": "1391538578",
+          "end_bin_id": 36,
+          "bins_crossed": 175,
+          "volatility_accumulator": null
+        },
+        "exact_out_small": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "desired_out": "479265521",
+          "amount_in": "417520407",
+          "amount_out": "479265521",
+          "fee": "379035",
+          "protocol_fee": "42114",
+          "total_fee": "421149",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_out_deep": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "desired_out": "256000000000",
+          "amount_in": "244178759515",
+          "amount_out": "256000000000",
+          "fee": "1189614001",
+          "protocol_fee": "132179255",
+          "total_fee": "1321793256",
+          "end_bin_id": 31,
+          "bins_crossed": 170,
+          "volatility_accumulator": null
+        }
+      }
+    },
+    "mode_1_only_y": {
+      "x_to_y": {
+        "exact_in_small": {
+          "swap_for_y": true,
+          "fee_on_input": false,
+          "input": "36681",
+          "amount_in": "36681",
+          "amount_out": "31890",
+          "fee": "30",
+          "protocol_fee": "3",
+          "total_fee": "33",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_in_deep": {
+          "swap_for_y": true,
+          "fee_on_input": false,
+          "input": "256000000000",
+          "amount_in": "256000000000",
+          "amount_out": "204815609541",
+          "fee": "995325050",
+          "protocol_fee": "110591612",
+          "total_fee": "1105916662",
+          "end_bin_id": -276,
+          "bins_crossed": 137,
+          "volatility_accumulator": null
+        },
+        "exact_out_small": {
+          "swap_for_y": true,
+          "fee_on_input": false,
+          "desired_out": "31862",
+          "amount_in": "36649",
+          "amount_out": "31862",
+          "fee": "30",
+          "protocol_fee": "3",
+          "total_fee": "33",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_out_deep": {
+          "swap_for_y": true,
+          "fee_on_input": false,
+          "desired_out": "256000000000",
+          "amount_in": "324697292486",
+          "amount_out": "256000000000",
+          "fee": "1268727239",
+          "protocol_fee": "140969632",
+          "total_fee": "1409696871",
+          "end_bin_id": -301,
+          "bins_crossed": 162,
+          "volatility_accumulator": null
+        }
+      },
+      "y_to_x": {
+        "exact_in_small": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "input": "417520865",
+          "amount_in": "417520865",
+          "amount_out": "479266046",
+          "fee": "379035",
+          "protocol_fee": "42115",
+          "total_fee": "421150",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_in_deep": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "input": "256000000000",
+          "amount_in": "256000000000",
+          "amount_out": "267363753877",
+          "fee": "1252384792",
+          "protocol_fee": "139153786",
+          "total_fee": "1391538578",
+          "end_bin_id": 36,
+          "bins_crossed": 175,
+          "volatility_accumulator": null
+        },
+        "exact_out_small": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "desired_out": "479265521",
+          "amount_in": "417520407",
+          "amount_out": "479265521",
+          "fee": "379035",
+          "protocol_fee": "42114",
+          "total_fee": "421149",
+          "end_bin_id": -139,
+          "bins_crossed": 0,
+          "volatility_accumulator": null
+        },
+        "exact_out_deep": {
+          "swap_for_y": false,
+          "fee_on_input": true,
+          "desired_out": "256000000000",
+          "amount_in": "244178759515",
+          "amount_out": "256000000000",
+          "fee": "1189614001",
+          "protocol_fee": "132179255",
+          "total_fee": "1321793256",
+          "end_bin_id": 31,
+          "bins_crossed": 170,
+          "volatility_accumulator": null
+        }
+      }
+    }
+  }
+}
