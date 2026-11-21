@@ -83,7 +83,9 @@ pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
 
 /// Default minimum net profit (retained edge) that justifies execution, in lamports.
 pub const DEFAULT_MIN_PROFIT_LAMPORTS: u64 = 50_000;
-/// Default Jito tip floor enforced by the block engine, in lamports.
+/// Conservative default Jito tip floor in lamports. The block-engine-enforced
+/// minimum is 1,000 lamports (docs.jito.wtf); this runtime floor is 10x that to
+/// avoid submitting bundles that can never clear a quiet auction.
 pub const DEFAULT_JITO_TIP_FLOOR_LAMPORTS: u64 = 10_000;
 /// Default Jito tip share applied to a route's gross edge (70% per SEEEVV.MD).
 pub const DEFAULT_JITO_TIP_SHARE_BPS: u64 = 7_000;

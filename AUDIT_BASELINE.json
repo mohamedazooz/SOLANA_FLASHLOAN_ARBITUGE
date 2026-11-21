@@ -1,0 +1,214 @@
+{
+  "mission": "SOLANA_FLASHLOAN_ARBITUGE — Atomic Profitability & Execution Engineering",
+  "baseline_commit": "25ffe606f255d4ae5f0ea52e550df96afee55ef4",
+  "baseline_branch": "main",
+  "baseline_commit_date": "2026-11-21T02:46:22+02:00",
+  "audit_date": "2026-11-21",
+  "toolchain": {
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "1.99.1 (5f94df478 2026-08-27)",
+    "edition": "2024",
+    "pinned_by": "rust-toolchain.toml"
+  },
+  "method": "Repository forensics; every prior claim revalidated against current source; protocol-sensitive behavior checked against activated mainnet specifications (SIMD-0385 Activated, SIMD-0296) and official Jito/Kamino documentation on 2026-11-21.",
+  "network_capability": {
+    "egress_shell": "BLOCKED",
+    "env_file_present": false,
+    "consequence": "All mainnet-dependent evidence classes are BLOCKED in this sandbox; reproducible commands documented in docs/quality/SHADOW_EXECUTION_REPORT.md"
+  },
+  "verification_commands": [
+    { "command": "cargo fmt --all -- --check", "result": "PASS" },
+    { "command": "cargo check --workspace --all-targets", "result": "PASS (0 errors, 1m32s)" },
+    { "command": "cargo clippy --workspace --all-targets -- -D warnings", "result": "PASS (0 warnings)" },
+    { "command": "cargo test --workspace --all-targets", "result": "PASS (1398 passed / 0 failed / 2 ignored across 109 suites)" }
+  ],
+  "source_of_truth_matrix": [
+    {
+      "domain": "cpmm_quote_math",
+      "file": "crates/arb-math/src/cpmm.rs",
+      "entry_points": ["cpmm_out", "cpmm_out_fee", "cpmm_out_upfront_fee_ceil", "quote_cpmm"],
+      "tests": ["crates/arb-math/tests/python_oracle_differential.rs::cpmm_matches_python_oracle"],
+      "status": "VERIFIED"
+    },
+    {
+      "domain": "dlmm_quote_math",
+      "file": "crates/arb-math/src/dlmm/",
+      "entry_points": ["quote_dlmm_multi_bin", "quote_dlmm_view", "quote_dlmm_exact_out"],
+      "tests": [
+        "crates/arb-math/tests/python_oracle_differential.rs::dlmm_single_bin_matches_python_oracle",
+        "crates/arb-engine/tests/meteora_mainnet_sdk_differential.rs (official @meteora-ag/dlmm@1.9.14 over captured mainnet snapshot)"
+      ],
+      "status": "VERIFIED_OFFLINE",
+      "notes": "Live re-quote against mainnet BLOCKED (no egress)"
+    },
+    {
+      "domain": "clmm_math",
+      "file": "crates/arb-math/src/clmm.rs",
+      "tests": ["in-module unit tests", "proptest property tests"],
+      "status": "PARTIALLY_VERIFIED",
+      "notes": "No captured Whirlpool/CLMM SDK differential fixture exists in the repository"
+    },
+    {
+      "domain": "dlmm_fee_layer",
+      "file": "crates/arb-math/src/dlmm/fee.rs",
+      "entry_points": [
+        "compute_base_fee",
+        "compute_variable_fee",
+        "compute_fee_to_add",
+        "included_fee_amount",
+        "compute_fee_from_amount",
+        "compute_protocol_fee",
+        "update_references_with_decay",
+        "update_volatility_accumulator"
+      ],
+      "status": "VERIFIED",
+      "notes": "Formulas mirror official SDK: base=bf*bs*10*10^p, variable=ceil(vfc*(va*bs)^2/1e10), fee_to_add=ceil(a*r/(1e9-r))"
+    },
+    {
+      "domain": "kamino_flash_fee",
+      "file": "crates/arb-math/src/economic.rs",
+      "entry_points": [
+        "kamino_fee_bits (line 646)",
+        "kamino_flash_fee_checked (line 621)",
+        "calculate_kamino_flash_fee",
+        "calculate_flash_fee_raw (line 655)"
+      ],
+      "invariants": [
+        "fee_bits = max(amount*sf, 2^60) in U68F60",
+        "round ties away from zero",
+        "BorrowTooSmall guard compares RAW bits pre-rounding"
+      ],
+      "tests": ["economic.rs unit tests incl. boundary tests at lines 931-935"],
+      "status": "VERIFIED"
+    },
+    {
+      "domain": "token_2022",
+      "file": "crates/arb-dex/src/token2022.rs",
+      "status": "VERIFIED_UNSUPPORTED_FAIL_CLOSED",
+      "notes": "Non-base SPL mint owners excluded from production discovery (ISSUE-P1-01 closed for pilot)"
+    },
+    {
+      "domain": "state_integrity",
+      "file": "crates/arb-ingest/src/slot_integrity.rs, quote_readiness.rs, helius_ws.rs",
+      "tests": ["162 arb-ingest tests green at Phase 3 gate; re-run in this session's workspace test pass"],
+      "status": "VERIFIED_IN_PROCESS"
+    },
+    {
+      "domain": "route_discovery_and_dedup",
+      "file": "crates/arb-engine/src/route_graph.rs, bellman_ford.rs, route_sizing.rs; crates/arb-bot/src/supervisor/route_dedup.rs",
+      "status": "VERIFIED",
+      "notes": "ISSUE-P0-01 fixed in PR #93 with ordered RouteSignature regression coverage"
+    },
+    {
+      "domain": "sizing_optimizer",
+      "file": "crates/arb-engine/src/flash_loan_sizing.rs, route_sizing.rs, meteora_size_optimizer.rs, graph.rs",
+      "status": "VERIFIED_BEST_OBSERVED",
+      "notes": "Joint route x size bounded search (PR #95); best observed candidate, not proven global optimum (ISSUE-P0-02)"
+    },
+    {
+      "domain": "tx_construction",
+      "file": "crates/arb-tx/src/primitives/builder.rs, flash/*",
+      "status": "VERIFIED",
+      "notes": "atomic_integrity::verify_atomic_integrity remains wired"
+    },
+    {
+      "domain": "transaction_v1",
+      "file": "crates/arb-tx/src/transport/adaptive.rs, flash/compiler.rs",
+      "status": "VERIFIED_AGAINST_ACTIVATED_SPEC",
+      "simd_0385_checks": {
+        "version_byte_0x81": true,
+        "config_mask_bits": { "priority_fee": [0, 1], "cu_limit": 2, "loaded_data_limit": 3, "heap_size": 4 },
+        "priority_fee_units": "absolute lamports (LE u64)",
+        "wire_limit": 4096,
+        "max_accounts": 64,
+        "max_instructions": 64,
+        "alt_support": false,
+        "unset_limits_fatal": true,
+        "heap_validation": "1 KiB multiple in [32KiB, 256KiB]",
+        "compute_budget_strip_and_klend_borrow_index_rewrite": true
+      }
+    },
+    {
+      "domain": "simulation",
+      "file": "crates/arb-sim/src/lib.rs",
+      "status": "VERIFIED_IN_PROCESS",
+      "notes": "Typed outcomes; fail-closed on missing evidence / zero CU / stale context"
+    },
+    {
+      "domain": "dispatch_and_recovery",
+      "file": "crates/arb-bot/src/supervisor/dispatch.rs, recovery.rs",
+      "status": "VERIFIED_IN_PROCESS",
+      "notes": "Signature-status reconciliation; no dup resubmit; expiry requires block-height evidence"
+    },
+    {
+      "domain": "landing_and_realized_pnl",
+      "file": "crates/arb-land/, crates/arb-store/src/lib.rs, crates/arb-metrics/src/lib.rs",
+      "status": "VERIFIED_IN_PROCESS",
+      "notes": "Realized PnL from balance deltas only; live evidence BLOCKED"
+    },
+    {
+      "domain": "on_chain_executor",
+      "file": "programs/arb-executor",
+      "status": "COMPILES"
+    }
+  ],
+  "protocol_constant_checks": [
+    {
+      "constant": "KAMINO_KLEND_PROGRAM_ID",
+      "value": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+      "repo_line": "crates/arb-constants/src/lib.rs:463",
+      "official": "Kamino docs / klend repo",
+      "result": "MATCH"
+    },
+    {
+      "constant": "JITO_TIP_ACCOUNTS",
+      "count": 8,
+      "repo_line": "crates/arb-constants/src/lib.rs:73",
+      "official": "docs.jito.wtf getTipAccounts",
+      "result": "MATCH"
+    },
+    {
+      "constant": "Jito bundle constraints",
+      "official": "max 5 txs/bundle; minimum tip 1000 lamports; 50ms parallel auction ticks; getInflightBundleStatuses lifecycle (Failed/Pending/Landed/Invalid)",
+      "result": "MATCH"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "P0",
+      "summary": "ISSUE-P0-04 (0x1773 slippage revert) root cause remains unresolved pending same-snapshot deterministic replay",
+      "disposition": "UNCHANGED — live-execution blocker stands"
+    },
+    {
+      "id": "F-02",
+      "severity": "P2",
+      "summary": "docs/active/DECISIONS.md Invariant 4 described V1 with ComputeBudget instructions and 16 MiB loaded-data limit, contradicting the adaptive.rs message-config implementation (CB stripped; 64 MiB cap)",
+      "disposition": "FIXED_IN_THIS_MISSION (docs)"
+    },
+    {
+      "id": "F-03",
+      "severity": "P2",
+      "summary": "DEFAULT_JITO_TIP_FLOOR_LAMPORTS comment claimed a block-engine-enforced floor of 10,000 lamports; official minimum is 1,000",
+      "disposition": "FIXED_IN_THIS_MISSION (comment)"
+    },
+    {
+      "id": "F-04",
+      "severity": "INFO",
+      "summary": "Mission-required deliverable docs missing at baseline",
+      "disposition": "CREATED_IN_THIS_MISSION"
+    },
+    {
+      "id": "F-05",
+      "severity": "BLOCKED",
+      "summary": "Shadow soak, mainnet parity re-run, Jito live metrics, realized PnL evidence impossible without network egress",
+      "disposition": "BLOCKED_WITH_REPRODUCIBLE_COMMANDS"
+    }
+  ],
+  "safety_defaults": {
+    "ARB_LIVE": 0,
+    "DRY_RUN": true,
+    "mode": "shadow",
+    "modified": false
+  }
+}
