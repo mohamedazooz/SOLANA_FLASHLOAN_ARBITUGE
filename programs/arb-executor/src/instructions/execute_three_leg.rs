@@ -7,8 +7,8 @@ use solana_program_error::ProgramResult;
 use crate::cpi::{DlmmSwapAccounts, invoke_meteora_swap2};
 use crate::error::ExecutorError;
 use crate::validation::{
-    TOKEN_2022_PROGRAM_ID, read_token_account_balance, validate_distinct_pools,
-    validate_protocol_programs, validate_user_token_account,
+    TOKEN_2022_PROGRAM_ID, WSOL_MINT, read_token_account_balance, validate_distinct_pools,
+    validate_protocol_programs, validate_user_token_account_for_mint,
 };
 
 /// Parameters for the `execute_three_leg` instruction.
@@ -47,6 +47,61 @@ fn resolve_token_program<'a>(
     } else {
         spl_token_prog
     }
+}
+
+/// Return the pool mint opposite `input_mint`. A valid DLMM hop must contain
+/// the expected input mint exactly once; absent or duplicated input mints fail.
+fn output_mint_for_input<'a>(
+    input_mint: &'a AccountInfo<'a>,
+    token_x_mint: &'a AccountInfo<'a>,
+    token_y_mint: &'a AccountInfo<'a>,
+) -> Result<&'a AccountInfo<'a>, solana_program_error::ProgramError> {
+    if token_x_mint.key == input_mint.key
+        && token_y_mint.key != input_mint.key
+        && token_x_mint.owner == input_mint.owner
+    {
+        Ok(token_y_mint)
+    } else if token_y_mint.key == input_mint.key
+        && token_x_mint.key != input_mint.key
+        && token_y_mint.owner == input_mint.owner
+    {
+        Ok(token_x_mint)
+    } else {
+        Err(ExecutorError::InvalidTokenAccount.into())
+    }
+}
+
+/// Resolve the canonical WSOL -> Meme A -> Meme B -> WSOL mint path from the
+/// three pool accounts before trusting any user token-account balances.
+fn resolve_route_mint_accounts<'a>(
+    leg1_x: &'a AccountInfo<'a>,
+    leg1_y: &'a AccountInfo<'a>,
+    leg2_x: &'a AccountInfo<'a>,
+    leg2_y: &'a AccountInfo<'a>,
+    leg3_x: &'a AccountInfo<'a>,
+    leg3_y: &'a AccountInfo<'a>,
+) -> Result<
+    (
+        &'a AccountInfo<'a>,
+        &'a AccountInfo<'a>,
+        &'a AccountInfo<'a>,
+    ),
+    solana_program_error::ProgramError,
+> {
+    let wsol_mint = if leg1_x.key == &WSOL_MINT {
+        leg1_x
+    } else if leg1_y.key == &WSOL_MINT {
+        leg1_y
+    } else {
+        return Err(ExecutorError::InvalidTokenAccount.into());
+    };
+    let meme_a_mint = output_mint_for_input(wsol_mint, leg1_x, leg1_y)?;
+    let meme_b_mint = output_mint_for_input(meme_a_mint, leg2_x, leg2_y)?;
+    let closing_mint = output_mint_for_input(meme_b_mint, leg3_x, leg3_y)?;
+    if closing_mint.key != &WSOL_MINT || closing_mint.owner != wsol_mint.owner {
+        return Err(ExecutorError::InvalidTokenAccount.into());
+    }
+    Ok((wsol_mint, meme_a_mint, meme_b_mint))
 }
 
 /// Execute the 3-leg DLMM CPI arbitrage route with on-chain sequential balance validation.
@@ -129,10 +184,23 @@ pub fn process_execute_three_leg<'a>(
     let leg2_bin_arrays = &accounts[ba_offset2..ba_offset3];
     let leg3_bin_arrays = &accounts[ba_offset3..ba_offset_end];
 
-    // Baseline Token Balances & Ownership Validation
-    let wsol_initial = validate_user_token_account(user_wsol_account, user.key, None)?;
-    let meme_a_initial = validate_user_token_account(user_meme_a_account, user.key, None)?;
-    let meme_b_initial = validate_user_token_account(user_meme_b_account, user.key, None)?;
+    // Resolve and enforce the exact WSOL -> Meme A -> Meme B -> WSOL mint
+    // chain before reading balances. Also require each token account's owning
+    // token program to match the owning program of its mint account.
+    let (wsol_mint, meme_a_mint, meme_b_mint) = resolve_route_mint_accounts(
+        leg1_token_x_mint,
+        leg1_token_y_mint,
+        leg2_token_x_mint,
+        leg2_token_y_mint,
+        leg3_token_x_mint,
+        leg3_token_y_mint,
+    )?;
+    let wsol_initial =
+        validate_user_token_account_for_mint(user_wsol_account, user.key, wsol_mint)?;
+    let meme_a_initial =
+        validate_user_token_account_for_mint(user_meme_a_account, user.key, meme_a_mint)?;
+    let meme_b_initial =
+        validate_user_token_account_for_mint(user_meme_b_account, user.key, meme_b_mint)?;
 
     // Initial WSOL must cover Leg 1 input
     let wsol_baseline = wsol_initial
@@ -329,4 +397,72 @@ pub fn verify_sequential_balance_transitions(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod route_mint_tests {
+    use super::*;
+    use crate::validation::SPL_TOKEN_PROGRAM_ID;
+
+    #[test]
+    fn resolves_wsol_meme_a_meme_b_wsol_route() {
+        let wsol = WSOL_MINT;
+        let meme_a = solana_address::Address::from([11u8; 32]);
+        let meme_b = solana_address::Address::from([22u8; 32]);
+        let owner = SPL_TOKEN_PROGRAM_ID;
+        let mut l1 = 1;
+        let mut l2 = 1;
+        let mut l3 = 1;
+        let mut l4 = 1;
+        let mut l5 = 1;
+        let mut l6 = 1;
+        let mut d1 = [];
+        let mut d2 = [];
+        let mut d3 = [];
+        let mut d4 = [];
+        let mut d5 = [];
+        let mut d6 = [];
+        let a1 = AccountInfo::new(&wsol, false, false, &mut l1, &mut d1, &owner, false);
+        let a2 = AccountInfo::new(&meme_a, false, false, &mut l2, &mut d2, &owner, false);
+        let a3 = AccountInfo::new(&meme_a, false, false, &mut l3, &mut d3, &owner, false);
+        let a4 = AccountInfo::new(&meme_b, false, false, &mut l4, &mut d4, &owner, false);
+        let a5 = AccountInfo::new(&meme_b, false, false, &mut l5, &mut d5, &owner, false);
+        let a6 = AccountInfo::new(&wsol, false, false, &mut l6, &mut d6, &owner, false);
+
+        let (resolved_wsol, resolved_a, resolved_b) =
+            resolve_route_mint_accounts(&a1, &a2, &a3, &a4, &a5, &a6).unwrap();
+        assert_eq!(resolved_wsol.key, &wsol);
+        assert_eq!(resolved_a.key, &meme_a);
+        assert_eq!(resolved_b.key, &meme_b);
+    }
+
+    #[test]
+    fn rejects_broken_mint_chain_and_token_program_mismatch() {
+        let wsol = WSOL_MINT;
+        let meme_a = solana_address::Address::from([11u8; 32]);
+        let meme_b = solana_address::Address::from([22u8; 32]);
+        let wrong = solana_address::Address::from([33u8; 32]);
+        let spl = SPL_TOKEN_PROGRAM_ID;
+        let token_2022 = crate::validation::TOKEN_2022_PROGRAM_ID;
+        let mut l1 = 1;
+        let mut l2 = 1;
+        let mut l3 = 1;
+        let mut l4 = 1;
+        let mut l5 = 1;
+        let mut l6 = 1;
+        let mut d1 = [];
+        let mut d2 = [];
+        let mut d3 = [];
+        let mut d4 = [];
+        let mut d5 = [];
+        let mut d6 = [];
+        let a1 = AccountInfo::new(&wsol, false, false, &mut l1, &mut d1, &spl, false);
+        let a2 = AccountInfo::new(&meme_a, false, false, &mut l2, &mut d2, &spl, false);
+        let a3 = AccountInfo::new(&wrong, false, false, &mut l3, &mut d3, &spl, false);
+        let a4 = AccountInfo::new(&meme_b, false, false, &mut l4, &mut d4, &spl, false);
+        let a5 = AccountInfo::new(&meme_b, false, false, &mut l5, &mut d5, &token_2022, false);
+        let a6 = AccountInfo::new(&wsol, false, false, &mut l6, &mut d6, &spl, false);
+
+        assert!(resolve_route_mint_accounts(&a1, &a2, &a3, &a4, &a5, &a6).is_err());
+    }
 }
