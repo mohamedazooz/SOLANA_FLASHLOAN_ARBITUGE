@@ -3,7 +3,7 @@
 //! the sizing bench do, so a change in any layer that breaks the chain fails here
 //! rather than only in a unit test that stubs the layer next to it.
 
-use arb_engine::{MarketEdge, MarketGraph, cycle_profit_at, golden_section_size};
+use arb_engine::{MarketEdge, MarketGraph, cycle_profit_at};
 use arb_math::economic::EconomicConfig;
 use arb_types::{DexProtocol, Lamports, MintId, PoolId, PoolKind, PoolState, Slot, TokenAmount};
 
@@ -93,7 +93,15 @@ fn cycle_profit_peaks_at_an_interior_size() {
 
     let lo = 1_000u64;
     let hi = 100_000u64;
-    let optimal = golden_section_size(&path, lo, hi, 60);
+    // Integer coarse-grid scan of the exact quote engine. The former
+    // golden_section_size f64 search is deleted: sizing must be integer-only,
+    // and a grid over an interior-peaked CPMM cycle finds the same region
+    // without any floating-point state.
+    let step = 500u64;
+    let optimal = (lo..hi)
+        .step_by(step as usize)
+        .max_by_key(|&d| cycle_profit_at(&path, d))
+        .unwrap_or(lo);
     let best = cycle_profit_at(&path, optimal);
 
     assert!(best > 0, "a 6% spread must be profitable, got {best}");

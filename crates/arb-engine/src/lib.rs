@@ -66,6 +66,7 @@ use arb_math::{
     cpmm_price_impact_bps,
     economic::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
+        slippage_haircut_min_final,
     },
     quote_clmm, quote_dlmm_view,
 };
@@ -275,33 +276,6 @@ pub fn cycle_profit_at(path: &[&MarketEdge], d: u64) -> u64 {
     }
 }
 
-/// Golden-section search for the input size maximizing profit on a (CPMM) cycle.
-/// P1 #11: replaces the bisection that converged to the breakeven edge.
-pub fn golden_section_size(path: &[&MarketEdge], lo: u64, hi: u64, iters: u32) -> u64 {
-    if hi <= lo {
-        return lo;
-    }
-    let phi = 0.6180339887498949f64;
-    let mut a = lo as f64;
-    let mut b = hi as f64;
-    let mut c = b - (b - a) * phi;
-    let mut d = a + (b - a) * phi;
-    for _ in 0..iters {
-        let fc = cycle_profit_at(path, c as u64) as f64;
-        let fd = cycle_profit_at(path, d as u64) as f64;
-        if fc < fd {
-            a = c;
-            c = d;
-            d = a + (b - a) * phi;
-        } else {
-            b = d;
-            d = c;
-            c = b - (b - a) * phi;
-        }
-    }
-    ((a + b) / 2.0) as u64
-}
-
 /// Directed edge in the market liquidity graph.
 #[derive(Debug, Clone)]
 pub struct MarketEdge {
@@ -415,6 +389,16 @@ impl MarketGraph {
 
         let flash_fee_raw = calculate_flash_fee_raw(size_in, config.flash_loan_fee_sf).ok()?;
         let final_out_u64 = u64::try_from(final_out).ok()?;
+        // ECON-002: the profitability gate and the carried min-output floor are
+        // both anchored to a compounded per-hop slippage haircut of the expected
+        // final output, never to `expected_out` itself. Fail closed on any
+        // haircut arithmetic failure by rejecting the opportunity.
+        let minimum_final_out = slippage_haircut_min_final(
+            final_out_u64,
+            hops.len(),
+            arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        )
+        .ok()?;
         let quote_timestamp_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -425,7 +409,7 @@ impl MarketGraph {
             config.base_decimals,
             TokenAmount(size_in),
             TokenAmount(final_out_u64),
-            TokenAmount(final_out_u64),
+            TokenAmount(minimum_final_out),
             TokenAmount(flash_fee_raw),
             TokenAmount(0),
             TokenAmount(0),
@@ -472,7 +456,7 @@ impl MarketGraph {
             price_impact_bps: impact,
             hops,
 
-            expected_min_final_output: 0,
+            expected_min_final_output: minimum_final_out,
         })
     }
 
@@ -1190,6 +1174,41 @@ mod tests {
         assert!(
             opps.is_empty(),
             "Single pool trap must be strictly excluded (e1.pool_id != e2.pool_id)"
+        );
+    }
+
+    // ECON-002 regression: engine-discovered opportunities must carry a
+    // compounded per-hop slippage-haircut floor strictly below `expected_out`
+    // (never `expected_out` itself and never 0), derived only from the
+    // canonical arb-math helper.
+    #[test]
+    fn opportunities_carry_slippage_haircut_min_final_output() {
+        let base = MintId::new([1; 32]);
+        let p1 = make_pool(10, 1, 2, 1_000_000, 1_000_000);
+        let p2 = make_pool(20, 2, 1, 1_000_000, 1_050_000);
+
+        let mut graph = MarketGraph::new(vec![base]).with_economic_config(test_config());
+        graph.build_from_pools(&[p1, p2]);
+
+        let opps = graph.find_base_cycles(Slot(1), 100_000);
+        assert!(!opps.is_empty());
+        let opp = &opps[0];
+        let expected = opp.expected_out.as_u64();
+        let min_final = opp.expected_min_final_output;
+        assert!(
+            min_final > 0,
+            "haircut floor must be set, not the 0 sentinel"
+        );
+        assert!(min_final < expected, "haircut floor must be < expected_out");
+        assert_eq!(
+            min_final,
+            arb_math::economic::slippage_haircut_min_final(
+                expected,
+                opp.hops.len(),
+                arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            )
+            .unwrap(),
+            "floor must equal the canonical compounded haircut"
         );
     }
 
