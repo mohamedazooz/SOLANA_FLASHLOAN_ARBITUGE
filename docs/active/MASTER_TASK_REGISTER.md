@@ -274,8 +274,9 @@ REQUIRED_CHANGE: Centralize provider IDs; require the healthy account WebSocket 
 TEST_PLAN: Add regression tests for provider identity, RPC-only health rejection, disconnect readiness, reconnect generation invalidation, and live-over-bootstrap replacement; run focused arb-ingest and arb-bot suites.
 ACCEPTANCE_CRITERIA: RPC cannot authorize trading without a healthy account WebSocket; disconnected and prior-generation data fail readiness; live updates replace bootstrap snapshots; tests pass.
 ACTUAL_RESULT: Implemented provider identity constants and fail-closed WS-only health gate; RPC bootstrap no longer advances WS liveness; reconnect resets WS watermarks and account snapshots while preserving pool cache; live data can replace bootstrap state. Formatting and `git diff --check` completed; no build or tests were run.
-COMMIT: follow-up commits
+COMMIT: 15c36c0
 PR: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/102
 REMAINING_RISKS: Reconnection, provider-selection, and snapshot replacement behavior still needs focused regression tests and a compile run. Routes require fresh snapshots for every dependency before becoming eligible again.
+
 NEXT_TASK: Phase 3 task 3 — verify reconnection, backoff, and resubscription lifecycle with focused regression tests.
 ```
