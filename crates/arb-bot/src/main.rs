@@ -77,36 +77,80 @@ fn parse_args() -> Result<Args> {
     Ok(Args { config_path, mode })
 }
 
+fn redact_secret(value: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        value.to_string()
+    } else {
+        value.replace(secret, "[REDACTED]")
+    }
+}
+
 fn install_panic_hook() {
-    let default_hook = std::panic::take_hook();
+    // Do not chain the default hook: it prints the original, unredacted panic
+    // payload and could leak credentials after our sanitized log entry.
+    let _default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        tracing::error!("FATAL PANIC: {info}");
-        // Best-effort operator alert: the runtime may already be unwinding, so
-        // this uses a short-lived curl subprocess instead of the async client.
-        if let (Ok(token), Ok(chat)) = (
-            std::env::var("TELEGRAM_BOT_TOKEN"),
-            std::env::var("TELEGRAM_CHAT_ID"),
-        ) {
-            let text = format!("🚨 <b>FATAL PANIC — arb-bot stopped</b>\n<code>{info}</code>");
-            let _ = std::process::Command::new("curl")
-                .args([
-                    "-s",
-                    "-m",
-                    "5",
-                    "-X",
-                    "POST",
-                    &format!("https://api.telegram.org/bot{token}/sendMessage"),
-                    "-d",
-                    &format!("chat_id={chat}"),
-                    "--data-urlencode",
-                    &format!("text={text}"),
-                    "-d",
-                    "parse_mode=HTML",
-                ])
-                .output();
+        // Panic payloads can contain configuration values. Redact known
+        // Telegram credentials before either logging or sending the alert.
+        let token = std::env::var("TELEGRAM_BOT_TOKEN").ok();
+        let chat = std::env::var("TELEGRAM_CHAT_ID").ok();
+        let mut panic_message = info.to_string();
+        if let Some(secret) = token.as_deref() {
+            panic_message = redact_secret(&panic_message, secret);
         }
-        default_hook(info);
+        if let Some(secret) = chat.as_deref() {
+            panic_message = redact_secret(&panic_message, secret);
+        }
+        tracing::error!("FATAL PANIC: {}", panic_message);
+
+        // Never spawn a shell process or place credentials in process
+        // arguments. Best-effort notification is sent through reqwest only
+        // when a Tokio runtime is still available during unwinding.
+        if let (Some(token), Some(chat)) = (token, chat) {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let client = reqwest::Client::new();
+                let url = format!("https://api.telegram.org/bot{token}/sendMessage");
+                let text = format!("FATAL PANIC — arb-bot stopped\n{panic_message}");
+                handle.spawn(async move {
+                    let _ = client
+                        .post(url)
+                        .timeout(Duration::from_secs(5))
+                        .form(&[("chat_id", chat.as_str()), ("text", text.as_str())])
+                        .send()
+                        .await;
+                });
+            }
+        }
+        if let Some(location) = info.location() {
+            tracing::error!(
+                file = location.file(),
+                line = location.line(),
+                column = location.column(),
+                "panic location"
+            );
+        }
     }));
+}
+
+#[cfg(test)]
+mod panic_hook_tests {
+    use super::redact_secret;
+
+    #[test]
+    fn panic_alert_redacts_bot_token_and_chat_id() {
+        let message = "panic token=123456:ABC chat=987654";
+        let without_token = redact_secret(message, "123456:ABC");
+        let redacted = redact_secret(&without_token, "987654");
+
+        assert!(!redacted.contains("123456:ABC"));
+        assert!(!redacted.contains("987654"));
+        assert_eq!(redacted, "panic token=[REDACTED] chat=[REDACTED]");
+    }
+
+    #[test]
+    fn empty_secret_does_not_change_message() {
+        assert_eq!(redact_secret("panic", ""), "panic");
+    }
 }
 
 #[derive(Clone)]
@@ -420,12 +464,20 @@ async fn main() -> Result<()> {
                                         "unauthorized\n",
                                     );
                                 }
-                                ks.activate();
-                                info!("admin: kill switch activated via authenticated /pause");
-                                (
-                                    axum::http::StatusCode::OK,
-                                    "Bot trading paused via admin API\n",
-                                )
+                                match ks.activate() {
+                                    Ok(true) => {
+                                        info!("admin: durable kill switch activated via authenticated /pause");
+                                        (axum::http::StatusCode::OK, "Bot trading paused; durable marker persisted\n")
+                                    }
+                                    Ok(false) => (
+                                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                                        "Bot blocked in memory only; durable storage is not configured\n",
+                                    ),
+                                    Err(error) => {
+                                        tracing::error!(error = %error, "admin /pause persistence failed; in-memory block remains active");
+                                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "Bot blocked in memory; durable persistence failed\n")
+                                    }
+                                }
                             }
                         }),
                     )
@@ -442,12 +494,16 @@ async fn main() -> Result<()> {
                                         "unauthorized\n",
                                     );
                                 }
-                                ks.deactivate();
-                                info!("admin: kill switch cleared via authenticated /resume");
-                                (
-                                    axum::http::StatusCode::OK,
-                                    "Bot trading resumed via admin API\n",
-                                )
+                                match ks.deactivate() {
+                                    Ok(()) => {
+                                        info!("admin: kill switch cleared via authenticated /resume");
+                                        (axum::http::StatusCode::OK, "Kill switch cleared via admin API\n")
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(error = %error, "admin /resume failed; kill switch remains blocked");
+                                        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "Bot remains blocked; marker removal failed\n")
+                                    }
+                                }
                             }
                         }),
                     );

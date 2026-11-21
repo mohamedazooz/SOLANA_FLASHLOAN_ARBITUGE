@@ -1033,7 +1033,11 @@ mod tests {
         ));
         ControlService::new(
             mode,
-            Arc::new(KillSwitch::new()),
+            Arc::new(KillSwitch::with_file(
+                std::env::temp_dir()
+                    .join(format!("web_killswitch_{}.marker", std::process::id()))
+                    .to_string_lossy(),
+            )),
             std::env::temp_dir()
                 .join(format!("web_audit_{}.log", std::process::id()))
                 .display()

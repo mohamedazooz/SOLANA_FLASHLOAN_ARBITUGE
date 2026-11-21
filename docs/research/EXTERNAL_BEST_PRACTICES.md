@@ -142,3 +142,39 @@ all-or-nothing, a losing or under-profit execution never pays a tip.
 2. The `execute_three_leg_with_tip` tip economics assume `min_final_wsol_delta >=
    repay (principal + fee)` as documented in `FLASHLOAN_EXECUTION_REPORT.md`; the
    on-chain retained-edge floor uses exactly that operator stipulation.
+
+## S2.5 LiteSVM end-to-end borrow→swap→repay harness — BLOCKED (sandbox)
+
+A full LiteSVM harness (repo already pins `litesvm = 0.18.2`, and `arb-sim/src/litesvm_sim.rs`
+is fail-closed: every invoked program must be explicitly deployed in the VM or the result
+is classified unverified) requires three SBF `.so` blobs:
+
+1. `arb-executor` itself — needs `cargo-build-sbf` + Agave `platform-tools`
+   (not installed here; `which cargo-build-sbf solana` -> empty).
+2. Kamino `klend` mainnet program blob.
+3. Meteora DLMM `lb_clmm` mainnet program blob.
+
+**Blocked because**: the SBF toolchain and program blobs are large external artifacts and
+the blobs must be provenance-verified (mainnet `getAccountInfo` raw bytes or official
+release builds) before any test that uses them may be cited as evidence. Partial value
+delivered instead: byte-level wire-parity tests lock the off-chain builder to the on-chain
+argument structs for BOTH instruction variants
+(`cargo test -p arb-tx -- wire_parity`).
+
+**Exact unblock commands (networked host)**:
+
+```bash
+sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"   # cargo-build-sbf + platform-tools
+cargo build-sbf -p arb-executor                                  # target/sbf-solana-solana/arb-executor.so
+
+# mainnet program blobs (or official release builds from
+# github.com/Kamino-Finance/klend + MeteoraAg program release assets):
+solana account KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD --output json | \
+  jq -r .data[0] | base64 -d > klend.so
+solana account LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo --output json | \
+  jq -r .data[0] | base64 -d > dlmm.so
+
+# then: litesvm.with_program(ARB_EXECUTOR_ID, include_bytes!(...so)) and run
+# borrow -> swap x3 -> repay -> conditional tip inside one composed tx
+# (release blobs must be hash-verified against the deployed on-chain program hash)
+```

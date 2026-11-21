@@ -23,6 +23,8 @@ ed25519-dalek = { version = "2.1", default-features = false, features = ["fast",
 
 [dev-dependencies]
 proptest = { workspace = true }
+arb-executor = { path = "../../programs/arb-executor", features = ["no-entrypoint"] }
+borsh = { version = "1", default-features = false }
 solana-address = { version = "=2.7.0", default-features = false }
 solana-hash = { version = "=4.6.0", default-features = false }
 solana-instruction = { version = "=3.5.0", default-features = false }

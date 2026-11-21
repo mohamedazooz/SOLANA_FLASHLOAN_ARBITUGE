@@ -45,17 +45,28 @@ export default function App() {
     reload();
     timerRef.current = window.setInterval(reload, 4000);
 
-    // WebSocket real-time state stream
+    // WebSocket real-time state stream. Browser WebSocket cannot set an
+    // Authorization header, so obtain a short-lived single-use ticket.
     let ws: WebSocket | null = null;
-    let timeout: any = null;
-    const connect = () => {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const token = getToken();
-      const wsUrl = `${proto}//${window.location.host}/api/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    let reconnectTimer: number | null = null;
+    let disposed = false;
 
+    const scheduleReconnect = (delayMs: number) => {
+      if (disposed) return;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        void connect();
+      }, delayMs);
+    };
+
+    const connect = async () => {
       try {
-        ws = new WebSocket(wsUrl);
-        ws.onmessage = (ev) => {
+        const wsUrl = await api.wsUrl();
+        if (disposed) return;
+        const socket = new WebSocket(wsUrl);
+        ws = socket;
+        socket.onmessage = (ev) => {
           try {
             const data = JSON.parse(ev.data);
             if (data && typeof data === 'object') {
@@ -75,26 +86,23 @@ export default function App() {
               }
             }
           } catch {
-            // non-json
+            // Ignore non-JSON events.
           }
         };
-        ws.onclose = () => {
-          timeout = setTimeout(connect, 4000);
-        };
-        ws.onerror = () => {
-          ws?.close();
-        };
+        socket.onclose = () => scheduleReconnect(4000);
+        socket.onerror = () => socket.close();
       } catch {
-        timeout = setTimeout(connect, 5000);
+        scheduleReconnect(5000);
       }
     };
 
-    connect();
+    void connect();
 
     return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      if (ws) ws.close();
-      if (timeout) clearTimeout(timeout);
+      disposed = true;
+      if (timerRef.current !== null) window.clearInterval(timerRef.current);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      ws?.close();
     };
   }, [authed]);
 
@@ -106,19 +114,25 @@ export default function App() {
 
   const handleEmergencyStop = async () => {
     try {
-      await api.updateConfig({ emergency_stopped: true, paused: true });
+      const result = await api.control('emergency-stop');
+      if (!result.ok) throw new Error(result.message || 'Emergency stop was not confirmed');
       reload();
     } catch (e) {
-      console.error(e);
+      console.error('Emergency stop request failed:', e);
+      reload();
     }
   };
 
   const handleResumeExecution = async () => {
     try {
-      await api.updateConfig({ emergency_stopped: false, paused: false, execution_enabled: true });
+      const cleared = await api.control('clear-emergency-stop');
+      if (!cleared.ok) throw new Error(cleared.message || 'Emergency latch clear was not confirmed');
+      const started = await api.control('start');
+      if (!started.ok) throw new Error(started.message || 'Execution start was not confirmed');
       reload();
     } catch (e) {
-      console.error(e);
+      console.error('Execution resume request failed:', e);
+      reload();
     }
   };
 
