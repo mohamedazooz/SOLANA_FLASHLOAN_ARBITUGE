@@ -281,22 +281,19 @@ pub struct FlashThreeLegArbitrageTx {
     pub pool_3: Pubkey,
 }
 
-/// Assemble the instruction list for the 3-leg flash-funded route.
-pub fn assemble_flash_funded_three_pool(
+/// Shared fail-closed validation for direct-swap and ArbExecutor-CPI routes.
+pub(crate) fn validate_flash_funded_three_pool_params(
     params: &FlashArb3LegParams,
-) -> Result<(Vec<CompiledInstruction>, usize, usize), FlashArb3LegError> {
-    // ── Invariant 1: three distinct pools ──
+) -> Result<u64, FlashArb3LegError> {
     if params.leg_1.lb_pair == params.leg_2.lb_pair
         || params.leg_1.lb_pair == params.leg_3.lb_pair
         || params.leg_2.lb_pair == params.leg_3.lb_pair
     {
         return Err(FlashArb3LegError::PoolsNotDistinct);
     }
-    // ── Invariant 2: non-zero principal ──
     if params.borrow_amount == 0 {
         return Err(FlashArb3LegError::ZeroBorrowAmount);
     }
-    // ── Invariant 3: repayment covers principal + fee ──
     let repay_amount = params.repay_amount();
     if repay_amount < params.borrow_amount.saturating_add(params.flash_fee) {
         return Err(FlashArb3LegError::InsufficientRepayment {
@@ -305,20 +302,25 @@ pub fn assemble_flash_funded_three_pool(
             fee: params.flash_fee,
         });
     }
-
     let flash_mint = params.leg_1.token_in();
     let mint_a = params.leg_1.token_out();
     let mint_b = params.leg_2.token_out();
     let final_mint = params.leg_3.token_out();
-
-    // ── Invariant 4: closing route (flash mint in, flash mint out) ──
     if final_mint != flash_mint {
         return Err(FlashArb3LegError::NonClosingRoute {
             expected: flash_mint.to_string(),
             actual: final_mint.to_string(),
         });
     }
-    // ── Invariant 5: mint chaining between legs (mint + token program) ──
+    if params.leg_3.token_out_program() != params.leg_1.token_in_program() {
+        return Err(FlashArb3LegError::MintChainMismatch {
+            detail: format!(
+                "closing token program {} does not match flash mint program {}",
+                params.leg_3.token_out_program(),
+                params.leg_1.token_in_program()
+            ),
+        });
+    }
     if params.leg_2.token_in() != mint_a
         || params.leg_2.token_in_program() != params.leg_1.token_out_program()
     {
@@ -345,31 +347,30 @@ pub fn assemble_flash_funded_three_pool(
             ),
         });
     }
-    // ── Invariant 6: each leg's min output covers the next leg's required input ──
-    // Leg 1 min_out must cover Leg 2 amount_in
-    if params.leg_1.min_amount_out < params.leg_2.amount_in {
-        return Err(FlashArb3LegError::LegOutputBelowRequired {
-            leg: 1,
-            min_out: params.leg_1.min_amount_out,
-            required: params.leg_2.amount_in,
-        });
+    for (leg, min_out, required) in [
+        (1, params.leg_1.min_amount_out, params.leg_2.amount_in),
+        (2, params.leg_2.min_amount_out, params.leg_3.amount_in),
+        (3, params.leg_3.min_amount_out, repay_amount),
+    ] {
+        if min_out < required {
+            return Err(FlashArb3LegError::LegOutputBelowRequired {
+                leg,
+                min_out,
+                required,
+            });
+        }
     }
-    // Leg 2 min_out must cover Leg 3 amount_in
-    if params.leg_2.min_amount_out < params.leg_3.amount_in {
-        return Err(FlashArb3LegError::LegOutputBelowRequired {
-            leg: 2,
-            min_out: params.leg_2.min_amount_out,
-            required: params.leg_3.amount_in,
-        });
-    }
-    // Leg 3 min_out must cover repayment
-    if params.leg_3.min_amount_out < repay_amount {
-        return Err(FlashArb3LegError::LegOutputBelowRequired {
-            leg: 3,
-            min_out: params.leg_3.min_amount_out,
-            required: repay_amount,
-        });
-    }
+    Ok(repay_amount)
+}
+
+/// Assemble the instruction list for the 3-leg flash-funded route.
+pub fn assemble_flash_funded_three_pool(
+    params: &FlashArb3LegParams,
+) -> Result<(Vec<CompiledInstruction>, usize, usize), FlashArb3LegError> {
+    validate_flash_funded_three_pool_params(params)?;
+    let flash_mint = params.leg_1.token_in();
+    let mint_a = params.leg_1.token_out();
+    let mint_b = params.leg_2.token_out();
 
     let payer = params.payer;
     let flash_program = params.leg_1.token_in_program();
