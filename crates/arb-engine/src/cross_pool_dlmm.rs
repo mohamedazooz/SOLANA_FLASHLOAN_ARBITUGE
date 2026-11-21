@@ -428,7 +428,11 @@ fn dlmm_edge_ok(e: &MarketEdge) -> Result<(), &'static str> {
     let Some(params) = d.params.as_ref() else {
         return Err("missing fee params");
     };
-    if params.function_type != 0 {
+    // ConcreteFunctionType 1 (LiquidityMining) is quote-equivalent to 0
+    // (supportLimitOrder=false => zero order liquidity); 2+ (LimitOrder) has
+    // no differential-parity evidence and is rejected fail-closed, matching
+    // the LbPair-validation gate in arb-dex.
+    if params.function_type > 1 {
         return Err("unsupported DLMM function type");
     }
     if d.bins.is_empty() {

@@ -62,9 +62,13 @@ mission rules forbid rewriting working modules for cosmetic reasons.
 
 ## 4. Tests added / run
 
-- **Added**: none required — no behavior change was justified; existing
-  regression coverage (route identity, sizing basins, fail-closed simulation,
-  V1 sanitization, PnL provenance, ingest integrity) was revalidated.
+- **Added (2026-11-21, OnlyY gap closure)**:
+  `dlmm_validation::liquidity_mining_function_type_passes_gate_but_limit_order_is_rejected`
+  — locks the ConcreteFunctionType gate at {0,1} accepted / ≥2 fail-closed; plus the
+  batch-differential schema now enforces refusal-ledger entries and real-mode-1
+  provenance (`meteora_mainnet_sdk_differential.rs`). Existing regression coverage
+  (route identity, sizing basins, fail-closed simulation, V1 sanitization, PnL
+  provenance, ingest integrity) was revalidated green.
 - **Run this session** at the baseline commit (+the comment fix):
 
 | Gate | Command | Result |
@@ -78,6 +82,10 @@ mission rules forbid rewriting working modules for cosmetic reasons.
 | bench | `cargo bench -p arb-math` | ✅ cpmm_out ≈ **16.8 ns**, optimal_two_pool ≈ **205 ns** (see [HOT_PATH_BENCHMARKS](docs/performance/HOT_PATH_BENCHMARKS.md)) |
 | parity (post-baseline, 2026-11-21) | `cargo test -p arb-engine --test raydium_clmm_mainnet_sdk_differential` | ✅ exact-integer parity vs `@raydium-io/raydium-sdk-v2` over 6 live-mainnet captured pools (tick spacings 1/60/120, `fee_on` 0/1, small+deep probes) — see [QUOTE_PARITY_REPORT §4.3](docs/quality/QUOTE_PARITY_REPORT.md) |
 | revalidation (post-baseline, 2026-11-21) | `cargo test --workspace` | ✅ **1,449 passed / 0 failed / 2 ignored** (113 suites) |
+| OnlyY gap closure (2026-11-21) | `cargo test -p arb-engine --test meteora_mainnet_sdk_differential` | ✅ 4/4 — batch now covers a genuinely deployed `collect_fee_mode=1` pool (`7A35wpq…As4Z`, slot 472266867): 12 served cases exact vs `@meteora-ag/dlmm@1.9.14`, 4 deep cases fail-closed-refused with ledger-enforced entries, real-mode-1 provenance asserted — see [QUOTE_PARITY_REPORT §4.5](docs/quality/QUOTE_PARITY_REPORT.md) |
+| OnlyY gate regression (2026-11-21) | `cargo test -p arb-dex --lib dlmm_validation` | ✅ `liquidity_mining_function_type_passes_gate_but_limit_order_is_rejected` — ft=1 accepted (quote-equivalent), ft∈{2,3,255} fail-closed-rejected; also fixed `update_from_account` never assigning `function_type`/`collect_fee_mode` (validation gate was a no-op) |
+| OnlyY policy alignment (2026-11-21) | `cargo test -p arb-dex -p arb-engine && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings` | ✅ all gates green — {0,1} accepted / ≥2 fail-closed now enforced consistently in `dlmm_validation`, `meteora_dlmm` adapter, `adapters`, `lib`, `cross_pool_dlmm`, `meteora_pair_discovery`, `meteora_quote_engine`, `dlmm_flash_arbitrage` |
+| revalidation post-OnlyY (2026-11-21) | `cargo test --workspace` | ✅ **1,450 passed / 0 failed / 2 ignored** (+1 regression test) |
 
 ## 5. Deliverables produced
 

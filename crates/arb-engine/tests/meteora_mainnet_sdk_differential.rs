@@ -92,12 +92,27 @@ struct SdkQuote {
     desired_out: Option<String>,
 }
 
+/// A quote case the official SDK oracle could not serve (liquidity-limited
+/// thin pools); the runner records these in the fixture's `refusals` ledger
+/// instead of silently dropping them.
+#[derive(Debug, Deserialize)]
+struct RefusalEntry {
+    mode: u8,
+    direction: String,
+    case: String,
+    #[expect(dead_code)]
+    reason: String,
+    #[serde(default)]
+    #[expect(dead_code)]
+    detail: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CaseSet {
-    exact_in_small: SdkQuote,
-    exact_in_deep: SdkQuote,
-    exact_out_small: SdkQuote,
-    exact_out_deep: SdkQuote,
+    exact_in_small: Option<SdkQuote>,
+    exact_in_deep: Option<SdkQuote>,
+    exact_out_small: Option<SdkQuote>,
+    exact_out_deep: Option<SdkQuote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +147,8 @@ struct SdkFixture {
     parameters: Params,
     variable_parameters: VariableParams,
     quotes: Quotes,
+    #[serde(default)]
+    refusals: Vec<RefusalEntry>,
 }
 
 // --- captured Mainnet bin data ------------------------------------------------
@@ -494,6 +511,7 @@ fn mainnet_pool_batch_quotes_match_official_sdk() {
         "expected the batch-captured pool set (>=4 pools), found {quotes_files:?}"
     );
 
+    let mut pools_with_real_mode_1_served = 0usize;
     for qname in &quotes_files {
         let stem = qname
             .strip_suffix(".quotes.json")
@@ -512,50 +530,73 @@ fn mainnet_pool_batch_quotes_match_official_sdk() {
             assert_eq!(rust, sdk, "{stem}: price mismatch at bin {}", p.bin_id);
         }
 
-        // Full comparison against this pool's SDK-generated quotes.
+        // Full comparison against this pool's SDK-generated quotes. A case
+        // absent from the fixture must carry a refusal entry; anything served
+        // is compared exactly.
+        let mut served = 0usize;
         for (mode, m) in [
             (0u8, &f.quotes.mode_0_input_only),
             (1u8, &f.quotes.mode_1_only_y),
         ] {
             for (dirn, set) in [("x_to_y", &m.x_to_y), ("y_to_x", &m.y_to_x)] {
-                check_case(
-                    &f,
-                    &bins,
-                    &format!("{stem} mode{mode} {dirn} exact_in_small"),
-                    mode,
-                    &set.exact_in_small,
-                );
-                check_case(
-                    &f,
-                    &bins,
-                    &format!("{stem} mode{mode} {dirn} exact_in_deep"),
-                    mode,
-                    &set.exact_in_deep,
-                );
-                check_case(
-                    &f,
-                    &bins,
-                    &format!("{stem} mode{mode} {dirn} exact_out_small"),
-                    mode,
-                    &set.exact_out_small,
-                );
-                check_case(
-                    &f,
-                    &bins,
-                    &format!("{stem} mode{mode} {dirn} exact_out_deep"),
-                    mode,
-                    &set.exact_out_deep,
-                );
+                for (kind, q) in [
+                    ("exact_in_small", &set.exact_in_small),
+                    ("exact_in_deep", &set.exact_in_deep),
+                    ("exact_out_small", &set.exact_out_small),
+                    ("exact_out_deep", &set.exact_out_deep),
+                ] {
+                    match q {
+                        Some(q) => {
+                            check_case(
+                                &f,
+                                &bins,
+                                &format!("{stem} mode{mode} {dirn} {kind}"),
+                                mode,
+                                q,
+                            );
+                            served += 1;
+                        }
+                        None => assert!(
+                            f.refusals.iter().any(|r| {
+                                r.mode == mode && r.direction == dirn && r.case == kind
+                            }),
+                            "{stem}: mode{mode} {dirn} {kind} absent without a refusal entry"
+                        ),
+                    }
+                }
             }
         }
+        assert!(
+            served >= 1,
+            "{stem}: fixture has no servable comparable case"
+        );
+
+        // Gap-closure provenance: at least one committed fixture must be a
+        // genuinely deployed OnlyY pool with served real-mode-1 cases (not
+        // mode-override simulations).
+        if f.parameters.collect_fee_mode == 1 {
+            assert!(
+                f.quotes.mode_1_only_y.x_to_y.exact_in_small.is_some()
+                    || f.quotes.mode_1_only_y.y_to_x.exact_in_small.is_some(),
+                "{stem}: real OnlyY pool without served mode-1 cases"
+            );
+            pools_with_real_mode_1_served += 1;
+        }
+
         println!(
-            "{stem}: slot={} active_id={} bin_step={} price_checks={} — all exact",
+            "{stem}: slot={} active_id={} bin_step={} mode={} served={served} refused={} — all exact",
             f.rpc_slot,
             f.active_id,
             f.bin_step,
-            f.price_checks.len()
+            f.parameters.collect_fee_mode,
+            f.refusals.len()
         );
     }
+    assert!(
+        pools_with_real_mode_1_served >= 1,
+        "the fixture set must contain at least one genuinely deployed \
+         CollectFeeMode=OnlyY pool with served real-mode quotes"
+    );
 }
 
 #[test]
@@ -588,28 +629,28 @@ fn mainnet_snapshot_quotes_match_official_sdk() {
                 &bins,
                 &format!("mode{mode} {dir} exact_in_small"),
                 mode,
-                &set.exact_in_small,
+                set.exact_in_small.as_ref().expect("served case"),
             );
             check_case(
                 &f,
                 &bins,
                 &format!("mode{mode} {dir} exact_in_deep"),
                 mode,
-                &set.exact_in_deep,
+                set.exact_in_deep.as_ref().expect("served case"),
             );
             check_case(
                 &f,
                 &bins,
                 &format!("mode{mode} {dir} exact_out_small"),
                 mode,
-                &set.exact_out_small,
+                set.exact_out_small.as_ref().expect("served case"),
             );
             check_case(
                 &f,
                 &bins,
                 &format!("mode{mode} {dir} exact_out_deep"),
                 mode,
-                &set.exact_out_deep,
+                set.exact_out_deep.as_ref().expect("served case"),
             );
         }
     }
@@ -721,14 +762,23 @@ fn phase15_2_sdk_differential_manifest() {
     ];
     for (mode, m) in mode_sets {
         for (dir, set) in [("x_to_y", &m.x_to_y), ("y_to_x", &m.y_to_x)] {
-            let cases: [(&str, &SdkQuote); 4] = [
-                ("exact_in_small", &set.exact_in_small),
-                ("exact_in_deep", &set.exact_in_deep),
-                ("exact_out_small", &set.exact_out_small),
-                ("exact_out_deep", &set.exact_out_deep),
+            let cases: [(&str, Option<&SdkQuote>); 4] = [
+                ("exact_in_small", set.exact_in_small.as_ref()),
+                ("exact_in_deep", set.exact_in_deep.as_ref()),
+                ("exact_out_small", set.exact_out_small.as_ref()),
+                ("exact_out_deep", set.exact_out_deep.as_ref()),
             ];
             for (kind, q) in cases {
                 let label = format!("mode{mode}_{dir}_{kind}");
+                let Some(q) = q else {
+                    assert!(
+                        f.refusals
+                            .iter()
+                            .any(|r| { r.mode == mode && r.direction == dir && r.case == kind }),
+                        "{label}: absent without a refusal entry"
+                    );
+                    continue;
+                };
                 let e = evaluate_case(&f, &bins, &label, mode, q);
 
                 let sdk_total: i128 = q.total_fee.parse().expect("sdk total_fee");

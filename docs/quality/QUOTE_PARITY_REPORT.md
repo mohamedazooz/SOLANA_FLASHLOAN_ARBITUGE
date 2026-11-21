@@ -38,8 +38,10 @@ Results:
 | `whirlpool_mainnet_batch_quotes_match_official_sdk` (added 2026-11-21: 4 classic mainnet whirlpools — tick spacings 1/4/8/64; both directions × exact-in small/deep = 16 deep-quote comparisons over captured tick-array sets; engine `compute_whirlpool_swap` matches `swapQuoteByInputToken` exactly: amount_in_consumed, amount_out, trade_fee tolerance 0; adaptive-fee pools fail-closed-rejected at capture; tick-array PDA re-derivation + raw-byte field re-verification per case; start-tick probes on `get_start_tick_index` exact) | ✅ PASS |
 | `dlmm_timestamp_drift_matches_official_sdk_state_machine` + `dlmm_drift_invariants_never_decrease_reference_below_zero_or_above_max` (added 2026-11-21: 13 deterministic timestamp-drift scenarios vs `@meteora-ag/dlmm@1.9.14` fee statics — filter expiry, decay window boundaries, reset, pre-filter moves, VA clamp, backward timestamps, chained post-swap state; every reference/accumulator/fee integer exact) | ✅ PASS |
 | `raydium_clmm_mainnet_batch_quotes_match_official_sdk` (added 2026-11-21: 6 live-mainnet Raydium CLMM pools — tick spacings 1/60/120, `fee_on` 0 and 1, both directions, small (1e6) + deep (bisected largest fully-servable, one probe at `u64::MAX`) = 14 exact-in comparisons incl. an empty-span multi-array crossing; `amount_in_consumed`/`amount_out_received`/`fee_paid` exact against `PoolUtils.getOutputAmountAndRemainAccounts`; tick-array PDA re-derivation + raw-byte field re-verification per pool; fee-on-output directions asserted REFUSED; a Token-2022 candidate refused at capture) | ✅ PASS |
+| `mainnet_pool_batch_quotes_match_official_sdk` (extended 2026-11-21 with a genuinely deployed OnlyY pool, see §4.5: the batch test now loads 5 fixtures, requires a fail-closed refusal-ledger entry for every absent case, requires ≥1 servable case per pool, and asserts ≥1 pool with served real-mode-1 quotes) | ✅ PASS |
 | `phase15_2_sdk_differential_manifest` | ✅ PASS |
-| Full workspace suite | ✅ 1,449 passed / 0 failed / 2 ignored (113 suites) — includes the whirlpool differential batch, the DLMM timestamp-drift vectors, and the Raydium CLMM mainnet SDK differential |
+| `dlmm_validation::liquidity_mining_function_type_passes_gate_but_limit_order_is_rejected` (added 2026-11-21: ConcreteFunctionType gate regression — ft=1 accepted, ft∈{2,3,255} fail-closed-rejected) | ✅ PASS |
+| Full workspace suite | ✅ 1,450 passed / 0 failed / 2 ignored — includes the whirlpool differential batch, the DLMM timestamp-drift vectors, the Raydium CLMM mainnet SDK differential, and the new OnlyY fixture batch coverage |
 
 Fee-scope note (SDK parity): the official DLMM client returns `fee` as the LP share and `protocolFee` separately; total trading fee = `fee + protocolFee`. The Rust engine's `fee_amount` is the **total** trading fee and `protocol_fee` its protocol part. This mapping is asserted in the harness and is an *explained* representation difference, not a math difference.
 
@@ -180,12 +182,62 @@ done
 cargo test -p arb-engine --test raydium_clmm_mainnet_sdk_differential
 ```
 
-### 4.4 Remaining gaps (open)
+### 4.5 Closed: Meteora DLMM OnlyY (`collect_fee_mode = 1`) live mainnet differential (2026-11-21)
+
+**Status: CLOSED — executed on a genuinely deployed OnlyY pool, exact parity.** Discovery tool:
+`scripts/differential-harness/discover_onlyy_pools.js` (`getProgramAccounts` on
+`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` with the `account:LbPair` Anchor discriminator
+`210b3162b565b10d` + memcmp offset 36 == 1, `dataSlice 0..216`, reserve balances at token-account
+offset 64..72, mint-owner check for classic SPL). Findings: **8,160 deployed LbPair accounts with
+collect_fee_mode=1**; function_type histogram `{1: 595, 2: 7565}` — **zero pools with
+function_type=0** (OnlyY pools are launch/farming pools, not classic). Most are one-sided or
+Token-2022; ~20 classic-SPL both-sides candidates, all launch-thin (deepest feasible crossings
+0–2 bins).
+
+Corrected ConcreteFunctionType semantics (verified in `@meteora-ag/dlmm@1.9.14` `dist/index.js`,
+`isSupportLimitOrder` and `getFeeMode`): **0 = Undetermined** (legacy classic), **1 = LiquidityMining**
+(`supportLimitOrder = false` → `getLimitOrderLiquidity` returns {0,0} and the fill path is
+market-maker-only, i.e. quote-equivalent to classic), **2 = LimitOrder** (order liquidity participates —
+NOT differentially verified). The previously documented "0=Spot, 1=Concentrated, 2=Percentile"
+meaning was wrong (older IDL generation). Policy aligned repo-wide: {0,1} accepted, ≥2 rejected
+fail-closed (`arb-dex/src/dlmm_validation.rs`, `arb-dex/src/meteora_dlmm.rs`,
+`arb-engine/src/{adapters,lib,cross_pool_dlmm,meteora_pair_discovery,meteora_quote_engine,dlmm_flash_arbitrage}.rs`).
+Two real defects were found and fixed by this differential:
+
+1. **`MeteoraDlmmPool::update_from_account` never assigned `self.function_type` / `self.collect_fee_mode`** (`arb-dex/src/meteora_dlmm.rs`) — both stayed 0, making the validation gate a no-op (LimitOrder pools passed fail-open). Fixed by assigning the decoded values; regression test added.
+2. **Thin launch pools must be servable-refused, not skipped**: the runner now records per-case `refusals` ledger entries (insufficient liquidity) and the Rust batch test enforces that every absent case has one, fail-closed.
+
+Captured fixture: `fixtures/meteora_dlmm_pools/onlyy_step1_7a35.snapshot.json` +
+`onlyy_step1_7a35.quotes.json` — pool `7A35wpqKVEwnKK4Xz8XsmpRMSxRF1KQ9EBFeYwTgAs4Z`, capture slot
+472266867, active_id 69061, bin_step 1, ft=1, collect_fee_mode=1, base_factor 10000, protocol_share
+1000 (10%), both sides classic SPL, status 0. 12 served cases (both modes × both directions ×
+exact-in/exact-out small) + 4 refusal-ledgered deep cases. Mode-1 X→Y verified fee_on_input=false
+(fee on output Y), matching `getFeeMode`'s `feeOnInput = !swapForY` exactly; mode-0 vs mode-1
+fee-split consistency enforced pre-write. First capture candidate was refused at the runner's
+Token-2022 gate (mint carried a TransferFeeConfig at 300 bps — SDK wrapper folds transfer-fee
+deltas into totals, our engine refuses transfer-fee mints by design; this is the fail-closed
+correct behavior, not a parity miss).
+
+Reproduction (network-enabled host, from repo root):
+
+```bash
+cd scripts/differential-harness && npm ci
+BIN_ARRAYS_PER_SIDE=16 DEEP_MIN_FALLBACK_CROSSED=2 \
+  POOL_ADDRESS=7A35wpqKVEwnKK4Xz8XsmpRMSxRF1KQ9EBFeYwTgAs4Z \
+  SNAPSHOT_OUT=../../fixtures/meteora_dlmm_pools/onlyy_step1_7a35.snapshot.json \
+  QUOTES_OUT=../../fixtures/meteora_dlmm_pools/onlyy_step1_7a35.quotes.json \
+  node run_mainnet_snapshot_differential.js
+cargo test -p arb-engine --test meteora_mainnet_sdk_differential
+cargo test -p arb-dex --lib dlmm_validation
+```
+
+### 4.6 Remaining gaps (open)
 
 | Gap | Class | Remediation path |
 |---|---|---|
-| All batch-captured DLMM pools have `collect_fee_mode = 0` (InputOnly); mode 1 (OnlyY) blocks are SDK-side overrides marked SIMULATED_ONLY | Coverage gap | Discover a live mainnet pool with `collect_fee_mode = 1` (decode `LbPair` per `fixtures/dlmm.json` IDL + 8-byte account discriminator) and run the same harness |
 | Transient-capture hazard: one step-1 capture attempt failed at the active bin ("no bin consumed output") and succeeded on re-capture at a later slot | Environment | Re-run with a higher commitment or slot-pinned capture when transient emptiness matters |
+| Raydium CLMM `PoolUtils.computeAmountOutFormat` wrapper (Decimal/slippage formatting layer) not exercised — the harness pins the integer core `getOutputAmountAndRemainAccounts`, which is the decision-path surface | Scope note | Optional: wrap the existing integer oracle with the format layer in the runner |
+| DLMM `function_type = 2` (LimitOrder) pools: order-liquidity fill paths are implemented in `arb-math` but have **no differential fixture** (discovery found 7,565 such pools; none captured) | Coverage gap | Capture a live ft=2 pool and run the same harness before enabling the ft≥2 gates |
 | Raydium CLMM `PoolUtils.computeAmountOutFormat` wrapper (Decimal/slippage formatting layer) not exercised — the harness pins the integer core `getOutputAmountAndRemainAccounts`, which is the decision-path surface | Scope note | Optional: wrap the existing integer oracle with the format layer in the runner |
 
 Live mainnet re-capture is no longer blocked (network egress verified working from this

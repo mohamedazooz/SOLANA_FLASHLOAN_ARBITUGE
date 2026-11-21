@@ -65,6 +65,17 @@ Source: [docs.jito.wtf/lowlatencytxnsend](https://docs.jito.wtf/lowlatencytxnsen
 
 **Implementation decision**: The layer-match source (`LayerFill`/`BinFillResult`, `Rounding::Up` full-layer input / `Rounding::Down` partial output) in `crates/arb-math/src/dlmm/swap.rs` mirrors the official SDK `FillResult` semantics and remains the parity reference. No change.
 
+### 4.1 OnlyY (`collect_fee_mode = 1`) + ConcreteFunctionType semantics (VERIFIED 2026-11-21)
+
+| Item | Finding | Checked |
+|---|---|---|
+| OnlyY fee semantics | `CollectFeeMode.OnlyY (1)` collects fees in token Y; X→Y swap → fee on output (Y); Y→X swap → fee on input (Y) | [docs.meteora.ag — DLMM Collect Fee Mode](https://docs.meteora.ag/core-products/dlmm/collect-fee-mode), fetched 2026-11-21 |
+| SDK `getFeeMode` | `InputOnly(0) → feeOnInput = true; OnlyY(1) → feeOnInput = !swapForY` — byte-matches `arb-math/src/dlmm/error.rs::dlmm_fee_on_input` | `@meteora-ag/dlmm@1.9.14` `dist/index.js` (installed dependency, verified in-script), 2026-11-21 |
+| SDK `isSupportLimitOrder` | `function_type 2 (LimitOrder) → true; 1 (LiquidityMining) → false; 0 (Undetermined) → true iff every reward mint is PublicKey.default; default → throw` — the old "Spot/Concentrated/Percentile" meaning was from an older IDL generation and is WRONG | same SDK source, 2026-11-21 |
+| Mainnet OnlyY population | 8,160 deployed LbPair accounts with `collect_fee_mode=1` (discriminator-filtered `getProgramAccounts`); function_type histogram `{1: 595, 2: 7565}`, **zero** ft=0 pools — OnlyY is a launch/farm-pool feature | on-chain scan, `scripts/differential-harness/discover_onlyy_pools.js`, executed 2026-11-21 |
+| Policy decision | {0,1} accepted everywhere (1 is quote-equivalent to 0: `getLimitOrderLiquidity` returns {0,0} when `!supportLimitOrder`); ≥2 rejected fail-closed — LimitOrder fill paths exist in `arb-math` but have **no differential fixture** (7,565 ft=2 pools discovered, none captured) | `arb-dex/src/dlmm_validation.rs` + engine gate alignment, 2026-11-21 |
+| Transfer-fee interaction | First OnlyY capture candidate was refused: mint is Token-2022 with TransferFeeConfig (300 bps); the SDK wrapper folds transfer-fee inclusion into totals while our engine refuses transfer-fee mints fail-closed — correct behavior, not a parity miss | runner gate + `@solana/spl-token` mint decode, 2026-11-21 |
+
 ## 5. Raydium / Orca
 
 ### 5.1 Orca Whirlpool (VERIFIED 2026-11-21)
