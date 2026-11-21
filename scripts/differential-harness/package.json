@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@meteora-ag/dlmm": "^1.9.14",
+    "@orca-so/whirlpools-core": "^3.1.1",
     "bs58": "^6.0.0"
   }
 }

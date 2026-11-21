@@ -1367,6 +1367,252 @@ pub fn compute_swap_with_ticks_per_array_and_math(
     })
 }
 
+/// Exact Orca Whirlpool swap traversal, ported verbatim from the official
+/// whirlpools-core engine (`rust-sdk/core/src/quote/swap.rs` and
+/// `math/tick_array.rs`, tag @orca-so/whirlpools-core v3.1.1).
+///
+/// Unlike [`compute_swap_with_ticks_per_array`], which steps array-edge to
+/// array-edge, this walks the loaded tick-array sequence as one span: the step
+/// target is the next initialized tick in the swap direction (sequence start
+/// for `a_to_b`, sequence end for `b_to_a` when no further initialized tick
+/// exists), with the official step split (`calc = remaining * (D - fee) / D`,
+/// ceiling fee extraction on initialization-boundary hits, round-down output).
+/// All arithmetic stays checked and fail-closed.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_whirlpool_swap(
+    mut sqrt_price_current_x64: u128,
+    mut tick_current_index: i32,
+    mut liquidity: u128,
+    tick_spacing: u16,
+    fee_rate: u16,
+    amount_specified: u64,
+    a_to_b: bool,
+    tick_arrays: &[TickArrayFacade],
+) -> Result<WhirlpoolQuote, ClmmMathError> {
+    if tick_spacing == 0 {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+    if fee_rate as u64 >= FEE_RATE_DENOMINATOR {
+        return Err(ClmmMathError::InvalidAccountData);
+    }
+    let spacing = i32::from(tick_spacing);
+    let array_span = (TICK_ARRAY_SIZE as i32)
+        .checked_mul(spacing)
+        .ok_or(ClmmMathError::IntegerOverflow)?;
+    let mut starts = tick_arrays.iter().map(|array| array.start_tick_index);
+    let seq_start = starts
+        .next()
+        .ok_or(ClmmMathError::MissingTickArrayCoverage(
+            get_start_tick_index(tick_current_index, tick_spacing),
+        ))?;
+    let mut seq_start = seq_start;
+    let mut seq_end = seq_start;
+    for start in starts {
+        seq_start = seq_start.min(start);
+        seq_end = seq_end.max(start);
+    }
+    seq_end = seq_end
+        .checked_add(array_span)
+        .ok_or(ClmmMathError::IntegerOverflow)?
+        .saturating_sub(1);
+
+    let initialized_tick_at = |index: i32| -> Option<&TickFacade> {
+        let array = tick_arrays.iter().find(|array| {
+            index >= array.start_tick_index
+                && index
+                    < array
+                        .start_tick_index
+                        .checked_add(array_span)
+                        .unwrap_or(i32::MAX)
+        })?;
+        let offset = index.checked_sub(array.start_tick_index)?;
+        if offset < 0 || offset % spacing != 0 {
+            return None;
+        }
+        array.ticks.get((offset / spacing) as usize)
+    };
+
+    // Official `TickArraySequence` next/prev-initialized-tick semantics: scan
+    // the full sequence on the spacing grid; when no initialized tick survives,
+    // the boundary is the sequence start (a_to_b) or end (b_to_a), not the
+    // current array's edge. Out-of-sequence positions are fail-closed.
+    let next_initialized = |tick_index: i32| -> Result<(Option<i128>, i32), ClmmMathError> {
+        if tick_index >= seq_end {
+            return Err(ClmmMathError::MissingTickArrayCoverage(
+                seq_end.saturating_add(1),
+            ));
+        }
+        let mut next = tick_index
+            .div_euclid(spacing)
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(spacing))
+            .ok_or(ClmmMathError::IntegerOverflow)?;
+        loop {
+            if next > seq_end {
+                return Ok((None, seq_end));
+            }
+            if let Some(tick) = initialized_tick_at(next)
+                && tick.initialized
+            {
+                return Ok((Some(tick.liquidity_net), next));
+            }
+            next = next
+                .checked_add(spacing)
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            if next > MAX_TICK_INDEX {
+                return Err(ClmmMathError::IncompleteQuote);
+            }
+        }
+    };
+    let prev_initialized = |tick_index: i32| -> Result<(Option<i128>, i32), ClmmMathError> {
+        if tick_index < seq_start {
+            return Err(ClmmMathError::MissingTickArrayCoverage(
+                seq_start.saturating_sub(array_span),
+            ));
+        }
+        let mut prev = tick_index
+            .div_euclid(spacing)
+            .checked_mul(spacing)
+            .ok_or(ClmmMathError::IntegerOverflow)?;
+        loop {
+            if prev < seq_start {
+                return Ok((None, seq_start));
+            }
+            if let Some(tick) = initialized_tick_at(prev)
+                && tick.initialized
+            {
+                return Ok((Some(tick.liquidity_net), prev));
+            }
+            prev = prev
+                .checked_sub(spacing)
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            if prev < MIN_TICK_INDEX {
+                return Err(ClmmMathError::IncompleteQuote);
+            }
+        }
+    };
+
+    let fee_denom = u128::from(FEE_RATE_DENOMINATOR);
+    let fee_num = u128::from(fee_rate);
+    let mut amount_remaining = amount_specified;
+    let mut total_amount_out = 0u64;
+    let mut total_fee = 0u64;
+    let mut steps_taken = 0usize;
+    let max_steps = tick_arrays
+        .len()
+        .checked_mul(tick_arrays.len().saturating_mul(2) + TICK_ARRAY_SIZE + 1)
+        .and_then(|n| n.checked_add(tick_arrays.len()))
+        .ok_or(ClmmMathError::IntegerOverflow)?
+        .max(1);
+
+    while amount_remaining > 0 {
+        if steps_taken >= max_steps {
+            return Err(ClmmMathError::IterationLimitExceeded);
+        }
+        let (init_net, next_tick_index) = if a_to_b {
+            prev_initialized(tick_current_index)?
+        } else {
+            next_initialized(tick_current_index)?
+        };
+        let next_tick_sqrt = tick_index_to_sqrt_price_x64(next_tick_index)?;
+
+        // Official `compute_swap` inner loop: bounded to the current
+        // initialized-tick target (or sequence boundary); a boundary hit with
+        // unconsumed input re-enters the search, exactly as the SDK does.
+        loop {
+            if steps_taken >= max_steps {
+                return Err(ClmmMathError::IterationLimitExceeded);
+            }
+            let calc =
+                u64::try_from(u128::from(amount_remaining) * (fee_denom - fee_num) / fee_denom)
+                    .map_err(|_| ClmmMathError::IntegerOverflow)?;
+            let initial_input = if a_to_b {
+                get_amount_delta_a(sqrt_price_current_x64, next_tick_sqrt, liquidity, true)?
+            } else {
+                get_amount_delta_b(sqrt_price_current_x64, next_tick_sqrt, liquidity, true)?
+            };
+            let next_sqrt = if u128::from(initial_input) <= u128::from(calc) {
+                next_tick_sqrt
+            } else if a_to_b {
+                get_next_sqrt_price_from_a_input(sqrt_price_current_x64, liquidity, calc)?
+            } else {
+                get_next_sqrt_price_from_b_input(sqrt_price_current_x64, liquidity, calc)?
+            };
+            let is_max = next_sqrt == next_tick_sqrt;
+            let amount_out = if a_to_b {
+                get_amount_delta_b(sqrt_price_current_x64, next_sqrt, liquidity, false)?
+            } else {
+                get_amount_delta_a(sqrt_price_current_x64, next_sqrt, liquidity, false)?
+            };
+            let amount_in = if is_max {
+                initial_input
+            } else if a_to_b {
+                get_amount_delta_a(sqrt_price_current_x64, next_sqrt, liquidity, true)?
+            } else {
+                get_amount_delta_b(sqrt_price_current_x64, next_sqrt, liquidity, true)?
+            };
+            let fee = if is_max {
+                u64::try_from((u128::from(amount_in) * fee_num).div_ceil(fee_denom - fee_num))
+                    .map_err(|_| ClmmMathError::IntegerOverflow)?
+            } else {
+                amount_remaining
+                    .checked_sub(amount_in)
+                    .ok_or(ClmmMathError::IntegerOverflow)?
+            };
+            if fee > amount_remaining
+                || amount_in
+                    > amount_remaining
+                        .checked_sub(fee)
+                        .ok_or(ClmmMathError::IntegerOverflow)?
+            {
+                return Err(ClmmMathError::IntegerOverflow);
+            }
+
+            amount_remaining = amount_remaining
+                .checked_sub(amount_in)
+                .and_then(|v| v.checked_sub(fee))
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            total_amount_out = total_amount_out
+                .checked_add(amount_out)
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            total_fee = total_fee
+                .checked_add(fee)
+                .ok_or(ClmmMathError::IntegerOverflow)?;
+            let previous_sqrt_price = sqrt_price_current_x64;
+            sqrt_price_current_x64 = next_sqrt;
+            steps_taken += 1;
+
+            if next_sqrt == next_tick_sqrt {
+                if let Some(net) = init_net {
+                    liquidity = update_liquidity_on_cross(liquidity, net, a_to_b)?;
+                }
+                tick_current_index = if a_to_b {
+                    next_tick_index.saturating_sub(1)
+                } else {
+                    next_tick_index
+                };
+            } else if next_sqrt != previous_sqrt_price {
+                tick_current_index = sqrt_price_x64_to_tick_index(next_sqrt)?;
+            }
+            if amount_remaining == 0 || sqrt_price_current_x64 == next_tick_sqrt {
+                break;
+            }
+        }
+    }
+
+    Ok(WhirlpoolQuote {
+        amount_in_consumed: amount_specified
+            .checked_sub(amount_remaining)
+            .ok_or(ClmmMathError::IntegerOverflow)?,
+        amount_out_received: total_amount_out,
+        fee_paid: total_fee,
+        final_sqrt_price_x64: sqrt_price_current_x64,
+        final_tick_index: tick_current_index,
+        final_liquidity: liquidity,
+        steps_taken,
+    })
+}
+
 /// Convenient helper matching Whirlpool quote interface (88 ticks/array).
 #[allow(clippy::too_many_arguments)]
 pub fn quote_clmm(

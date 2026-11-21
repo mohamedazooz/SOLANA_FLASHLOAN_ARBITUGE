@@ -21,6 +21,7 @@ paths = [
   '''^fixtures/meteora_dlmm_pools/step10_sol_usdc\.snapshot\.json$''',
   '''^fixtures/meteora_dlmm_pools/step10_trump_usdc\.snapshot\.json$''',
   '''^fixtures/meteora_dlmm_pools/step50_sol_usdc\.snapshot\.json$''',
+  '''^fixtures/whirlpool_mainnet_pools/.*\.json$''',
   '''^docs/reference_archive/.*''',
 ]
 regexes = [
