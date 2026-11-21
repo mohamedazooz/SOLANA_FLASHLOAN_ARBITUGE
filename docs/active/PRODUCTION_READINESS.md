@@ -56,7 +56,7 @@ graph LR
 - [ ] Verified heartbeat writer updating every 1 second.
 
 ### Gate 6: Operator Authorization & Live Arming Checklist
-- [ ] All 19 phases of [`MASTER_ROADMAP.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_ROADMAP.md) formally completed with evidence.
+- [ ] All 19 phases of [`MASTER_ROADMAP.md`](../../docs/active/MASTER_ROADMAP.md) formally completed with evidence.
 - [ ] Operator manually inspects wallet balance and sets conservative max loss limit (`MAX_DAILY_LOSS_USD`).
 - [ ] Operator explicitly configures `ARB_MODE=live` and `ARB_LIVE=1`.
 - [ ] Operator signs off on execution parameter configurations.

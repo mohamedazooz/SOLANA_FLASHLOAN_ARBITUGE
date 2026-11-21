@@ -10,14 +10,14 @@ any harness: Antigravity, OpenCode, Claude Code, Cursor) **MUST first read the
 following authoritative active documents in full** and adopt them as binding
 operating rules before doing any work:
 
-1. [`AGENTS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/AGENTS.md) — This root guide
-2. [`docs/agents/AGENT_RULES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/AGENT_RULES.md) — Immutable operational rules
-3. [`docs/active/README.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/README.md) — Active documentation entry point
-4. [`docs/active/MASTER_ROADMAP.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_ROADMAP.md) — Single authoritative engineering roadmap
-5. [`docs/active/CURRENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_STATUS.md) — Verified baseline status
-6. [`docs/active/OPEN_ISSUES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/OPEN_ISSUES.md) — Forensic defect register
-7. [`docs/active/DECISIONS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DECISIONS.md) — Canonical architectural decisions & invariants
-8. [`docs/agents/HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md) — Mandatory task handoff template
+1. [`AGENTS.md`](AGENTS.md) — This root guide
+2. [`docs/agents/AGENT_RULES.md`](docs/agents/AGENT_RULES.md) — Immutable operational rules
+3. [`docs/active/README.md`](docs/active/README.md) — Active documentation entry point
+4. [`docs/active/MASTER_ROADMAP.md`](docs/active/MASTER_ROADMAP.md) — Single authoritative engineering roadmap
+5. [`docs/active/CURRENT_STATUS.md`](docs/active/CURRENT_STATUS.md) — Verified baseline status
+6. [`docs/active/OPEN_ISSUES.md`](docs/active/OPEN_ISSUES.md) — Forensic defect register
+7. [`docs/active/DECISIONS.md`](docs/active/DECISIONS.md) — Canonical architectural decisions & invariants
+8. [`docs/agents/HANDOFF_PROTOCOL.md`](docs/agents/HANDOFF_PROTOCOL.md) — Mandatory task handoff template
 9. The specific task description and relevant test evidence
 
 ### Core Operational Identity & Directives
@@ -53,12 +53,12 @@ operating rules before doing any work:
 
 The multi-agent operating system divides responsibilities across specialized roles:
 
-- **Supervisor** ([`docs/agents/SUPERVISOR.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/SUPERVISOR.md)): Architecture consistency, roadmap phase gates, task assignment, review, concurrent edit prevention, and evidence verification.
-- **Quant & Protocol Agent** ([`docs/agents/QUANT_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/QUANT_AGENT.md)): Protocol math, quote engines, fee models, route optimization, borrow-size optimization, net-profit calculations, and differential tests.
-- **Ingestion & HFT Agent** ([`docs/agents/INGESTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/INGESTION_AGENT.md)): WebSocket ingestion, optional Yellowstone gRPC client, HTTP RPC fallback, account decoding, state integrity, provider failover, and latency benchmarks.
-- **Execution & Transaction Agent** ([`docs/agents/EXECUTION_AGENT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/EXECUTION_AGENT.md)): Flash loan integration, CPI/instruction ordering, transaction builder, compute budget, simulation, dispatch, landing lifecycle, reconciliation, and security.
+- **Supervisor** ([`docs/agents/SUPERVISOR.md`](docs/agents/SUPERVISOR.md)): Architecture consistency, roadmap phase gates, task assignment, review, concurrent edit prevention, and evidence verification.
+- **Quant & Protocol Agent** ([`docs/agents/QUANT_AGENT.md`](docs/agents/QUANT_AGENT.md)): Protocol math, quote engines, fee models, route optimization, borrow-size optimization, net-profit calculations, and differential tests.
+- **Ingestion & HFT Agent** ([`docs/agents/INGESTION_AGENT.md`](docs/agents/INGESTION_AGENT.md)): WebSocket ingestion, optional Yellowstone gRPC client, HTTP RPC fallback, account decoding, state integrity, provider failover, and latency benchmarks.
+- **Execution & Transaction Agent** ([`docs/agents/EXECUTION_AGENT.md`](docs/agents/EXECUTION_AGENT.md)): Flash loan integration, CPI/instruction ordering, transaction builder, compute budget, simulation, dispatch, landing lifecycle, reconciliation, and security.
 
-Every task handoff between agents MUST use the structured template in [`docs/agents/HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md).
+Every task handoff between agents MUST use the structured template in [`docs/agents/HANDOFF_PROTOCOL.md`](docs/agents/HANDOFF_PROTOCOL.md).
 
 ---
 
@@ -99,7 +99,7 @@ build (yellowstone gRPC dep). Reference script: `scripts/verify-linux.sh`.
 
 ## Architecture Map
 
-See [`docs/active/CURRENT_ARCHITECTURE.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_ARCHITECTURE.md) for the full architecture and [`docs/active/CALL_GRAPH.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CALL_GRAPH.md) for runtime execution flows. The short version:
+See [`docs/active/CURRENT_ARCHITECTURE.md`](docs/active/CURRENT_ARCHITECTURE.md) for the full architecture and [`docs/active/CALL_GRAPH.md`](docs/active/CALL_GRAPH.md) for runtime execution flows. The short version:
 
 - `arb-types` / `arb-constants` — leaf crates, no workspace deps.
 - `arb-math` — all quote math + canonical economics (leaf crate).

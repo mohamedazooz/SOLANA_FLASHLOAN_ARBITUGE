@@ -10,7 +10,7 @@
 
 ## Roadmap Overview and Phase Governance
 
-Phases are strictly sequential. A phase is marked closed **only** when its acceptance criteria are supported by verified code and test evidence. If an investigation proves that a component is unnecessary or unsupported, that decision is formally recorded in [`DECISIONS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/DECISIONS.md) rather than implementing it merely because it appears in this roadmap.
+Phases are strictly sequential. A phase is marked closed **only** when its acceptance criteria are supported by verified code and test evidence. If an investigation proves that a component is unnecessary or unsupported, that decision is formally recorded in [`DECISIONS.md`](../../docs/active/DECISIONS.md) rather than implementing it merely because it appears in this roadmap.
 
 ```mermaid
 flowchart TD
@@ -51,11 +51,11 @@ flowchart TD
   7. Run existing tests and builds without changing trading behavior.
 
 - **Deliverables**:
-  - [`BASELINE_AUDIT.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/BASELINE_AUDIT.md)
-  - [`CURRENT_ARCHITECTURE.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CURRENT_ARCHITECTURE.md)
-  - [`COMPONENT_STATUS.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/COMPONENT_STATUS.md)
-  - [`CALL_GRAPH.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/CALL_GRAPH.md)
-  - [`OPEN_ISSUES.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/OPEN_ISSUES.md)
+  - [`BASELINE_AUDIT.md`](../../docs/active/BASELINE_AUDIT.md)
+  - [`CURRENT_ARCHITECTURE.md`](../../docs/active/CURRENT_ARCHITECTURE.md)
+  - [`COMPONENT_STATUS.md`](../../docs/active/COMPONENT_STATUS.md)
+  - [`CALL_GRAPH.md`](../../docs/active/CALL_GRAPH.md)
+  - [`OPEN_ISSUES.md`](../../docs/active/OPEN_ISSUES.md)
 
 - **Exit Gate**: Every critical component has a verified status and a reproducible baseline. No unverified claim is marked as working.
 

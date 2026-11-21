@@ -9,9 +9,9 @@
 
 1. **Architectural Consistency**: Ensure every modification complies with the crate topology, dependency hierarchy (downward-only), and single source of truth rules.
 2. **Phase Gate Governance**: Enforce sequential progression through the roadmap. Prevent work on Phase $N+1$ until Phase $N$ exit gates are proven with reproducible evidence.
-3. **Task Assignment & Conflict Prevention**: Assign granular tasks from [`MASTER_TASK_REGISTER.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/active/MASTER_TASK_REGISTER.md). Ensure no two agents modify the same critical files concurrently without synchronization.
+3. **Task Assignment & Conflict Prevention**: Assign granular tasks from [`MASTER_TASK_REGISTER.md`](../../docs/active/MASTER_TASK_REGISTER.md). Ensure no two agents modify the same critical files concurrently without synchronization.
 4. **Evidence Verification**: Reject verbal claims of completion. Require exact compiler output, test execution logs, and on-chain simulation return codes before marking tasks `VERIFIED`.
-5. **Documentation & Handoff Audit**: Ensure all agent handoffs conform strictly to [`HANDOFF_PROTOCOL.md`](file:///c:/Users/azoozz/Downloads/my arbitrge/docs/agents/HANDOFF_PROTOCOL.md).
+5. **Documentation & Handoff Audit**: Ensure all agent handoffs conform strictly to [`HANDOFF_PROTOCOL.md`](../../docs/agents/HANDOFF_PROTOCOL.md).
 
 ---
 
