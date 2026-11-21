@@ -26,6 +26,67 @@ fn preflight_simulation_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// ISSUE-P0-04 forensic capture: bind the failed pre-flight simulation's wire
+/// bytes, per-hop quote provenance, bounded logs, and context slot into a
+/// deterministic-replay bundle under `reports/forensics/` (override with
+/// `FORENSIC_CAPTURE_DIR`). Capture is strictly side-band: any IO failure is
+/// logged, never propagated into the gate ladder.
+fn capture_simulation_forensics(
+    opp: &ExecutionOpportunity,
+    tx_bytes: &[u8],
+    context_slot: Option<u64>,
+    logs: &[String],
+    error: Option<String>,
+    units_consumed: u64,
+) {
+    let per_hop_provenance = opp
+        .hops
+        .iter()
+        .enumerate()
+        .map(|(i, hop)| HopProvenance {
+            hop_index: i,
+            pool_id: hop.pool_id.0.to_string(),
+            protocol: format!("{:?}", hop.protocol),
+            mint_in: hop.mint_in.0.to_string(),
+            mint_out: hop.mint_out.0.to_string(),
+            nominal_amount_in: opp.hop_inputs.get(i).copied().unwrap_or_default(),
+            expected_out: opp
+                .hop_inputs
+                .get(i + 1)
+                .copied()
+                .unwrap_or_else(|| opp.expected_out.as_u64()),
+            quote_slot: opp.slot.0,
+        })
+        .collect();
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or_default();
+    let bundle = ForensicBundle::capture(
+        tx_bytes,
+        opp.slot.0,
+        context_slot,
+        per_hop_provenance,
+        opp.hop_slippage_bps,
+        opp.expected_out.as_u64(),
+        logs,
+        error,
+        units_consumed,
+        now_unix_ms,
+    );
+    let dir = std::env::var_os("FORENSIC_CAPTURE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("reports/forensics"));
+    match bundle.write_bundle(&dir) {
+        Ok(path) => tracing::warn!(
+            target: "arb_events",
+            "FORENSIC_CAPTURE_WRITTEN: path={}",
+            path.display()
+        ),
+        Err(e) => tracing::warn!("forensic capture write failed (non-fatal): {e}"),
+    }
+}
+
 impl Supervisor {
     pub async fn process_opportunities(
         &self,
@@ -1424,6 +1485,14 @@ impl Supervisor {
                     Ok(result) => result,
                     Err(e) => {
                         warn!("Non-broadcast simulation could not run ({e}) - failing closed");
+                        capture_simulation_forensics(
+                            &opp,
+                            &tx_bytes,
+                            None,
+                            &[],
+                            Some(e.to_string()),
+                            0,
+                        );
                         if let Some(ref intel) = self.intel_persistence {
                             intel.try_record_simulation(arb_store::RouteSimulationRecord {
                                 simulation_id: format!("sim-{}-{}", current_slot.0, opp.route_id.0),
@@ -1503,6 +1572,14 @@ impl Supervisor {
                         target: "arb_events",
                         "SIMULATION_FAILED: error={:?}",
                         fork_result.error
+                    );
+                    capture_simulation_forensics(
+                        &opp,
+                        &tx_bytes,
+                        fork_result.context_slot,
+                        &fork_result.logs,
+                        fork_result.error.clone(),
+                        fork_result.units_consumed,
                     );
                     warn!(
                         "Non-broadcast simulation rejected the route: {:?}",

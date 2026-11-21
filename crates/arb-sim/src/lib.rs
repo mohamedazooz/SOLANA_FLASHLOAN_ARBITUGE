@@ -6,6 +6,7 @@
 use arb_types::Lamports;
 use thiserror::Error;
 
+pub mod forensic;
 pub mod fork_sim;
 pub mod litesvm_sim;
 pub mod meteora_fresh_pipeline;
@@ -13,6 +14,7 @@ pub mod meteora_simulation_harness;
 pub mod opportunity_recorder;
 pub mod paper_trading_report;
 pub mod profitability_gate;
+pub use forensic::{FORENSIC_CAPTURE_VERSION, ForensicBundle, HopProvenance};
 pub use fork_sim::{
     DEFAULT_FORK_SIM_TIMEOUT_MS, ForkSimResult, ForkSimulator, ForkState, LandedBalanceChanges,
     SimAccountSnapshot, SimTokenBalance, meta_fee_lamports, parse_landed_balance_changes,

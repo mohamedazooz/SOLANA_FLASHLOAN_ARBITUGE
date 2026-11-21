@@ -77,3 +77,6 @@ SOLANA_HFT_REFERENCE_PACK/
 
 # Third-party decompiled/reference files in forensics
 artifacts/forensics/*.rs
+
+# Runtime forensic capture bundles (side-band replay artifacts, P0-04)
+reports/forensics/

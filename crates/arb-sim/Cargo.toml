@@ -19,6 +19,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 base64 = { version = "0.22", features = ["alloc"] }
 bincode = "1.3"
+sha2 = { workspace = true }
 solana-transaction = { version = "4.3", features = ["serde"], optional = true }
 litesvm = { version = "0.18.2", optional = true }
 
@@ -32,6 +33,8 @@ sha2 = { workspace = true }
 arb-constants = { path = "../arb-constants" }
 arb-math = { path = "../arb-math" }
 tracing-subscriber = { workspace = true }
+solana-keypair = "3.1.2"
+solana-transaction = "4.3"
 
 [lints]
 workspace = true

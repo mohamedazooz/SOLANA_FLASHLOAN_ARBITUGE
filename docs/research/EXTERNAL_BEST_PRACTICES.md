@@ -143,18 +143,56 @@ all-or-nothing, a losing or under-profit execution never pays a tip.
    repay (principal + fee)` as documented in `FLASHLOAN_EXECUTION_REPORT.md`; the
    on-chain retained-edge floor uses exactly that operator stipulation.
 
-## S2.5 LiteSVM end-to-end borrow→swap→repay harness — BLOCKED (sandbox)
+## S2.5 LiteSVM end-to-end borrow→swap→repay harness — UNBLOCKED (toolchain + blobs + milestone-A harness) — updated 2026-11-21
+
+**Status update (2026-11-21)**: the artifact blockers are RESOLVED in the sandbox and the
+milestone-A harness is implemented (`crates/arb-sim/tests/litesvm_arb_executor_e2e.rs`). The full
+economic borrow→swap→repay proof still requires a consistent mainnet account snapshot (Kamino
+reserve/market + DLMM pool/bin arrays + CPMM pool + vaults at one slot) and remains tracked as a
+later milestone.
+
+Unblock evidence (all VERIFIED in this session):
+
+1. Agave toolchain installed via `agave-install-init stable --no-modify-path -d /workspace/agave-toolchain`
+   (release.anza.xyz/stable, cargo-build-sbf 4.5.0, platform-tools v1.57, sbf rust 1.95.0, solana CLI).
+   `programs/arb-executor` then needed `[lib] crate-type = ["cdylib", "lib"]` in `programs/arb-executor/Cargo.toml`
+   — without it `cargo build-sbf` produced only an rlib and no deploy artifact.
+2. `arb_executor.so` built: sha256 `faf2b7e6ffd9aa8d748406bd10c4d39e3fc3c0fac3d55e725d9eecdac76e31b8`
+   (64,728 bytes, `target/deploy/arb_executor.so`). Note: `cargo build-sbf -p arb-executor` is invalid for this
+   workspace; run `cargo build-sbf` from `programs/arb-executor` (SBF output dir: `target/sbpf-solana-solana/`).
+3. Mainnet program blobs fetched via RPC `getAccountInfo` (base64 → bytes, following the
+   BPFLoaderUpgradeable programdata pointers). Correct wire layout: `[4B enum tag][8B slot][1B Option tag][32B
+   upgrade authority]` = **45-byte header**; ELF slice at data offset 45 (base64 payload minus 36 when only slot-ish
+   tail is present after a 9-byte strip — always locate `\x7fELF` and slice)
+   - `klend.so` (program `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`, programdata
+     `9uSbGW1y9H5Av6H5TKxQ1wnFApSq2t3oEpfF2YfjDQGA`): ELF slice 10,485,715 bytes,
+     sha256 `6482390f659a6774b059768313b6f701b14819110f9e10db8fa651a311e9c97b`.
+   - `dlmm.so` (program `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`, programdata
+     `HZcJwcJ2njPDxZtpPoKnF8v2w9QAx2rS7TdJPSRkbEhu`): ELF slice 2,229,776 bytes,
+     sha256 `d296c6771cec945601027613ca637c1be6721044c5859009d41c453477844c1f`.
+4. LiteSVM 0.18.2 milestone-A harness — all 4 tests passed locally:
+   `cargo test -p arb-sim --features litesvm --test litesvm_arb_executor_e2e`
+   (`arb_executor_sbf_elf_loads_and_dispatches_typed_error`: real SBF artifact deployed at
+   `ArbExec111…` and dispatcher returned typed `Custom(6000)`; short-data guard test; system-transfer VM boot;
+   mainnet klend + dlmm blobs deploy). Artifacts resolve from `ARB_EXECUTOR_SO` / `LITESVM_PROGRAM_BLOBS`
+   (`target/deploy/program-blobs/{klend,dlmm}.so`) and tests SKIP with an explicit message when absent — never a
+   fabricated pass.
+5. Deterministic-replay capture for ISSUE-P0-04 delivered: `crates/arb-sim/src/forensic.rs`
+   (`ForensicBundle`/`HopProvenance`, sha256-pinned wire, bounded logs, emitting-program hint,
+   `replay_locally` via the fail-closed `litesvm_sim::simulate_locally`), wired into the supervisor's
+   pre-flight failure paths (`crates/arb-bot/src/supervisor/opportunity.rs`, writes `reports/forensics/`,
+   override `FORENSIC_CAPTURE_DIR`).
 
 A full LiteSVM harness (repo already pins `litesvm = 0.18.2`, and `arb-sim/src/litesvm_sim.rs`
 is fail-closed: every invoked program must be explicitly deployed in the VM or the result
 is classified unverified) requires three SBF `.so` blobs:
 
 1. `arb-executor` itself — needs `cargo-build-sbf` + Agave `platform-tools`
-   (not installed here; `which cargo-build-sbf solana` -> empty).
-2. Kamino `klend` mainnet program blob.
-3. Meteora DLMM `lb_clmm` mainnet program blob.
+   (RESOLVED: installed 2026-11-21, see status update above).
+2. Kamino `klend` mainnet program blob (RESOLVED: fetched + hash-pinned, see above).
+3. Meteora DLMM `lb_clmm` mainnet program blob (RESOLVED: fetched + hash-pinned, see above).
 
-**Blocked because**: the SBF toolchain and program blobs are large external artifacts and
+**Blocked because (historical)**: the SBF toolchain and program blobs are large external artifacts and
 the blobs must be provenance-verified (mainnet `getAccountInfo` raw bytes or official
 release builds) before any test that uses them may be cited as evidence. Partial value
 delivered instead: byte-level wire-parity tests lock the off-chain builder to the on-chain
