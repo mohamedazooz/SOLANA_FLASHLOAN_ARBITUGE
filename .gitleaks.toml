@@ -1,7 +1,7 @@
 # Gitleaks policy: all default rules stay active. Only the narrow, documented
 # false-positive classes below are allowlisted. Within a single [allowlist]
 # gitleaks ORs its conditions, so every condition here is exact and narrow:
-# five named fixture/report files verified to contain only public on-chain
+# named fixture/report files verified to contain only public on-chain
 # identifiers, and two exact literal strings (the RFC 6455 spec sample WS key
 # and a test URL placeholder). Real credentials anywhere else — including
 # src/, workflows, configs, markdown and other fixtures — still fail the scan.
@@ -17,6 +17,10 @@ paths = [
   '''^reports/phase16/shadow_soak_merged_main_log_sample\.txt$''',
   '''^fixtures/phase17_meteora_pools\.json$''',
   '''^fixtures/meteora_mainnet_snapshot\.json$''',
+  '''^fixtures/meteora_dlmm_pools/step1\.snapshot\.json$''',
+  '''^fixtures/meteora_dlmm_pools/step10_sol_usdc\.snapshot\.json$''',
+  '''^fixtures/meteora_dlmm_pools/step10_trump_usdc\.snapshot\.json$''',
+  '''^fixtures/meteora_dlmm_pools/step50_sol_usdc\.snapshot\.json$''',
   '''^docs/reference_archive/.*''',
 ]
 regexes = [
