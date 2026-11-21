@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Lock, Flame, ArrowRight, ShieldCheck, AlertCircle } from 'lucide-react';
 import { api } from '../api';
 
@@ -6,23 +6,6 @@ export const Login: React.FC<{ onLogin: () => void }> = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    const defaultPassword = '1234';
-    api.login(defaultPassword)
-      .then(({ token }) => {
-        if (!active) return;
-        sessionStorage.setItem('arb_session_token', token);
-        onLogin();
-      })
-      .catch(() => {
-        // Fall back to manual login
-      });
-    return () => {
-      active = false;
-    };
-  }, [onLogin]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

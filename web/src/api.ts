@@ -45,6 +45,8 @@ export interface StatusSnapshot {
   execution_enabled: boolean;
   paused: boolean;
   emergency_stopped: boolean;
+  kill_switch_marker_present?: boolean;
+  kill_switch_persistence_error?: string | null;
   slot: number;
   pools_tracked: number;
   stream_connected: boolean;
