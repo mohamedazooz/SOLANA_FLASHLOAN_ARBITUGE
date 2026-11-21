@@ -3,7 +3,12 @@
 
 use crate::*;
 
-/// Derive Associated Token Address (ATA) deterministically for a wallet and mint.
+/// Derive an SPL Token (legacy Token Program) ATA.
+///
+/// This helper is only correct when the mint is owned by the legacy SPL Token
+/// program. For Token-2022 or mint-dynamic swap paths, use
+/// [`get_associated_token_address_with_program_id`] with the mint's actual
+/// token program.
 pub fn get_associated_token_address(wallet: &Pubkey, mint: &Pubkey) -> Pubkey {
     let token_program = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
     let ata_program = Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap();
@@ -133,5 +138,24 @@ pub fn build_system_transfer(from: Pubkey, to: Pubkey, lamports: u64) -> Compile
         program_id: Pubkey::new_from_array(SYSTEM_PROGRAM_ID),
         accounts: vec![AccountMeta::new(from, true), AccountMeta::new(to, false)],
         data,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ata_derivation_is_token_program_specific() {
+        let wallet = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let spl = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+        let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        let spl_ata = get_associated_token_address_with_program_id(&wallet, &mint, &spl);
+        let token_2022_ata =
+            get_associated_token_address_with_program_id(&wallet, &mint, &token_2022);
+
+        assert_eq!(get_associated_token_address(&wallet, &mint), spl_ata);
+        assert_ne!(spl_ata, token_2022_ata);
     }
 }

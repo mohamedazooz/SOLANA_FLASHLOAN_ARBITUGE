@@ -176,19 +176,35 @@ pub fn build_pump_swap_instruction(
     let program_id = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID)
         .map_err(|e| TxError::InstructionError(e.to_string()))?;
 
-    let user_base_token = get_associated_token_address(&user_authority, &base_mint);
-    let user_quote_token = get_associated_token_address(&user_authority, &quote_mint);
+    let user_base_token = get_associated_token_address_with_program_id(
+        &user_authority,
+        &base_mint,
+        &token_program_base,
+    );
+    let user_quote_token = get_associated_token_address_with_program_id(
+        &user_authority,
+        &quote_mint,
+        &token_program_quote,
+    );
 
     let fee_recipient_ata = if protocol_fee_recipient_ata != Pubkey::default() {
         protocol_fee_recipient_ata
     } else {
-        get_associated_token_address(&protocol_fee_recipient, &quote_mint)
+        get_associated_token_address_with_program_id(
+            &protocol_fee_recipient,
+            &quote_mint,
+            &token_program_quote,
+        )
     };
 
     let creator_vault_ata = if coin_creator_vault_ata != Pubkey::default() {
         coin_creator_vault_ata
     } else if coin_creator_vault_authority != Pubkey::default() {
-        get_associated_token_address(&coin_creator_vault_authority, &quote_mint)
+        get_associated_token_address_with_program_id(
+            &coin_creator_vault_authority,
+            &quote_mint,
+            &token_program_quote,
+        )
     } else {
         fee_recipient_ata
     };
@@ -228,4 +244,56 @@ pub fn build_pump_swap_instruction(
         accounts: accounts_meta,
         data,
     })
+}
+
+#[cfg(test)]
+mod ata_program_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn pump_swap_v1_uses_program_aware_atas_for_user_and_fee_accounts() {
+        let user = Pubkey::new_unique();
+        let base_mint = Pubkey::new_unique();
+        let quote_mint = Pubkey::new_unique();
+        let fee_authority = Pubkey::new_unique();
+        let token_program_base = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        let token_program_quote = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let ix = build_pump_swap_instruction(
+            Pubkey::new_unique(),
+            user,
+            base_mint,
+            quote_mint,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            fee_authority,
+            Pubkey::default(),
+            Pubkey::new_unique(),
+            Pubkey::default(),
+            token_program_base,
+            token_program_quote,
+            10_000,
+            9_000,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            ix.accounts[5].pubkey,
+            get_associated_token_address_with_program_id(&user, &base_mint, &token_program_base)
+        );
+        assert_eq!(
+            ix.accounts[6].pubkey,
+            get_associated_token_address_with_program_id(&user, &quote_mint, &token_program_quote)
+        );
+        assert_eq!(
+            ix.accounts[10].pubkey,
+            get_associated_token_address_with_program_id(
+                &fee_authority,
+                &quote_mint,
+                &token_program_quote
+            )
+        );
+    }
 }
