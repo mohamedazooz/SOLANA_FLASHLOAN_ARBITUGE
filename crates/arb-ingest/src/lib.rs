@@ -495,7 +495,7 @@ impl IngestClient {
             // Every reconnect starts a new data epoch. Keep the pool cache so
             // account notifications can update existing decoders, while quote
             // readiness rejects account snapshots from the previous epoch.
-            let _ = self.stream_generation.fetch_update(
+            let _ = self.stream_generation.try_update(
                 Ordering::AcqRel,
                 Ordering::Acquire,
                 |generation| Some(generation.saturating_add(1).max(1)),

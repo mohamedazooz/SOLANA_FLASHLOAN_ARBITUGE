@@ -550,7 +550,7 @@ pub fn build_three_leg_meme_pipeline(
             .unwrap_or(i64::MIN);
         tested.push((*size, net_at_size));
         if let Some((chain, quote, net_profit)) = best_at_size
-            && net_profit > best_profit
+            && (best_candidate.is_none() || net_profit > best_profit)
         {
             best_profit = net_profit;
             best_size = *size;
