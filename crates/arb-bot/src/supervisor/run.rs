@@ -61,8 +61,9 @@ impl Supervisor {
     pub fn kamino_available_flash_liquidity(&self, current_slot: Slot) -> Option<u64> {
         let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).ok()?;
         let snap = self.ingest.account_store().get(&supply_vault)?;
-        // Freshness bound relaxed to 5000 slots (~30 mins) so network jitter/polling gaps
-        // do not spuriously drop verified reserve liquidity, while preventing stale unverified states.
+        // The vault is rehydrated every ~30 seconds. Allow one missed refresh,
+        // not the multi-minute stale window that can materially overstate
+        // borrowable liquidity.
         const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
         if snap.slot > current_slot.0
             || current_slot.0.saturating_sub(snap.slot) > MAX_SNAPSHOT_AGE_SLOTS
@@ -210,9 +211,19 @@ impl Supervisor {
             let capacity = tuning.size_ladder.clamp(1, 8);
             let mut sizes = Vec::with_capacity(capacity);
             let mut s = tuning.input_size.min(ceiling).max(1);
-            while sizes.len() < capacity && s <= ceiling {
+            while sizes.len() < capacity.saturating_sub(1) && s < ceiling {
                 sizes.push(s);
-                s = s.saturating_mul(3).max(s.saturating_add(1));
+                let next = s.saturating_mul(3).max(s.saturating_add(1));
+                if next <= s {
+                    break;
+                }
+                s = next.min(ceiling);
+            }
+            if sizes.last().copied() != Some(ceiling) && capacity > 1 {
+                sizes.push(ceiling);
+            }
+            if sizes.is_empty() {
+                sizes.push(if capacity == 1 { s } else { ceiling });
             }
             sizes
         };
@@ -749,10 +760,19 @@ impl Supervisor {
             .iter()
             .map(|s| s.as_str())
             .collect();
-        if let Ok(accounts) = self.rpc_pool.get_multiple_accounts(&fetch_strs).await {
+        if let Ok((accounts, account_slots)) = self
+            .rpc_pool
+            .get_multiple_accounts_with_slots(&fetch_strs)
+            .await
+        {
             use base64::prelude::*;
-            for (idx, acc_opt) in accounts.into_iter().enumerate() {
+            for (idx, (acc_opt, context_slot)) in
+                accounts.into_iter().zip(account_slots).enumerate()
+            {
                 let Some(acc) = acc_opt else { continue };
+                if context_slot == 0 {
+                    continue;
+                }
                 let target_pk = if idx == 0 {
                     startup_vault
                 } else if let Some(ata) = payer_settlement_ata_opt {
@@ -773,10 +793,12 @@ impl Supervisor {
                             let snap = arb_ingest::AccountSnapshot {
                                 pubkey: target_pk,
                                 owner,
-                                slot: reported_seed_slot,
-                                write_version: 1,
-                                is_startup: false,
-                                provider_id: arb_ingest::ProviderId(0),
+                                slot: context_slot,
+                                write_version: arb_ingest::next_pool_write_version(),
+                                // HTTP account reads are bootstrap/reconciliation
+                                // evidence, never a live stream dependency.
+                                is_startup: true,
+                                provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
                                 bank_id: None,
                                 generation: self.ingest.stream_generation(),
                                 data: Arc::new(bytes),
@@ -784,11 +806,11 @@ impl Supervisor {
                             self.ingest.account_store().apply(snap);
                             if idx == 0 {
                                 info!(
-                                    "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={reported_seed_slot})"
+                                    "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={context_slot})"
                                 );
                             } else {
                                 info!(
-                                    "💧 Payer WSOL settlement ATA successfully hydrated at startup ({target_pk}, slot={reported_seed_slot})"
+                                    "💧 Payer WSOL settlement ATA successfully hydrated at startup ({target_pk}, slot={context_slot})"
                                 );
                             }
                         }
@@ -857,7 +879,7 @@ impl Supervisor {
                         let _ = ingest_worker_res.apply_pool_update(pool);
                     }
 
-                    // Periodically hydrate Kamino WSOL supply vault snapshot if stale (> 100 slots)
+                    // Periodically hydrate Kamino WSOL supply vault snapshot if stale (> 100 slots).
                     let supply_vault =
                         Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
                     let is_vault_stale = match ingest_worker_res.account_store().get(&supply_vault)
@@ -867,10 +889,16 @@ impl Supervisor {
                     };
                     if is_vault_stale {
                         let vault_str = supply_vault.to_string();
-                        if let Ok(mut accounts) =
-                            rpc_worker.get_multiple_accounts(&[&vault_str]).await
+                        if let Ok((mut accounts, mut account_slots)) = rpc_worker
+                            .get_multiple_accounts_with_slots(&[&vault_str])
+                            .await
                         {
-                            if let Some(Some(acc)) = accounts.pop() {
+                            if let Some((Some(acc), context_slot)) =
+                                accounts.pop().zip(account_slots.pop())
+                            {
+                                if context_slot == 0 {
+                                    continue;
+                                }
                                 if let (Some(owner_str), Some(data_arr)) = (
                                     acc.get("owner").and_then(|o| o.as_str()),
                                     acc.get("data").and_then(|d| d.as_array()),
@@ -884,10 +912,14 @@ impl Supervisor {
                                             let snap = arb_ingest::AccountSnapshot {
                                                 pubkey: supply_vault,
                                                 owner,
-                                                slot: s,
-                                                write_version: 1,
-                                                is_startup: false,
-                                                provider_id: arb_ingest::ProviderId(0),
+                                                slot: context_slot,
+                                                write_version: arb_ingest::next_pool_write_version(
+                                                ),
+                                                // RPC refreshes can seed a missing
+                                                // snapshot, but cannot masquerade as
+                                                // live WebSocket state.
+                                                is_startup: true,
+                                                provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
                                                 bank_id: None,
                                                 generation: ingest_worker_res.stream_generation(),
                                                 data: Arc::new(bytes),
@@ -979,12 +1011,13 @@ impl Supervisor {
         let mut adaptive_delay_ms: u64 = 50;
 
         // Provider health/failover supervisor (G2): deterministic circuit
-        // breaker over the live data plane. Provider 0 is the WebSocket
-        // account stream; provider 1 is the HTTP RPC slot fallback. When no
+        // breaker over the live data plane. Provider 1 is the WebSocket
+        // account stream; provider 0 is the HTTP RPC slot fallback. When no
         // provider is healthy and fresh, new opportunity cycles stop (fail
         // closed, no stale fallback).
-        const WS_STREAM_PROVIDER: arb_ingest::ProviderId = arb_ingest::ProviderId(0);
-        const RPC_FALLBACK_PROVIDER: arb_ingest::ProviderId = arb_ingest::ProviderId(1);
+        const WS_STREAM_PROVIDER: arb_ingest::ProviderId =
+            arb_ingest::ACCOUNT_WEBSOCKET_PROVIDER_ID;
+        const RPC_FALLBACK_PROVIDER: arb_ingest::ProviderId = arb_ingest::HTTP_RPC_PROVIDER_ID;
         let provider_supervisor = parking_lot::Mutex::new(arb_ingest::ProviderSupervisor::new(
             vec![
                 arb_ingest::ProviderHealth::new(WS_STREAM_PROVIDER, 0),
@@ -993,6 +1026,7 @@ impl Supervisor {
             arb_ingest::SupervisorPolicy::default(),
         ));
         let mut last_ws_slot: u64 = 0;
+        let mut last_ws_generation = self.ingest.stream_generation();
         let mut last_ws_advance_at = Instant::now();
         let ws_stale_after = arb_ingest::SupervisorPolicy::default().stale_after;
 
@@ -1064,6 +1098,12 @@ impl Supervisor {
             // healthy while its slot watermark advances; a stall beyond the
             // stale-after window trips the circuit breaker.
             let now = Instant::now();
+            let ws_generation = self.ingest.stream_generation();
+            if ws_generation != last_ws_generation {
+                last_ws_generation = ws_generation;
+                last_ws_slot = 0;
+                last_ws_advance_at = now;
+            }
             if helius_slot > last_ws_slot {
                 last_ws_slot = helius_slot;
                 last_ws_advance_at = now;
@@ -1076,7 +1116,9 @@ impl Supervisor {
                     .record_failure(WS_STREAM_PROVIDER, now);
             }
 
-            // Fallback: If slot is still 0 or lagging behind current_slot, query rpc_pool slot stream
+            // Fallback cluster clock only: an RPC slot may pace a cycle, but it
+            // must never advance the Helius watermark or mark the WS stream
+            // connected. Market-data readiness is evaluated independently.
             if (stream_slot == 0 || stream_slot <= current_slot.0)
                 && (stream_slot == 0 || tick.is_multiple_of(5))
             {
@@ -1092,8 +1134,6 @@ impl Supervisor {
                                 "Advancing slot from RPC slot stream fallback: {rpc_slot} (previous: {stream_slot})"
                             );
                             self.ingest.record_slot(rpc_slot);
-                            self.ingest.record_helius_slot(rpc_slot);
-                            self.ingest.mark_stream_connected();
                             stream_slot = rpc_slot;
                         }
                     }
@@ -1113,17 +1153,16 @@ impl Supervisor {
             adaptive_delay_ms = 50;
             current_slot = Slot(stream_slot);
 
-            // Fail-closed provider gate (G2): when no provider is healthy,
-            // fresh and close to the cluster slot, no new opportunity cycles
-            // are generated (no stale-fallback trading).
-            if provider_supervisor
+            // Only the healthy account WebSocket can authorize trading. HTTP
+            // RPC is a cluster-clock fallback; accepting it here could let
+            // stale WS snapshots pass while their socket is stalled.
+            let selected_provider = provider_supervisor
                 .lock()
-                .select(current_slot.0, Instant::now())
-                .is_none()
-            {
+                .select(current_slot.0, Instant::now());
+            if selected_provider != Some(WS_STREAM_PROVIDER) || !self.ingest.stream_connected() {
                 debug!(
-                    "No healthy data provider at slot {}; skipping opportunity cycle (fail closed)",
-                    current_slot.0
+                    "No healthy account WebSocket at slot {} (selected provider: {:?}); skipping opportunity cycle (fail closed)",
+                    current_slot.0, selected_provider
                 );
                 continue;
             }

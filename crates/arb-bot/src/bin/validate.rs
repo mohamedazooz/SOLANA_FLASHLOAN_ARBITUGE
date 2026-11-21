@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 use arb_engine::MarketGraph;
-use arb_ingest::{AccountSnapshot, AccountSnapshotStore, MultiDexRegistry, ProviderId, RpcPool};
+use arb_ingest::{AccountSnapshot, AccountSnapshotStore, MultiDexRegistry, RpcPool};
 use arb_math::economic::calculate_flash_fee_raw;
 use arb_math::{Leg, cpmm_out, optimal_two_pool};
 use arb_tx::JupiterClient;
@@ -202,8 +202,8 @@ async fn main() -> Result<()> {
             slot: slot.0,
             write_version: 1,
             is_startup: false,
-            // ProviderId(0) is the documented RPC-bootstrap identity.
-            provider_id: ProviderId(0),
+            // RPC snapshots are bootstrap evidence, not a live stream.
+            provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
             bank_id: None,
             generation: 0,
             data: std::sync::Arc::new(data),
