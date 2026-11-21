@@ -13,7 +13,7 @@ import {
   XCircle,
   Info,
 } from 'lucide-react';
-import { api, getToken, type LogRecord } from '../api';
+import { api, type LogRecord } from '../api';
 
 export const Logs: React.FC = () => {
   const [logs, setLogs] = useState<LogRecord[]>([]);
@@ -41,15 +41,16 @@ export const Logs: React.FC = () => {
     let ws: WebSocket | null = null;
     let reconnectTimeout: any = null;
 
-    const connectWs = () => {
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const token = getToken();
-      const wsUrl = `${proto}//${window.location.host}/api/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    let disposed = false;
 
+    const connectWs = async () => {
       try {
-        ws = new WebSocket(wsUrl);
+        const wsUrl = await api.wsUrl();
+        if (disposed) return;
+        const socket = new WebSocket(wsUrl);
+        ws = socket;
 
-        ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
           if (isPaused) return;
           try {
             const data = JSON.parse(event.data);
@@ -77,23 +78,24 @@ export const Logs: React.FC = () => {
           }
         };
 
-        ws.onclose = () => {
-          reconnectTimeout = setTimeout(connectWs, 3000);
+        socket.onclose = () => {
+          if (!disposed) reconnectTimeout = window.setTimeout(() => void connectWs(), 3000);
         };
 
-        ws.onerror = () => {
-          ws?.close();
+        socket.onerror = () => {
+          socket.close();
         };
       } catch {
-        reconnectTimeout = setTimeout(connectWs, 5000);
+        if (!disposed) reconnectTimeout = window.setTimeout(() => void connectWs(), 5000);
       }
     };
 
-    connectWs();
+    void connectWs();
 
     return () => {
+      disposed = true;
       if (ws) ws.close();
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (reconnectTimeout !== null) window.clearTimeout(reconnectTimeout);
     };
   }, [isPaused]);
 
