@@ -1,0 +1,85 @@
+{
+  "provenance": {
+    "kind": "raydium_clmm_mainnet_sdk_quotes",
+    "sdk": {
+      "package": "@raydium-io/raydium-sdk-v2",
+      "version": "0.2.85-alpha",
+      "oracle": "PoolUtils.getOutputAmountAndRemainAccounts (src/raydium/clmm/libraries/pool.ts over swapSimulator.swapInternal)",
+      "layouts": "PoolInfoLayout/TickArrayLayout/TickArrayBitmapExtensionLayout/ClmmConfigLayout (SDK decodes)"
+    },
+    "snapshot": {
+      "pool_address": "8VmwmoTU869tofZvYnNxV5hSK9jbVnkLu9Ys9eHi9dSk",
+      "slot": 472254143,
+      "block_timestamp": 1795288864,
+      "sdk_version": "0.2.85-alpha"
+    },
+    "captured_at_utc": "2026-11-21T19:21:04.991Z",
+    "comparability_notes": [
+      "dynamic-fee pools refused at capture; fee amounts derive from AmmConfig.tradeFeeRate alone",
+      "fee_on=1/2 fee-on-output directions are recorded as SDK provenance only; the Rust engine refuses them fail-closed",
+      "remaining_accounts is the official swap account-dependency manifest (tick arrays + bitmap extension walk order)"
+    ]
+  },
+  "pair": {
+    "tick_spacing": 1,
+    "fee_on": 0,
+    "trade_fee_rate": 100,
+    "mint_0": "8vkMi2eeho8Tchc4VoGmYcxsKUuS2jxRtHBrNzjsnJ5h",
+    "mint_1": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "decimals_0": 8,
+    "decimals_1": 6
+  },
+  "cases": [
+    {
+      "case_id": "a_to_b_small",
+      "zero_for_one": true,
+      "amount_in": "1000000",
+      "all_trade": true,
+      "amount_out": "229918",
+      "fee_amount": "203",
+      "execution_price_x64": "8846081804190105337",
+      "remaining_accounts": [
+        "AXPAvZX6MrUS5DTizXtLj6SbvwvgA8GzZfMBSBAWDNHG"
+      ]
+    },
+    {
+      "case_id": "a_to_b_deep",
+      "deep_probe_candidate": "255137684",
+      "zero_for_one": true,
+      "amount_in": "255137684",
+      "all_trade": true,
+      "amount_out": "58666966",
+      "fee_amount": "25514",
+      "execution_price_x64": "8846081804188981423",
+      "remaining_accounts": [
+        "AXPAvZX6MrUS5DTizXtLj6SbvwvgA8GzZfMBSBAWDNHG"
+      ]
+    },
+    {
+      "case_id": "b_to_a_small",
+      "zero_for_one": false,
+      "amount_in": "1000000",
+      "all_trade": true,
+      "amount_out": "4347824",
+      "fee_amount": "150",
+      "execution_price_x64": "8846081804190128989",
+      "remaining_accounts": [
+        "AXPAvZX6MrUS5DTizXtLj6SbvwvgA8GzZfMBSBAWDNHG"
+      ]
+    },
+    {
+      "case_id": "b_to_a_deep",
+      "deep_probe_candidate": "22998987566061913",
+      "zero_for_one": false,
+      "amount_in": "22998987566061913",
+      "all_trade": true,
+      "amount_out": "99995651844887830",
+      "fee_amount": "2299898756607",
+      "execution_price_x64": "8846524097222140140",
+      "remaining_accounts": [
+        "AXPAvZX6MrUS5DTizXtLj6SbvwvgA8GzZfMBSBAWDNHG"
+      ]
+    }
+  ],
+  "refusals": []
+}

@@ -76,6 +76,8 @@ mission rules forbid rewriting working modules for cosmetic reasons.
 | parity | `cargo test -p arb-math --test python_oracle_differential` | ✅ 2/2 |
 | parity | `cargo test -p arb-engine --test meteora_mainnet_sdk_differential` | ✅ 3/3 |
 | bench | `cargo bench -p arb-math` | ✅ cpmm_out ≈ **16.8 ns**, optimal_two_pool ≈ **205 ns** (see [HOT_PATH_BENCHMARKS](docs/performance/HOT_PATH_BENCHMARKS.md)) |
+| parity (post-baseline, 2026-11-21) | `cargo test -p arb-engine --test raydium_clmm_mainnet_sdk_differential` | ✅ exact-integer parity vs `@raydium-io/raydium-sdk-v2` over 6 live-mainnet captured pools (tick spacings 1/60/120, `fee_on` 0/1, small+deep probes) — see [QUOTE_PARITY_REPORT §4.3](docs/quality/QUOTE_PARITY_REPORT.md) |
+| revalidation (post-baseline, 2026-11-21) | `cargo test --workspace` | ✅ **1,449 passed / 0 failed / 2 ignored** (113 suites) |
 
 ## 5. Deliverables produced
 

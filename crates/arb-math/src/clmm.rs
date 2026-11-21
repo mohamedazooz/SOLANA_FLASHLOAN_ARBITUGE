@@ -635,6 +635,72 @@ pub fn get_next_sqrt_price_from_b_input(
     u128::try_from(next_price).map_err(|_| ClmmMathError::IntegerOverflow)
 }
 
+/// Wide (u128) amount ΔA between two sqrt prices. A `u128::MAX` result means
+/// the amount is not representable in u128 — the step consumer only compares
+/// it against a remaining input that fits u64, so the sentinel always means
+/// "target unreachable within the remaining amount" (the official SDK's
+/// `calculateAmountInRange` catches its own `MaxTokenOverflow` the same way
+/// and completes the step from the price move alone).
+fn amount_delta_a_wide(
+    sqrt_price_0: u128,
+    sqrt_price_1: u128,
+    liquidity: u128,
+    round_up: bool,
+) -> u128 {
+    if sqrt_price_0 == 0 || sqrt_price_1 == 0 || liquidity == 0 {
+        return 0;
+    }
+    let (sqrt_price_lower, sqrt_price_upper) = if sqrt_price_0 < sqrt_price_1 {
+        (sqrt_price_0, sqrt_price_1)
+    } else {
+        (sqrt_price_1, sqrt_price_0)
+    };
+
+    let delta_p = U256::from(sqrt_price_upper - sqrt_price_lower);
+    let l = U256::from(liquidity);
+    let product = l * delta_p;
+    let numerator = product << 64;
+    if (numerator >> 64) != product {
+        return u128::MAX;
+    }
+    let denominator = U256::from(sqrt_price_lower) * U256::from(sqrt_price_upper);
+    if denominator.is_zero() {
+        return u128::MAX;
+    }
+    let mut amount = numerator / denominator;
+    if round_up && numerator % denominator != U256::ZERO {
+        amount += U256::from(1u8);
+    }
+    u128::try_from(amount).unwrap_or(u128::MAX)
+}
+
+/// Wide (u128) amount ΔB between two sqrt prices; sentinel semantics as in
+/// [`amount_delta_a_wide`].
+fn amount_delta_b_wide(
+    sqrt_price_0: u128,
+    sqrt_price_1: u128,
+    liquidity: u128,
+    round_up: bool,
+) -> u128 {
+    if sqrt_price_0 == 0 || sqrt_price_1 == 0 || liquidity == 0 {
+        return 0;
+    }
+    let (sqrt_price_lower, sqrt_price_upper) = if sqrt_price_0 < sqrt_price_1 {
+        (sqrt_price_0, sqrt_price_1)
+    } else {
+        (sqrt_price_1, sqrt_price_0)
+    };
+
+    let delta_p = U256::from(sqrt_price_upper - sqrt_price_lower);
+    let l = U256::from(liquidity);
+    let prod = l * delta_p;
+    let mut amount = prod >> 64;
+    if round_up && prod % U256::from(1u128 << 64) != U256::ZERO {
+        amount += U256::from(1u8);
+    }
+    u128::try_from(amount).unwrap_or(u128::MAX)
+}
+
 /// Result of a single tick-step swap calculation in CLMM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepSwapResult {
@@ -677,25 +743,46 @@ pub fn compute_swap_step_checked(
     .map_err(|_| ClmmMathError::IntegerOverflow)?;
 
     // Amount needed to move all the way to the target tick (rounded up).
-    let amount_in_max = if a_to_b {
-        get_amount_delta_a(
+    // Computed wide first: with concentrated liquidity the gap can exceed
+    // u64, which the official SDK survives (its `calculateAmountInRange`
+    // catches `MaxTokenOverflow` and runs a partial step from the price
+    // move); a naive u64 computation here would wrongly fail the quote.
+    let amount_in_max_wide = if a_to_b {
+        amount_delta_a_wide(
             sqrt_price_target_x64,
             sqrt_price_current_x64,
             liquidity,
             true,
-        )?
+        )
     } else {
-        get_amount_delta_b(
+        amount_delta_b_wide(
             sqrt_price_current_x64,
             sqrt_price_target_x64,
             liquidity,
             true,
-        )?
+        )
     };
 
-    if amount_remaining_less_fee >= amount_in_max {
+    if u128::from(amount_remaining_less_fee) >= amount_in_max_wide {
         // Full step reaches the target tick. Fee is grossed up over the net
-        // amount, exactly like the on-chain program.
+        // amount, exactly like the on-chain program. The gap amount fits u64
+        // here by construction (it is tracked by `amount_remaining`), so the
+        // narrow re-derivation below cannot overflow.
+        let amount_in_max = if a_to_b {
+            get_amount_delta_a(
+                sqrt_price_target_x64,
+                sqrt_price_current_x64,
+                liquidity,
+                true,
+            )?
+        } else {
+            get_amount_delta_b(
+                sqrt_price_current_x64,
+                sqrt_price_target_x64,
+                liquidity,
+                true,
+            )?
+        };
         let fee_amount = div_ceil_u64(
             u128::from(amount_in_max) * u128::from(fee_rate),
             u128::from(FEE_RATE_DENOMINATOR - u64::from(fee_rate)),
@@ -1128,8 +1215,35 @@ pub fn find_next_tick_boundary_with_size(
         }
 
         // No initialized tick remains in this array in the swap direction.
-        // Move to its edge; the next iteration must have the adjacent array
-        // loaded or fail with MissingTickArrayCoverage.
+        // Official semantics (Raydium `swapSimulator.ts` walks the
+        // caller-ordered loaded-array list; whirlpools form the same list):
+        // the price only ever moves to the next INITIALIZED tick, so the
+        // traversal jumps straight to the next LOADED array in the swap
+        // direction and never needs the literal adjacent array — empty spans
+        // spanned by unallocated (closed) tick arrays are crossed without any
+        // account. The Whirlpool list `[base, base - T, base - 2T]` is exactly
+        // the nearest-lower case here, so adjacency semantics are unchanged
+        // for contiguous lists.
+        let next_start = if a_to_b {
+            tick_arrays
+                .iter()
+                .map(|array| array.start_tick_index)
+                .filter(|start| *start < current_array_start)
+                .max()
+        } else {
+            tick_arrays
+                .iter()
+                .map(|array| array.start_tick_index)
+                .filter(|start| *start > current_array_start)
+                .min()
+        };
+
+        if let Some(next_start) = next_start {
+            current_array_start = next_start;
+            continue;
+        }
+
+        // Loaded sequence exhausted in the swap direction.
         let boundary = if a_to_b {
             current_array_start
         } else {
@@ -1137,23 +1251,6 @@ pub fn find_next_tick_boundary_with_size(
                 .checked_add(ticks_per_array)
                 .ok_or(ClmmMathError::IntegerOverflow)?
         };
-
-        // `a_to_b` at the array's lower edge: the edge equals the current
-        // tick, so there is zero room left inside this array. Descend into the
-        // previous array instead of fabricating progress. The Whirlpool
-        // program orders arrays `[base, base - T, base - 2T]`, so the previous
-        // array is exactly the next one it will search.
-        if a_to_b && boundary == tick_current {
-            let previous_start = current_array_start
-                .checked_sub(ticks_per_array)
-                .ok_or(ClmmMathError::IntegerOverflow)?;
-            if previous_start < MIN_TICK_INDEX {
-                return Err(ClmmMathError::IncompleteQuote);
-            }
-            current_array_start = previous_start;
-            continue;
-        }
-
         let boundary = boundary.clamp(MIN_TICK_INDEX, MAX_TICK_INDEX);
         if boundary == tick_current {
             return Err(ClmmMathError::NoProgress);

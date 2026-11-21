@@ -1,0 +1,66 @@
+{
+  "provenance": {
+    "kind": "raydium_clmm_mainnet_sdk_quotes",
+    "sdk": {
+      "package": "@raydium-io/raydium-sdk-v2",
+      "version": "0.2.85-alpha",
+      "oracle": "PoolUtils.getOutputAmountAndRemainAccounts (src/raydium/clmm/libraries/pool.ts over swapSimulator.swapInternal)",
+      "layouts": "PoolInfoLayout/TickArrayLayout/TickArrayBitmapExtensionLayout/ClmmConfigLayout (SDK decodes)"
+    },
+    "snapshot": {
+      "pool_address": "BaKfiGgycM3MiK4XvGZRrLedVmd3m5qcognBu1PeNV4w",
+      "slot": 472254156,
+      "block_timestamp": 1795288867,
+      "sdk_version": "0.2.85-alpha"
+    },
+    "captured_at_utc": "2026-11-21T19:21:07.669Z",
+    "comparability_notes": [
+      "dynamic-fee pools refused at capture; fee amounts derive from AmmConfig.tradeFeeRate alone",
+      "fee_on=1/2 fee-on-output directions are recorded as SDK provenance only; the Rust engine refuses them fail-closed",
+      "remaining_accounts is the official swap account-dependency manifest (tick arrays + bitmap extension walk order)"
+    ]
+  },
+  "pair": {
+    "tick_spacing": 1,
+    "fee_on": 0,
+    "trade_fee_rate": 200,
+    "mint_0": "4uemtJCvqn8DvYuFY1u6erFqGuK8SAuFMKyThHmX5oCr",
+    "mint_1": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "decimals_0": 8,
+    "decimals_1": 6
+  },
+  "cases": [
+    {
+      "case_id": "b_to_a_small",
+      "zero_for_one": false,
+      "amount_in": "1000000",
+      "all_trade": true,
+      "amount_out": "963",
+      "fee_amount": "1551",
+      "execution_price_x64": "593931677091228675806",
+      "remaining_accounts": [
+        "GkYPUEBZaBF3YFB1F4KMBmtRnA2vwAyXsArdJC4GeSQT"
+      ]
+    },
+    {
+      "case_id": "b_to_a_deep",
+      "deep_probe_candidate": "18446744073709551615",
+      "zero_for_one": false,
+      "amount_in": "18446744073709551615",
+      "all_trade": true,
+      "amount_out": "17790799257364963",
+      "fee_amount": "3689348814743351",
+      "execution_price_x64": "593936960001769813984",
+      "remaining_accounts": [
+        "GkYPUEBZaBF3YFB1F4KMBmtRnA2vwAyXsArdJC4GeSQT"
+      ]
+    }
+  ],
+  "refusals": [
+    {
+      "direction": "a_to_b",
+      "reason": "small_probe_partial",
+      "detail": "out=14327385 fee=3"
+    }
+  ]
+}

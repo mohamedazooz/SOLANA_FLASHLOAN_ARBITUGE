@@ -12,7 +12,7 @@
 |---|---|---|---|
 | Raydium CPMM / AMM v4 / DAMM v2 constant-product accounting | `arb-math::cpmm` | Independent Python oracle over protocol spec (`audit/math_oracle/oracle.py`), vectors `audit/test_vectors/cpmm_vectors.json` | Specification-derived |
 | Meteora DLMM | `arb-math::dlmm` (multi-bin exact-in, exact-out, view-quote) | (a) Python oracle, `dlmm_single_bin_vectors.json`; (b) **official `@meteora-ag/dlmm@1.9.14`** over a byte-identical captured mainnet snapshot (`fixtures/meteora_mainnet_snapshot.json`, pool `5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6`) | Spec-derived + official SDK |
-| Raydium CLMM | `arb-math::clmm` + `arb-dex::raydium_clmm` | In-repo unit + property tests + official raydium-clmm swap-step parity vectors (`raydium_clmm_swap_math_parity_tests.rs`) | Property/invariant + step parity oracle |
+| Raydium CLMM | `arb-math::clmm` + `arb-dex::raydium_clmm` | (a) In-repo unit + property tests + official raydium-clmm swap-step parity vectors (`raydium_clmm_swap_math_parity_tests.rs`); (b) **official `@raydium-io/raydium-sdk-v2@0.2.85-alpha`** `PoolUtils.getOutputAmountAndRemainAccounts` over byte-identical captured mainnet snapshots (`fixtures/raydium_clmm_mainnet_pools/`, 6 pools, tick spacings 1/60/120, `fee_on` 0/1) | Property/invariant + step parity + official SDK |
 | Orca Whirlpool | `arb_math::clmm::compute_whirlpool_swap` | **official `@orca-so/whirlpools-core` v3.1.1 (wasm)** over byte-identical captured mainnet snapshots (`fixtures/whirlpool_mainnet_pools/`, 4 classic pools, tick spacings 1/4/8/64) | Official SDK |
 | Pump.fun / PumpSwap / LaunchLab / DBC / DLMM-Pro | dedicated adapters | unit tests incl. fee-mode fail-closed guards | Property/invariant |
 
@@ -36,8 +36,10 @@ Results:
 | `mainnet_snapshot_quotes_match_official_sdk` (exact-in/exact-out × small/deep × both directions × both `CollectFeeMode`s; deep cases cross 45–121 bins incl. bin-array boundaries) | ✅ PASS |
 | `mainnet_pool_batch_quotes_match_official_sdk` (added 2026-11-21: 4 new mainnet pools — bin steps 1/10/50 + TRUMP/USDC pair, deep probes up to 511 bins crossed; every integer field and every Q64.64 price check exact) | ✅ PASS |
 | `whirlpool_mainnet_batch_quotes_match_official_sdk` (added 2026-11-21: 4 classic mainnet whirlpools — tick spacings 1/4/8/64; both directions × exact-in small/deep = 16 deep-quote comparisons over captured tick-array sets; engine `compute_whirlpool_swap` matches `swapQuoteByInputToken` exactly: amount_in_consumed, amount_out, trade_fee tolerance 0; adaptive-fee pools fail-closed-rejected at capture; tick-array PDA re-derivation + raw-byte field re-verification per case; start-tick probes on `get_start_tick_index` exact) | ✅ PASS |
+| `dlmm_timestamp_drift_matches_official_sdk_state_machine` + `dlmm_drift_invariants_never_decrease_reference_below_zero_or_above_max` (added 2026-11-21: 13 deterministic timestamp-drift scenarios vs `@meteora-ag/dlmm@1.9.14` fee statics — filter expiry, decay window boundaries, reset, pre-filter moves, VA clamp, backward timestamps, chained post-swap state; every reference/accumulator/fee integer exact) | ✅ PASS |
+| `raydium_clmm_mainnet_batch_quotes_match_official_sdk` (added 2026-11-21: 6 live-mainnet Raydium CLMM pools — tick spacings 1/60/120, `fee_on` 0 and 1, both directions, small (1e6) + deep (bisected largest fully-servable, one probe at `u64::MAX`) = 14 exact-in comparisons incl. an empty-span multi-array crossing; `amount_in_consumed`/`amount_out_received`/`fee_paid` exact against `PoolUtils.getOutputAmountAndRemainAccounts`; tick-array PDA re-derivation + raw-byte field re-verification per pool; fee-on-output directions asserted REFUSED; a Token-2022 candidate refused at capture) | ✅ PASS |
 | `phase15_2_sdk_differential_manifest` | ✅ PASS |
-| Full workspace suite | ✅ 1,446 passed / 0 failed / 2 ignored (112 suites) — includes the whirlpool differential batch and the Raydium CLMM 60-tick-span route-discovery regression pair |
+| Full workspace suite | ✅ 1,449 passed / 0 failed / 2 ignored (113 suites) — includes the whirlpool differential batch, the DLMM timestamp-drift vectors, and the Raydium CLMM mainnet SDK differential |
 
 Fee-scope note (SDK parity): the official DLMM client returns `fee` as the LP share and `protocolFee` separately; total trading fee = `fee + protocolFee`. The Rust engine's `fee_amount` is the **total** trading fee and `protocol_fee` its protocol part. This mapping is asserted in the harness and is an *explained* representation difference, not a math difference.
 
@@ -146,14 +148,45 @@ POOL_ADDRESS=Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE node capture_mainnet_w
 cargo test -p arb-engine --test whirlpool_mainnet_sdk_differential
 ```
 
-### 4.3 Remaining gaps (open)
+### 4.3 Closed: Raydium CLMM multi-array mainnet SDK differential (2026-11-21)
+
+**Status: CLOSED — executed, exact parity.** Harness: `scripts/differential-harness/capture_mainnet_raydium_clmm.js` + `run_mainnet_raydium_clmm_differential.js`, oracle = official `@raydium-io/raydium-sdk-v2@0.2.85-alpha` `PoolUtils.getOutputAmountAndRemainAccounts` (the deployed `swapSimulator.swapInternal`) over a frozen in-process capture with `block_timestamp` pinned via `getBlockTime(slot)`. Pool discovery: Raydium's api-v3 REST is broken server-side (500 on every `/pools/info/list-v2` route), so the 197,290 deployed 1544-byte `PoolState` accounts were scanned on-chain via `getProgramAccounts` + `dataSlice` (window 225..281 covering u128 liquidity @237 + `tick_current` @269), ranked by liquidity, then captured fail-closed (dynamic-fee-active, Token-2022, swap-disabled, zero-liquidity pools refused).
+
+| Snapshot | Pool | tick_spacing | fee_on | capture slot | arrays (existing/captured) |
+|---|---|---|---|---|---|
+| `fixtures/raydium_clmm_mainnet_pools/rc_ts1_m8vkmusdc_0.snapshot.json` | `8VmwmoTU…9dSk` | 1 | 0 | 472254143 | 1/5 |
+| `fixtures/raydium_clmm_mainnet_pools/rc_ts1_m9evwusdc_0.snapshot.json` | `4obueSHx…AXV` | 1 | 0 | 472254148 | 1/5 |
+| `fixtures/raydium_clmm_mainnet_pools/rc_ts1_usdcmhfzy_0.snapshot.json` | `7izxtfJX…aE1P` | 1 | 0 | 472254152 | 1/5 |
+| `fixtures/raydium_clmm_mainnet_pools/rc_ts1_m4uemusdc_0.snapshot.json` | `BaKfiGgy…NV4w` | 1 | 0 | 472254156 | 1/5 (1 of 2 directions refused: one-sided liquidity) |
+| `fixtures/raydium_clmm_mainnet_pools/rc_ts60_solmdzqz_0.snapshot.json` | `D7HU4rLQ…6qU` | 60 | 0 | 472254160 | 2/6 (b_to_a refused: closed empty span) |
+| `fixtures/raydium_clmm_mainnet_pools/rc_ts120_m6gmamfn3r_1.snapshot.json` | `8vJk9vpg…fzKo` | 120 | 1 | 472254165 | 2/6 (fee_on=1 → b_to_a is SDK-provenance only; engine refusal asserted) |
+
+Note: pool `FvqiTGa9…C7C` (tick_spacing 10, 6/6 contiguous arrays) was captured but has no quotes fixture — BOTH directions refused (`all_trade=false` even at a 1e6 probe; degenerate sub-µ depth). The refusal ledger is the fixture contract; its snapshot is not committed.
+
+Two engine defects were found and fixed by this differential (both previously made the engine WRONG — fail-closed on valid mainnet states):
+
+1. **Empty-span array advancing** (`arb-math/src/clmm.rs::find_next_tick_boundary_with_size`): the walker demanded the literal adjacent array (`start ± 60·tick_spacing`) whenever the current array ran out, failing with `MissingTickArrayCoverage` across unallocated/closed-array spans. Official semantics (`swapSimulator.ts::swapInternal`) advance to the next array **in the caller-ordered list** — the price only ever moves to the next INITIALIZED tick; empty spans are crossed without any account. Fixed to advance to the nearest loaded array in direction; contiguous-list (incl. Whirlpool `[base, base−T, base−2T]`) behavior is byte-identical to before.
+2. **u64 step-reachability bound** (`compute_swap_step_checked`): the "amount to reach the target tick" was computed as u64 before the step's partial/full split; with concentrated liquidity the gap legitimately exceeds u64 (`liquidity × Δ(1/√P)` ≈ 1e20 at `liquidity` 6.4e22) and the quote failed `IntegerOverflow` although the step is partial. Fixed with a wide (u128) reachability pre-check mirroring the SDK's `MaxTokenOverflow`-catch (`calculateAmountInRange` returning `null`), leaving every amount actually materialized as narrow checked u64.
+
+Fee gross-up verified live per `swapMath.ts`: full step `fee = ceil(net_in × rate / (1e6 − rate))`, partial step `fee = amount_remaining − amount_in`; deep ts=120 probe reproduced the SDK's `fee_amount = 12106742575587251` exactly.
+
+Reproduction (network-enabled host, from repo root):
+
+```bash
+cd scripts/differential-harness && npm ci
+for P in 8VmwmoTU869tofZvYnNxV5hSK9jbVnkLu9Ys9eHi9dSk 4obueSHxA53UFb6jPYs1rQY41z6uD858SkTCf9AEmAXV 7izxtfJX7wk92aWanepSCP69RwMcSGsUefwsyA6CaE1P BaKfiGgycM3MiK4XvGZRrLedVmd3m5qcognBu1PeNV4w D7HU4rLQjmboCAWGa1upQuGFmncPgzufoVW6avE9F6qU 8vJk9vpgni14p6ofq6wVMZMn3aoFDug1RaK6XPDbfzKo; do
+  POOL_ADDRESS=$P node run_mainnet_raydium_clmm_differential.js
+done
+cargo test -p arb-engine --test raydium_clmm_mainnet_sdk_differential
+```
+
+### 4.4 Remaining gaps (open)
 
 | Gap | Class | Remediation path |
 |---|---|---|
-| Raydium CLMM multi-array mainnet SDK differential (same class as the whirlpool capture; step-level parity already covered by `raydium_clmm_swap_math_parity_tests.rs`, and the 60-tick-span defect that made hydrated Raydium hops fail closed in the general engine is fixed — see `EXTERNAL_BEST_PRACTICES.md` §5.2) | Coverage gap | Capture mainnet snapshots + official `@raydium-io/raydium-sdk-v2` `PoolUtils.computeAmountOutFormat` quotes (requires `ComputeClmmPoolInfo` + `tickarrayBitmapExtension` + `blockTimestamp`) via a harness analogous to `scripts/differential-harness/` |
 | All batch-captured DLMM pools have `collect_fee_mode = 0` (InputOnly); mode 1 (OnlyY) blocks are SDK-side overrides marked SIMULATED_ONLY | Coverage gap | Discover a live mainnet pool with `collect_fee_mode = 1` (decode `LbPair` per `fixtures/dlmm.json` IDL + 8-byte account discriminator) and run the same harness |
-| Variable-fee volatility state depends on `last_update_timestamp` handling; re-quotes on live snapshots exercise decay paths only in unit tests | Coverage gap | Capture timestamped snapshots; add timestamp-drift vectors |
 | Transient-capture hazard: one step-1 capture attempt failed at the active bin ("no bin consumed output") and succeeded on re-capture at a later slot | Environment | Re-run with a higher commitment or slot-pinned capture when transient emptiness matters |
+| Raydium CLMM `PoolUtils.computeAmountOutFormat` wrapper (Decimal/slippage formatting layer) not exercised — the harness pins the integer core `getOutputAmountAndRemainAccounts`, which is the decision-path surface | Scope note | Optional: wrap the existing integer oracle with the format layer in the runner |
 
 Live mainnet re-capture is no longer blocked (network egress verified working from this
 sandbox; commands under §4.1 were executed there). The interpolation of the previous
