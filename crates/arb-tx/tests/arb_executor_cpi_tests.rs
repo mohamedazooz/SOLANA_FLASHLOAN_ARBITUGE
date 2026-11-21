@@ -10,10 +10,13 @@
 //! - Both V0 with ALT and Solana V1 (SIMD-0385) wire compilation
 
 use arb_constants::{TOKEN_PROGRAM_ID, WSOL_MINT};
-use arb_tx::dlmm_3leg_flash_arb::{FlashArb3LegError, FlashArb3LegParams, FlashArb3LegPoolLeg};
+use arb_tx::dlmm_3leg_flash_arb::{
+    FlashArb3LegError, FlashArb3LegParams, FlashArb3LegPoolLeg, assemble_flash_funded_three_pool,
+};
 use arb_tx::flash::arb_executor::{
     ARB_EXECUTOR_PROGRAM_ID_STR, EXECUTE_THREE_LEG_DISCRIMINATOR,
-    assemble_flash_funded_three_pool_cpi, build_arb_executor_three_leg_instruction,
+    assemble_flash_funded_three_pool_cpi, assemble_flash_funded_three_pool_cpi_instructions,
+    build_arb_executor_three_leg_instruction,
 };
 use arb_tx::{KaminoFlashParams, KeypairSigner};
 use solana_pubkey::Pubkey;
@@ -111,6 +114,62 @@ fn make_test_params(
         recent_blockhash: [1u8; 32],
         v1_transport_supported: v1_transport,
     }
+}
+
+#[test]
+fn direct_and_cpi_assemblers_share_route_validation_contract() {
+    let signer = KeypairSigner::new_random();
+    let valid = make_test_params(
+        signer.pubkey(),
+        1_000_000_000,
+        1_000_000_000,
+        1_010_000_000,
+        1_010_000_000,
+        1_020_000_000,
+        1_020_000_000,
+        1_100_000_000,
+        true,
+    );
+
+    let assert_parity = |params: &FlashArb3LegParams| {
+        let direct = assemble_flash_funded_three_pool(params)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        let cpi = assemble_flash_funded_three_pool_cpi_instructions(params)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
+        assert_eq!(direct, cpi, "direct/CPI validation diverged");
+    };
+
+    assert_parity(&valid);
+
+    let mut zero_borrow = valid.clone();
+    zero_borrow.borrow_amount = 0;
+    assert_parity(&zero_borrow);
+
+    let mut duplicate_pool = valid.clone();
+    duplicate_pool.leg_3.lb_pair = duplicate_pool.leg_1.lb_pair;
+    assert_parity(&duplicate_pool);
+
+    let mut non_closing = valid.clone();
+    non_closing.leg_3.token_y_mint = Pubkey::new_unique();
+    assert_parity(&non_closing);
+
+    let mut mint_mismatch = valid.clone();
+    mint_mismatch.leg_2.token_x_mint = Pubkey::new_unique();
+    assert_parity(&mint_mismatch);
+
+    let mut token_program_mismatch = valid.clone();
+    token_program_mismatch.leg_2.token_x_program = Pubkey::new_unique();
+    assert_parity(&token_program_mismatch);
+
+    let mut closing_program_mismatch = valid.clone();
+    closing_program_mismatch.leg_3.token_y_program = Pubkey::new_unique();
+    assert_parity(&closing_program_mismatch);
+
+    let mut underfunded_hop = valid;
+    underfunded_hop.leg_1.min_amount_out = underfunded_hop.leg_2.amount_in - 1;
+    assert_parity(&underfunded_hop);
 }
 
 #[test]

@@ -19,6 +19,7 @@ use crate::atomic_integrity::{
 };
 use crate::flash::dlmm_3leg_flash_arb::{
     FlashArb3LegError, FlashArb3LegParams, FlashThreeLegArbitrageTx,
+    validate_flash_funded_three_pool_params,
 };
 use crate::meteora_dlmm::{DlmmSwapAccountSet, MEMO_PROGRAM_ID_STR, OPTIONAL_ACCOUNT_SENTINEL};
 use crate::{
@@ -256,51 +257,9 @@ pub fn build_arb_executor_three_leg_with_tip_instruction(
 pub fn assemble_flash_funded_three_pool_cpi_instructions(
     params: &FlashArb3LegParams,
 ) -> Result<(Vec<CompiledInstruction>, usize, usize), FlashArb3LegError> {
-    // ── Invariant 1: three distinct pools ──
-    if params.leg_1.lb_pair == params.leg_2.lb_pair
-        || params.leg_1.lb_pair == params.leg_3.lb_pair
-        || params.leg_2.lb_pair == params.leg_3.lb_pair
-    {
-        return Err(FlashArb3LegError::PoolsNotDistinct);
-    }
-    // ── Invariant 0: executor CPI stack depth inside the Agave runtime budget ──
+    let repay_amount = validate_flash_funded_three_pool_params(params)?;
+    // CPI has an additional stack-depth invariant beyond shared route checks.
     validate_executor_cpi_stack_depth()?;
-    // ── Invariant 2: non-zero principal ──
-    if params.borrow_amount == 0 {
-        return Err(FlashArb3LegError::ZeroBorrowAmount);
-    }
-    // ── Invariant 3: repayment covers principal + fee ──
-    let repay_amount = params.repay_amount();
-    if repay_amount < params.borrow_amount.saturating_add(params.flash_fee) {
-        return Err(FlashArb3LegError::InsufficientRepayment {
-            borrow: params.borrow_amount,
-            repay: repay_amount,
-            fee: params.flash_fee,
-        });
-    }
-
-    // ── Invariant 4: canonical hop input chaining ──
-    if params.leg_1.min_amount_out < params.leg_2.amount_in {
-        return Err(FlashArb3LegError::LegOutputBelowRequired {
-            leg: 1,
-            min_out: params.leg_1.min_amount_out,
-            required: params.leg_2.amount_in,
-        });
-    }
-    if params.leg_2.min_amount_out < params.leg_3.amount_in {
-        return Err(FlashArb3LegError::LegOutputBelowRequired {
-            leg: 2,
-            min_out: params.leg_2.min_amount_out,
-            required: params.leg_3.amount_in,
-        });
-    }
-    if params.leg_3.min_amount_out < repay_amount {
-        return Err(FlashArb3LegError::LegOutputBelowRequired {
-            leg: 3,
-            min_out: params.leg_3.min_amount_out,
-            required: repay_amount,
-        });
-    }
 
     let payer = params.payer;
     let flash_mint = params.leg_1.token_in();
