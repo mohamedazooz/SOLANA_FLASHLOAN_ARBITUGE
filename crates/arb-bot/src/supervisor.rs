@@ -12,7 +12,7 @@ use arb_land::{BidderConfig, JitoLander, TipStrategy};
 use arb_math::economic::calculate_net_profit_raw;
 use arb_math::{RttTracker, SlotClock};
 use arb_risk::{CircuitBreaker, KillSwitch, RiskGate, RiskLimits};
-use arb_sim::{ForkSimulator, Simulator};
+use arb_sim::{ForensicBundle, ForkSimulator, HopProvenance, Simulator};
 use arb_store::{AttemptRecord, PostgresStore, SqliteStore, Store};
 use arb_tx::{KaminoFlashParams, KeypairSigner, TxBuilder};
 use arb_types::{
