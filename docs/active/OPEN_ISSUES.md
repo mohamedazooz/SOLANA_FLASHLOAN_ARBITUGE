@@ -111,6 +111,11 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - N2: BF f64 `-ln` weights are pre-screen only; integer re-derivation mandatory for pricing/sizing/gating (`bellman_ford.rs:404`) — keep the boundary.
 - N3: Sizing returns best-observed candidate (budgeted multi-basin search), never claimed as global optimum — accepted limitation.
 
+### TXC-F-2026-11-22-N1: V1 Transport Toggles Pending Live Landing Observation (P3)
+
+- **File**: `crates/arb-tx/src/transport/selection.rs` (env gates `SOLANA_TX_V1_DIRECT_ENABLED` / `SOLANA_TX_V1_JITO_ENABLED`, default OFF).
+- **Behavior**: V1 compile is spec-complete and fuzz/differential-tested, but enabling submission requires an on-cluster observation of a V1 land on Agave ≥4.2.2 — not available in the sandbox. Gate is correct and fail-closed; do not toggle before evidence.
+
 ---
 
 ## 3. P1 Defects (High Priority)

@@ -356,3 +356,22 @@ PR: (this PR)
 REMAINING_RISKS: Live profitability unproven (no live tx permitted); 0x1773 still blocks live; DLMM optimizer wire-up gated on FL-N2.
 NEXT_TASK: Mission §10 Phase 5 — Transaction compiler audit.
 ```
+
+```markdown
+TASK_ID: TASK-M5-001
+PHASE: Mission §10 — Solana Transaction Compiler (Phase 5)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Audit the V0/V1 compilation pipeline (serialization, remapping, sanitation limits, transport selection, no-downgrade rule) against the current SIMD-0385 spec.
+FILES: docs/active/audit/TRANSACTION_COMPILER_AUDIT.md, docs/active/audit/TRANSACTION_COMPATIBILITY_MATRIX.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: compile_v1_message (adaptive.rs:415), compile_v1_only, compile_v0_message, select_transport, V1ConfigParams::compute_mask_and_values
+CURRENT_BEHAVIOR: V1 spec-complete; env-gated submission defaults OFF; V0 production default.
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation only.
+TEST_PLAN: cargo test -p arb-tx (434 tests incl. property fuzz + boundary ladders).
+ACCEPTANCE_CRITERIA: Full SIMD-0385 layout table + compatibility matrix + no-downgrade rule documented with test evidence.
+ACTUAL_RESULT: 2026-11-22 — 434 passed / 0 failed; TXC-F-2026-11-22-N1 (P3) registered (V1 toggles pending live landing evidence).
+PR: (this PR)
+REMAINING_RISKS: Live on-cluster V1 observation outstanding; V0 remains the default path.
+NEXT_TASK: Mission §11 Phase 6 — On-chain program security.
+```

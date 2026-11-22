@@ -31,6 +31,8 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`audit/QUOTE_PARITY_REPORT.md`](../../docs/active/audit/QUOTE_PARITY_REPORT.md) | **Phase 3 Quote Parity**: differential-vs-official-SDK evidence per venue, honest parity gaps. |
 | [`audit/ARBITRAGE_ENGINE_AUDIT.md`](../../docs/active/audit/ARBITRAGE_ENGINE_AUDIT.md) | **Phase 4 Arbitrage Engine Audit**: BF-discovery-only policy, integer re-derivation ladder, executability gates. |
 | [`audit/ECONOMIC_INVARIANTS.md`](../../docs/active/audit/ECONOMIC_INVARIANTS.md) | **Phase 4 Economic Invariants**: EI-01…EI-12 with enforcement points and tests. |
+| [`audit/TRANSACTION_COMPILER_AUDIT.md`](../../docs/active/audit/TRANSACTION_COMPILER_AUDIT.md) | **Phase 5 Compiler Audit**: SIMD-0385 layout re-verified, CB strip + fail-closed index rewrite, V0/V1 gates. |
+| [`audit/TRANSACTION_COMPATIBILITY_MATRIX.md`](../../docs/active/audit/TRANSACTION_COMPATIBILITY_MATRIX.md) | **Phase 5 Compatibility Matrix**: format × transport × runtime, no-downgrade rules. |
 
 ---
 
