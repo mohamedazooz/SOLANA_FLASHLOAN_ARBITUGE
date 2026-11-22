@@ -375,3 +375,22 @@ PR: (this PR)
 REMAINING_RISKS: Live on-cluster V1 observation outstanding; V0 remains the default path.
 NEXT_TASK: Mission §11 Phase 6 — On-chain program security.
 ```
+
+```markdown
+TASK_ID: TASK-M6-001
+PHASE: Mission §11 — On-Chain Program Security (Phase 6)
+PRIORITY: P0
+STATUS: VERIFIED
+OBJECTIVE: Audit every arb-executor instruction (signer, PDA/state, program identity, pools, mints, token accounts, tips, arithmetic, reentrancy, replay) and verify deployment status honestly.
+FILES: programs/arb-executor/src/instructions/*.rs, programs/arb-executor/src/validation/*.rs, docs/active/security/ONCHAIN_PROGRAM_SECURITY_AUDIT.md, docs/active/security/PROGRAM_DEPLOYMENT_VERIFICATION.md, docs/active/OPEN_ISSUES.md
+FUNCTIONS: process_execute_three_leg, resolve_route_mint_accounts, validate_protocol_programs, validate_user_token_account_for_mint, validate_jito_tip_account, tip_amount_for_bps, process_profit_guard
+CURRENT_BEHAVIOR: native (non-Anchor) stateless entrypoint; delta-based profit guards; hard-coded trusted program IDs; vanity placeholder deploy ID.
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation + register entries only.
+TEST_PLAN: cargo test -p arb-executor.
+ACCEPTANCE_CRITERIA: Full security property table; deployment verdict honest (NOT VERIFIED); findings registered.
+ACTUAL_RESULT: 2026-11-22 — 36 passed / 0 failed; no unsafe/unwrap in prod paths; findings EXEC-F-2026-11-22-N1 (P2 placeholder ID) and N2 (P3 SBF build absent) registered. Program is native, not Anchor (mission wording corrected).
+PR: (this PR)
+REMAINING_RISKS: Deployment identity unverified — on-chain executor cannot be trusted for live routing until EXEC-N1 items are done.
+NEXT_TASK: Mission §12 Phase 7 — Market data & HFT infrastructure.
+```
