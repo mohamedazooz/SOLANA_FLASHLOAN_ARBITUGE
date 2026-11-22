@@ -250,7 +250,18 @@ impl DlmmFlashArbPool {
                 status: dlmm.status,
             });
         }
-        if fp.function_type > 1 {
+        // Source-verified on-chain `StaticParameters.function_type` semantics
+        // (dlmm-sdk commons/src/conversions/function_type.rs TryFrom<u8>):
+        // 0 = Undetermined (system decides LO vs LM by reward initialization,
+        // which the decoder folds into `support_limit_order`),
+        // 1 = LiquidityMining, 2 = LimitOrder. Limit-order pools are a
+        // first-class pool type whose exact-in fill layers (market-maker ->
+        // processed -> open) are implemented in `arb-math::dlmm::swap` so
+        // them. Only values outside the official `TryFrom` set fail closed.
+        // NOTE: the creation-time `ConcreteFunctionType` argument (0 = LO,
+        // 1 = LM per meteora-invent dlmm_config.jsonc) is a DIFFERENT enum
+        // from the stored `FunctionType`; do not conflate them here.
+        if fp.function_type > 2 {
             return Err(QuoteGateRejection::UnsupportedFunctionType {
                 function_type: fp.function_type,
             });
@@ -353,10 +364,12 @@ impl DlmmFlashArbPool {
 /// these into `None`; diagnostics and rejection details carry the specific
 /// variant instead of an opaque "quote failed".
 ///
-/// `UnsupportedFunctionType` covers Meteora `ConcreteFunctionType` values the
-/// engine does not price (only 0 = Undetermined and 1 = LiquidityMining are
-/// accepted; e.g. limit-order-featured pools fail closed until a differential
-/// SDK parity test proves the open-order layer semantics).
+/// `UnsupportedFunctionType` covers on-chain `StaticParameters.function_type`
+/// values outside the official `FunctionType` set
+/// {0 = Undetermined, 1 = LiquidityMining, 2 = LimitOrder}
+/// (dlmm-sdk commons/src/conversions/function_type.rs). Limit-order pools
+/// (2) are quoted through the exact-in limit-order fill layers in
+/// `arb-math::dlmm::swap`; only undocumented values > 2 fail closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuoteGateRejection {
     ZeroInput,
@@ -1584,10 +1597,10 @@ mod tests {
             .params
             .as_mut()
             .unwrap()
-            .function_type = 2;
+            .function_type = 3;
         assert_eq!(
             pool.quote_failure_reason(1_000, &from, &to),
-            Some(QuoteGateRejection::UnsupportedFunctionType { function_type: 2 })
+            Some(QuoteGateRejection::UnsupportedFunctionType { function_type: 3 })
         );
 
         let mut pool = gate_pool();
@@ -1633,18 +1646,61 @@ mod tests {
 
     #[test]
     fn quote_gate_order_puts_pair_state_before_fee_params() {
-        // status != 0 AND function_type = 2: the disabled status must win
+        // status != 0 AND function_type = 3: the disabled status must win
         // because it describes the pool globally, not the fee config.
         let mut pool = gate_pool();
         {
             let dlmm = pool.state.dlmm.as_mut().unwrap();
             dlmm.status = 7;
-            dlmm.params.as_mut().unwrap().function_type = 2;
+            dlmm.params.as_mut().unwrap().function_type = 3;
         }
         let (from, to) = (pool_x(), pool_y());
         assert_eq!(
             pool.quote_failure_reason(1_000, &from, &to),
             Some(QuoteGateRejection::PoolDisabled { status: 7 })
+        );
+    }
+
+    #[test]
+    fn function_type_2_limit_order_pool_quotes_like_the_official_sdk() {
+        // Source-verified: StaticParameters.function_type == 2 is
+        // FunctionType::LimitOrder (dlmm-sdk commons function_type.rs), a
+        // first-class pool type. With empty limit-order layers the official
+        // exact-in fill reduces to the market-maker-only path, so the quote
+        // must be identical to an Undetermined pool over the same bins.
+        let maker_only = gate_pool();
+        let mut lo_pool = gate_pool();
+        lo_pool
+            .state
+            .dlmm
+            .as_mut()
+            .unwrap()
+            .params
+            .as_mut()
+            .unwrap()
+            .function_type = 2;
+        let (from, to) = (pool_x(), pool_y());
+        for amount in [1u64, 5_000_000u64, 9_500_000u64] {
+            assert_eq!(
+                lo_pool.quote_failure_reason(amount, &from, &to),
+                maker_only.quote_failure_reason(amount, &from, &to),
+                "LO pool must gate identically to the maker-only pool"
+            );
+            let (Some(a), Some(b)) = (
+                lo_pool.quote(amount, &from, &to),
+                maker_only.quote(amount, &from, &to),
+            ) else {
+                continue;
+            };
+            assert_eq!(
+                a.amount_out, b.amount_out,
+                "LO layers empty => identical out"
+            );
+            assert_eq!(a.fee_amount, b.fee_amount);
+        }
+        assert!(
+            lo_pool.quote(5_000_000, &from, &to).is_some(),
+            "function_type=2 must quote, not be rejected"
         );
     }
 
@@ -1676,9 +1732,10 @@ mod tests {
 
     #[test]
     fn evaluate_surfaces_the_precise_quote_gate_reason() {
-        // Mirror of the live 9hjBLBrc finding: a function_type=2 pool must
-        // surface UnsupportedFunctionType in the evaluation detail, not an
-        // opaque "DLMM quote failed".
+        // Undocumented function_type values (e.g. 3) must surface
+        // UnsupportedFunctionType in the evaluation detail, not an opaque
+        // "DLMM quote failed". (The live 9hjBLBrc pair has function_type=2 =
+        // FunctionType::LimitOrder and is now supported, not rejected.)
         let a = gate_pool();
         let mut b = gate_pool();
         b.state
@@ -1688,7 +1745,7 @@ mod tests {
             .params
             .as_mut()
             .unwrap()
-            .function_type = 2;
+            .function_type = 3;
         let fm = pool_x();
         let cfg = DlmmFlashArbConfig {
             allowlist: DlmmPoolAllowlist::new(vec![a.pool_id, b.pool_id]),
@@ -1704,12 +1761,12 @@ mod tests {
                 assert!(!detail.is_empty(), "detail must never be empty");
                 if (*hop == "A" || *hop == "B")
                     && detail.contains("UnsupportedFunctionType")
-                    && detail.contains("function_type: 2")
+                    && detail.contains("function_type: 3")
                 {
                     found = true;
                 }
             }
         }
-        assert!(found, "function_type=2 must surface in an evaluate detail");
+        assert!(found, "function_type=3 must surface in an evaluate detail");
     }
 }
