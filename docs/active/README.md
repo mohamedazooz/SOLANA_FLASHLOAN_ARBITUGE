@@ -42,6 +42,8 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 
 | [`audit/JITO_LANDING_AUDIT.md`](../../docs/active/audit/JITO_LANDING_AUDIT.md) | **Phase 8 Jito Landing Audit**: bundle fan-out, EV-maximizing bidder, measured-posterior ledger, proven-expiry lifecycle, tip-drift CI guard. |
 | [`performance/JITO_BENCHMARKS.md`](../../docs/active/performance/JITO_BENCHMARKS.md) | **Phase 8 Jito Benchmarks**: measurement contract (metrics wired × sources), no invented landing numbers, soak execution plan. |
+| [`security/CONFIGURATION_SECURITY.md`](../../docs/active/security/CONFIGURATION_SECURITY.md) | **Phase 9 Configuration Security**: precedence chain, profile set, fail-closed validation rules, secrets handling vs OWASP/NIST/KMS research. |
+| [`operations/RISK_CONTROL_POLICY.md`](../../docs/active/operations/RISK_CONTROL_POLICY.md) | **Phase 9 Risk Control Policy**: validated limits matrix, mode gates, breaker/switch inventory, authorization matrix, fail economics. |
 
 ---
 
