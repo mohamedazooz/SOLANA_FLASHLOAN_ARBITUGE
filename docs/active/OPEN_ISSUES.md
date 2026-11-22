@@ -116,6 +116,16 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **File**: `crates/arb-tx/src/transport/selection.rs` (env gates `SOLANA_TX_V1_DIRECT_ENABLED` / `SOLANA_TX_V1_JITO_ENABLED`, default OFF).
 - **Behavior**: V1 compile is spec-complete and fuzz/differential-tested, but enabling submission requires an on-cluster observation of a V1 land on Agave ≥4.2.2 — not available in the sandbox. Gate is correct and fail-closed; do not toggle before evidence.
 
+### EXEC-F-2026-11-22-N1: Vanity Placeholder Program ID masquerading as Deployment Identity (P2)
+
+- **File**: `crates/arb-constants/src/lib.rs:658` (`ARB_EXECUTOR_PROGRAM_ID = "ArbExec1111…111"`).
+- **Observed Behavior**: the workspace test only asserts pubkey parseability; nothing ties the constant to any real deployment. Claiming "deployed program verified" today would be false.
+- **Required Fix**: on any real deployment, record the true program ID + upgrade authority here and add a cross-check test (constant == deployed ID; deployed buffer slot's binary descriptor hash == locally built SBF workspace binary hash). Until then, on-chain executor CPI paths must be treated as UNVERIFIED for live routing.
+
+### EXEC-F-2026-11-22-N2: SBF Build Unverified This Session (P3)
+
+- `cargo-build-sbf` toolchain absent in the current sandbox; rebuild + hash-pin the workspace blobs before any deployment attempt.
+
 ---
 
 ### HFT-F-2026-11-22-N1: Yellowstone gRPC Compile-Ready but Not Decision-Wired (P3)
