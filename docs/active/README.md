@@ -27,6 +27,8 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`research/`](../../docs/active/research/README.md) | **Phase 1 Research Dossier**: Verified online/open-source best-practice findings per domain (Solana core, Jito, Yellowstone, DEX, flash loans, HFT, security). |
 | [`audit/FLASH_LOAN_FORENSIC_AUDIT.md`](../../docs/active/audit/FLASH_LOAN_FORENSIC_AUDIT.md) | **Phase 2 Flash Loan Forensic Audit**: 19-step lifecycle verification against the official Kamino clone, subsidy-exposure coverage matrix, findings FL-F-2026-11-22-N1/N2, ISSUE-P0-04 status. |
 | [`audit/FLASH_LOAN_REGRESSION_MATRIX.md`](../../docs/active/audit/FLASH_LOAN_REGRESSION_MATRIX.md) | **Phase 2 Regression Matrix**: FL-01…FL-22 invariants × guard location × test × evidence. |
+| [`audit/DEX_SUPPORT_MATRIX.md`](../../docs/active/audit/DEX_SUPPORT_MATRIX.md) | **Phase 3 DEX Support Matrix**: per-protocol A–H pillar classification, verified program IDs, dormant-approximation findings. |
+| [`audit/QUOTE_PARITY_REPORT.md`](../../docs/active/audit/QUOTE_PARITY_REPORT.md) | **Phase 3 Quote Parity**: differential-vs-official-SDK evidence per venue, honest parity gaps. |
 
 ---
 
