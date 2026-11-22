@@ -337,3 +337,22 @@ PR: (this PR)
 REMAINING_RISKS: Pump.fun/PumpSwap mainnet snapshots not committed (synthetic fixtures only); four dormant approximations must never be enabled without the registered prerequisites.
 NEXT_TASK: Mission §9 Phase 4 — Arbitrage engine & quantitative correctness.
 ```
+
+```markdown
+TASK_ID: TASK-M4-001
+PHASE: Mission §9 — Arbitrage Engine & Quantitative Correctness (Phase 4)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Audit Bellman-Ford usage, route graph/dedup, exact re-quoting & sizing, the net-profit consistency ladder across scanner/builder/sim/risk/executor/PnL, and produce the engine audit + economic invariants docs.
+FILES: docs/active/audit/ARBITRAGE_ENGINE_AUDIT.md, docs/active/audit/ECONOMIC_INVARIANTS.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: evaluate_cycle (bellman_ford.rs:404), compute_cycle_profit, calculate_net_profit_raw (economic.rs:552), route_dedup, liquidity-capped sizing
+CURRENT_BEHAVIOR: BF f64 weights pre-screen only; integer re-derivation for pricing/sizing/gating; best-observed sizing (not global optimum); realized PnL is balance-delta-only.
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation + register entries only.
+TEST_PLAN: cargo test -p arb-engine; cargo test -p arb-risk.
+ACCEPTANCE_CRITERIA: Full consistency ladder documented with evidence; limitations explicitly stated; suite green.
+ACTUAL_RESULT: 2026-11-22 — arb-engine 190 passed / 0 failed; arb-risk 22 passed / 0 failed; findings ARB-F-2026-11-22-N1/N2/N3 (all P3) registered; EI-01..EI-12 invariants tabulated with enforcement/test evidence.
+PR: (this PR)
+REMAINING_RISKS: Live profitability unproven (no live tx permitted); 0x1773 still blocks live; DLMM optimizer wire-up gated on FL-N2.
+NEXT_TASK: Mission §10 Phase 5 — Transaction compiler audit.
+```

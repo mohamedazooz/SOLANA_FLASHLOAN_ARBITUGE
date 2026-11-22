@@ -29,6 +29,8 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`audit/FLASH_LOAN_REGRESSION_MATRIX.md`](../../docs/active/audit/FLASH_LOAN_REGRESSION_MATRIX.md) | **Phase 2 Regression Matrix**: FL-01…FL-22 invariants × guard location × test × evidence. |
 | [`audit/DEX_SUPPORT_MATRIX.md`](../../docs/active/audit/DEX_SUPPORT_MATRIX.md) | **Phase 3 DEX Support Matrix**: per-protocol A–H pillar classification, verified program IDs, dormant-approximation findings. |
 | [`audit/QUOTE_PARITY_REPORT.md`](../../docs/active/audit/QUOTE_PARITY_REPORT.md) | **Phase 3 Quote Parity**: differential-vs-official-SDK evidence per venue, honest parity gaps. |
+| [`audit/ARBITRAGE_ENGINE_AUDIT.md`](../../docs/active/audit/ARBITRAGE_ENGINE_AUDIT.md) | **Phase 4 Arbitrage Engine Audit**: BF-discovery-only policy, integer re-derivation ladder, executability gates. |
+| [`audit/ECONOMIC_INVARIANTS.md`](../../docs/active/audit/ECONOMIC_INVARIANTS.md) | **Phase 4 Economic Invariants**: EI-01…EI-12 with enforcement points and tests. |
 
 ---
 
