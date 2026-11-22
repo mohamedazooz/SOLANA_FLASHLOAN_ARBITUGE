@@ -318,3 +318,22 @@ PR: (this PR)
 REMAINING_RISKS: 0x1773 unresolved (live execution blocked, fail-closed); Token-2022 unsupported path unchanged; DLMM two-pool engine must not be wired up before FL-F-2026-11-22-N2 correction.
 NEXT_TASK: Mission §8 Phase 3 — DEX support matrix completion.
 ```
+
+```markdown
+TASK_ID: TASK-M3-001
+PHASE: Mission §8 — DEX and Quote Engine Audit (Phase 3)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Classify all 11 DexProtocol variants across pillars A–H (discovery, decoding, quote, sizing, building, CPI, simulation, mainnet verification) with verified program IDs and honest unsupported labels.
+FILES: docs/active/audit/DEX_SUPPORT_MATRIX.md, docs/active/audit/QUOTE_PARITY_REPORT.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: decode_pool_info, QuoteEngine dispatch (engines/mod.rs), build_swap_hop_instruction, per-protocol differential test suites
+CURRENT_BEHAVIOR: 7 protocols carry the full loop; DAMM v2 / DBC / DLMM Pro / LaunchLab quote via constant-product approximations but are fail-closed for discovery (unreachable); Token-2022 excluded by policy; Jupiter is transport-only.
+ROOT_CAUSE: N/A (audit + registration task).
+REQUIRED_CHANGE: Documentation + register entries only; no runtime behavior changed.
+TEST_PLAN: cargo test -p arb-dex; cargo test -p arb-math; program-ID verification against official sources.
+ACCEPTANCE_CRITERIA: Matrix complete for all 11 protocols; parity evidence cited per venue; gaps classified with IDs.
+ACTUAL_RESULT: 2026-11-22 — matrix delivered; program IDs re-verified (Meteora docs / Bitquery / Raydium catalog); arb-dex 127 passed / 0 failed; arb-math 342 passed / 0 failed; findings DEX-F-2026-11-22-N1 (P3, dormant CP approximations) and N2 (P3 telemetry) registered.
+PR: (this PR)
+REMAINING_RISKS: Pump.fun/PumpSwap mainnet snapshots not committed (synthetic fixtures only); four dormant approximations must never be enabled without the registered prerequisites.
+NEXT_TASK: Mission §9 Phase 4 — Arbitrage engine & quantitative correctness.
+```

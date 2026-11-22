@@ -93,6 +93,18 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Required Fix**: when the two-pool engine is wired into supervision, raise `leg_b.min_amount_out` to `max(repay, borrow+fee+tip+min_profit)` and include the tip; then add the FL-15-style regression test to this assembler.
 - **Status**: OPEN (P3); wire-up must not proceed without this.
 
+### DEX-F-2026-11-22-N1: DAMM v2 / DBC / DLMM Pro / LaunchLab Quote via CP Approximation (P3)
+
+- **File**: `crates/arb-dex/src/engines/mod.rs:94–118`.
+- **Observed Behavior**: those four protocols quote through a generic constant-product fallback with hard-coded fees (25/25/10/25 bps) — not official protocol math. They are fail-closed for discovery (`crates/arb-ingest/src/decoders.rs:274` returns `None`), so no live edge can reference them today; instruction builders and hydration accounts exist but are unreachable in the live loop.
+- **Required Fix Before ANY Enablement**: exact per-protocol math (DAMM v2 configurable-fee CP + position ranges; DBC 16-point piecewise curve; DLMM Pro continuous ticks; LaunchLab curve) + dynamic fee model + discovery + mainnet snapshot differential tests.
+- **Status**: OPEN (P3). See `docs/active/audit/DEX_SUPPORT_MATRIX.md`.
+
+### DEX-F-2026-11-22-N2: Raydium CLMM Discovery Fallback Fee Is a Structural Constant (P3, telemetry)
+
+- **File**: `crates/arb-ingest/src/decoders.rs:262` (`decode_pool_info` CLMM arm).
+- **Observed Behavior**: discovery-time struct carries `fee_bps: 25` placeholder. Operative fee is correct: catalog `feeRate` (`discovery.rs:517`) + millionths→bps conversion with fail-closed exclusion of `fee_on`/`dynamic_fee_info` pools (`decoders.rs:692–701`). Risk only if a CLMM pool reaches the graph without hydration — log/telemetry improvement.
+
 ---
 
 ## 3. P1 Defects (High Priority)
