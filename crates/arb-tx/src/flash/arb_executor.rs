@@ -34,12 +34,266 @@ use std::str::FromStr;
 /// Arbitrage Executor Program ID on Solana.
 pub const ARB_EXECUTOR_PROGRAM_ID_STR: &str = arb_constants::ARB_EXECUTOR_PROGRAM_ID;
 
+/// 1-byte instruction discriminator for `execute_swap`.
+pub const DISCRIMINATOR_EXECUTE_SWAP: u8 = 0;
+/// 1-byte instruction discriminator for `execute_route`.
+pub const DISCRIMINATOR_EXECUTE_ROUTE: u8 = 1;
+/// 1-byte instruction discriminator for `profit_guard`.
+pub const DISCRIMINATOR_PROFIT_GUARD: u8 = 2;
+
+/// 8-byte instruction discriminator for `profit_guard`.
+pub const PROFIT_GUARD_DISCRIMINATOR: [u8; 8] = [2, 0, 0, 0, 0, 0, 0, 0];
+/// 8-byte instruction discriminator for `execute_route`.
+pub const EXECUTE_ROUTE_DISCRIMINATOR: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 0];
+
 /// Discriminator for `execute_three_leg` (sha256("arb_executor:execute_three_leg")[..8]).
 pub const EXECUTE_THREE_LEG_DISCRIMINATOR: [u8; 8] = [173, 221, 98, 44, 189, 21, 102, 184];
 
 /// Discriminator for `execute_three_leg_with_tip`
 /// (sha256("arb_executor:execute_three_leg_with_tip")[..8]).
 pub const EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR: [u8; 8] = [124, 34, 60, 60, 78, 94, 133, 177];
+
+/// Build the on-chain standalone `profit_guard` instruction.
+///
+/// Verifies that `token_account` holds at least `min_balance_after`.
+/// If not, the instruction aborts and reverts the transaction before
+/// any repayment instruction can seize pre-existing funds.
+pub fn build_profit_guard_instruction(
+    token_account: Pubkey,
+    min_balance_after: u64,
+) -> CompiledInstruction {
+    let executor_program =
+        Pubkey::from_str(ARB_EXECUTOR_PROGRAM_ID_STR).expect("valid arb executor program id");
+
+    let mut data = Vec::with_capacity(9);
+    data.push(DISCRIMINATOR_PROFIT_GUARD);
+    data.extend_from_slice(&min_balance_after.to_le_bytes());
+
+    CompiledInstruction {
+        program_id: executor_program,
+        accounts: vec![AccountMeta::new_readonly(token_account, false)],
+        data,
+    }
+}
+
+/// Parameters for a single hop within a multi-leg route instruction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteHopParams {
+    pub protocol: u8,
+    pub flags: u8,
+    pub amount_in: u64,
+    pub min_amount_out: u64,
+    pub hop_accounts: Vec<AccountMeta>,
+}
+
+/// Build the `arb_executor::execute_route` instruction for arbitrary 2-leg and 3-leg paths.
+pub fn build_arb_executor_route_instruction(
+    payer: Pubkey,
+    settlement_account: Pubkey,
+    intermediate_accounts: &[Pubkey],
+    hops: &[RouteHopParams],
+    min_final_delta: u64,
+) -> CompiledInstruction {
+    let executor_program =
+        Pubkey::from_str(ARB_EXECUTOR_PROGRAM_ID_STR).expect("valid arb executor program id");
+
+    let hop_count = hops.len() as u8;
+    let mut data = Vec::with_capacity(89);
+    data.push(DISCRIMINATOR_EXECUTE_ROUTE);
+    data.push(hop_count);
+    data.extend_from_slice(&[0u8; 7]); // padding
+    data.extend_from_slice(&min_final_delta.to_le_bytes());
+
+    for i in 0..3 {
+        if let Some(hop) = hops.get(i) {
+            data.push(hop.protocol);
+            data.push(hop.flags);
+            data.push(hop.hop_accounts.len() as u8);
+            data.extend_from_slice(&[0u8; 5]); // padding
+            data.extend_from_slice(&hop.amount_in.to_le_bytes());
+            data.extend_from_slice(&hop.min_amount_out.to_le_bytes());
+        } else {
+            data.extend_from_slice(&[0u8; 24]);
+        }
+    }
+
+    let total_accounts =
+        2 + intermediate_accounts.len() + hops.iter().map(|h| h.hop_accounts.len()).sum::<usize>();
+    let mut metas = Vec::with_capacity(total_accounts);
+    metas.push(AccountMeta::new(payer, true));
+    metas.push(AccountMeta::new(settlement_account, false));
+    for intermediate in intermediate_accounts {
+        metas.push(AccountMeta::new(*intermediate, false));
+    }
+    for hop in hops {
+        metas.extend(hop.hop_accounts.iter().cloned());
+    }
+
+    CompiledInstruction {
+        program_id: executor_program,
+        accounts: metas,
+        data,
+    }
+}
+
+/// Parameters for multi-leg flash-funded route CPI execution.
+#[derive(Debug, Clone)]
+pub struct FlashRouteCpiParams {
+    pub payer: Pubkey,
+    pub kamino: crate::KaminoFlashParams,
+    pub borrow_amount: u64,
+    pub flash_fee: u64,
+    pub settlement_mint: Pubkey,
+    pub settlement_program: Pubkey,
+    pub intermediate_tokens: Vec<(Pubkey, Pubkey)>, // (mint, program)
+    pub hops: Vec<RouteHopParams>,
+    pub min_final_delta: u64,
+    pub min_net_profit_lamports: u64,
+    pub jito_tip_account: Pubkey,
+    pub jito_tip_lamports: u64,
+    pub cu_limit: u32,
+    pub priority_fee_micro_lamports: u64,
+}
+
+/// Assembles a complete atomic multi-leg flash-funded route CPI transaction.
+pub fn assemble_flash_funded_route_cpi(
+    params: &FlashRouteCpiParams,
+) -> Result<Vec<CompiledInstruction>, FlashArb3LegError> {
+    if params.hops.len() < 2 || params.hops.len() > 3 {
+        return Err(FlashArb3LegError::AtomicityFailed(
+            "hop count must be 2 or 3".into(),
+        ));
+    }
+
+    let mut ixs = Vec::new();
+    let effective_cu = crate::calculate_dynamic_cu_limit(params.cu_limit);
+    ixs.push(build_compute_unit_limit(effective_cu));
+    ixs.push(build_compute_unit_price(params.priority_fee_micro_lamports));
+
+    let settlement_ata = get_associated_token_address_with_program_id(
+        &params.payer,
+        &params.settlement_mint,
+        &params.settlement_program,
+    );
+
+    // Ephemeral ATA for settlement token
+    ixs.push(build_create_ata_idempotent_for_program(
+        params.payer,
+        params.payer,
+        params.settlement_mint,
+        settlement_ata,
+        params.settlement_program,
+    ));
+
+    // Ephemeral ATAs for intermediate tokens
+    let mut intermediate_atas = Vec::with_capacity(params.intermediate_tokens.len());
+    for (mint, program) in &params.intermediate_tokens {
+        let ata = get_associated_token_address_with_program_id(&params.payer, mint, program);
+        intermediate_atas.push(ata);
+        ixs.push(build_create_ata_idempotent_for_program(
+            params.payer,
+            params.payer,
+            *mint,
+            ata,
+            *program,
+        ));
+    }
+
+    // Kamino FlashBorrow
+    let borrow_idx = ixs.len();
+    let mut kamino = params.kamino.clone();
+    if kamino.user_destination_liquidity == Pubkey::default()
+        || kamino.user_destination_liquidity == params.settlement_mint
+    {
+        kamino.user_destination_liquidity = settlement_ata;
+    }
+    ixs.push(build_kamino_flash_borrow(
+        &kamino,
+        params.payer,
+        params.borrow_amount,
+    ));
+
+    // Route instruction
+    ixs.push(build_arb_executor_route_instruction(
+        params.payer,
+        settlement_ata,
+        &intermediate_atas,
+        &params.hops,
+        params.min_final_delta,
+    ));
+
+    // Standalone on-chain profit guard assertion before FlashRepay
+    let min_balance_after = params
+        .borrow_amount
+        .checked_add(params.flash_fee)
+        .and_then(|f| f.checked_add(params.min_net_profit_lamports))
+        .ok_or_else(|| FlashArb3LegError::AtomicityFailed("min_balance_after overflow".into()))?;
+    ixs.push(build_profit_guard_instruction(
+        settlement_ata,
+        min_balance_after,
+    ));
+
+    // Kamino FlashRepay
+    let repay_idx = ixs.len();
+    ixs.push(build_kamino_flash_repay_with_index(
+        &kamino,
+        params.payer,
+        params.borrow_amount,
+        borrow_idx as u8,
+    ));
+
+    // Close intermediate ATAs
+    for ((_, program), ata) in params
+        .intermediate_tokens
+        .iter()
+        .zip(intermediate_atas.iter())
+    {
+        ixs.push(crate::build_close_token_account_for_program(
+            *ata,
+            params.payer,
+            params.payer,
+            *program,
+        ));
+    }
+
+    // Jito tip
+    if params.jito_tip_lamports > 0 {
+        ixs.push(crate::build_jito_tip_instruction(
+            params.payer,
+            params.jito_tip_account,
+            Lamports(params.jito_tip_lamports),
+        ));
+    }
+
+    // Verify atomicity
+    let repay_amount = params.borrow_amount.checked_add(params.flash_fee).ok_or(
+        FlashArb3LegError::RepaymentOverflow {
+            borrow: params.borrow_amount,
+            fee: params.flash_fee,
+        },
+    )?;
+    let integrity = verify_atomic_integrity_for_format(
+        ExecutionMode::SingleTransaction,
+        &ixs,
+        Some(borrow_idx),
+        Some(repay_idx),
+        params.borrow_amount,
+        repay_amount,
+        params.flash_fee,
+        Some(TransactionFormat::V1),
+    )
+    .map_err(|e| FlashArb3LegError::AtomicityFailed(e.to_string()))?;
+
+    if !integrity.is_atomic {
+        return Err(FlashArb3LegError::AtomicityFailed(
+            integrity
+                .rejection_reason
+                .unwrap_or_else(|| "atomic verification failed".to_string()),
+        ));
+    }
+
+    Ok(ixs)
+}
 
 /// Estimated deepest CPI chain generated by the executor layout above:
 /// payer top-level -> `arb_executor::execute_three_leg` (frame 2) -> DEX program

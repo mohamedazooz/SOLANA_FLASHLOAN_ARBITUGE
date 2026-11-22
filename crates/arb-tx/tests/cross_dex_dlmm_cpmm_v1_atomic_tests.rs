@@ -160,9 +160,10 @@ fn test_matrix_01_profitable_dlmm_to_cpmm_v1_compilation() {
     // [3] Kamino FlashBorrow
     // [4] Meteora DLMM swap
     // [5] Raydium CPMM swap
-    // [6] Kamino FlashRepay
-    // [7] Jito Tip Transfer
-    assert_eq!(ixs.len(), 8);
+    // [6] Standalone Profit Guard
+    // [7] Kamino FlashRepay
+    // [8] Jito Tip Transfer
+    assert_eq!(ixs.len(), 9);
     assert_eq!(
         ixs[0].program_id.to_string(),
         "ComputeBudget111111111111111111111111111111"
@@ -174,7 +175,11 @@ fn test_matrix_01_profitable_dlmm_to_cpmm_v1_compilation() {
     assert_eq!(ixs[3].program_id.to_string(), KAMINO_KLEND_PROGRAM_ID);
     assert_eq!(ixs[4].program_id.to_string(), METEORA_DLMM_PROGRAM_ID);
     assert_eq!(ixs[5].program_id.to_string(), RAYDIUM_CPMM_PROGRAM_ID);
-    assert_eq!(ixs[6].program_id.to_string(), KAMINO_KLEND_PROGRAM_ID);
+    assert_eq!(
+        ixs[6].program_id.to_string(),
+        arb_tx::ARB_EXECUTOR_PROGRAM_ID_STR
+    );
+    assert_eq!(ixs[7].program_id.to_string(), KAMINO_KLEND_PROGRAM_ID);
 
     // 4. Compile strictly into Solana V1 Versioned Transaction
     let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
@@ -297,7 +302,7 @@ fn test_matrix_07_08_09_failure_simulation_and_atomicity_rollback() {
         .expect("Kamino flash repay instruction must exist");
     assert_ne!(borrow_idx, repay_idx);
     assert_eq!(borrow_idx, 3);
-    assert_eq!(repay_idx, 6);
+    assert_eq!(repay_idx, 7);
 
     let initial_verification = arb_tx::atomic_integrity::verify_atomic_integrity(
         arb_tx::atomic_integrity::ExecutionMode::SingleTransaction,
@@ -782,8 +787,8 @@ fn test_matrix_15_v1_transaction_structure_cryptographic_verification_and_config
     // 3. All required accounts are inline, no ALT dependency
     let num_addresses = compiled.message_bytes[41] as usize;
     assert_eq!(
-        num_addresses, 32,
-        "Phase 17 cross-DEX opportunity has 32 unique inline accounts"
+        num_addresses, 33,
+        "Phase 17 cross-DEX opportunity has 33 unique inline accounts"
     );
     assert!(
         num_addresses <= 64,
@@ -853,8 +858,8 @@ fn test_matrix_15_v1_transaction_structure_cryptographic_verification_and_config
     );
 
     // 6. No legacy Compute Budget instruction is incorrectly relied upon
-    // The original instruction list had 8 instructions (indices 0 and 1 were ComputeBudget)
-    assert_eq!(ixs.len(), 8);
+    // The original instruction list had 9 instructions (indices 0 and 1 were ComputeBudget)
+    assert_eq!(ixs.len(), 9);
     assert_eq!(
         ixs[0].program_id.to_string(),
         "ComputeBudget111111111111111111111111111111"
@@ -867,8 +872,8 @@ fn test_matrix_15_v1_transaction_structure_cryptographic_verification_and_config
     // In the compiled V1 message: num_instructions is at byte 40
     let num_ixs = compiled.message_bytes[40] as usize;
     assert_eq!(
-        num_ixs, 6,
-        "V1 message must strip 2 ComputeBudget instructions, leaving 6 executed instructions"
+        num_ixs, 7,
+        "V1 message must strip 2 ComputeBudget instructions, leaving 7 executed instructions"
     );
 
     // Verify repay instruction borrow_instruction_index was shifted from 3 to 1

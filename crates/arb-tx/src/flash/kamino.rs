@@ -270,7 +270,7 @@ pub const SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET: usize = 64;
 
 /// Errors reading on-chain Kamino flash-loan inputs. Fail closed: any
 /// malformed or unverifiable account is an error, never a default value.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum KaminoReadError {
     #[error("reserve account too short: {0} bytes")]
     AccountTooShort(usize),

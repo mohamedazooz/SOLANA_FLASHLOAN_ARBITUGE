@@ -717,6 +717,15 @@ impl ProtocolIntelligenceRepository for SqliteStore {
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         conn.execute(
+            "INSERT OR IGNORE INTO route_registry (
+                route_id, route_type, number_of_pools, ordered_pool_addresses,
+                ordered_protocol_ids, input_mint, intermediate_mints, output_mint,
+                route_version, enabled
+            ) VALUES (?1, 'AUTO_GENERATED', 2, '[]', '[]', '', '[]', '', 'v1', 1)",
+            params![s.route_id],
+        )
+        .map_err(|e| ArbError::Internal(format!("Failed to ensure route in registry: {e}")))?;
+        conn.execute(
             "INSERT OR REPLACE INTO route_simulation_records (
                 simulation_id, route_id, input_amount_raw, output_amount_raw, principal_raw,
                 flash_loan_fee_raw, network_fee_raw, priority_fee_raw, tip_raw, token_transfer_fees_raw,

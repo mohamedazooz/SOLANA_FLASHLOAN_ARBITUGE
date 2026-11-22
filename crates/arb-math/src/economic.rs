@@ -214,11 +214,7 @@ impl EconomicQuote {
 /// Convert a SOL-denominated lamport cost into base-mint raw units using an
 /// explicit, verified rational rate `rate_num / rate_denom`. Checked arithmetic throughout —
 /// overflow rejects the quote rather than silently saturating.
-pub(crate) fn lamports_to_base_raw(
-    lamports: Lamports,
-    rate_num: u128,
-    rate_denom: u128,
-) -> Result<u128> {
+pub fn lamports_to_base_raw(lamports: Lamports, rate_num: u128, rate_denom: u128) -> Result<u128> {
     if rate_num == 0 || rate_denom == 0 {
         return Err(ArbError::InvalidInput(
             "zero conversion rate component".into(),
@@ -1100,5 +1096,79 @@ mod tests {
 
         // Bounds are hard errors, never saturated.
         assert!(slippage_haircut_min_final(expected, 1, 10_001).is_err());
+    }
+
+    #[test]
+    fn test_kamino_flash_fee_checked_exhaustive_edge_cases() {
+        // 1. FlashLoanDisabled sentinel
+        assert_eq!(
+            kamino_flash_fee_checked(1_000_000_000, u64::MAX),
+            Err(KaminoFeeError::FlashLoanDisabled)
+        );
+        assert_eq!(
+            kamino_flash_fee_checked(0, u64::MAX),
+            Err(KaminoFeeError::FlashLoanDisabled)
+        );
+
+        // 2. Zero cases
+        assert_eq!(kamino_flash_fee_checked(0, 0), Ok(0));
+        assert_eq!(kamino_flash_fee_checked(0, 11_529_215_046_068), Ok(0));
+        assert_eq!(kamino_flash_fee_checked(1_000_000_000, 0), Ok(0));
+
+        // 3. Fee floor (1.0 raw unit minimum when fee_sf > 0)
+        // borrow = 10, sf = 1 => product = 10 < 1 << 60 => fee_bits clamped to 1 << 60
+        // fee_bits (1 << 60) < amount_bits (10 << 60), rounded = 1
+        assert_eq!(kamino_flash_fee_checked(10, 1), Ok(1));
+        assert_eq!(kamino_flash_fee_checked(2, 1), Ok(1));
+
+        // 4. BorrowTooSmall guard: fee_bits >= amount_bits
+        // borrow = 1 => amount_bits = 1 << 60, fee_bits >= 1 << 60 (due to 1.0 floor)
+        // Thus borrow = 1 fails with BorrowTooSmall for any fee_sf > 0!
+        assert_eq!(
+            kamino_flash_fee_checked(1, 1),
+            Err(KaminoFeeError::BorrowTooSmall)
+        );
+        assert_eq!(
+            kamino_flash_fee_checked(1, 11_529_215_046_068),
+            Err(KaminoFeeError::BorrowTooSmall)
+        );
+
+        // 100% fee rate (fee_sf = 1 << 60): product = amount * 2^60 = amount_bits
+        // fee_bits >= amount_bits -> BorrowTooSmall for ANY borrow amount
+        let sf_100pct = 1u64 << 60;
+        assert_eq!(
+            kamino_flash_fee_checked(1_000_000_000, sf_100pct),
+            Err(KaminoFeeError::BorrowTooSmall)
+        );
+
+        // 5. Round ties-away exact fractional testing
+        // With borrow = 1_000_000:
+        // We want fee_bits = product = (borrow * sf).
+        // Let target fee_bits have fractional part exactly 0.5 (1 << 59).
+        // If borrow = 2^10 = 1024, sf = (N << 50) + (1 << 49)
+        // Then borrow * sf = 2^10 * (N << 50 + 1 << 49) = N << 60 + 1 << 59.
+        // Rounding ties away: (N << 60 + 1 << 59 + 1 << 59) >> 60 = N + 1.
+        let borrow_pow2 = 1024u64;
+        let n = 5u64;
+        // sf that produces exact .5 fractional bit:
+        let sf_exact_half = (n << 50) + (1u64 << 49);
+        let fee_half = kamino_flash_fee_checked(borrow_pow2, sf_exact_half).unwrap();
+        assert_eq!(
+            fee_half,
+            n + 1,
+            "exact half ties away from zero -> rounds up"
+        );
+
+        // sf that produces strictly less than .5 fractional bit (half - 1):
+        let sf_just_below_half = (n << 50) + (1u64 << 49) - 1;
+        let fee_below = kamino_flash_fee_checked(borrow_pow2, sf_just_below_half).unwrap();
+        assert_eq!(fee_below, n, "just below half rounds down");
+
+        // 6. Mainnet realistic rate: 10 SOL @ 0.1 bps
+        let mainnet_wsol_sf: u64 = 11_529_215_046_068; // 1e-5
+        let ten_sol = 10_000_000_000u64;
+        let fee_10sol = kamino_flash_fee_checked(ten_sol, mainnet_wsol_sf).unwrap();
+        // 10e9 * 1e-5 = 100_000 lamports
+        assert_eq!(fee_10sol, 100_000);
     }
 }

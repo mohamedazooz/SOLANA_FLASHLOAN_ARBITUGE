@@ -80,3 +80,6 @@ artifacts/forensics/*.rs
 
 # Runtime forensic capture bundles (side-band replay artifacts, P0-04)
 reports/forensics/
+crates/arb-bot/reports/
+.agent/
+

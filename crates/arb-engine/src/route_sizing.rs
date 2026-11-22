@@ -6,14 +6,14 @@
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
-pub(crate) struct SizeSearchResult<T> {
+pub struct SizeSearchResult<T> {
     pub input: u64,
     pub score: i128,
     pub candidate: T,
     pub evaluated_count: usize,
 }
 
-pub(crate) fn optimize_bounded_non_monotonic<T: Clone>(
+pub fn optimize_bounded_non_monotonic<T: Clone>(
     max_input: u64,
     coarse_samples: usize,
     max_basins: usize,

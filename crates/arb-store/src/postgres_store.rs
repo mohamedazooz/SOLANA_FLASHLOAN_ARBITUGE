@@ -765,6 +765,15 @@ impl ProtocolIntelligenceRepository for PostgresStore {
             s.simulation_error.clone(),
         );
         self.block_on(async move {
+            let _ = client.execute(
+                "INSERT INTO route_registry (
+                    route_id, route_type, number_of_pools, ordered_pool_addresses,
+                    ordered_protocol_ids, input_mint, intermediate_mints, output_mint,
+                    route_version, enabled
+                ) VALUES ($1, 'AUTO_GENERATED', 2, '[]', '[]', '', '[]', '', 'v1', true)
+                ON CONFLICT (route_id) DO NOTHING",
+                &[&route_id],
+            ).await;
             client.execute(
                 "INSERT INTO route_simulation_records (
                     simulation_id, route_id, input_amount_raw, output_amount_raw, principal_raw,

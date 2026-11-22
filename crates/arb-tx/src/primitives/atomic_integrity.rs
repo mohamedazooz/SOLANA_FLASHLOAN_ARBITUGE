@@ -180,7 +180,7 @@ pub fn verify_atomic_integrity_for_format(
     match (borrow_idx, repay_idx) {
         (Some(b), Some(r)) => {
             // Check 2a: Borrow must come before repay.
-            if b >= r {
+            if b >= r && rejection_reason.is_none() {
                 rejection_reason = Some(format!(
                     "Flash borrow (index {b}) must precede repay (index {r})"
                 ));
@@ -189,17 +189,18 @@ pub fn verify_atomic_integrity_for_format(
             if r < instructions.len() && instructions[r].data.len() >= 16 {
                 let ix_repay_principal =
                     u64::from_le_bytes(instructions[r].data[8..16].try_into().unwrap_or_default());
-                if ix_repay_principal != 0
-                    && ix_repay_principal != borrow_amount
-                    && ix_repay_principal != borrow_amount.saturating_add(flash_fee)
-                {
+                if ix_repay_principal != borrow_amount && rejection_reason.is_none() {
                     rejection_reason = Some(format!(
                         "Flash repay instruction principal ({ix_repay_principal}) does not match borrow amount ({borrow_amount})"
                     ));
                 }
             }
-            let required_repay = borrow_amount.saturating_add(flash_fee);
-            if repay_amount < required_repay && repay_amount != borrow_amount {
+            let required_repay = borrow_amount.checked_add(flash_fee).ok_or_else(|| {
+                TxError::InvalidInput(
+                    "Repayment calculation overflow (borrow_amount + flash_fee)".to_string(),
+                )
+            })?;
+            if repay_amount < required_repay && rejection_reason.is_none() {
                 rejection_reason = Some(format!(
                     "Repayment {repay_amount} < borrow + fee {required_repay} — \
                      insufficient repayment causes transaction failure"
@@ -287,6 +288,44 @@ fn verify_instruction_ordering(
             if r <= s {
                 return Some(format!(
                     "repay index {r} must be after swaps (first swap at {s})"
+                ));
+            }
+        }
+    }
+
+    // If an on-chain profit guard instruction is present, enforce strict ordering:
+    // borrow < swaps < profit_guard < repay
+    let executor_program = Pubkey::from_str_const(arb_constants::ARB_EXECUTOR_PROGRAM_ID);
+    let mut guard_idx: Option<usize> = None;
+    for (i, ix) in instructions.iter().enumerate() {
+        if ix.program_id == executor_program
+            && (ix.data.first() == Some(&2)
+                || (ix.data.len() >= 8 && ix.data[..8] == [2, 0, 0, 0, 0, 0, 0, 0]))
+        {
+            guard_idx = Some(i);
+            break;
+        }
+    }
+
+    if let Some(g) = guard_idx {
+        if let Some(b) = borrow_idx {
+            if g <= b {
+                return Some(format!(
+                    "profit guard index {g} must be after borrow index {b}"
+                ));
+            }
+        }
+        if let Some(r) = repay_idx {
+            if g >= r {
+                return Some(format!(
+                    "profit guard index {g} must precede repay index {r}"
+                ));
+            }
+        }
+        if let Some(s) = first_swap_idx {
+            if g <= s {
+                return Some(format!(
+                    "profit guard index {g} must be after swaps (first swap at {s})"
                 ));
             }
         }
@@ -570,7 +609,8 @@ mod tests {
     fn test_flash_loan_borrow_before_repay() {
         let payer = test_payer();
         let borrow_ix = build_flash_borrow_ix(1_000_000_000, payer);
-        let repay_ix = build_flash_repay_ix(1_000_000_625, payer, 2);
+        // In Kamino, repay instruction liquidity_amount argument is principal ONLY
+        let repay_ix = build_flash_repay_ix(1_000_000_000, payer, 2);
 
         let ixs = vec![
             CompiledInstruction {
@@ -602,7 +642,7 @@ mod tests {
         .unwrap();
         assert!(
             result.is_atomic,
-            "borrow before repay with sufficient repayment should be atomic"
+            "borrow before repay with matching principal and sufficient repayment should be atomic"
         );
     }
 
@@ -610,7 +650,7 @@ mod tests {
     fn test_insufficient_repayment_rejected() {
         let payer = test_payer();
         let borrow_ix = build_flash_borrow_ix(1_000_000_000, payer);
-        let repay_ix = build_flash_repay_ix(1_000_000, payer, 2); // repay < borrow + fee
+        let repay_ix = build_flash_repay_ix(1_000_000_000, payer, 2);
 
         let ixs = vec![
             CompiledInstruction {
@@ -628,7 +668,7 @@ mod tests {
             Some(1),
             Some(2),
             1_000_000_000,
-            1_000_000,
+            1_000_000, // repay_amount < borrow + fee (1_000_000_625)
             625,
         )
         .unwrap();
@@ -649,7 +689,7 @@ mod tests {
     fn test_repay_before_borrow_rejected() {
         let payer = test_payer();
         let borrow_ix = build_flash_borrow_ix(1_000_000_000, payer);
-        let repay_ix = build_flash_repay_ix(1_000_000_625, payer, 1);
+        let repay_ix = build_flash_repay_ix(1_000_000_000, payer, 1);
 
         let ixs = vec![
             repay_ix,  // index 0 (repay before borrow!)
@@ -667,6 +707,118 @@ mod tests {
         )
         .unwrap();
         assert!(!result.is_atomic, "repay before borrow should be rejected");
+    }
+
+    #[test]
+    fn test_repay_instruction_with_fee_in_principal_rejected() {
+        let payer = test_payer();
+        let borrow_ix = build_flash_borrow_ix(1_000_000_000, payer);
+        // Kamino Lend expects principal only. Passing borrow + fee in the instruction data must fail.
+        let repay_ix_with_fee = build_flash_repay_ix(1_000_000_625, payer, 2);
+
+        let ixs = vec![
+            CompiledInstruction {
+                program_id: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
+                accounts: vec![],
+                data: vec![2, 255, 0, 0, 0],
+            },
+            borrow_ix,         // index 1
+            repay_ix_with_fee, // index 2
+        ];
+
+        let result = verify_atomic_integrity(
+            ExecutionMode::SingleTransaction,
+            &ixs,
+            Some(1),
+            Some(2),
+            1_000_000_000,
+            1_000_000_625,
+            625,
+        )
+        .unwrap();
+        assert!(
+            !result.is_atomic,
+            "passing borrow + fee in repay instruction principal must be rejected"
+        );
+        let reason = result.rejection_reason.unwrap();
+        assert!(
+            reason.contains("does not match borrow amount"),
+            "expected mismatch reason, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn test_repay_amount_equal_to_borrow_without_fee_rejected_when_fee_positive() {
+        let payer = test_payer();
+        let borrow_ix = build_flash_borrow_ix(1_000_000_000, payer);
+        let repay_ix = build_flash_repay_ix(1_000_000_000, payer, 2);
+
+        let ixs = vec![
+            CompiledInstruction {
+                program_id: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
+                accounts: vec![],
+                data: vec![2, 255, 0, 0, 0],
+            },
+            borrow_ix,
+            repay_ix,
+        ];
+
+        // repay_amount == borrow_amount (1_000_000_000) but flash_fee is 625.
+        // The old loophole allowed repay_amount == borrow_amount even when fee > 0.
+        // This must be strictly rejected now!
+        let result = verify_atomic_integrity(
+            ExecutionMode::SingleTransaction,
+            &ixs,
+            Some(1),
+            Some(2),
+            1_000_000_000,
+            1_000_000_000, // missing fee
+            625,
+        )
+        .unwrap();
+        assert!(
+            !result.is_atomic,
+            "repay_amount lacking flash_fee coverage must be rejected"
+        );
+        assert!(
+            result
+                .rejection_reason
+                .unwrap()
+                .contains("insufficient repayment"),
+            "should fail due to insufficient repayment"
+        );
+    }
+
+    #[test]
+    fn test_repayment_calculation_overflow_returns_err() {
+        let payer = test_payer();
+        let borrow_ix = build_flash_borrow_ix(u64::MAX, payer);
+        let repay_ix = build_flash_repay_ix(u64::MAX, payer, 2);
+
+        let ixs = vec![
+            CompiledInstruction {
+                program_id: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
+                accounts: vec![],
+                data: vec![2, 255, 0, 0, 0],
+            },
+            borrow_ix,
+            repay_ix,
+        ];
+
+        // borrow_amount = u64::MAX and flash_fee = 1 -> overflow in checked_add
+        let res = verify_atomic_integrity(
+            ExecutionMode::SingleTransaction,
+            &ixs,
+            Some(1),
+            Some(2),
+            u64::MAX,
+            u64::MAX,
+            1,
+        );
+        assert!(
+            matches!(res, Err(TxError::InvalidInput(ref msg)) if msg.contains("overflow")),
+            "expected overflow TxError::InvalidInput, got: {res:?}"
+        );
     }
 
     #[test]
@@ -779,7 +931,7 @@ mod tests {
             Some(1),
             Some(2),
             1_000_000_000,
-            1_000_000_000,
+            1_000_000_625,
             625,
         )
         .unwrap();

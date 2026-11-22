@@ -37,6 +37,7 @@ fn get_funded_signer() -> Option<KeypairSigner> {
 }
 
 #[tokio::test]
+#[ignore = "opt-in mainnet live simulation; requires live cluster stability"]
 async fn test_fresh_state_meteora_cross_pool_cycle() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

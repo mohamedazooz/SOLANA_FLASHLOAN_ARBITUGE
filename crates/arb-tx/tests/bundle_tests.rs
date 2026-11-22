@@ -214,7 +214,7 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         flash_loan_fee_sf: 0,
     };
 
-    // 1. Verify assemble_atomic_bundle outputs EXACTLY 7 instructions
+    // 1. Verify assemble_atomic_bundle outputs EXACTLY 8 instructions (with profit guard)
     let ixs = TxBuilder::assemble_atomic_bundle(
         payer,
         tip_acc,
@@ -229,8 +229,8 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
 
     assert_eq!(
         ixs.len(),
-        7,
-        "2-hop bundle must contain strictly 7 instructions"
+        8,
+        "2-hop bundle must contain strictly 8 instructions (with profit guard)"
     );
 
     // [0] SetComputeUnitLimit: 1_400_000 CU (runtime max fallback)
@@ -283,40 +283,47 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc").unwrap()
     );
 
-    // [5] KaminoFlashRepay: Index = 5, pointing to borrow_instruction_index = 2
+    // [5] Standalone On-Chain Profit Guard: Index = 5
     assert_eq!(
         ixs[5].program_id,
+        Pubkey::from_str(arb_tx::ARB_EXECUTOR_PROGRAM_ID_STR).unwrap()
+    );
+    assert_eq!(ixs[5].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
+
+    // [6] KaminoFlashRepay: Index = 6, pointing to borrow_instruction_index = 2
+    assert_eq!(
+        ixs[6].program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
     );
     assert_eq!(
-        ixs[5].data.len(),
+        ixs[6].data.len(),
         17,
         "Repay data must be strictly 17 bytes"
     );
-    assert_eq!(&ixs[5].data[0..8], &FLASH_REPAY_DISCRIMINATOR);
+    assert_eq!(&ixs[6].data[0..8], &FLASH_REPAY_DISCRIMINATOR);
     // Repay `amount` == borrow principal; the origination fee is collected
     // separately, on top, from the same source ATA at repay time.
-    assert_eq!(&ixs[5].data[8..16], &10_000_000_000u64.to_le_bytes());
+    assert_eq!(&ixs[6].data[8..16], &10_000_000_000u64.to_le_bytes());
     assert_eq!(
-        ixs[5].data[16], 2,
+        ixs[6].data[16], 2,
         "borrow_instruction_index must be strictly 2"
     );
     assert_eq!(
-        ixs[5].accounts.len(),
+        ixs[6].accounts.len(),
         12,
         "Repay must have canonical 12 accounts"
     );
     assert_eq!(
-        ixs[5].accounts[10].pubkey,
+        ixs[6].accounts[10].pubkey,
         Pubkey::from_str(SYSVAR_INSTRUCTIONS_ID).unwrap()
     );
 
-    // [6] Jito Tip Transfer
-    assert_eq!(ixs[6].program_id, Pubkey::new_from_array([0; 32])); // System Program
-    assert_eq!(&ixs[6].data[0..4], &2u32.to_le_bytes());
-    assert_eq!(&ixs[6].data[4..12], &50_000u64.to_le_bytes());
-    assert_eq!(ixs[6].accounts[0].pubkey, payer);
-    assert_eq!(ixs[6].accounts[1].pubkey, tip_acc);
+    // [7] Jito Tip Transfer
+    assert_eq!(ixs[7].program_id, Pubkey::new_from_array([0; 32])); // System Program
+    assert_eq!(&ixs[7].data[0..4], &2u32.to_le_bytes());
+    assert_eq!(&ixs[7].data[4..12], &50_000u64.to_le_bytes());
+    assert_eq!(ixs[7].accounts[0].pubkey, payer);
+    assert_eq!(ixs[7].accounts[1].pubkey, tip_acc);
 
     // 2. Build signed VersionedTransaction and assert wire format & MTU compliance
     let v0_tx = TxBuilder::build_kamino_bundle(&params).unwrap();
@@ -374,8 +381,8 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
 
     assert_eq!(
         ixs.len(),
-        8,
-        "3-hop bundle must contain strictly 8 instructions"
+        9,
+        "3-hop bundle must contain strictly 9 instructions (with profit guard)"
     );
 
     // [0] SetComputeUnitLimit: 1_400_000 CU (runtime max fallback)
@@ -403,19 +410,26 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap()
     );
 
-    // [6] KaminoFlashRepay with borrow_instruction_index = 2
+    // [6] Standalone On-Chain Profit Guard: Index = 6
     assert_eq!(
         ixs[6].program_id,
+        Pubkey::from_str(arb_tx::ARB_EXECUTOR_PROGRAM_ID_STR).unwrap()
+    );
+    assert_eq!(ixs[6].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
+
+    // [7] KaminoFlashRepay with borrow_instruction_index = 2
+    assert_eq!(
+        ixs[7].program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
     );
-    assert_eq!(ixs[6].data.len(), 17);
+    assert_eq!(ixs[7].data.len(), 17);
     assert_eq!(
-        ixs[6].data[16], 2,
+        ixs[7].data[16], 2,
         "borrow_instruction_index in 3-hop must still be 2"
     );
 
-    // [7] Jito Tip Transfer
-    assert_eq!(ixs[7].program_id, Pubkey::new_from_array([0; 32]));
+    // [8] Jito Tip Transfer
+    assert_eq!(ixs[8].program_id, Pubkey::new_from_array([0; 32]));
 
     // Build and verify signed transaction
     let v0_tx = TxBuilder::build_kamino_bundle(&params).unwrap();

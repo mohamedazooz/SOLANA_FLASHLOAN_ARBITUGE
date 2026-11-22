@@ -431,15 +431,15 @@ mod tests {
             &[],
         )
         .unwrap();
-        // Base route: CU limit + CU price + WSOL ATA Create + Kamino Borrow + 2 Swaps + Kamino Repay + Jito Tip = 8 instructions
-        assert_eq!(ixs_base.len(), 8);
+        // Base route: CU limit + CU price + WSOL ATA Create + Kamino Borrow + 2 Swaps + Profit Guard + Kamino Repay + Jito Tip = 9 instructions
+        assert_eq!(ixs_base.len(), 9);
         assert_eq!(&ixs_base[0].data[1..5], &184_000u32.to_le_bytes()); // 160k + 15% buffer = 184k
         assert_eq!(ixs_base[3].accounts[0].pubkey, payer); // Borrow user authority (signer)
         assert_eq!(ixs_base[3].accounts[2].pubkey, params.lending_market); // Borrow lending market
-        assert_eq!(ixs_base[6].accounts[0].pubkey, payer); // Repay user authority (signer)
-        assert_eq!(ixs_base[6].accounts[2].pubkey, params.lending_market); // Repay lending market
+        assert_eq!(ixs_base[7].accounts[0].pubkey, payer); // Repay user authority (signer)
+        assert_eq!(ixs_base[7].accounts[2].pubkey, params.lending_market); // Repay lending market
 
-        // 2. Route with intermediate trending token (Ephemeral ATA Create -> Swaps -> Close & Rent Reclaim)
+        // 2. Route with intermediate trending token (Ephemeral ATA Create -> Swaps -> Profit Guard -> Repay -> Close & Rent Reclaim)
         let intermediate_token = Pubkey::new_from_array([88; 32]);
         let opp_intermediate = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
@@ -493,8 +493,8 @@ mod tests {
             &[],
         )
         .unwrap();
-        // Base (8) + 1 Ephemeral ATA Create + 1 Ephemeral ATA Close = 10 instructions
-        assert_eq!(ixs_inter.len(), 10);
+        // Base (9) + 1 Ephemeral ATA Create + 1 Ephemeral ATA Close = 11 instructions
+        assert_eq!(ixs_inter.len(), 11);
         assert_eq!(
             ixs_inter[2].program_id,
             Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap()
@@ -504,10 +504,10 @@ mod tests {
             Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap()
         ); // CreateIdempotent (Intermediate)
         assert_eq!(
-            ixs_inter[8].program_id,
+            ixs_inter[9].program_id,
             Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap()
         ); // CloseAccount (Rent Reclaimed to Payer)
-        assert_eq!(ixs_inter[8].data, vec![9]); // CloseAccount opcode
+        assert_eq!(ixs_inter[9].data, vec![9]); // CloseAccount opcode
     }
 
     #[test]

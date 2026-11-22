@@ -47,6 +47,7 @@ fn setup_test_supervisor(db_filename: &str) -> (Supervisor, KeypairSigner) {
     let mut config: Config = toml::from_str(example_toml).expect("config.example.toml must parse");
 
     let db_path = std::env::temp_dir().join(format!("{}_{}.db", db_filename, std::process::id()));
+    let _ = std::fs::remove_file(&db_path);
     config.store.url = format!("sqlite://{}", db_path.display());
     config.strategy.max_state_age_slots = 5;
 
@@ -358,7 +359,7 @@ async fn test_matrix_01_supervisor_full_cross_dex_shadow_reconciliation() {
         pools: &pools,
     };
 
-    supervisor.set_cached_blockhash([3u8; 32], Some(1_150));
+    supervisor.set_cached_blockhash([3u8; 32], Some(slot.0 as i64 + 150));
     supervisor.process_opportunities(&[opp], pass).await;
 
     // 6. Verify evidence in durable store:
@@ -494,7 +495,7 @@ async fn test_matrix_02_supervisor_unprofitable_candidate_rejected() {
         pools: &pools,
     };
 
-    supervisor.set_cached_blockhash([3u8; 32], Some(2_150));
+    supervisor.set_cached_blockhash([3u8; 32], Some(slot.0 as i64 + 150));
     supervisor.process_opportunities(&[opp], pass).await;
 
     // Zero attempts should be persisted for slot because it was rejected at the profit floor
