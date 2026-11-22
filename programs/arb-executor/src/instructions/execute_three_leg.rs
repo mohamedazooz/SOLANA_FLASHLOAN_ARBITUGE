@@ -8,7 +8,8 @@ use crate::cpi::{DlmmSwapAccounts, invoke_meteora_swap2};
 use crate::error::ExecutorError;
 use crate::validation::{
     TOKEN_2022_PROGRAM_ID, WSOL_MINT, read_token_account_balance, validate_distinct_pools,
-    validate_protocol_programs, validate_user_token_account_for_mint,
+    validate_protocol_programs, validate_token_program_accounts,
+    validate_user_token_account_for_mint,
 };
 
 /// Parameters for the `execute_three_leg` instruction.
@@ -141,6 +142,10 @@ pub fn process_execute_three_leg<'a>(
     let event_authority = &accounts[8];
 
     validate_protocol_programs(dlmm_program, memo_program, event_authority, user)?;
+
+    // The token program accounts at indices 5 and 6 are the transfer targets
+    // every DLMM leg CPIs into; both must be the canonical SPL Token programs.
+    validate_token_program_accounts(token_program, token_2022_program)?;
 
     // Pool Accounts: Leg 1 (indices 9..17)
     let leg1_lb_pair = &accounts[9];

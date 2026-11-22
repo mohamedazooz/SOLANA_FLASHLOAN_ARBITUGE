@@ -171,6 +171,25 @@ pub fn validate_user_token_account_for_mint(
     validate_user_token_account(account, expected_user, Some(expected_mint.key))
 }
 
+/// Validate the two token-program header accounts against canonical IDs.
+///
+/// `execute_three_leg` delegates token transfers to whichever of these two
+/// accounts matches the mint owner. Without this gate, an attacker could
+/// substitute an arbitrary program at index 5 or 6 for a mint owned by the
+/// legacy Token program, causing the DLMM leg's token movements to CPI into
+/// attacker-chosen logic.
+pub fn validate_token_program_accounts(
+    token_program: &AccountInfo,
+    token_2022_program: &AccountInfo,
+) -> Result<(), ProgramError> {
+    if *token_program.key != SPL_TOKEN_PROGRAM_ID
+        || *token_2022_program.key != TOKEN_2022_PROGRAM_ID
+    {
+        return Err(ExecutorError::UnauthorizedProgramId.into());
+    }
+    Ok(())
+}
+
 /// Validate protocol programs, authority PDAs, and signer privileges.
 pub fn validate_protocol_programs(
     dlmm_program: &AccountInfo,
@@ -239,6 +258,51 @@ mod tests {
         assert_eq!(
             validate_distinct_pools(&p1, &p2, &p1),
             Err(ExecutorError::PoolsNotDistinct.into())
+        );
+    }
+
+    #[test]
+    fn test_validate_token_program_accounts() {
+        let spl_key = SPL_TOKEN_PROGRAM_ID;
+        let token_2022_key = TOKEN_2022_PROGRAM_ID;
+        let wrong = Address::from_str_const("11111111111111111111111111111111");
+        let mut l1: u64 = 1;
+        let mut l2: u64 = 1;
+        let mut l3: u64 = 1;
+        let mut d1: Vec<u8> = vec![];
+        let mut d2: Vec<u8> = vec![];
+        let mut d3: Vec<u8> = vec![];
+
+        let spl_acc = AccountInfo::new(&spl_key, false, false, &mut l1, &mut d1, &spl_key, false);
+        let tt_acc = AccountInfo::new(
+            &token_2022_key,
+            false,
+            false,
+            &mut l2,
+            &mut d2,
+            &token_2022_key,
+            false,
+        );
+        let wrong_acc = AccountInfo::new(&wrong, false, false, &mut l3, &mut d3, &spl_key, false);
+
+        assert!(validate_token_program_accounts(&spl_acc, &tt_acc).is_ok());
+        assert_eq!(
+            validate_token_program_accounts(&wrong_acc, &tt_acc),
+            Err(ProgramError::Custom(
+                ExecutorError::UnauthorizedProgramId as u32
+            ))
+        );
+        assert_eq!(
+            validate_token_program_accounts(&spl_acc, &wrong_acc),
+            Err(ProgramError::Custom(
+                ExecutorError::UnauthorizedProgramId as u32
+            ))
+        );
+        assert_eq!(
+            validate_token_program_accounts(&tt_acc, &spl_acc),
+            Err(ProgramError::Custom(
+                ExecutorError::UnauthorizedProgramId as u32
+            ))
         );
     }
 

@@ -315,21 +315,9 @@ impl ThreeLegMemeArbitrageContext {
             ));
         }
 
-        // ATA safety: never close an account with nonzero balance or withheld fees.
-        if self.meme_a_ata_balance > 0 && self.meme_a_ata_exists {
-            // This is fine — we just won't close it.
-        }
-        if self.meme_b_ata_balance > 0 && self.meme_b_ata_exists {
-            // Fine.
-        }
-
-        // Token-2022 withheld fees must be zero before considering close.
-        if self.meme_a_is_token_2022 && self.meme_a_withheld_fees > 0 {
-            // Close disallowed for this ATA.
-        }
-        if self.meme_b_is_token_2022 && self.meme_b_withheld_fees > 0 {
-            // Close disallowed for this ATA.
-        }
+        // ATA-close safety (nonzero balance, withheld Token-2022 fees, pre-existing
+        // canonical ATA) is enforced at instruction-emission time by
+        // `should_close_intermediate_ata`, which reads the same fields directly.
 
         Ok(())
     }

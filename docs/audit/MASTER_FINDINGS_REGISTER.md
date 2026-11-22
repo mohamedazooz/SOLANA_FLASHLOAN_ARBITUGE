@@ -12,13 +12,13 @@
 | WEB-001 | P1 | `web/src/components/Login.tsx` | CONFIRMED DEFECT | Removed automatic login and fixed credential attempt; login now occurs only from explicit form submission. | `npm run test:security` | FIXED IN PHASE 1A |
 | CTRL-001 | P1 | `web/src/App.tsx`; `crates/arb-bot/src/control_service.rs` | CONFIRMED DEFECT | Dashboard now calls the canonical `/api/control/{action}` contract. Resume clears the emergency latch, then explicitly calls `start`; no optimistic local success state is set. | `npm run test:security`; backend route contract inspected | FIXED IN PHASE 1A |
 | AUTH-002 | P2 | `web/src/App.tsx`; `web/src/components/Logs.tsx`; `web/src/api.ts`; `crates/arb-bot/src/web_api.rs` | CONFIRMED DEFECT | Both WebSocket consumers now request fresh single-use tickets through `api.wsUrl()`; long-lived session tokens are not placed in WebSocket URLs. | `npm run test:security`; backend single-use ticket tests exist | FIXED IN PHASE 1A |
-| OPS-001 | P2 | `crates/arb-bot/src/main.rs` | CONFIRMED SECURITY ISSUE | Pending Phase 1B | Pending | OPEN |
-| RISK-001 | P2 | `crates/arb-risk/src/lib.rs`; `crates/arb-bot/src/control_service.rs` | CONFIRMED DEFECT | Pending Phase 1B | Pending | OPEN |
-| CPI-001 | P2 | CPI assembly paths | INTEGRATION GAP | Pending source-path parity audit | Pending | OPEN |
-| CPI-002 | P2 | `programs/arb-executor/src/instructions/execute_three_leg.rs` | CONFIRMED DEFECT | Pending Phase 1C | Pending | OPEN |
-| CPI-003 | P2 | Flash repayment builders | CONFIRMED ECONOMIC RISK | Pending Phase 1C | Pending | OPEN |
-| ARCH-001 | P1 | Supervisor execution assembly | INTEGRATION GAP | Pending execution-path proof | Pending | OPEN |
-| TOKEN-003 | P1 | ATA derivation call sites | CONFIRMED DEFECT | Repository-wide remediation pending | Pending | OPEN |
+| OPS-001 | P2 | `crates/arb-bot/src/main.rs` | CONFIRMED SECURITY ISSUE | Fail-closed config discovery (config/config.toml first, explicit bail, never auto-selects example config) | `cargo test -p arb-bot` 85+1+6/0 | FIXED IN PHASE 1B (PR #136) |
+| RISK-001 | P2 | `crates/arb-risk/src/lib.rs`; `crates/arb-bot/src/control_service.rs` | CONFIRMED DEFECT | Half-open single-probe admission + immediate re-trip on probe failure + stale-probe release; 3 new regression tests | `cargo test -p arb-risk` 25/0 | FIXED IN PHASE 1B (PR #136) |
+| CPI-001 | P2 | CPI assembly paths | INTEGRATION GAP | Shared `validate_flash_funded_three_pool_params` forces identical solvency/route contract on direct and CPI assemblers | `cargo test -p arb-tx` 373/2i; `--test arb_executor_cpi_tests` 6/0 | FIXED IN PHASE 1C (`1a5d526`) |
+| CPI-002 | P2 | `programs/arb-executor/src/instructions/execute_three_leg.rs` | CONFIRMED DEFECT | On-chain mint-chain resolution + user token-account/mint ownership validation (`968a`) + token-account maintenance/authority checks (Phase 1D); token-program header-ID gate added Phase 1C-2 | `cargo test -p arb-executor` 37/0 incl. Program wallet admin gate tests | FIXED IN PHASE 1D + 1C-2 |
+| CPI-003 | P2 | Flash repayment builders | CONFIRMED ECONOMIC RISK | `repay_amount` checked, typed `RepaymentOverflow`, saturating coverage checks removed (Phase 1E); Kamino fee math parity verified vs klend `FeeCalculation::Exclusive` at `kamino.rs:685` | `three_pool_flash_arb_tests` 18/0 | FIXED IN PHASE 1E |
+| ARCH-001 | P1 | Supervisor execution assembly | INTEGRATION GAP | Execution-path proof (Phase 1C-2): supervisor production path = `compile_3leg_meme_dlmm_arb` (direct 3-leg, no flash) via `three_leg_meme_pipeline.rs` + `dlmm_flash_arb`/`meteora_atomic_builder` (flash 2-hop) via `dlmm_flash_arbitrage.rs`; flash-funded three-pool assembler + `arb-executor` CPI path remain unwired (no arb-engine/arb-bot callers) | repo-wide caller trace | OPEN — integration gap proven with evidence |
+| TOKEN-003 | P1 | ATA derivation call sites | CONFIRMED DEFECT | Token-program-aware ATA derivation across Orca/DLMM/CPMM/CLMM/DAMM/LaunchLab/PumpSwap/Kamino paths; legacy 2-arg helper documented SPL-only and restricted to WSOL/USDC contexts | `cargo test -p arb-tx` (ATA divergence tests) | FIXED IN PHASE 1F |
 
 ## Other previously reported findings
 
