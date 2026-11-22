@@ -123,9 +123,41 @@ pub fn optimize_bounded_non_monotonic<T: Clone>(
     })
 }
 
+/// Geometric candidate-borrow ladder shared by the production supervisor and
+/// the rehearsal harness. Single source of truth for ladder shape so the
+/// offline rehearsal measures EXACTLY what production would search: grows
+/// from `from_size` (clamped into `[1, ceiling]`) by ×3 with a +1 floor until
+/// `capacity - 1` rungs are filled, then always appends `ceiling` so the
+/// configured borrow ceiling is always evaluated. Integer-only, overflow-safe
+/// (saturating growth); `capacity` is clamped to `[1, 8]` to bound the quote
+/// budget. A capacity of 1 collapses to a single evaluation at the clamped
+/// discovery size.
+#[must_use]
+pub fn build_size_ladder(from_size: u64, ceiling: u64, capacity: usize) -> Vec<u64> {
+    let ceiling = ceiling.max(1);
+    let capacity = capacity.clamp(1, 8);
+    let mut sizes = Vec::with_capacity(capacity);
+    let mut s = from_size.min(ceiling).max(1);
+    while sizes.len() < capacity.saturating_sub(1) && s < ceiling {
+        sizes.push(s);
+        let next = s.saturating_mul(3).max(s.saturating_add(1));
+        if next <= s {
+            break;
+        }
+        s = next.min(ceiling);
+    }
+    if sizes.last().copied() != Some(ceiling) && capacity > 1 {
+        sizes.push(ceiling);
+    }
+    if sizes.is_empty() {
+        sizes.push(if capacity == 1 { s } else { ceiling });
+    }
+    sizes
+}
+
 #[cfg(test)]
 mod tests {
-    use super::optimize_bounded_non_monotonic;
+    use super::{build_size_ladder, optimize_bounded_non_monotonic};
 
     #[test]
     fn selects_best_late_basin_and_refines_around_it() {
@@ -179,5 +211,40 @@ mod tests {
     #[test]
     fn zero_bound_has_no_candidate() {
         assert!(optimize_bounded_non_monotonic::<()>(0, 16, 4, 8, &[], |_| None).is_none());
+    }
+
+    #[test]
+    fn size_ladder_grows_geometrically_and_always_includes_ceiling() {
+        let ladder = build_size_ladder(1_000_000, 100_000_000, 4);
+        assert_eq!(ladder, vec![1_000_000, 3_000_000, 9_000_000, 100_000_000]);
+    }
+
+    #[test]
+    fn size_ladder_single_rung_collapses_to_clamped_discovery_size() {
+        assert_eq!(
+            build_size_ladder(5_000_000, 100_000_000, 1),
+            vec![5_000_000]
+        );
+        assert_eq!(
+            build_size_ladder(200_000_000, 100_000_000, 1),
+            vec![100_000_000]
+        );
+        assert_eq!(build_size_ladder(0, 100_000_000, 1), vec![1]);
+    }
+
+    #[test]
+    fn size_ladder_respects_capacity_and_never_exceeds_ceiling() {
+        let ladder = build_size_ladder(1, u64::MAX - 1, 8);
+        assert_eq!(ladder.len(), 8);
+        assert_eq!(*ladder.last().expect("non-empty"), u64::MAX - 1);
+        assert!(ladder.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn size_ladder_from_at_ceiling_evaluates_only_the_ceiling() {
+        assert_eq!(
+            build_size_ladder(50_000_000, 50_000_000, 8),
+            vec![50_000_000]
+        );
     }
 }

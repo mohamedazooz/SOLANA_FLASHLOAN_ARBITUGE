@@ -206,26 +206,12 @@ impl Supervisor {
 
         // Candidate size ladder bounded by both the tuning ceiling and the live
         // risk-gate sizing. Falls back to a single discovery size when capped.
+        // Shared geometric ladder (×3 growth, ceiling always evaluated) so the
+        // rehearsal harness searches the SAME sizes as production.
         let size_search_sizes = {
             let ceiling = max_sizing.min(tuning.max_input).max(1);
             let capacity = tuning.size_ladder.clamp(1, 8);
-            let mut sizes = Vec::with_capacity(capacity);
-            let mut s = tuning.input_size.min(ceiling).max(1);
-            while sizes.len() < capacity.saturating_sub(1) && s < ceiling {
-                sizes.push(s);
-                let next = s.saturating_mul(3).max(s.saturating_add(1));
-                if next <= s {
-                    break;
-                }
-                s = next.min(ceiling);
-            }
-            if sizes.last().copied() != Some(ceiling) && capacity > 1 {
-                sizes.push(ceiling);
-            }
-            if sizes.is_empty() {
-                sizes.push(if capacity == 1 { s } else { ceiling });
-            }
-            sizes
+            arb_engine::build_size_ladder(tuning.input_size, ceiling, capacity)
         };
 
         // Dynamic economics: the candidate-ranking cost model uses the SAME

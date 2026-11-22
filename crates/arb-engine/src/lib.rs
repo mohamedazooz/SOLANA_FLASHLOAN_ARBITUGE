@@ -60,7 +60,9 @@ pub use three_leg_meme_pipeline::{
 pub mod three_pool_router;
 pub use three_pool_router::*;
 pub mod route_sizing;
-pub use route_sizing::{SizeSearchResult, optimize_bounded_non_monotonic};
+pub use route_sizing::{SizeSearchResult, build_size_ladder, optimize_bounded_non_monotonic};
+pub mod units;
+pub use units::{net_lamports_equiv, wsol_mint_pubkey};
 
 use arb_math::{
     DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
