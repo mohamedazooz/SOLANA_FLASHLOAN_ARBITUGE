@@ -194,6 +194,39 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+### BCK-F-2026-11-22-N1: In-Memory Session Store (P3)
+
+- **File**: `crates/arb-bot/src/web_api.rs`
+- **Severity**: P3
+- **Status**: Open (deliberate for single-operator).
+- **Evidence**: sessions live in process memory; restart forces re-login; no persistence or revocation list.
+- **Required action**: acceptable as-is; revisit only for multi-operator deployment.
+
+### BCK-F-2026-11-22-N2: Client IP Trust For Rate Limiting (P3)
+
+- **File**: `crates/arb-bot/src/web_api.rs:210+`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: per-IP limiter derives identity from proxy conventions; spoofable if ever exposed beyond loopback.
+- **Required action**: keep loopback bind; document trusted-proxy requirement; consider X-Forwarded-For strict parsing behind a known proxy.
+
+### BCK-F-2026-11-22-N3: Plain sha256 For Login Password (P3)
+
+- **File**: `crates/arb-bot/src/web_api.rs:52,158–164`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: sha256 with constant-time compare; loopback-only default exposure keeps risk low.
+- **Required action**: upgrade to Argon2id before any non-loopback or multi-operator exposure.
+
+### FRT-F-2026-11-22-N1/N2: Frontend UX Minor Gaps (P3)
+
+- **File**: `web/src/components/RiskControl.tsx`, `StrategyConfig.tsx`, `api.ts`
+- **Severity**: P3
+- **Summary**: minimal error messaging on failed control/config POSTs; token TTL is tab-bound by design.
+- **Required action**: cosmetic; combine in a single UI polish pass later.
+
+---
+
 ## 3. P1 Defects (High Priority)
 
 ### ISSUE-P1-01: Token-2022 Transfer Fee Double Counting Audit
