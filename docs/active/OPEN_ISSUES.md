@@ -105,6 +105,12 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **File**: `crates/arb-ingest/src/decoders.rs:262` (`decode_pool_info` CLMM arm).
 - **Observed Behavior**: discovery-time struct carries `fee_bps: 25` placeholder. Operative fee is correct: catalog `feeRate` (`discovery.rs:517`) + millionths→bps conversion with fail-closed exclusion of `fee_on`/`dynamic_fee_info` pools (`decoders.rs:692–701`). Risk only if a CLMM pool reaches the graph without hydration — log/telemetry improvement.
 
+### ARB-F-2026-11-22-N1..N3 (P3, audit notations)
+
+- N1: DLMM two-pool engine unreachable + quote-time-only floor (cross-ref FL-F-2026-11-22-N2).
+- N2: BF f64 `-ln` weights are pre-screen only; integer re-derivation mandatory for pricing/sizing/gating (`bellman_ford.rs:404`) — keep the boundary.
+- N3: Sizing returns best-observed candidate (budgeted multi-basin search), never claimed as global optimum — accepted limitation.
+
 ---
 
 ## 3. P1 Defects (High Priority)
