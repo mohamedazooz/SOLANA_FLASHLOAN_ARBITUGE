@@ -412,6 +412,26 @@ ACTUAL_RESULT: 2026-11-22 — arb-ingest 177/0, arb-metrics 11/0; HFT-F-2026-11-
 PR: (this PR)
 REMAINING_RISKS: Yellowstone A/B outstanding; ingest-decode histogram missing; bench coverage limited.
 NEXT_TASK: Mission §13 Phase 8 — Jito landing audit.
+
+```
+
+```markdown
+TASK_ID: TASK-M8-001
+PHASE: Mission §13 — Jito & Landing Engine (Phase 8)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Audit bundle submission, tip pricing, tip validation, lifecycle state machine, landing ledger, retry/reconciliation semantics.
+FILES: docs/active/audit/JITO_LANDING_AUDIT.md, docs/active/performance/JITO_BENCHMARKS.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: send_bundle/send_bundle_multi_region (arb-land lib.rs:458/525), AdaptiveBidder (bidder.rs), LandingLedger (ledger.rs), TransactionLifecycle (lifecycle.rs), TipOracle (tip_oracle.rs), validate_jito_tip_account (programs/arb-executor validation)
+CURRENT_BEHAVIOR: EV-maximizing bidder with refuse-above-ceiling rule; stale tip floor = no bid; proven-expiry-only retries; no per-region landing attribution (correct by design); tip account drift CI-guarded.
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation only.
+TEST_PLAN: cargo test -p arb-land.
+ACCEPTANCE_CRITERIA: Semantic separation acceptance≠landing≠confirmation≠finalization documented with test evidence; no blind retry verified.
+ACTUAL_RESULT: 2026-11-22 — arb-land 68/0; JTO-F-2026-11-22-N1/N2/N3 (P3) registered; no soak data yet (posteriors at prior).
+PR: #131
+REMAINING_RISKS: No measured landing data until shadow soak; bundle-sim policy unsettled.
+NEXT_TASK: Mission §14 Phase 9 — Risk & configuration hardening.
 ```
 
 ```markdown
@@ -426,7 +446,7 @@ CURRENT_BEHAVIOR: layered precedence (base → profile → whitelisted env → C
 ROOT_CAUSE: N/A (audit task).
 REQUIRED_CHANGE: Documentation + research only.
 TEST_PLAN: cargo test -p arb-config -p arb-risk.
-ACCEPTANCE_CRITERIA: Precedence + profiles + validation rules + control matrix documented with file:line evidence; fresh URl-dated research citations; gaps registered.
+ACCEPTANCE_CRITERIA: Precedence + profiles + validation rules + control matrix documented with file:line evidence; fresh URL-dated research citations; gaps registered.
 ACTUAL_RESULT: 2026-11-22 — findings CFN-F-2026-11-22-N1/N2/N3 + JTO-F-2026-11-22-N4 registered (all P3); research refreshed with OWASP/NIST/solana.com/Jito sources incl. BAM 2025-09-25.
 PR: (this PR)
 REMAINING_RISKS: legacy config ambiguity needs operator decision; config-audit log hook pending; BAM re-evaluation pending.

@@ -39,6 +39,9 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`architecture/MARKET_DATA_PIPELINE.md`](../../docs/active/architecture/MARKET_DATA_PIPELINE.md) | **Phase 7 Market Data Pipeline**: ingestion topology, coherence/integrity primitives, 11-rung latency ladder with wired call sites. |
 | [`performance/HFT_ARCHITECTURE.md`](../../docs/active/performance/HFT_ARCHITECTURE.md) | **Phase 7 HFT Architecture**: hot-path concurrency audit, batching wins, evidence-first optimization policy (no unsafe, no speculative changes). |
 | [`performance/LATENCY_BENCHMARKS.md`](../../docs/active/performance/LATENCY_BENCHMARKS.md) | **Phase 7 Latency Benchmarks**: stage-ladder metrics × sources, bench inventory, captured test evidence, honest NOT-EXECUTED gaps. |
+
+| [`audit/JITO_LANDING_AUDIT.md`](../../docs/active/audit/JITO_LANDING_AUDIT.md) | **Phase 8 Jito Landing Audit**: bundle fan-out, EV-maximizing bidder, measured-posterior ledger, proven-expiry lifecycle, tip-drift CI guard. |
+| [`performance/JITO_BENCHMARKS.md`](../../docs/active/performance/JITO_BENCHMARKS.md) | **Phase 8 Jito Benchmarks**: measurement contract (metrics wired × sources), no invented landing numbers, soak execution plan. |
 | [`security/CONFIGURATION_SECURITY.md`](../../docs/active/security/CONFIGURATION_SECURITY.md) | **Phase 9 Configuration Security**: precedence chain, profile set, fail-closed validation rules, secrets handling vs OWASP/NIST/KMS research. |
 | [`operations/RISK_CONTROL_POLICY.md`](../../docs/active/operations/RISK_CONTROL_POLICY.md) | **Phase 9 Risk Control Policy**: validated limits matrix, mode gates, breaker/switch inventory, authorization matrix, fail economics. |
 
