@@ -44,10 +44,9 @@ jobs:
         run: cargo check --workspace --all-targets
 
       - name: Check workspace (all supported features)
-        # Explicit feature matrix, not --all-features: the quarantined
-        # legacy pump-raydium builder modules (see BUG_NOTES.md) are
-        # default-off features that do not compile yet and must not be
-        # promoted by a blanket --all-features gate.
+        # Explicit feature matrix, not --all-features: optional ingest/routing/
+        # sims features are opt-in and must not be promoted by a blanket
+        # --all-features gate.
         run: >-
           cargo check --workspace --all-targets
           --features arb-bot/extra-ingest,arb-ingest/extra-ingest,arb-bot/split-routing,arb-engine/split-routing,arb-sim/litesvm

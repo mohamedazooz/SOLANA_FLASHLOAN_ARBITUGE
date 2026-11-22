@@ -37,4 +37,3 @@ solana-signer = { version = "=3.0.1", default-features = false }
 workspace = true
 
 [features]
-pump-v1-legacy-builder = []
