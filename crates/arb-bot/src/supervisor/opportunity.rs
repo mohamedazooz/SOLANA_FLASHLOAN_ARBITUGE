@@ -26,6 +26,30 @@ fn preflight_simulation_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// On-chain min-out for the split-route RETURN hop, in borrowed-mint raw units.
+///
+/// Binds the stricter of the slippage bound and the economic floor
+/// (principal + flash fee + tip + retained profit), mirroring the final-hop
+/// semantics of `TxBuilder::derive_swap_legs`. Pure and total: saturating on
+/// every intermediate addition.
+#[cfg(feature = "split-routing")]
+pub(crate) fn split_return_min_out(
+    total_out: u64,
+    slippage_bps: u64,
+    borrow_raw: u64,
+    flash_fee_raw: u64,
+    tip_raw: u64,
+    min_profit_raw: u64,
+) -> u64 {
+    let slippage_amount = total_out.saturating_mul(slippage_bps) / 10_000;
+    let slippage_floor = total_out.saturating_sub(slippage_amount);
+    let economic_floor = borrow_raw
+        .saturating_add(flash_fee_raw)
+        .saturating_add(tip_raw)
+        .saturating_add(min_profit_raw);
+    slippage_floor.max(economic_floor)
+}
+
 /// ISSUE-P0-04 forensic capture: bind the failed pre-flight simulation's wire
 /// bytes, per-hop quote provenance, bounded logs, and context slot into a
 /// deterministic-replay bundle under `reports/forensics/` (override with
@@ -1023,9 +1047,16 @@ impl Supervisor {
                 // and fail the repay — the split route is incomplete without it.
                 if opp.hops.len() >= 2 {
                     let return_hop = &opp.hops[1];
-                    // Calculate min_out using the estimated total output and slippage
-                    let slippage_amount = total_out * slip / 10_000;
-                    let min_out = total_out.saturating_sub(slippage_amount);
+                    // Slippage bound applied once; the economic floor below is
+                    // combined with `max` so the stricter of the two binds.
+                    let min_out = split_return_min_out(
+                        total_out,
+                        slip,
+                        opp.size_in.as_u64(),
+                        flash_fee_raw,
+                        tip.as_u64(),
+                        min_net_base_raw,
+                    );
                     match arb_tx::build_swap_hop_instruction(return_hop, payer, total_out, min_out)
                     {
                         Ok(ix) => all_legs.push(ix),
@@ -1744,5 +1775,39 @@ impl Supervisor {
             )
             .map(|_| ())
             .map_err(|e| format!("quote dependency readiness: {e:?}"))
+    }
+}
+
+#[cfg(all(test, feature = "split-routing"))]
+mod split_return_min_out_tests {
+    use super::split_return_min_out;
+
+    /// FL-F-2026-11-22-N1 regression: the return hop's on-chain min_out must
+    /// never sit below principal + flash fee + tip + retained profit, even when
+    /// the quote-relative slippage bound is looser.
+    #[test]
+    fn economic_floor_binds_when_slippage_is_looser() {
+        let out = split_return_min_out(1_000_000, 50, 985_000, 9_000, 1_000, 30_000);
+        assert_eq!(out, 1_025_000);
+        let looser = split_return_min_out(1_000_000, 50, 900_000, 9_000, 1_000, 30_000);
+        assert_eq!(looser, 995_000);
+    }
+
+    #[test]
+    fn slippage_floor_binds_when_stricter() {
+        let out = split_return_min_out(1_000_000, 50, 10, 1, 1, 1);
+        assert_eq!(out, 995_000);
+    }
+
+    #[test]
+    fn zero_slippage_returns_full_total() {
+        let out = split_return_min_out(777_777, 0, 10, 1, 1, 1);
+        assert_eq!(out, 777_777);
+    }
+
+    #[test]
+    fn saturating_at_extremes() {
+        let out = split_return_min_out(u64::MAX, 100, u64::MAX - 3, 1, 1, 1);
+        assert_eq!(out, u64::MAX);
     }
 }

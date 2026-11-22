@@ -298,3 +298,23 @@ ACTUAL_RESULT: 2026-11-21 — `cargo test -p arb-ingest`: 150 passed, 0 failed (
 REMAINING_RISKS: Real-network reconnect handshake (TLS dial, upgrade, mid-stream drop, redial) is not covered by in-process tests; gate while live-WS infrastructure is unavailable.
 NEXT_TASK: Phase 4 (TASK-P4-001).
 ```
+
+```markdown
+TASK_ID: TASK-M2-001
+PHASE: Mission §7 — Complete Flash Loan Forensic Audit (Phase 2)
+PRIORITY: P0
+STATUS: VERIFIED
+OBJECTIVE: Verify the complete 19-step flash-loan lifecycle against the official Kamino implementation, audit every assembler for subsidy exposure (no pre-existing balance can disguise a loss), and produce the forensic audit + regression matrix without touching slippage.
+FILES: crates/arb-tx/src/flash/kamino.rs, crates/arb-tx/src/flash/kamino_flash.rs, crates/arb-tx/src/flash/arb_executor.rs, crates/arb-tx/src/flash/dlmm_flash_arb.rs, crates/arb-tx/src/primitives/builder.rs, crates/arb-tx/src/primitives/atomic_integrity.rs, crates/arb-bot/src/supervisor/opportunity.rs, programs/arb-executor/src/instructions/execute_three_leg.rs, docs/active/audit/FLASH_LOAN_FORENSIC_AUDIT.md, docs/active/audit/FLASH_LOAN_REGRESSION_MATRIX.md
+FUNCTIONS: build_kamino_flash_borrow, build_kamino_flash_repay_with_index, derive_swap_legs, assemble_split_flash_arbitrage, assemble_flash_funded_two_pool, compile_v1_message, verify_atomic_integrity_for_format, execute_three_leg (on-chain)
+CURRENT_BEHAVIOR: Split-route return hop min_out bound only by quote-relative slippage; DLMM two-pool engine floor excludes tip/min_profit; 0x1773 (ISSUE-P0-04) root cause still unreproduced.
+ROOT_CAUSE: FL-F-2026-11-22-N1: split-route return hop lacked the final-hop economic floor that `derive_swap_legs` enforces on all other assemblers (path double-gated dead: feature off by default + `split = None` hardcoded at opportunity.rs:756).
+REQUIRED_CHANGE: `split_return_min_out` guard binding `max(slippage_floor, borrow+fee+tip+min_profit)` to the return hop; document per-path floor coverage; track DLMM engine wire-up requirement (N2) without touching reachable code semantics.
+TEST_PLAN: `cargo test --workspace`; `cargo clippy --workspace --all-targets -- -D warnings`; `cargo clippy -p arb-bot --features split-routing --all-targets -- -D warnings`; new `split_return_min_out_tests`.
+ACCEPTANCE_CRITERIA: Official-clone differential documented; every reachable path floored; findings registered; suite green.
+ACTUAL_RESULT: 2026-11-22 — 19-step lifecycle verified vs official Kamino clone (accounts, writability, optional referrer placeholder, discriminators re-hashed, fee semantics, flash_repay_checks); subsidy matrix completed; N1 FIXED (+4 tests, split feature), N2 registered P3 (path unreachable). `cargo test --workspace`: 1,626 passed / 0 failed / 6 ignored (+4 over baseline). Clippy clean both feature sets; fmt clean. LiteSVM e2e not run this session (SBF blobs absent; SKIP classed honestly). ISSUE-P0-04 remains OPEN pending a real captured failure.
+COMMIT: (this PR)
+PR: (this PR)
+REMAINING_RISKS: 0x1773 unresolved (live execution blocked, fail-closed); Token-2022 unsupported path unchanged; DLMM two-pool engine must not be wired up before FL-F-2026-11-22-N2 correction.
+NEXT_TASK: Mission §8 Phase 3 — DEX support matrix completion.
+```
