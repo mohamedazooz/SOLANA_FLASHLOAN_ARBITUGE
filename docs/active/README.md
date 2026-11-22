@@ -25,6 +25,8 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`CALL_GRAPH.md`](../../docs/active/CALL_GRAPH.md) | **Runtime Call Graph**: Detailed execution trace from startup through ingestion, quoting, sizing, and dispatch. |
 | [`DOCUMENTATION_INVENTORY.md`](../../docs/active/DOCUMENTATION_INVENTORY.md) | **Repository Documentation Inventory**: Comprehensive classification of all active and archived files. |
 | [`research/`](../../docs/active/research/README.md) | **Phase 1 Research Dossier**: Verified online/open-source best-practice findings per domain (Solana core, Jito, Yellowstone, DEX, flash loans, HFT, security). |
+| [`audit/FLASH_LOAN_FORENSIC_AUDIT.md`](../../docs/active/audit/FLASH_LOAN_FORENSIC_AUDIT.md) | **Phase 2 Flash Loan Forensic Audit**: 19-step lifecycle verification against the official Kamino clone, subsidy-exposure coverage matrix, findings FL-F-2026-11-22-N1/N2, ISSUE-P0-04 status. |
+| [`audit/FLASH_LOAN_REGRESSION_MATRIX.md`](../../docs/active/audit/FLASH_LOAN_REGRESSION_MATRIX.md) | **Phase 2 Regression Matrix**: FL-01…FL-22 invariants × guard location × test × evidence. |
 
 ---
 

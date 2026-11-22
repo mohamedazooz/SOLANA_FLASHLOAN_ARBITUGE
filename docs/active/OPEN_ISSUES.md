@@ -77,6 +77,22 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Regression Test**: Simulation harness verifying proper error categorization and bounded slippage behavior.
 - **Status (2026-11-20)**: Typed outcomes and fail-closed dispatch preflight are in PR #93; the Phase 17 diagnostic's fake-bin fallback and simulation-error pass-through are removed in PR #96 (green CI). The opt-in mainnet diagnostic previously substituted active bin `-6542` when the pool read failed and returned success when `simulateTransaction` reported an RPC error or an on-chain revert; it now fails closed. Historical evidence shows the harness could report a revert as a pass while using a hardcoded first-hop minimum; it does not identify the exact on-chain price, fee, or state cause. Same-snapshot quote and replay remain outstanding, so this issue still blocks live execution.
 
+### FL-F-2026-11-22-N1: Split-Route Return Hop Missing Economic Floor (Fixed)
+
+- **Severity**: P2 at time of audit — the path was double-gated dead (`split-routing` feature off by default AND `split = None` hardcoded at `opportunity.rs:756` with a "disabled until proven" notice).
+- **File**: `crates/arb-bot/src/supervisor/opportunity.rs` (split-route return hop).
+- **Observed Behavior (pre-fix)**: return hop `min_out` was quote-relative slippage only; had split routing ever been re-enabled, price drift within the slippage band could let the Kamino repay succeed out of a pre-existing wallet balance.
+- **Correction (this phase)**: `split_return_min_out(total_out, slip, borrow, fee, tip, min_profit) = max(slippage_floor, economic_floor)` is bound to the return hop; integer-only saturating math; gate parity with `TxBuilder::derive_swap_legs`.
+- **Regression Tests**: `supervisor::opportunity::split_return_min_out_tests` (4 tests, `--features split-routing`): economic floor binds / slippage binds / zero slippage / u64 saturation.
+- **Status**: FIXED in branch `vibe/flashloan-forensic-8ade4e`.
+
+### FL-F-2026-11-22-N2: DLMM Two-Pool Engine Lacks On-Chain Retained-Profit Floor (P3)
+
+- **File**: `crates/arb-engine/src/dlmm_flash_arbitrage.rs` + `crates/arb-tx/src/flash/dlmm_flash_arb.rs`.
+- **Observed Behavior**: `leg_b.min_amount_out = repay (principal+fee)` — repayment sufficiency guaranteed (no subsidized repayment), but retained profit and tip are enforced only at quote time (`ProfitBelowFloor`), not as an on-chain min-out. Path is NOT reachable from `arb-bot` (tests/examples only).
+- **Required Fix**: when the two-pool engine is wired into supervision, raise `leg_b.min_amount_out` to `max(repay, borrow+fee+tip+min_profit)` and include the tip; then add the FL-15-style regression test to this assembler.
+- **Status**: OPEN (P3); wire-up must not proceed without this.
+
 ---
 
 ## 3. P1 Defects (High Priority)
