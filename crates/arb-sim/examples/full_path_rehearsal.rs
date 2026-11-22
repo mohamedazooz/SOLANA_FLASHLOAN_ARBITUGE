@@ -270,12 +270,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signer = KeypairSigner::from_base58(&secret)?;
     println!("[3] signer ready: {}", signer.pubkey());
 
+    // REHEARSAL_SLIPPAGE_BPS: per-leg conservative floor. The old hardcoded
+    // 100 bps dominated the economics (1% chained on ~0.01 SOL notional
+    // ~= 100k lamports of guaranteed margin vs a ~11k-lamports fixed cost
+    // stack), masking the true spread. 25 bps is the calibrated default.
+    let slippage_bps: u64 = std::env::var("REHEARSAL_SLIPPAGE_BPS")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|v| (1..=500).contains(v))
+        .unwrap_or(25);
     let pipeline_cfg = MeteoraFreshPipelineConfig {
         max_retries: 2,
         max_allowed_slot_lag: 2,
         base_backoff_ms: 30,
         max_backoff_ms: 150,
-        slippage_bps: 100,
+        slippage_bps,
         cu_limit: arb_constants::APPLICATION_SAFETY_CU_LIMIT,
         priority_fee_micro_lamports: arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS,
         min_input_amount: 10_000_000,
@@ -530,7 +539,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 priority_fee_micro_lamports: flash_cfg.priority_fee_micro_lamports,
                 jito_tip_account: arb_constants::jito_tip_account_at(0),
                 jito_tip_lamports: arb_constants::DEFAULT_JITO_TIP_FLOOR_LAMPORTS,
-                slippage_bps: 100,
+                slippage_bps,
                 min_profit_lamports: 1,
                 flash_loan_fee_sf: flash_cfg.kamino_flash_fee_sf,
                 network_cost_lamports: flash_cfg.network_cost_lamports,

@@ -338,12 +338,16 @@ impl ThreeLegMemeArbitrageContext {
 
 /// Compile a three-leg Meteora DLMM meme arbitrage route.
 ///
-/// Returns `CompileResult::V0JitoCompatible` when the transaction fits within
-/// 1232 bytes using the Static Master ALT (Jito-compatible path).
+/// Format selection is V1-primary when `ctx.v1_transport_supported` is
+/// proven (TX-V1 active mainnet since epoch 1035; requires a successful
+/// transport canary per repo gate TXC-F-N1), with V0+ALT as the automatic
+/// fallback. Without a proven V1 transport, V0+ALT stays primary.
 ///
-/// Returns `CompileResult::V1DirectTransport` when V0 exceeds 1232 bytes but V1
-/// fits within 4096 bytes (direct RPC/TPU path, NOT Jito unless independently
-/// verified).
+/// Returns `CompileResult::V1DirectTransport` when V1 compiles (direct
+/// RPC/TPU path; Jito-Solana >= 4.2.2 leaders also build v1 into blocks).
+///
+/// Returns `CompileResult::V0JitoCompatible` when V0 fits within
+/// 1232 bytes using the Static Master ALT (Jito bundle compatible).
 ///
 /// Returns `CompileResult::Rejected` when neither format can accommodate the route.
 ///
@@ -423,7 +427,22 @@ pub fn compile_3leg_meme_dlmm_arb(
     // 2. Determine which accounts go in the ALT vs inline.
     let (alt_accounts, inline_accounts) = partition_accounts(ctx, master_alt)?;
 
-    // 3. Try V0 path first (primary).
+    // Format selection (SIMD-0385/TX-V1 activated mainnet epoch 1035, 2026-09-15;
+    // Jito-Solana >= 4.2.2 builds v1 — earlier leaders only build v0):
+    // - V1-primary when the transport is proven (`ctx.v1_transport_supported`):
+    //   every account inline, no ALT extend/ownership maintenance, 4096-byte
+    //   headroom. V0+ALT remains the automatic fallback if V1 compilation
+    //   rejects the route.
+    // - V0-primary (legacy behavior) until the transport canary proves V1.
+    if ctx.v1_transport_supported {
+        match try_compile_v1(ctx, &instructions, signer)? {
+            Ok(v1_result) => return Ok(CompileResult::V1DirectTransport(v1_result)),
+            Err(reason) => {
+                eprintln!("V1-primary compile rejected ({reason:?}); falling back to V0+ALT");
+            }
+        }
+    }
+
     let v0_result = try_compile_v0(
         ctx,
         &instructions,
@@ -445,7 +464,6 @@ pub fn compile_3leg_meme_dlmm_arb(
         v0_result.byte_budget.summarize()
     );
 
-    // 4. V1 fallback: reconstruct with every account inline (no ALT).
     if !ctx.v1_transport_supported {
         return Ok(CompileResult::Rejected(
             RejectionReason::V1TransportUnsupported,
@@ -1335,6 +1353,40 @@ mod tests {
         // Meme mints (not in ALT) should be inline.
         assert!(inline_accs.contains(&ctx.meme_a_mint.0));
         assert!(inline_accs.contains(&ctx.meme_b_mint.0));
+    }
+
+    #[test]
+    fn test_v1_is_primary_when_transport_supported() {
+        let ctx = test_ctx();
+        assert!(ctx.v1_transport_supported);
+        let alt = test_master_alt();
+        let signer = KeypairSigner::new_random();
+
+        let result = compile_3leg_meme_dlmm_arb(&ctx, &alt, &signer).unwrap();
+        match &result {
+            CompileResult::V1DirectTransport(v1) => {
+                assert!(v1.wire_size <= crate::adaptive::SOLANA_PACKET_V1_MTU);
+            }
+            other => {
+                panic!("V1 must be the primary format when transport is supported, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn test_v0_is_primary_when_transport_unsupported() {
+        let mut ctx = test_ctx();
+        ctx.v1_transport_supported = false;
+        let alt = test_master_alt();
+        let signer = KeypairSigner::new_random();
+
+        let result = compile_3leg_meme_dlmm_arb(&ctx, &alt, &signer).unwrap();
+        match &result {
+            CompileResult::V0JitoCompatible(v0) => {
+                assert!(v0.wire_size <= SOLANA_PACKET_MTU_LIMIT);
+            }
+            other => panic!("V0 must be primary without a proven V1 transport, got {other:?}"),
+        }
     }
 
     #[test]
