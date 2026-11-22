@@ -463,7 +463,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let evaluator = DlmmFlashArbEvaluator {
                     config: &pair_flash_cfg,
                 };
-                if let Some(r) = routes.first() {
+                // Evaluate EVERY enumerated direction, never just the first:
+                // enumerate_routes yields (A->B) and (B->A) with materially
+                // different nets (asymmetric fees + one-sided active-bin
+                // depth), so a single-direction diagnostic understates the
+                // best achievable route and can hide the better side.
+                let mut best_dir: Option<usize> = None;
+                let mut best_net: Option<i64> = None;
+                for (dir_idx, r) in routes.iter().enumerate() {
                     let e = evaluator.evaluate(r, pair_flash_cfg.min_borrow);
                     if !e.feasible {
                         if let Some(
@@ -505,15 +512,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     println!(
-                        "    sweep {:<10} {tag}: feasible={} net={} rejection={:?}",
+                        "    sweep {:<10} {tag} dir{dir_idx} [{}/{} via {}]: feasible={} net={} rejection={:?}",
                         meme_label,
+                        &r.pool_a.pool_id.to_string()[..8],
+                        &r.pool_b.pool_id.to_string()[..8],
+                        &r.mid_mint.0.to_string()[..6],
                         e.feasible,
                         net_report(e.net_profit, &fm, dec, sol_usd_price),
                         e.rejection.as_ref().map(|x| x.as_str())
                     );
                     if let Some(rej) = e.rejection.as_ref() {
-                        println!("      detail: {rej:?}");
+                        println!("      detail dir{dir_idx}: {rej:?}");
                     }
+                    // Thin-side evidence: how much input each hop's ACTIVE bin
+                    // can absorb before the exact quote must walk into the
+                    // next bin (each crossing costs ~bin_step of price).
+                    println!(
+                        "      depth dir{dir_idx}: hop_a_bins={} hop_b_bins={} active_bin_max_in hop_a={:?} hop_b={:?} (borrow={})",
+                        e.bins_a,
+                        e.bins_b,
+                        r.pool_a.active_bin_max_input(&MintId(fm), &r.mid_mint),
+                        r.pool_b.active_bin_max_input(&r.mid_mint, &MintId(fm)),
+                        pair_flash_cfg.min_borrow
+                    );
+                    if best_net.map(|n| e.net_profit > n).unwrap_or(true) {
+                        best_net = Some(e.net_profit);
+                        best_dir = Some(dir_idx);
+                    }
+                }
+                if let Some(dir_idx) = best_dir {
+                    let r = &routes[dir_idx];
                     // Size-ladder diagnostic: is ANY size close to feasible?
                     // Same geometric ×3 ladder as production (build_size_ladder),
                     // not a hand-picked trio — the ladder is fully dynamic.
