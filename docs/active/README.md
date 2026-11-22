@@ -40,6 +40,9 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`performance/HFT_ARCHITECTURE.md`](../../docs/active/performance/HFT_ARCHITECTURE.md) | **Phase 7 HFT Architecture**: hot-path concurrency audit, batching wins, evidence-first optimization policy (no unsafe, no speculative changes). |
 | [`performance/LATENCY_BENCHMARKS.md`](../../docs/active/performance/LATENCY_BENCHMARKS.md) | **Phase 7 Latency Benchmarks**: stage-ladder metrics × sources, bench inventory, captured test evidence, honest NOT-EXECUTED gaps. |
 
+| [`audit/JITO_LANDING_AUDIT.md`](../../docs/active/audit/JITO_LANDING_AUDIT.md) | **Phase 8 Jito Landing Audit**: bundle fan-out, EV-maximizing bidder, measured-posterior ledger, proven-expiry lifecycle, tip-drift CI guard. |
+| [`performance/JITO_BENCHMARKS.md`](../../docs/active/performance/JITO_BENCHMARKS.md) | **Phase 8 Jito Benchmarks**: measurement contract (metrics wired × sources), no invented landing numbers, soak execution plan. |
+
 ---
 
 ## 2. Agent Operating System
