@@ -452,3 +452,22 @@ PR: (this PR)
 REMAINING_RISKS: legacy config ambiguity needs operator decision; config-audit log hook pending; BAM re-evaluation pending.
 NEXT_TASK: Mission §15 Phase 10 — Backend, frontend and API.
 ```
+
+```markdown
+TASK_ID: TASK-M10-001
+PHASE: Mission §15 — Backend, Frontend and API (Phase 10)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Audit web_api.rs, control_service.rs, Telegram control and the React dashboard; document the API surface and auth contract; verify security contract tests.
+FILES: docs/active/audit/BACKEND_SECURITY_AUDIT.md, docs/active/audit/FRONTEND_AUDIT.md, docs/active/architecture/API_REFERENCE.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: WebState::new (web_api.rs:79-106), login/authorize (154-206), control_post (320-354), execute_command (control_service.rs:855-876), live CONFIRM-LIVE gate (755-775), ws tickets (111-137), api.ts token handling
+CURRENT_BEHAVIOR: Bearer-token auth (no cookies → no CSRF), placeholder-password rejection, per-IP rate limits, single-use WS tickets, 64 KiB body cap, OWASP headers, live double-gated; frontend is projection+control only.
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation only.
+TEST_PLAN: node --test web/security-contract.test.mjs; cargo test -p arb-bot (web auth unit tests).
+ACCEPTANCE_CRITERIA: Full API table, auth internals, high-risk action gates, frontend classification, findings registered.
+ACTUAL_RESULT: 2026-11-22 — security contract 3/0 pass; BCK-F-2026-11-22-N1/N2/N3 + FRT-F-2026-11-22-N1/N2 (P3) registered; no auth bypass found.
+PR: (this PR)
+REMAINING_RISKS: sha256 login hashing before any non-loopback exposure (N3); IP-trust caveat.
+NEXT_TASK: Mission §16 Phase 11 — Webhook service.
+```

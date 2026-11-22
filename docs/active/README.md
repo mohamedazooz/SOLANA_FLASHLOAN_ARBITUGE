@@ -44,6 +44,9 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`performance/JITO_BENCHMARKS.md`](../../docs/active/performance/JITO_BENCHMARKS.md) | **Phase 8 Jito Benchmarks**: measurement contract (metrics wired × sources), no invented landing numbers, soak execution plan. |
 | [`security/CONFIGURATION_SECURITY.md`](../../docs/active/security/CONFIGURATION_SECURITY.md) | **Phase 9 Configuration Security**: precedence chain, profile set, fail-closed validation rules, secrets handling vs OWASP/NIST/KMS research. |
 | [`operations/RISK_CONTROL_POLICY.md`](../../docs/active/operations/RISK_CONTROL_POLICY.md) | **Phase 9 Risk Control Policy**: validated limits matrix, mode gates, breaker/switch inventory, authorization matrix, fail economics. |
+| [`audit/BACKEND_SECURITY_AUDIT.md`](../../docs/active/audit/BACKEND_SECURITY_AUDIT.md) | **Phase 10 Backend Security Audit**: API auth internals, CONFIRM-LIVE gating, rate limits, secret handling; findings BCK-F-2026-11-22-N1..N3. |
+| [`audit/FRONTEND_AUDIT.md`](../../docs/active/audit/FRONTEND_AUDIT.md) | **Phase 10 Frontend Audit**: React/Vite dashboard classification, token handling, security contract tests (3/0 pass). |
+| [`architecture/API_REFERENCE.md`](../../docs/active/architecture/API_REFERENCE.md) | **Phase 10 API Reference**: full endpoint table with auth + semantics + error model. |
 
 ---
 
