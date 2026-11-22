@@ -157,6 +157,43 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+### CFN-F-2026-11-22-N1: Legacy Root config.toml Auto-Selected First With Divergent Values (P3)
+
+- **File**: `crates/arb-bot/src/main.rs:42–50`, root `config.toml`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: default config path picks `config.toml` before `config/config.toml`; the root file is annotated "Automatically mapped from .env" and carries values divergent from the layered defaults (e.g. min_keep_lamports=20000, max_tip_lamports=100000).
+- **Risk if ignored**: stale flat-file values can silently override the documented layered scheme.
+- **Required action**: operator decision — delete legacy root config.toml/config.example.toml or invert the probe order; add a startup log line naming the exact effective config paths.
+- **Acceptance criteria**: single canonical entry point + startup log of effective source(s).
+
+### CFN-F-2026-11-22-N2: No Testing Profile (P3)
+
+- **File**: `config/`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: development/staging/production layer on base.toml; a testing profile is absent (runtime steps down to base defaults).
+- **Required action**: add `config/testing.toml` mirroring staging with test endpoints.
+
+### CFN-F-2026-11-22-N3: No Append-Only Config-Change Audit Log (P3)
+
+- **File**: `crates/arb-config/src/loader.rs`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: threshold changes land via reviewed PRs, but runtime loads record no audit row of effective threshold values.
+- **Required action**: emit a config-load audit record (diff vs previous persisted load) on every startup.
+
+### JTO-F-2026-11-22-N4: BAM / Proposer-Builder Separation Transition Unassessed (P3)
+
+- **File**: `crates/arb-land/src/lib.rs` (bundle submission paths)
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: online research (2026-11-22) confirms Jito's Block Assembly Marketplace (PBS, TEE-based builders) live on mainnet since 2025-09-25; repo's submission path and landing model have not been re-evaluated against BAM semantics (verifiable ordering may change uncled-bundle/landing attribution).
+- **Risk if ignored**: landing posteriors mix pre/post-BAM regimes once slope changes.
+- **Required action**: monitor Jito announcements; re-measure per-rung posteriors after any BAM behavior change; keep proven ledger schema versioning for regime breaks.
+
+---
+
 ## 3. P1 Defects (High Priority)
 
 ### ISSUE-P1-01: Token-2022 Transfer Fee Double Counting Audit

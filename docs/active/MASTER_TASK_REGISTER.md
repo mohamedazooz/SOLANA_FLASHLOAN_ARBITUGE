@@ -413,3 +413,22 @@ PR: (this PR)
 REMAINING_RISKS: Yellowstone A/B outstanding; ingest-decode histogram missing; bench coverage limited.
 NEXT_TASK: Mission §13 Phase 8 — Jito landing audit.
 ```
+
+```markdown
+TASK_ID: TASK-M9-001
+PHASE: Mission §14 — Risk & Configuration Hardening (Phase 9)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Audit config precedence, profiles, strict validation, risk limits enforcement, kill switch/breakers; refresh online best-practices research (OWASP/NIST/Jito-BAM); document policies without changing behavior.
+FILES: docs/active/security/CONFIGURATION_SECURITY.md, docs/active/operations/RISK_CONTROL_POLICY.md, docs/active/research/SECURITY_BEST_PRACTICES.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: arb_config::validation::validate (validation.rs:19), check_no_placeholder_secret_env_names (validation.rs:414), RiskGate (arb-risk lib.rs:454), KillSwitch (lib.rs:115), apply_env_overrides (loader.rs:48-70), fire-time gate (dispatch.rs:649-665)
+CURRENT_BEHAVIOR: layered precedence (base → profile → whitelisted env → CLI); shadow default + ARB_LIVE double gate; nothing clamped; legacy root config.toml selection-order gap (CFN-N1).
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation + research only.
+TEST_PLAN: cargo test -p arb-config -p arb-risk.
+ACCEPTANCE_CRITERIA: Precedence + profiles + validation rules + control matrix documented with file:line evidence; fresh URl-dated research citations; gaps registered.
+ACTUAL_RESULT: 2026-11-22 — findings CFN-F-2026-11-22-N1/N2/N3 + JTO-F-2026-11-22-N4 registered (all P3); research refreshed with OWASP/NIST/solana.com/Jito sources incl. BAM 2025-09-25.
+PR: (this PR)
+REMAINING_RISKS: legacy config ambiguity needs operator decision; config-audit log hook pending; BAM re-evaluation pending.
+NEXT_TASK: Mission §15 Phase 10 — Backend, frontend and API.
+```
