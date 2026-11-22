@@ -227,6 +227,24 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+### WEB-F-2026-11-22-N1: CI Coverage Gap For Webhook Service (P2)
+
+- **Component**: `webhook-service/` (standalone crate, own Cargo.lock, outside main workspace).
+- **Root cause**: `.github/workflows/rust-ci.yml` ran only cargo-deny against the webhook service; build/test/fmt/clippy never executed by CI despite a 28-test suite existing locally.
+- **Impact**: silent regression/rot of an independently deployed edge component.
+- **Correction**: dedicated `webhook-service` CI job added in Phase 11 PR (fmt + build + test + clippy -D warnings + cargo-deny). Evidence: `docs/active/audit/WEBHOOK_SERVICE_AUDIT.md` §4-5.
+
+### WEB-F-2026-11-22-N2: Per-Instance In-Memory Rate Limiter (P3)
+
+- **Component**: `webhook-service/src/rate_limit.rs:26` — counters are process-local `DashMap`; effective limit multiplies by replica count behind horizontal scale.
+- **Impact**: single-VPS deployment today; becomes real only if replicas > 1.
+- **Recommended**: Redis-backed sliding window when scaling out; not hot path.
+
+### WEB-F-2026-11-22-N3: Webhook Service Unwired From Main Bot (P3, by design)
+
+- **Component**: `webhook-service/` vs `crates/arb-bot` — no consumption path exists; classification PRESENT-UNWIRED (discovery-only value, e.g. pump.fun events).
+- **Impact**: none while unwired; any future pump.fun ingestion must pass the same `(slot, write_version)` coherence contract as the primary ingest (MARKET_DATA_PIPELINE.md).
+
 ## 3. P1 Defects (High Priority)
 
 ### ISSUE-P1-01: Token-2022 Transfer Fee Double Counting Audit
