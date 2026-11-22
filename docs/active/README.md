@@ -47,6 +47,7 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`audit/BACKEND_SECURITY_AUDIT.md`](../../docs/active/audit/BACKEND_SECURITY_AUDIT.md) | **Phase 10 Backend Security Audit**: API auth internals, CONFIRM-LIVE gating, rate limits, secret handling; findings BCK-F-2026-11-22-N1..N3. |
 | [`audit/FRONTEND_AUDIT.md`](../../docs/active/audit/FRONTEND_AUDIT.md) | **Phase 10 Frontend Audit**: React/Vite dashboard classification, token handling, security contract tests (3/0 pass). |
 | [`architecture/API_REFERENCE.md`](../../docs/active/architecture/API_REFERENCE.md) | **Phase 10 API Reference**: full endpoint table with auth + semantics + error model. |
+| [`audit/WEBHOOK_SERVICE_AUDIT.md`](../../docs/active/audit/WEBHOOK_SERVICE_AUDIT.md) | **Phase 11 Webhook Service Audit**: independent test suite (28/0), auth/dedup/replay/rate-limit guards, PRESENT-UNWIRED classification, CI coverage fix (WEB-F-2026-11-22-N1). |
 
 ---
 

@@ -471,3 +471,22 @@ PR: (this PR)
 REMAINING_RISKS: sha256 login hashing before any non-loopback exposure (N3); IP-trust caveat.
 NEXT_TASK: Mission §16 Phase 11 — Webhook service.
 ```
+
+```markdown
+TASK_ID: TASK-M11-001
+PHASE: Mission §16 — Webhook Service (Phase 11)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Independently test webhook-service outside the workspace; document auth/dedup/replay/rate-limit guards; close the CI coverage gap (build, test, clippy, dependency audit) required by the mission spec §16.
+FILES: docs/active/audit/WEBHOOK_SERVICE_AUDIT.md, .github/workflows/rust-ci.yml, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: constant_time_eq (lib.rs:58), verify_webhook_token (lib.rs:70), verify_hmac_signature (lib.rs:87), event_age_allowed (lib.rs:111), Deduplicator two-tier (dedup.rs:1-32), RateLimiter (rate_limit.rs:26), max_body_bytes (config.rs:41,59), handle_helius_pumpfun_webhook (helius_pumpfun_handler.rs:46)
+CURRENT_BEHAVIOR: 28/28 tests pass standalone; auth fail-closed via constant-time compare (token + HMAC); two-tier dedup (DashMap local_ttl + Redis SET NX PX); fixed-window rate limit; OWASP body cap; PRESENT-UNWIRED from main bot (discovery-only value).
+ROOT_CAUSE: N1 — CI ran cargo-deny only for webhook-service; no build/test/clippy gate existed.
+REQUIRED_CHANGE: Dedicated webhook-service CI job; audit doc; findings WEB-F-2026-11-22-N1 (P2, fixed in this PR), N2/N3 (P3, documented).
+TEST_PLAN: cd webhook-service && cargo fmt --check && cargo build --all-targets && cargo test && cargo clippy --all-targets -- -D warnings; YAML parse check of rust-ci.yml.
+ACCEPTANCE_CRITERIA: CI job present and green; scenario coverage table documented; findings registered.
+ACTUAL_RESULT: 2026-11-22 — 28/0 pass fresh on branch; fmt EXIT=0; CI job syntax validated; WEB-F-N1 fixed by this PR, WEB-F-N2/N3 (P3) registered.
+PR: (this PR)
+REMAINING_RISKS: Redis-outage dedup behavior untested at integration level; in-memory rate limiter per-instance (N2).
+NEXT_TASK: Mission §17 Phase 12 — Database & storage (DATA_MODEL.md + DATABASE_RECOVERY.md).
+```

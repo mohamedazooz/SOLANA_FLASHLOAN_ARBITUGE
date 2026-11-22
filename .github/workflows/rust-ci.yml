@@ -61,6 +61,44 @@ jobs:
           --features arb-bot/extra-ingest,arb-ingest/extra-ingest,arb-bot/split-routing,arb-engine/split-routing,arb-sim/litesvm
           -- -D warnings
 
+  webhook-service:
+    name: Webhook service (fmt, build, test, clippy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: webhook-service
+
+      - name: Verify formatting
+        run: cargo fmt --manifest-path webhook-service/Cargo.toml --check
+
+      - name: Build
+        run: cargo build --manifest-path webhook-service/Cargo.toml --all-targets
+
+      - name: Run tests
+        run: cargo test --manifest-path webhook-service/Cargo.toml --all-targets
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path webhook-service/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo-deny (webhook-service)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources licenses
+          manifest-path: webhook-service/Cargo.toml
+
   security:
     name: Security advisories (cargo-deny)
     runs-on: ubuntu-latest
@@ -75,12 +113,6 @@ jobs:
         with:
           command: check advisories bans sources licenses
           arguments: --workspace
-
-      - name: cargo-deny (webhook-service)
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans sources licenses
-          manifest-path: webhook-service/Cargo.toml
 
   secrets:
     name: Secret scanning (gitleaks)
