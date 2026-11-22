@@ -182,7 +182,7 @@ pub struct IdlEnumVariant {
 
 /// IDL Processor - parses IDL and generates helper code.
 pub struct IdlProcessor {
-    config: GenConfig,
+    pub config: GenConfig,
 }
 
 impl IdlProcessor {
@@ -214,7 +214,7 @@ impl IdlProcessor {
         Ok(())
     }
 
-    fn generate_accounts_rs(&self, idl: &Idl) -> Result<()> {
+    fn generate_accounts_rs(&self, _idl: &Idl) -> Result<()> {
         let mut out = String::new();
         out.push_str("//! Account decoding helpers\n");
         out.push_str("//! DO NOT EDIT MANUALLY\n\n");
@@ -230,7 +230,7 @@ impl IdlProcessor {
         Ok(())
     }
 
-    fn generate_instructions_rs(&self, idl: &Idl) -> Result<()> {
+    fn generate_instructions_rs(&self, _idl: &Idl) -> Result<()> {
         let mut out = String::new();
         out.push_str("//! Instruction building helpers\n");
         out.push_str("//! DO NOT EDIT MANUALLY\n\n");
@@ -248,7 +248,7 @@ impl IdlProcessor {
         Ok(())
     }
 
-    fn generate_events_rs(&self, idl: &Idl) -> Result<()> {
+    fn generate_events_rs(&self, _idl: &Idl) -> Result<()> {
         let mut out = String::new();
         out.push_str("//! Event parsing helpers\n");
         out.push_str("//! DO NOT EDIT MANUALLY\n\n");
@@ -321,7 +321,6 @@ fn main() {{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_discriminators() {

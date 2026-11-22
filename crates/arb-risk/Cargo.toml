@@ -9,6 +9,10 @@ arb-types = { path = "../arb-types" }
 arb-constants = { path = "../arb-constants" }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+arb-math = { path = "../arb-math" }
+solana-pubkey = { workspace = true }
 [lints]
 workspace = true
 

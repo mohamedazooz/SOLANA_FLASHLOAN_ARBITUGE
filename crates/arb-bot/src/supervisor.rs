@@ -130,8 +130,8 @@ pub struct Supervisor {
 /// configured-but-unavailable store returns an error and startup aborts —
 /// the supervisor never silently degrades to non-durable in-memory storage,
 /// because dispatch-intent reconciliation (R12) requires durable persistence.
-/// Precedence: `store_url` postgres → `database_url` postgres → `database_url`
-/// sqlite → `store_url` sqlite/plain path.
+/// Precedence: `store_url` postgres → `database_url` postgres → explicit
+/// `store_url` sqlite/custom → `database_url` sqlite → default `store_url`.
 type OpenedStore = (
     Arc<dyn Store>,
     Option<Arc<arb_store::AsyncIntelligencePersistence>>,
@@ -155,6 +155,20 @@ fn open_store_and_intel(
         })?);
         let intel_queue = Arc::new(arb_store::AsyncIntelligencePersistence::new(pg.clone()));
         return Ok((pg, Some(intel_queue)));
+    }
+    // An explicit, non-default store_url takes precedence over DATABASE_URL so
+    // tests and custom configs isolate their storage and do not bleed into the
+    // shared warm DB.
+    let is_default_store = store_url.is_empty()
+        || store_url == "sqlite://arb_sentinel.db"
+        || store_url == "arb_sentinel.db";
+    if !is_default_store {
+        let s = Arc::new(
+            SqliteStore::open(&sqlite_path_from_url(store_url))
+                .map_err(|e| anyhow::anyhow!("SQLite store unavailable (fail-closed): {e}"))?,
+        );
+        let intel_queue = Arc::new(arb_store::AsyncIntelligencePersistence::new(s.clone()));
+        return Ok((s, Some(intel_queue)));
     }
     if let Some(sqlite_url) = database_url.filter(|u| u.starts_with("sqlite://")) {
         let s = Arc::new(
@@ -1454,6 +1468,51 @@ mod tests {
         let reopened = open_store(&url, None).expect("reopen");
         assert_eq!(reopened.get_attempt(1).expect("read").expect("row").id, 1);
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn open_store_custom_sqlite_url_takes_precedence_over_database_url_sqlite() {
+        let db_path_custom = std::env::temp_dir().join(format!(
+            "arb_store_custom_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        let db_path_env = std::env::temp_dir().join(format!(
+            "arb_store_env_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+                + 1
+        ));
+        let custom_url = format!("sqlite://{}", db_path_custom.display());
+        let env_url = format!("sqlite://{}", db_path_env.display());
+
+        let store = open_store(&custom_url, Some(&env_url)).expect("must open custom sqlite store");
+        store
+            .record_attempt(&AttemptRecord {
+                id: 42,
+                slot: 100,
+                route_id: "custom_isolation".into(),
+                expected_net: Lamports(100),
+                tip_lamports: None,
+                decision: "test".into(),
+            })
+            .expect("record attempt");
+        drop(store);
+
+        assert!(db_path_custom.exists(), "custom store file must exist");
+        assert!(
+            !db_path_env.exists(),
+            "env store file must NOT be written when custom store_url is provided"
+        );
+
+        let _ = std::fs::remove_file(&db_path_custom);
+        let _ = std::fs::remove_file(&db_path_env);
     }
 
     fn pool_at(id: u8, last_update_slot: u64) -> PoolState {

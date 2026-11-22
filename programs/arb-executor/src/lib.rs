@@ -13,20 +13,34 @@ pub mod instructions;
 pub mod validation;
 
 use borsh::BorshDeserialize;
-use solana_account_info::AccountInfo;
 use solana_address::Address;
 use solana_program_error::{ProgramError, ProgramResult};
 
 pub use error::ExecutorError;
 pub use instructions::{
-    ExecuteThreeLegArgs, ExecuteThreeLegWithTipArgs, process_execute_three_leg,
-    process_execute_three_leg_with_tip, verify_sequential_balance_transitions,
+    ExecuteRouteArgs, ExecuteThreeLegArgs, ExecuteThreeLegWithTipArgs, HopDescriptor,
+    ProfitGuardArgs, process_execute_route, process_execute_three_leg,
+    process_execute_three_leg_with_tip, process_profit_guard,
+    verify_sequential_balance_transitions,
 };
+pub use solana_account_info::AccountInfo;
 pub use validation::*;
 
 /// Arbitrage Executor Program ID.
 pub const ARB_EXECUTOR_PROGRAM_ID: Address =
     Address::from_str_const("ArbExec1111111111111111111111111111111111111");
+
+/// 1-byte instruction discriminator for `execute_swap`.
+pub const DISCRIMINATOR_EXECUTE_SWAP: u8 = 0;
+/// 1-byte instruction discriminator for `execute_route`.
+pub const DISCRIMINATOR_EXECUTE_ROUTE: u8 = 1;
+/// 1-byte instruction discriminator for `profit_guard`.
+pub const DISCRIMINATOR_PROFIT_GUARD: u8 = 2;
+
+/// 8-byte instruction discriminator for `profit_guard`.
+pub const PROFIT_GUARD_DISCRIMINATOR: [u8; 8] = [2, 0, 0, 0, 0, 0, 0, 0];
+/// 8-byte instruction discriminator for `execute_route`.
+pub const EXECUTE_ROUTE_DISCRIMINATOR: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 0];
 
 /// 8-byte instruction discriminator for `execute_three_leg` (sha256("arb_executor:execute_three_leg")[..8]).
 pub const EXECUTE_THREE_LEG_DISCRIMINATOR: [u8; 8] = [173, 221, 98, 44, 189, 21, 102, 184];
@@ -38,28 +52,57 @@ pub const EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR: [u8; 8] = [124, 34, 60, 60, 
 #[cfg(all(target_os = "solana", not(feature = "no-entrypoint")))]
 solana_program_entrypoint::entrypoint!(process_instruction);
 
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests_unit;
+
 /// Program entrypoint dispatcher.
 pub fn process_instruction<'a>(
     _program_id: &Address,
     accounts: &'a [AccountInfo<'a>],
     instruction_data: &[u8],
 ) -> ProgramResult {
-    if instruction_data.len() < 8 {
+    if instruction_data.is_empty() {
         return Err(ExecutorError::InvalidInstructionData.into());
     }
 
-    let (disc, data) = instruction_data.split_at(8);
-
-    if disc == EXECUTE_THREE_LEG_DISCRIMINATOR {
-        let args = ExecuteThreeLegArgs::try_from_slice(data)
-            .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
-        return process_execute_three_leg(accounts, args);
+    // 1-byte discriminator routing
+    match instruction_data[0] {
+        DISCRIMINATOR_EXECUTE_SWAP => {
+            return process_execute_route(accounts, &instruction_data[1..]);
+        }
+        DISCRIMINATOR_EXECUTE_ROUTE => {
+            return process_execute_route(accounts, &instruction_data[1..]);
+        }
+        DISCRIMINATOR_PROFIT_GUARD => {
+            return process_profit_guard(accounts, &instruction_data[1..]);
+        }
+        _ => {}
     }
 
-    if disc == EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR {
-        let args = ExecuteThreeLegWithTipArgs::try_from_slice(data)
-            .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
-        return process_execute_three_leg_with_tip(accounts, args);
+    // 8-byte discriminator routing (backward compatibility)
+    if instruction_data.len() >= 8 {
+        let (disc, data) = instruction_data.split_at(8);
+
+        if disc == EXECUTE_THREE_LEG_DISCRIMINATOR {
+            let args = ExecuteThreeLegArgs::try_from_slice(data)
+                .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
+            return process_execute_three_leg(accounts, args);
+        }
+
+        if disc == EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR {
+            let args = ExecuteThreeLegWithTipArgs::try_from_slice(data)
+                .map_err(|_| ProgramError::from(ExecutorError::InvalidInstructionData))?;
+            return process_execute_three_leg_with_tip(accounts, args);
+        }
+
+        if disc == PROFIT_GUARD_DISCRIMINATOR {
+            return process_profit_guard(accounts, data);
+        }
+
+        if disc == EXECUTE_ROUTE_DISCRIMINATOR {
+            return process_execute_route(accounts, data);
+        }
     }
 
     Err(ExecutorError::InvalidInstructionData.into())

@@ -78,6 +78,21 @@ pub enum ExecutorError {
 
     #[error("Settlement account must be a user-owned WSOL token account for tip computation")]
     TipRequiresWsolMint = 6022,
+
+    #[error("Final balance is below the required profit threshold")]
+    InsufficientProfit = 6023,
+
+    #[error("Unsupported DEX protocol")]
+    UnsupportedDexProtocol = 6024,
+
+    #[error("Invalid hop count (must be 2 or 3)")]
+    InvalidHopCount = 6025,
+
+    #[error("Unauthorized DEX or system program ID")]
+    UnauthorizedProgramId = 6026,
+
+    #[error("Account must be writable")]
+    AccountNotWritable = 6027,
 }
 
 impl From<ExecutorError> for ProgramError {

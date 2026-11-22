@@ -22,6 +22,7 @@ reqwest = { workspace = true }
 ed25519-dalek = { version = "2.1", default-features = false, features = ["fast", "std"] }
 
 [dev-dependencies]
+arb-land = { path = "../arb-land" }
 proptest = { workspace = true }
 arb-executor = { path = "../../programs/arb-executor", features = ["no-entrypoint"] }
 borsh = { version = "1", default-features = false }

@@ -24,8 +24,7 @@ impl PumpSwapQuoteEngine {
 
 impl QuoteEngine for PumpSwapQuoteEngine {
     fn protocol_id(&self) -> DexProtocol {
-        // Mapped to RaydiumCpmm / PumpFun family with AMM characteristics
-        DexProtocol::RaydiumCpmm
+        DexProtocol::PumpSwap
     }
 
     fn quote_exact_in(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
@@ -93,7 +92,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
         let dx_prime = input_after_fee as u128;
         let num_out = r_out.saturating_mul(dx_prime);
         let denom_out = r_in.saturating_add(dx_prime);
-        let gross_out = (num_out / denom_out) as u64;
+        let gross_out = u64::try_from(num_out / denom_out).map_err(|_| ArbError::Overflow)?;
 
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
@@ -118,7 +117,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
         let elapsed = start_time.elapsed().as_micros() as u64;
 
         Ok(QuoteResult {
-            protocol: DexProtocol::RaydiumCpmm,
+            protocol: DexProtocol::PumpSwap,
             pool_id: state.pool_id,
             amount_in_raw: request.amount,
             amount_out_raw: output_net_to_next_hop,

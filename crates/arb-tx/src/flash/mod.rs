@@ -11,6 +11,7 @@ pub mod dlmm_flash_arb;
 pub mod kamino;
 pub mod kamino_flash;
 pub mod meteora_atomic_builder;
+pub mod provider;
 
 pub use arb_executor::*;
 pub use compiler::*;
@@ -28,6 +29,7 @@ pub use kamino::{
 };
 pub use kamino_flash::*;
 pub use meteora_atomic_builder::*;
+pub use provider::*;
 
 //experimental: gated — was merged unbuildable in PR #73 (depends on
 //arb-engine upward + ambiguous AccountMeta under the flash glob re-exports).

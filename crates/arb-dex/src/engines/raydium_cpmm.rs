@@ -99,7 +99,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         let dx_prime = input_after_fee as u128;
         let num_out = r_out.saturating_mul(dx_prime);
         let denom_out = r_in.saturating_add(dx_prime);
-        let gross_out = (num_out / denom_out) as u64;
+        let gross_out = u64::try_from(num_out / denom_out).map_err(|_| ArbError::Overflow)?;
 
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(

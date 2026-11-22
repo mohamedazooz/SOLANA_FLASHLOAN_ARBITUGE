@@ -89,7 +89,17 @@ impl TxBuilder {
             )?);
         }
 
-        // [5] (or [6]) Kamino FlashRepay (borrow_instruction_index = 2).
+        // On-Chain Standalone Profit Guard: assert settlement account covers repay + min net profit
+        let min_balance_after = d_star
+            .checked_add(fee)
+            .and_then(|f| f.checked_add(min_profit_raw.as_u64()))
+            .ok_or_else(|| TxError::InvalidInput("min_balance_after overflow".into()))?;
+        ixs.push(crate::build_profit_guard_instruction(
+            accounts.user_liquidity_ata,
+            min_balance_after,
+        ));
+
+        // [6] (or [7]) Kamino FlashRepay (borrow_instruction_index = 2).
         // The repay instruction's `amount` argument MUST equal the borrow
         // principal: klend's `flash_repay_checks` enforces
         // `liquidity_amount == borrow amount`, and the origination fee is
@@ -514,7 +524,9 @@ impl TxBuilder {
         // amount`). The origination fee is debited separately, on top, from the
         // same source ATA at repay time, so the ATA must hold `principal + fee`.
         let repay_principal = borrow_amount;
-        let repay_funding = borrow_amount.saturating_add(fee);
+        let repay_funding = borrow_amount
+            .checked_add(fee)
+            .ok_or_else(|| TxError::InvalidInput("repay funding overflow".into()))?;
 
         // If last hop was Pump.fun Sell: user received native SOL, wrap it back into WSOL for Kamino repay
         if last_is_pump_sell {
@@ -527,6 +539,15 @@ impl TxBuilder {
             ixs.push(build_system_transfer(payer, user_wsol_ata, repay_funding));
             ixs.push(build_sync_native(user_wsol_ata));
         }
+
+        // On-Chain Standalone Profit Guard: assert settlement account covers repay_funding + min_profit
+        let min_balance_after = repay_funding
+            .checked_add(min_profit_raw.as_u64())
+            .ok_or_else(|| TxError::InvalidInput("min_balance_after overflow".into()))?;
+        ixs.push(crate::build_profit_guard_instruction(
+            user_wsol_ata,
+            min_balance_after,
+        ));
 
         // 5. Kamino Flash Repay (amount == principal; fee collected on top)
         let repay_idx = ixs.len();
@@ -567,7 +588,7 @@ impl TxBuilder {
             Some(borrow_idx),
             Some(repay_idx),
             borrow_amount,
-            repay_principal,
+            repay_funding,
             fee,
         )?;
         if !verification.is_atomic {
@@ -1015,6 +1036,7 @@ impl TxBuilder {
             Pubkey::from_str(WSOL_MINT).unwrap(),
             Pubkey::from_str(USDC_MINT).unwrap(),
             Pubkey::from_str(METEORA_DLMM_PROGRAM_ID).unwrap(),
+            Pubkey::from_str(ARB_EXECUTOR_PROGRAM_ID_STR).unwrap(),
         ];
         AddressLookupTable::new(alt_key, addresses)
     }

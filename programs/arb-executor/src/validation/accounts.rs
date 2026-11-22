@@ -9,6 +9,21 @@ use solana_program_error::ProgramError;
 pub const METEORA_DLMM_PROGRAM_ID: Address =
     Address::from_str_const("LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo");
 
+pub const RAYDIUM_CPMM_PROGRAM_ID: Address =
+    Address::from_str_const("CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C");
+
+pub const RAYDIUM_CLMM_PROGRAM_ID: Address =
+    Address::from_str_const("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
+
+pub const ORCA_WHIRLPOOL_PROGRAM_ID: Address =
+    Address::from_str_const("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc");
+
+pub const PUMP_SWAP_PROGRAM_ID: Address =
+    Address::from_str_const("PSwapMdSai8tjrEXcxFeQth87xC4rRGQ6ToNCPgAZgU");
+
+pub const PUMP_FUN_PROGRAM_ID: Address =
+    Address::from_str_const("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+
 pub const SPL_TOKEN_PROGRAM_ID: Address =
     Address::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
@@ -20,6 +35,65 @@ pub const MEMO_PROGRAM_ID: Address =
 
 pub const METEORA_EVENT_AUTHORITY: Address =
     Address::from_str_const("D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6");
+
+/// Allowlisted DEX protocol tags for on-chain dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DexProtocolTag {
+    MeteoraDlmm = 0,
+    RaydiumCpmm = 1,
+    RaydiumClmm = 2,
+    OrcaWhirlpool = 3,
+    PumpSwap = 4,
+}
+
+impl TryFrom<u8> for DexProtocolTag {
+    type Error = ExecutorError;
+
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        match v {
+            0 => Ok(Self::MeteoraDlmm),
+            1 => Ok(Self::RaydiumCpmm),
+            2 => Ok(Self::RaydiumClmm),
+            3 => Ok(Self::OrcaWhirlpool),
+            4 => Ok(Self::PumpSwap),
+            _ => Err(ExecutorError::UnsupportedDexProtocol),
+        }
+    }
+}
+
+/// Validate that a DEX program ID belongs to the strict compile-time allowlist.
+pub fn validate_dex_program(program_id: &Address) -> Result<DexProtocolTag, ExecutorError> {
+    if *program_id == METEORA_DLMM_PROGRAM_ID {
+        Ok(DexProtocolTag::MeteoraDlmm)
+    } else if *program_id == RAYDIUM_CPMM_PROGRAM_ID {
+        Ok(DexProtocolTag::RaydiumCpmm)
+    } else if *program_id == RAYDIUM_CLMM_PROGRAM_ID {
+        Ok(DexProtocolTag::RaydiumClmm)
+    } else if *program_id == ORCA_WHIRLPOOL_PROGRAM_ID {
+        Ok(DexProtocolTag::OrcaWhirlpool)
+    } else if *program_id == PUMP_SWAP_PROGRAM_ID || *program_id == PUMP_FUN_PROGRAM_ID {
+        Ok(DexProtocolTag::PumpSwap)
+    } else {
+        Err(ExecutorError::UnauthorizedProgramId)
+    }
+}
+
+/// Validate that an account is marked as writable.
+pub fn validate_account_writable(account: &AccountInfo) -> Result<(), ProgramError> {
+    if !account.is_writable {
+        return Err(ExecutorError::AccountNotWritable.into());
+    }
+    Ok(())
+}
+
+/// Validate that an account is marked as a transaction signer.
+pub fn validate_account_signer(account: &AccountInfo) -> Result<(), ProgramError> {
+    if !account.is_signer {
+        return Err(ExecutorError::MissingRequiredSigner.into());
+    }
+    Ok(())
+}
 
 /// Read the current SPL Token or Token-2022 balance from an `AccountInfo`.
 ///
@@ -130,6 +204,14 @@ pub fn validate_distinct_pools(
     p3: &Address,
 ) -> Result<(), ProgramError> {
     if p1 == p2 || p2 == p3 || p1 == p3 {
+        return Err(ExecutorError::PoolsNotDistinct.into());
+    }
+    Ok(())
+}
+
+/// Assert that the two pools in a 2-leg arbitrage route are strictly distinct.
+pub fn validate_distinct_pools_2leg(p1: &Address, p2: &Address) -> Result<(), ProgramError> {
+    if p1 == p2 {
         return Err(ExecutorError::PoolsNotDistinct.into());
     }
     Ok(())

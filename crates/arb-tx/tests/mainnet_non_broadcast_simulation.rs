@@ -77,6 +77,7 @@ fn get_funded_signer() -> Option<KeypairSigner> {
 }
 
 #[tokio::test]
+#[ignore = "opt-in mainnet live simulation; requires live cluster stability"]
 async fn test_mainnet_non_broadcast_simulation_raydium_v4_v2() {
     let rpc_url = match get_rpc_url() {
         Some(url) => url,
@@ -235,6 +236,7 @@ async fn test_mainnet_non_broadcast_simulation_raydium_v4_v2() {
 }
 
 #[tokio::test]
+#[ignore = "opt-in mainnet live simulation; requires live cluster stability"]
 async fn test_mainnet_non_broadcast_simulation_orca_whirlpool() {
     let rpc_url = match get_rpc_url() {
         Some(url) => url,
@@ -377,6 +379,7 @@ async fn test_mainnet_non_broadcast_simulation_orca_whirlpool() {
 }
 
 #[tokio::test]
+#[ignore = "opt-in mainnet diagnostic; fixed diagnostic thresholds are not live quotes (see OPEN_ISSUES.md ISSUE-P0-04)"]
 async fn test_mainnet_non_broadcast_simulation_cross_dex_dlmm_cpmm_kamino_v1() {
     let rpc_url = match get_rpc_url() {
         Some(url) => url,

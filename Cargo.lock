@@ -503,6 +503,7 @@ version = "0.1.0"
 dependencies = [
  "arb-constants",
  "borsh",
+ "bytemuck",
  "solana-account-info",
  "solana-address 2.7.0",
  "solana-cpi",
@@ -616,8 +617,10 @@ name = "arb-risk"
 version = "0.1.0"
 dependencies = [
  "arb-constants",
+ "arb-math",
  "arb-types",
  "parking_lot",
+ "solana-pubkey 2.4.0",
  "tracing",
 ]
 
@@ -671,6 +674,7 @@ dependencies = [
  "anyhow",
  "arb-constants",
  "arb-executor",
+ "arb-land",
  "arb-math",
  "arb-types",
  "base64 0.22.1",

@@ -546,6 +546,13 @@ pub fn assemble_cross_dex_flash_arbitrage(
         }
     }
 
+    // Standalone on-chain profit guard assertion before FlashRepay
+    let min_balance_after = params.repay_amount();
+    ixs.push(crate::build_profit_guard_instruction(
+        user_wsol_ata,
+        min_balance_after,
+    ));
+
     let repay_idx = ixs.len();
     ixs.push(crate::build_kamino_flash_repay_with_index(
         &resolved_params,
@@ -577,7 +584,7 @@ pub fn assemble_cross_dex_flash_arbitrage(
         Some(borrow_idx),
         Some(repay_idx),
         params.borrow_amount,
-        params.borrow_amount,
+        params.repay_amount(),
         params.flash_fee,
     )?;
     if !verification.is_atomic {

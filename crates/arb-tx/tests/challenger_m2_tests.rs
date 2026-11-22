@@ -137,8 +137,8 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
 
     assert_eq!(
         ixs_2hop.len(),
-        7,
-        "2-hop bundle must have exactly 7 instructions"
+        8,
+        "2-hop bundle must have exactly 8 instructions (with profit guard)"
     );
 
     // Borrow MUST be strictly at index 2
@@ -149,8 +149,11 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
     );
     assert_eq!(&borrow_ix.data[..8], &FLASH_BORROW_DISCRIMINATOR);
 
-    // Repay MUST be strictly at index 5 and specify borrow_instruction_index = 2
-    let repay_ix = &ixs_2hop[5];
+    // Standalone Profit Guard is strictly at index 5
+    assert_eq!(ixs_2hop[5].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
+
+    // Repay MUST be strictly at index 6 and specify borrow_instruction_index = 2
+    let repay_ix = &ixs_2hop[6];
     assert_eq!(
         repay_ix.program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
@@ -177,8 +180,8 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
 
     assert_eq!(
         ixs_3hop.len(),
-        8,
-        "3-hop bundle must have exactly 8 instructions"
+        9,
+        "3-hop bundle must have exactly 9 instructions (with profit guard)"
     );
 
     // In 3-hop, Borrow is still strictly at index 2
@@ -189,8 +192,11 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
     );
     assert_eq!(&borrow_ix_3hop.data[..8], &FLASH_BORROW_DISCRIMINATOR);
 
-    // Repay is at index 6, but its borrow_instruction_index MUST STILL be 2!
-    let repay_ix_3hop = &ixs_3hop[6];
+    // Standalone Profit Guard is strictly at index 6
+    assert_eq!(ixs_3hop[6].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
+
+    // Repay is at index 7, but its borrow_instruction_index MUST STILL be 2!
+    let repay_ix_3hop = &ixs_3hop[7];
     assert_eq!(
         repay_ix_3hop.program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
@@ -226,12 +232,12 @@ fn test_instruction_indexing_with_zero_priority_fee_and_zero_tip() {
     )
     .expect("assembly with 0 priority fee should succeed");
 
-    assert_eq!(ixs_zero_pf.len(), 7);
+    assert_eq!(ixs_zero_pf.len(), 8);
     assert_eq!(ixs_zero_pf[1].data[0], 3); // SetComputeUnitPrice instruction present
     assert_eq!(&ixs_zero_pf[1].data[1..9], &0u64.to_le_bytes());
     // Crucial: Borrow index is STILL 2 because SetComputeUnitPrice is not omitted
     assert_eq!(&ixs_zero_pf[2].data[..8], &FLASH_BORROW_DISCRIMINATOR);
-    assert_eq!(ixs_zero_pf[5].data[16], 2);
+    assert_eq!(ixs_zero_pf[6].data[16], 2);
 
     // Case B: Zero Tip Amount
     let ixs_zero_tip = TxBuilder::assemble_atomic_bundle(
@@ -249,12 +255,12 @@ fn test_instruction_indexing_with_zero_priority_fee_and_zero_tip() {
     // Tip instruction is omitted when tip == 0
     assert_eq!(
         ixs_zero_tip.len(),
-        6,
-        "Without tip, bundle has 6 instructions"
+        7,
+        "Without tip, bundle has 7 instructions (with profit guard)"
     );
-    // Borrow is still index 2, repay is index 5 pointing to 2
+    // Borrow is still index 2, repay is index 6 pointing to 2
     assert_eq!(&ixs_zero_tip[2].data[..8], &FLASH_BORROW_DISCRIMINATOR);
-    assert_eq!(ixs_zero_tip[5].data[16], 2);
+    assert_eq!(ixs_zero_tip[6].data[16], 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,7 +584,7 @@ fn test_oracle_verification_of_atomic_bundles() {
 
     // Adversarial Mutation A: Tamper with borrow_instruction_index (e.g. set to 1)
     let mut tampered_ixs = ixs_2hop.clone();
-    tampered_ixs[5].data[16] = 1; // Corrupt index
+    tampered_ixs[6].data[16] = 1; // Corrupt index (repay is at index 6)
     assert_eq!(
         kamino_onchain_introspection_oracle(&tampered_ixs),
         Err("borrow_instruction_index does not match actual borrow instruction index")
@@ -595,7 +601,7 @@ fn test_oracle_verification_of_atomic_bundles() {
 
     // Adversarial Mutation C: Mismatch account pubkey at index 6 (user ATA)
     let mut mismatched_accounts = ixs_2hop.clone();
-    mismatched_accounts[5].accounts[6].pubkey = Pubkey::new_from_array([99; 32]);
+    mismatched_accounts[6].accounts[6].pubkey = Pubkey::new_from_array([99; 32]);
     assert_eq!(
         kamino_onchain_introspection_oracle(&mismatched_accounts),
         Err("Account pubkey mismatch between borrow and repay")

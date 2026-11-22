@@ -12,8 +12,8 @@
 
 use std::path::PathBuf;
 
-use crate::{GenConfig, IdlProcessor, generate_cpi_crate, presets};
 use anyhow::Result;
+use arb_idl_gen::{GenConfig, IdlProcessor, generate_cpi_crate, presets};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
