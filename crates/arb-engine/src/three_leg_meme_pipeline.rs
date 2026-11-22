@@ -301,7 +301,7 @@ fn valid_meteora_pools(pools: &[PoolState]) -> Vec<PoolState> {
 }
 
 /// Internal representation of a route candidate (pool indexes into `candidates`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Chain {
     i: usize,
     j: usize,
@@ -340,13 +340,18 @@ struct ChainQuote {
 /// consume pre-existing wallet inventory to bridge a leg shortfall.
 /// Slippage is applied exactly once per hop boundary (no double-count).
 /// All arithmetic is checked/saturating on u64.
-fn quote_chain(
+/// Chain a quote through the three pools of `chain` given an already-computed
+/// leg-1 quote, so the discovery enumeration can reuse one leg-1 quote across
+/// every (j, k) continuation of the same WSOL-sided opener without re-quoting
+/// it.
+fn quote_chain_with_leg1(
     pools: &[PoolState],
     pool_indexes: (usize, usize, usize),
     a: MintId,
     b: MintId,
     input: u64,
     slippage_bps: u64,
+    leg1: (u64, arb_math::dlmm::DlmmSwapQuote, bool),
 ) -> Option<ChainQuote> {
     let wsol = wsol_mint();
     let (i, j, k) = pool_indexes;
@@ -356,8 +361,8 @@ fn quote_chain(
     let slippage_floor = |amount: u64| -> u64 {
         amount.saturating_mul(10_000u64.saturating_sub(slippage_bps)) / 10_000
     };
-    let (p1, p2, p3) = (&pools[i], &pools[j], &pools[k]);
-    let (out1, q1, d1) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p1, input, wsol, a)?;
+    let (p2, p3) = (&pools[j], &pools[k]);
+    let (out1, q1, d1) = leg1;
     let in2 = slippage_floor(out1);
     let (out2, q2, d2) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p2, in2, a, b)?;
     let in3 = slippage_floor(out2);
@@ -416,6 +421,16 @@ pub fn diagnose_missing_cycles(pools: &[PoolState]) -> String {
 /// Enumerate all ordered distinct (p1, p2, p3) triples that form a
 /// WSOL -> A -> B -> WSOL cycle. Returns every feasible chain with its quote
 /// at the discovery input size.
+///
+/// Structure-aware enumeration (replaces a naive n^3 triple sweep): pools are
+/// classified once into WSOL-sided edges, meme/meme bridges, and closing
+/// edges, and adjacency maps resolve candidate (A -> B -> WSOL)
+/// continuations so the hot loop never quotes a chain that structurally
+/// cannot close, and the leg-1 quote is computed once per WSOL-sided pool
+/// instead of once per qualifying triple. Construction matches
+/// [`quote_chain`]'s conservative chaining exactly (same inputs, same
+/// rounding, same guards), and output order matches the legacy (i, j, k)
+/// ascending sweep, pinned by a differential test.
 fn enumerate_cycles(
     pools: &[PoolState],
     input_size: u64,
@@ -425,51 +440,72 @@ fn enumerate_cycles(
     let n = pools.len();
     let mut out = Vec::new();
 
+    // One classification pass. Insertion order preserves ascending indices,
+    // so inner vectors reproduce the legacy (j, k) ascending order.
+    // wsol_side[i] = the non-WSOL mint of pool i when i is WSOL-sided.
+    let mut wsol_side: Vec<Option<MintId>> = vec![None; n];
+    let mut closers: std::collections::HashMap<MintId, Vec<usize>> = Default::default();
+    let mut bridges: std::collections::HashMap<MintId, Vec<(MintId, usize)>> = Default::default();
+    for (idx, p) in pools.iter().enumerate() {
+        let (m1, m2) = (p.base_mint, p.quote_mint);
+        let other = if m1 == wsol && m2 != wsol {
+            Some(m2)
+        } else if m2 == wsol && m1 != wsol {
+            Some(m1)
+        } else {
+            None
+        };
+        if let Some(a) = other {
+            wsol_side[idx] = Some(a);
+            closers.entry(a).or_default().push(idx);
+        } else if m1 != wsol && m2 != wsol && m1 != m2 {
+            bridges.entry(m1).or_default().push((m2, idx));
+            bridges.entry(m2).or_default().push((m1, idx));
+        }
+    }
+
     for i in 0..n {
-        for j in 0..n {
-            if j == i {
+        let Some(a) = wsol_side[i] else { continue };
+        // Leg 1 depends only on (i, input_size): quote once, reuse across
+        // every (j, k) continuation via quote_chain_with_leg1.
+        let Some(leg1) =
+            MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(&pools[i], input_size, wsol, a)
+        else {
+            continue;
+        };
+
+        let Some(bridge_js) = bridges.get(&a) else {
+            continue;
+        };
+        for (b, j) in bridge_js {
+            if *b == a {
                 continue;
             }
-            for k in 0..n {
-                if k == i || k == j {
+            let Some(closer_ks) = closers.get(b) else {
+                continue;
+            };
+            for &k in closer_ks {
+                // Structural distinctness: i is WSOL-sided, j is not, and k
+                // closes a different meme (b != a). The legacy guards are
+                // kept as a cheap invariant fence.
+                if *j == i || k == i || k == *j {
                     continue;
                 }
-                let (p1, p2, p3) = (&pools[i], &pools[j], &pools[k]);
-
-                // p1: WSOL <-> A, A != WSOL.
-                let (a1, a2) = (p1.base_mint, p1.quote_mint);
-                let a = if a1 == wsol {
-                    a2
-                } else if a2 == wsol {
-                    a1
-                } else {
-                    continue;
-                };
-                if a == wsol {
-                    continue;
-                }
-                // p3: B <-> WSOL, B != WSOL, B != A.
-                let (b1, b2) = (p3.base_mint, p3.quote_mint);
-                let b = if b1 == wsol {
-                    b2
-                } else if b2 == wsol {
-                    b1
-                } else {
-                    continue;
-                };
-                if b == wsol || b == a {
-                    continue;
-                }
-                // p2: must bridge A <-> B.
-                let p2_mints = [p2.base_mint, p2.quote_mint];
-                if !p2_mints.contains(&a) || !p2_mints.contains(&b) {
-                    continue;
-                }
-                let Some(quote) = quote_chain(pools, (i, j, k), a, b, input_size, slippage_bps)
+                let Some(quote) =
+                    quote_chain_with_leg1(pools, (i, *j, k), a, *b, input_size, slippage_bps, leg1)
                 else {
                     continue;
                 };
-                out.push((Chain { i, j, k, a, b }, quote));
+                out.push((
+                    Chain {
+                        i,
+                        j: *j,
+                        k,
+                        a,
+                        b: *b,
+                    },
+                    quote,
+                ));
             }
         }
     }
@@ -1151,5 +1187,183 @@ mod tests {
         assert_eq!(legs[2].amount_in, floor(legs[1].amount_out));
         assert!(legs[1].amount_in < legs[0].amount_out);
         assert!(legs[2].amount_in < legs[1].amount_out);
+    }
+
+    fn with_dlmm_state(
+        mut pool: PoolState,
+        active_bin_id: i32,
+        bins: Vec<arb_types::DlmmBin>,
+        params: arb_types::DlmmFeeParams,
+    ) -> PoolState {
+        pool.dlmm = Some(arb_types::DlmmState {
+            active_bin_id,
+            status: 0,
+            bin_step_bps: 10,
+            bins,
+            params: Some(params),
+            volatility_accumulator: 0,
+            volatility_reference: 0,
+            index_reference: active_bin_id,
+            last_update_timestamp: 1_700_000_000,
+            ..Default::default()
+        });
+        pool
+    }
+
+    /// Quotable DLMM pool fixture (3-bin ladder around `active_bin_id`),
+    /// mirroring the integration fixture in
+    /// `tests/three_leg_meme_pipeline_tests.rs`.
+    fn quotable_dlmm_pool(
+        pool_byte: u8,
+        active_bin_id: i32,
+        base_mint: MintId,
+        quote_mint: MintId,
+    ) -> PoolState {
+        let liquidity = 10_u128.pow(12);
+        let bins = vec![
+            arb_types::DlmmBin {
+                bin_id: active_bin_id - 1,
+                amount_x: liquidity * 2,
+                amount_y: 0,
+                ..Default::default()
+            },
+            arb_types::DlmmBin {
+                bin_id: active_bin_id,
+                amount_x: liquidity,
+                amount_y: liquidity,
+                ..Default::default()
+            },
+            arb_types::DlmmBin {
+                bin_id: active_bin_id + 1,
+                amount_x: 0,
+                amount_y: liquidity * 2,
+                ..Default::default()
+            },
+        ];
+        let params = arb_types::DlmmFeeParams {
+            base_factor: 100,
+            filter_period: 30,
+            decay_period: 600,
+            reduction_factor: 5000,
+            variable_fee_control: 40_000,
+            max_volatility_accumulator: 350_000,
+            protocol_share: 1000,
+            base_fee_power_factor: 0,
+            function_type: 0,
+            collect_fee_mode: 0,
+        };
+        with_dlmm_state(
+            pool_without_dlmm_state(pool_byte, base_mint, quote_mint),
+            active_bin_id,
+            bins,
+            params,
+        )
+    }
+
+    /// Differential pin: the adjacency-driven enumeration must produce
+    /// exactly the legacy n^3 sweep's output - same chains, same order, same
+    /// conservative quotes - over a market with duplicated WSOL edges,
+    /// unusable bridges, and unclosable memes.
+    #[test]
+    fn enumerate_cycles_matches_legacy_triple_sweep() {
+        let wsol = wsol();
+        let a = MintId(Pubkey::new_from_array([90u8; 32]));
+        let b = MintId(Pubkey::new_from_array([91u8; 32]));
+        let c = MintId(Pubkey::new_from_array([92u8; 32]));
+
+        let pools = vec![
+            // Two WSOL/A edges (duplicated opener + closer candidates).
+            quotable_dlmm_pool(1, -100, wsol, a),
+            quotable_dlmm_pool(2, -100, a, wsol),
+            // Meme/meme bridges.
+            quotable_dlmm_pool(3, 0, a, b),
+            quotable_dlmm_pool(4, 0, b, a),
+            // Bridge with NO closer (A<->C unclosable).
+            quotable_dlmm_pool(5, 0, a, c),
+            quotable_dlmm_pool(6, 0, c, a),
+            // Second WSOL/B edge.
+            quotable_dlmm_pool(7, 400, b, wsol),
+            quotable_dlmm_pool(8, 400, wsol, b),
+        ];
+        let input = 1_000_000u64;
+        let slippage = 25u64;
+
+        let got = enumerate_cycles(&pools, input, slippage);
+
+        // Legacy reference sweep (pre-optimization algorithm).
+        let mut expected: Vec<(Chain, ChainQuote)> = Vec::new();
+        for i in 0..pools.len() {
+            for j in 0..pools.len() {
+                if j == i {
+                    continue;
+                }
+                for k in 0..pools.len() {
+                    if k == i || k == j {
+                        continue;
+                    }
+                    let (p1, p2, p3) = (&pools[i], &pools[j], &pools[k]);
+                    let (a1, a2) = (p1.base_mint, p1.quote_mint);
+                    let ca = if a1 == wsol {
+                        a2
+                    } else if a2 == wsol {
+                        a1
+                    } else {
+                        continue;
+                    };
+                    if ca == wsol {
+                        continue;
+                    }
+                    let (b1, b2) = (p3.base_mint, p3.quote_mint);
+                    let cb = if b1 == wsol {
+                        b2
+                    } else if b2 == wsol {
+                        b1
+                    } else {
+                        continue;
+                    };
+                    if cb == wsol || cb == ca {
+                        continue;
+                    }
+                    let p2_mints = [p2.base_mint, p2.quote_mint];
+                    if !p2_mints.contains(&ca) || !p2_mints.contains(&cb) {
+                        continue;
+                    }
+                    let Some(leg1) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(
+                        &pools[i], input, wsol, ca,
+                    ) else {
+                        continue;
+                    };
+                    let Some(quote) =
+                        quote_chain_with_leg1(&pools, (i, j, k), ca, cb, input, slippage, leg1)
+                    else {
+                        continue;
+                    };
+                    expected.push((
+                        Chain {
+                            i,
+                            j,
+                            k,
+                            a: ca,
+                            b: cb,
+                        },
+                        quote,
+                    ));
+                }
+            }
+        }
+
+        assert_eq!(got.len(), expected.len(), "chain count mismatch");
+        for (gi, ei) in got.iter().zip(expected.iter()) {
+            assert_eq!(gi.0.i, ei.0.i);
+            assert_eq!(gi.0.j, ei.0.j);
+            assert_eq!(gi.0.k, ei.0.k);
+            assert_eq!(gi.0.a, ei.0.a);
+            assert_eq!(gi.0.b, ei.0.b);
+            assert_eq!(gi.1.inputs, ei.1.inputs, "chain {:?}", ei.0);
+            assert_eq!(gi.1.out, ei.1.out, "chain {:?}", ei.0);
+            assert_eq!(gi.1.fee, ei.1.fee, "chain {:?}", ei.0);
+            assert_eq!(gi.1.bins, ei.1.bins, "chain {:?}", ei.0);
+            assert_eq!(gi.1.swap_for_y, ei.1.swap_for_y, "chain {:?}", ei.0);
+        }
     }
 }

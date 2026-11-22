@@ -1151,20 +1151,37 @@ impl RpcPool {
         let mut all_slots = Vec::with_capacity(pubkeys.len());
 
         if has_healthy_batch_100 {
-            for chunk in pubkeys.chunks(100) {
-                match self
-                    .call_filtered_idx(
-                        "getMultipleAccounts",
-                        json!([chunk, {"encoding": "base64", "commitment": "processed"}]),
-                        |idx, _| {
-                            self.telemetry.get(idx).is_some_and(|t| {
-                                t.config.max_batch_size >= 100
-                                    && !t.quota_exhausted.load(Ordering::Acquire)
-                            })
-                        },
-                    )
-                    .await
-                {
+            // chunks are fetched with bounded parallelism (4 in flight): the
+            // dominant cost of a multi-chunk hydration is per-chunk RPC round
+            // trips, and fetching them concurrently removes the serial RTT
+            // chain (e.g. 3 chunks x ~45ms -> ~45ms). `buffered` preserves
+            // input order, so the DATA-01 contract (per-account slot stamping
+            // from the chunk response that carried it) is unchanged.
+            const MAX_PARALLEL_GMA_CHUNKS: usize = 4;
+            use futures::stream::{self, StreamExt};
+            let chunk_results: Vec<anyhow::Result<serde_json::Value>> = stream::iter(
+                pubkeys
+                    .chunks(100)
+                    .map(|chunk| {
+                        self.call_filtered_idx(
+                            "getMultipleAccounts",
+                            json!([chunk, {"encoding": "base64", "commitment": "processed"}]),
+                            |idx, _| {
+                                self.telemetry.get(idx).is_some_and(|t| {
+                                    t.config.max_batch_size >= 100
+                                        && !t.quota_exhausted.load(Ordering::Acquire)
+                                })
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .buffered(MAX_PARALLEL_GMA_CHUNKS)
+            .collect()
+            .await;
+
+            for (chunk, res) in pubkeys.chunks(100).zip(chunk_results) {
+                match res {
                     Ok(res) => {
                         let chunk_slot = res
                             .pointer("/context/slot")
