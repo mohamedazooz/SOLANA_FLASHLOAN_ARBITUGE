@@ -188,6 +188,7 @@ pub struct ObservabilitySnapshot {
     pub ws_subscriptions_active: u64,
     pub ws_reconnects_total: u64,
     pub stale_rejections_total: u64,
+    pub inventory_rejections_total: u64,
     pub fork_invalidations_total: u64,
     pub resyncs_total: u64,
     pub stream_gaps_total: u64,

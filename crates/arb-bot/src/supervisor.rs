@@ -666,6 +666,7 @@ impl Supervisor {
                 ws_subscriptions_active: arb_metrics::get_ws_subscriptions_active(),
                 ws_reconnects_total: arb_metrics::get_ws_reconnects_total(),
                 stale_rejections_total: arb_metrics::get_stale_rejections_total(),
+                inventory_rejections_total: arb_metrics::get_inventory_rejections_total(),
                 fork_invalidations_total: arb_metrics::get_fork_invalidations_total(),
                 resyncs_total: arb_metrics::get_resyncs_total(),
                 stream_gaps_total: arb_metrics::get_stream_slot_gaps_total(),

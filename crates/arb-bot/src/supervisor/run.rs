@@ -335,6 +335,7 @@ impl Supervisor {
             .fetch_payer_token_balances(&[wsol_ata, meme_a_ata, meme_b_ata])
             .await
         else {
+            arb_metrics::inc_inventory_rejections();
             debug!("3-leg capture rejected: ATA balances unfetchable (fail-closed)");
             return Vec::new();
         };
@@ -343,8 +344,9 @@ impl Supervisor {
         let a_bal = balances.get(1).copied().unwrap_or(u64::MAX);
         let b_bal = balances.get(2).copied().unwrap_or(u64::MAX);
         if wsol_bal > 0 || a_bal > 0 || b_bal > 0 {
+            arb_metrics::inc_inventory_rejections();
             warn!(
-                "3-leg capture rejected: pre-existing inventory would subsidize execution (wsol={wsol_bal}, meme_a={a_bal}, meme_b={b_bal})"
+                "3-leg capture rejected: pre-existing inventory would subsidize execution (wsol={wsol_bal}, meme_a={a_bal}, meme_b={b_bal}); remedy: wsol>0 requires unwrapping the WSOL ATA (converts WSOL back to SOL, e.g. syncNative-close flow), intermediate ATA dust requires closing that token account empty before 3-leg capture resumes"
             );
             return Vec::new();
         }
