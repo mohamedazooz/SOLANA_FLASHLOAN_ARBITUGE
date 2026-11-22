@@ -36,6 +36,9 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 
 | [`security/ONCHAIN_PROGRAM_SECURITY_AUDIT.md`](../../docs/active/security/ONCHAIN_PROGRAM_SECURITY_AUDIT.md) | **Phase 6 On-Chain Program Security**: delta-based profit guards, signer/program/pool/tip validation, no-unsafe/no-panic audit. |
 | [`security/PROGRAM_DEPLOYMENT_VERIFICATION.md`](../../docs/active/security/PROGRAM_DEPLOYMENT_VERIFICATION.md) | **Phase 6 Deployment Verification**: NOT VERIFIED verdict + prerequisites before live use. |
+| [`architecture/MARKET_DATA_PIPELINE.md`](../../docs/active/architecture/MARKET_DATA_PIPELINE.md) | **Phase 7 Market Data Pipeline**: ingestion topology, coherence/integrity primitives, 11-rung latency ladder with wired call sites. |
+| [`performance/HFT_ARCHITECTURE.md`](../../docs/active/performance/HFT_ARCHITECTURE.md) | **Phase 7 HFT Architecture**: hot-path concurrency audit, batching wins, evidence-first optimization policy (no unsafe, no speculative changes). |
+| [`performance/LATENCY_BENCHMARKS.md`](../../docs/active/performance/LATENCY_BENCHMARKS.md) | **Phase 7 Latency Benchmarks**: stage-ladder metrics × sources, bench inventory, captured test evidence, honest NOT-EXECUTED gaps. |
 
 | [`audit/JITO_LANDING_AUDIT.md`](../../docs/active/audit/JITO_LANDING_AUDIT.md) | **Phase 8 Jito Landing Audit**: bundle fan-out, EV-maximizing bidder, measured-posterior ledger, proven-expiry lifecycle, tip-drift CI guard. |
 | [`performance/JITO_BENCHMARKS.md`](../../docs/active/performance/JITO_BENCHMARKS.md) | **Phase 8 Jito Benchmarks**: measurement contract (metrics wired × sources), no invented landing numbers, soak execution plan. |
