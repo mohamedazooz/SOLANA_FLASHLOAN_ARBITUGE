@@ -33,6 +33,9 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`audit/ECONOMIC_INVARIANTS.md`](../../docs/active/audit/ECONOMIC_INVARIANTS.md) | **Phase 4 Economic Invariants**: EI-01…EI-12 with enforcement points and tests. |
 | [`audit/TRANSACTION_COMPILER_AUDIT.md`](../../docs/active/audit/TRANSACTION_COMPILER_AUDIT.md) | **Phase 5 Compiler Audit**: SIMD-0385 layout re-verified, CB strip + fail-closed index rewrite, V0/V1 gates. |
 | [`audit/TRANSACTION_COMPATIBILITY_MATRIX.md`](../../docs/active/audit/TRANSACTION_COMPATIBILITY_MATRIX.md) | **Phase 5 Compatibility Matrix**: format × transport × runtime, no-downgrade rules. |
+| [`architecture/MARKET_DATA_PIPELINE.md`](../../docs/active/architecture/MARKET_DATA_PIPELINE.md) | **Phase 7 Market Data Pipeline**: ingestion topology, coherence/integrity primitives, 11-rung latency ladder with wired call sites. |
+| [`performance/HFT_ARCHITECTURE.md`](../../docs/active/performance/HFT_ARCHITECTURE.md) | **Phase 7 HFT Architecture**: hot-path concurrency audit, batching wins, evidence-first optimization policy (no unsafe, no speculative changes). |
+| [`performance/LATENCY_BENCHMARKS.md`](../../docs/active/performance/LATENCY_BENCHMARKS.md) | **Phase 7 Latency Benchmarks**: stage-ladder metrics × sources, bench inventory, captured test evidence, honest NOT-EXECUTED gaps. |
 
 ---
 
