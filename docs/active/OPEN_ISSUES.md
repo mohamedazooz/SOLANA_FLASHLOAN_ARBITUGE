@@ -128,6 +128,24 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+### DIAG-F-2026-11-23-N1: Opaque `DLMM quote failed` on Pool 3gUa73kg (9hjBLBrc Pair) (P2, CLOSED AS CLASSIFIED)
+
+- **Files**: `crates/arb-engine/src/dlmm_flash_arbitrage.rs` (gate order), `crates/arb-ingest/src/decoders.rs:745` (`function_type = data[35]`).
+- **Observed Behavior**: live rehearsal rejected hop A/B with the detail-less string `DLMM quote failed`; neither the operator nor the log could tell whether the pool was broken, stale, or intentionally unsupported.
+- **Root Cause (live evidence, rehearsal run)**: the pool's `StaticParameters.function_type == 2`. The engine gate is `function_type > 1 -> reject` (SOURCE_VERIFIED against the dlmm-sdk IDL where `function_type: u8` maps to `ConcreteFunctionType`; the meteora-invent `dlmm_config.jsonc` documents concrete 0 = LimitOrder-enabled default, 1 = LiquidityMining only). Value 2 is outside the documented set, so rejection is the CORRECT fail-closed outcome, but it was mislabeled as a generic quote failure.
+- **Correction**: `quote()` re-factored into a thin wrapper over a private `quote_inner() -> Result<DlmmHopQuote, QuoteGateRejection>`; new public `quote_failure_reason()` is the single source of truth; `QuoteGateRejection` is a 13-variant taxonomy (`ZeroInput`, `MintNotInPool`, `MissingDlmmState`, `MissingFeeParams`, `PoolDisabled`, `UnsupportedFunctionType`, `UnsupportedCollectFeeMode`, `RiskyToken`, `TransferFee`, `BinAmountOverflow`, `EmptyBinWindow`, `QuoteEngineError`, `ZeroOutput`) and both evaluate() `QuoteFailed` sites now print `DLMM quote failed: {reason:?}`. Live re-run must show `UnsupportedFunctionType { function_type: 2 }` for this pool. Note: the decoder comment claiming `2 => LimitOrder` conflicts with the invent mapping and is flagged for separate online verification.
+- **Regression Tests**: `quote_gate_labels_each_rejection_precisely`, `quote_gate_order_puts_pair_state_before_fee_params`, `quote_and_quote_failure_reason_never_diverge`, `evaluate_surfaces_the_precise_quote_gate_reason` (arb-engine lib).
+- **Status**: FIXED (taxonomy) + OPEN follow-up: verify ConcreteFunctionType semantics against lb_clmm source before ever widening the gate.
+
+### DIAG-F-2026-11-23-N2: USDC Borrows Always Died As `FLASH_MINT_RESERVE_MISMATCH` (P2, CLOSED AS CONFIG WIRING)
+
+- **Files**: `crates/arb-sim/examples/full_path_rehearsal.rs`, `crates/arb-tx/src/flash/kamino.rs` (`select_kamino_flash_reserve`).
+- **Observed Behavior**: every USDC-denominated 2-pool evaluation failed with `FLASH_MINT_RESERVE_MISMATCH` because the session wired exactly one (WSOL) Kamino reserve while `flash_mint_matches_kamino_reserve` correctly fails closed on `flash_is_wsol != reserve_is_wsol`.
+- **Correction**: `select_flash_reserve_candidates_live` now sweeps+decodes ALL configured reserves; rehearsal builds a per-mint `HashMap<Pubkey, KaminoReserveCandidate>` for {env flash mint, WSOL, USDC}; every evaluation site (sweep loop, dry-run, executor assembly) applies the per-mint reserve override; mints with no selectable reserve are skipped with an explicit printed reason instead of failing per-quote. Engine semantics unchanged and still fail closed.
+- **Status**: FIXED (wiring). USDC routes now either evaluate with a correctly-wired USDC reserve or are skipped with an explicit reason; no net-profit accounting unit mixing is possible because the reserve mint must still equal the flash mint.
+
+---
+
 ### HFT-F-2026-11-22-N1: Yellowstone gRPC Compile-Ready but Not Decision-Wired (P3)
 
 - **File**: `crates/arb-ingest/Cargo.toml`, `crates/arb-ingest/src/dual_ingest.rs`, `crates/arb-ingest/src/quote_readiness.rs`
