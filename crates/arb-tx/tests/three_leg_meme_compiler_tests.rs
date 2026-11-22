@@ -803,10 +803,21 @@ fn test_missing_alt_address() {
     assert!(!alt.is_provisioned());
     assert!(alt.alt_address.is_none());
 
-    // Trying to compile without ALT should fail
-    let ctx = build_test_ctx(false, false, true);
+    // V1 transport proven: v1 messages carry every account inline and have no
+    // ALT concept at all - an unprovisioned ALT must not block V1-primary
+    // compilation (SIMD-0385, mainnet epoch 1035).
+    let proven_ctx = build_test_ctx(false, false, true);
     let signer = KeypairSigner::new_random();
-    let result = compile_3leg_meme_dlmm_arb(&ctx, &alt, &signer);
+    let proven_result = compile_3leg_meme_dlmm_arb(&proven_ctx, &alt, &signer).unwrap();
+    assert!(matches!(
+        proven_result,
+        arb_tx::flash::compiler::CompileResult::V1DirectTransport(_)
+    ));
+
+    // V1 transport unproven: the V0+ALT path cannot resolve static addresses
+    // from an unprovisioned ALT and must fail closed.
+    let unproven_ctx = build_test_ctx(false, false, false);
+    let result = compile_3leg_meme_dlmm_arb(&unproven_ctx, &alt, &signer);
     assert!(result.is_err());
 }
 
