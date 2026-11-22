@@ -294,6 +294,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         two_pool_v1: true,
     };
     let rpc = Arc::new(RpcPool::from_env());
+    // Capture before the config moves into the pipeline: the single integer
+    // SOL/USD price used for ALL cross-unit net normalization below.
+    let sol_usd_price = pipeline_cfg.sol_usd_price;
     let pipeline = MeteoraDlmmFreshStatePipeline::new(rpc.clone(), pipeline_cfg);
 
     // ── 4. Flash evaluation sweep across all candidate pairs ─────────────────
@@ -355,15 +358,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(20);
 
     // ▼▼▼ LIVE SWEEP LOOP ▼▼▼
-    let mut best_entry: Option<(
-        (Pubkey, Pubkey),
-        String,
-        MintId,
-        arb_engine::DlmmFlashArbEvaluation,
-    )> = None;
-    // Best below-floor pair (net, pool_a, pool_b, label, flash_mint, decimals):
-    // used for the forced flash dry-run when nothing is feasible.
-    let mut best_infeasible: Option<(i64, Pubkey, Pubkey, String, MintId, u8)> = None;
+    let mut best_entry: Option<BestFlashEntry> = None;
+    // Best below-floor pair: ranked on lamports-EQUIVALENT nets so a USDC-raw
+    // net can never outrank a WSOL-lamports net by a denomination artifact (1
+    // raw USDC = 10⁻⁶ token units vs 1 lamport = 10⁻⁹ WSOL — a 1000× unit
+    // bias). `net_lamports_eq` is None when the SOL price bridge is missing:
+    // cross-mint ranking then refuses (fail-closed) and only same-mint raw
+    // comparisons are honored.
+    let mut best_infeasible: Option<BestInfeasible> = None;
     for iteration in 0..loops {
         if iteration > 0 {
             println!(
@@ -471,20 +473,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             },
                         ) = e.rejection.as_ref()
                         {
-                            let cand = (
+                            let cand_eq = arb_engine::net_lamports_equiv(
                                 *net,
-                                pool_a,
-                                pool_b,
-                                meme_label.to_string(),
                                 MintId(fm),
                                 dec,
+                                sol_usd_price,
                             );
-                            if best_infeasible
-                                .as_ref()
-                                .map(|(n, _, _, _, _, _)| *net > *n)
-                                .unwrap_or(true)
-                            {
-                                best_infeasible = Some(cand);
+                            // Cross-unit selection: rank in lamports-eq when
+                            // both sides are convertible; refuse cross-mint
+                            // comparison when either side is unconvertible.
+                            let take = match best_infeasible.as_ref() {
+                                None => true,
+                                Some(b) => match (b.net_lamports_eq, cand_eq) {
+                                    (Some(a), Some(c)) => c > a,
+                                    (None, Some(_)) => true,
+                                    (Some(_), None) => false,
+                                    (None, None) => MintId(fm) == b.flash_mint && *net > b.net_raw,
+                                },
+                            };
+                            if take {
+                                best_infeasible = Some(BestInfeasible {
+                                    net_raw: *net,
+                                    net_lamports_eq: cand_eq,
+                                    pool_a,
+                                    pool_b,
+                                    label: meme_label.to_string(),
+                                    flash_mint: MintId(fm),
+                                    flash_mint_decimals: dec,
+                                });
                             }
                         }
                     }
@@ -492,26 +508,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "    sweep {:<10} {tag}: feasible={} net={} rejection={:?}",
                         meme_label,
                         e.feasible,
-                        e.net_profit,
+                        net_report(e.net_profit, &fm, dec, sol_usd_price),
                         e.rejection.as_ref().map(|x| x.as_str())
                     );
                     if let Some(rej) = e.rejection.as_ref() {
                         println!("      detail: {rej:?}");
                     }
                     // Size-ladder diagnostic: is ANY size close to feasible?
+                    // Same geometric ×3 ladder as production (build_size_ladder),
+                    // not a hand-picked trio — the ladder is fully dynamic.
                     let mut ladder_best: Option<(u64, i64)> = None;
-                    for size in [
+                    for size in arb_engine::build_size_ladder(
                         pair_flash_cfg.min_borrow,
-                        pair_flash_cfg.min_borrow.saturating_mul(5),
                         pair_flash_cfg.max_borrow,
-                    ] {
+                        8,
+                    ) {
                         let ev = evaluator.evaluate(r, size);
                         if ladder_best.map(|(_, n)| ev.net_profit > n).unwrap_or(true) {
                             ladder_best = Some((size, ev.net_profit));
                         }
                     }
                     if let Some((size, net)) = ladder_best {
-                        println!("      ladder-best: net={net} at borrow={size}");
+                        println!(
+                            "      ladder-best: {} at borrow={size}",
+                            net_report(net, &fm, dec, sol_usd_price)
+                        );
                     }
                 }
                 if let Some(found) = routes
@@ -520,8 +541,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|e| e.feasible)
                     .max_by_key(|e| e.net_profit)
                 {
-                    best_entry =
-                        Some(((pool_a, pool_b), meme_label.to_string(), MintId(fm), found));
+                    best_entry = Some(BestFlashEntry {
+                        pools: (pool_a, pool_b),
+                        label: meme_label.to_string(),
+                        flash_mint: MintId(fm),
+                        flash_mint_decimals: dec,
+                        evaluation: found,
+                    });
                     break;
                 }
             }
@@ -543,14 +569,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 min_profit_lamports: 1,
                 flash_loan_fee_sf: flash_cfg.kamino_flash_fee_sf,
                 network_cost_lamports: flash_cfg.network_cost_lamports,
-                input_size: 10_000_000,
-                size_search_sizes: vec![10_000_000, 30_000_000, 100_000_000],
+                input_size: flash_cfg.min_borrow,
+                // Fully dynamic borrow sizing — mirrors the production
+                // supervisor ladder (×3 growth, ceiling always evaluated) and
+                // is clamped by the LIVE Kamino reserve liquidity selected
+                // above, replacing the former static [10M, 30M, 100M] grid.
+                kamino_available_liquidity: Some(flash_cfg.kamino_available_liquidity),
+                size_search_sizes: arb_engine::build_size_ladder(
+                    flash_cfg.min_borrow,
+                    flash_cfg.max_borrow,
+                    8,
+                ),
                 ..ThreeLegMemeContextParams::for_discovery(signer.pubkey())
             };
             match build_three_leg_meme_pipeline(&all_states, &params) {
                 Ok(r) => {
                     println!(
-                        "    sweep 3leg: FEASIBLE pools {:?} mints [{}, {}] net={} raw (gross={} flash_fee={}) best_input={}",
+                        "    sweep 3leg: FEASIBLE pools {:?} mints [{}, {}] net={} lamports(WSOL·9dp) (gross={} flash_fee={}) best_input={}",
                         [
                             &r.pool_ids[0].to_string()[..8],
                             &r.pool_ids[1].to_string()[..8],
@@ -582,7 +617,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // ▲▲▲ END LIVE SWEEP LOOP ▲▲▲
 
-    let ((pool_a, pool_b), meme, flash_mint, best) = match best_entry {
+    let BestFlashEntry {
+        pools: (pool_a, pool_b),
+        label: meme,
+        flash_mint,
+        flash_mint_decimals: flash_dec,
+        evaluation: best,
+    } = match best_entry {
         Some(v) => v,
         None => {
             println!(
@@ -590,15 +631,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 candidates.len(),
                 loops
             );
-            let Some((net, pa, pb, label, fm, dec)) = best_infeasible else {
+            let Some(b) = best_infeasible else {
                 println!(
                     "[5b] no below-floor pair with a complete quote either -- nothing to dry-run."
                 );
                 return Ok(());
             };
             println!(
-                "[5b] FORCED FLASH DRY-RUN on {label} (best net {net} raw, below floor): build + fork simulation only, never broadcast."
+                "[5b] FORCED FLASH DRY-RUN on {} (best net {}, below floor): build + fork simulation only, never broadcast.",
+                b.label,
+                net_report(
+                    b.net_raw,
+                    &b.flash_mint.0,
+                    b.flash_mint_decimals,
+                    sol_usd_price
+                )
             );
+            let (pa, pb) = (b.pool_a, b.pool_b);
+            let (fm, dec) = (b.flash_mint, b.flash_mint_decimals);
             // Fresh states + fresh evaluation so the built transaction matches
             // the chain at simulation time, not at sweep time.
             let Ok((state_a, state_b, _, _, _)) =
@@ -633,21 +683,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let repay = e.borrow_amount.saturating_add(e.flash_fee);
             if e.hop_b_min_out < repay {
                 println!(
-                    "[5b] dry-run verdict: the builder gate refuses this transaction -- conservative final output {} < repayment {} raw. The flash loan cannot be repaid at the slippage floor: the route is economically negative at the quote level itself. Fail-closed confirmed at the last line of defense; nothing built, nothing broadcast.",
-                    e.hop_b_min_out, repay
+                    "[5b] dry-run verdict: the builder gate refuses this transaction -- conservative final output {} < repayment {} raw ({}dp denomination). The flash loan cannot be repaid at the slippage floor: the route is economically negative at the quote level itself. Fail-closed confirmed at the last line of defense; nothing built, nothing broadcast.",
+                    e.hop_b_min_out, repay, dec
                 );
                 return Ok(());
             }
-            ((pa, pb), label, fm, e)
+            BestFlashEntry {
+                pools: (pa, pb),
+                label: b.label,
+                flash_mint: fm,
+                flash_mint_decimals: dec,
+                evaluation: e,
+            }
         }
     };
     println!(
-        "[5] best flash route: meme={} pools {}+{} borrow={} raw net_profit={} raw ({} bps) flash_fee={} bins_a={} bins_b={}",
+        "[5] best flash route: meme={} pools {}+{} borrow={} raw({flash_dec}dp) net_profit={} ({} bps) flash_fee={} raw({flash_dec}dp) bins_a={} bins_b={}",
         meme,
         pool_a,
         pool_b,
         best.borrow_amount,
-        best.net_profit,
+        net_report(best.net_profit, &flash_mint.0, flash_dec, sol_usd_price),
         best.net_profit_bps,
         best.flash_fee,
         best.bins_a,
@@ -891,6 +947,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     Ok(())
+}
+
+/// Fully-denominated net report for a flash-mint raw value. Raw units are
+/// mint-specific and are NOT lamports unless the flash mint is WSOL (1 raw
+/// WSOL = 1 lamport, 9dp). Non-WSOL nets are normalized through the integer
+/// SOL price; when the price is missing/invalid the conversion is REFUSED
+/// (fail-closed, printed as UNAVAILABLE) rather than fabricated — mirrors
+/// `arb_engine::net_lamports_equiv` used for cross-unit ranking above.
+fn net_report(
+    net_raw: i64,
+    flash_mint: &Pubkey,
+    decimals: u8,
+    sol_usd_price: Option<u64>,
+) -> String {
+    let le = arb_engine::net_lamports_equiv(net_raw, MintId(*flash_mint), decimals, sol_usd_price);
+    let denom = if *flash_mint == arb_engine::wsol_mint_pubkey() {
+        format!("WSOL·{decimals}dp; 1 raw = 1 lamport")
+    } else {
+        format!("raw token·{decimals}dp (NOT lamports)")
+    };
+    match le {
+        Some(l) => format!("{net_raw} raw [{denom}] ≈ {l} lamports-eq"),
+        None => format!(
+            "{net_raw} raw [{denom}] ≈ UNAVAILABLE (no SOL price; cross-unit ranking refused)"
+        ),
+    }
+}
+
+/// Feasible winner of a sweep (named struct — the evaluation tuple was wide
+/// enough to trip clippy's type-complexity lint).
+struct BestFlashEntry {
+    pools: (Pubkey, Pubkey),
+    label: String,
+    flash_mint: MintId,
+    flash_mint_decimals: u8,
+    evaluation: arb_engine::DlmmFlashArbEvaluation,
+}
+
+/// Best below-floor pair seen in a sweep. Ranked cross-mint on
+/// `net_lamports_eq` (see sweep loop); raw fields are retained verbatim for
+/// the forced dry-run rebuild.
+struct BestInfeasible {
+    net_raw: i64,
+    net_lamports_eq: Option<i64>,
+    pool_a: Pubkey,
+    pool_b: Pubkey,
+    label: String,
+    flash_mint: MintId,
+    flash_mint_decimals: u8,
 }
 
 /// Short human-readable pair label for the watch record.
