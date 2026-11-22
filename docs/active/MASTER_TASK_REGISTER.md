@@ -375,3 +375,22 @@ PR: (this PR)
 REMAINING_RISKS: Live on-cluster V1 observation outstanding; V0 remains the default path.
 NEXT_TASK: Mission §11 Phase 6 — On-chain program security.
 ```
+
+```markdown
+TASK_ID: TASK-M7-001
+PHASE: Mission §12 — Market Data & HFT Infrastructure (Phase 7)
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Audit the market-data pipeline and HFT hot path (sources, coherence gates, latency ladder, concurrency primitives); document honestly without speculative optimization.
+FILES: docs/active/architecture/MARKET_DATA_PIPELINE.md, docs/active/performance/HFT_ARCHITECTURE.md, docs/active/performance/LATENCY_BENCHMARKS.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+FUNCTIONS: build_quote_dependency_set (quote_readiness.rs), SlotIntegrity::observe_with_bank (slot_integrity.rs), ProviderSupervisor::select (provider_supervisor.rs), StreamingPoolCache::apply (dual_ingest.rs), observe_* latency fns (arb-metrics 612-646), MultiDexRegistry::fetch_live_pool_states (hydration.rs)
+CURRENT_BEHAVIOR: HTTP polling is the decision source (conservative); dual-ingest shadow harness present; 9 of 10 ladder rungs have wired histograms; USB idle — no sub-slot loop introduced.
+ROOT_CAUSE: N/A (audit task).
+REQUIRED_CHANGE: Documentation only.
+TEST_PLAN: cargo test -p arb-ingest -p arb-metrics.
+ACCEPTANCE_CRITERIA: Pipeline map + latency ladder table + bench inventory + honest gaps, all source-verified.
+ACTUAL_RESULT: 2026-11-22 — arb-ingest 177/0, arb-metrics 11/0; HFT-F-2026-11-22-N1/N2/N3 (P3) registered; benches NOT executed this session (recorded honestly).
+PR: (this PR)
+REMAINING_RISKS: Yellowstone A/B outstanding; ingest-decode histogram missing; bench coverage limited.
+NEXT_TASK: Mission §13 Phase 8 — Jito landing audit.
+```

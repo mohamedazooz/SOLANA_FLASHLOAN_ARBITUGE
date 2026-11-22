@@ -118,6 +118,35 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+### HFT-F-2026-11-22-N1: Yellowstone gRPC Compile-Ready but Not Decision-Wired (P3)
+
+- **File**: `crates/arb-ingest/Cargo.toml`, `crates/arb-ingest/src/dual_ingest.rs`, `crates/arb-ingest/src/quote_readiness.rs`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: `yellowstone-grpc-client 17.0.0` is an optional dependency behind feature `yellowstone`; dual-ingest shadow harness (`dual_ingest.rs`) writes to an isolated `StreamingPoolCache` while HTTP polling (`MarketStateCache`) remains the trading source of truth; `QuoteReadinessContext.require_bank_identity` is the designed promotion gate for bank-id-bearing transports. Greedy client library exists; no wire-in or sustained A/B run.
+- **Risk if ignored**: none today (conservative direction). Risk only if streaming source were switched without measured A/B: silent data-path regression.
+- **Required action**: Run sustained dual-ingest A/B; promote streaming as decision source only with measured evidence; then wire `require_bank_identity=true` end-to-end.
+- **Accepted criteria**: recorded A/B report + parity run + no regression in landing latency before any switch.
+
+### HFT-F-2026-11-22-N2: No Ingest-Side Decode Histogram (P3)
+
+- **File**: `crates/arb-ingest/src/helius_ws.rs`, `crates/arb-metrics/src/lib.rs`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: Stage ladder begins histogramming at supervisor stages; ingest→decode leg reaches the ladder only as inherited `t_ingest_to_quote_us` (not a registered histogram in `arb-metrics`).
+- **Required action**: Add `INGEST_DECODE_LATENCY_US` histogram recorded at the WS apply path.
+- **Accepted criteria**: metric registered + recorded + boundary test.
+
+### HFT-F-2026-11-22-N3: Criterion Bench Coverage Limited (P3)
+
+- **File**: `crates/arb-ingest/benches/`, `crates/arb-math/benches/`
+- **Severity**: P3
+- **Status**: Open.
+- **Evidence**: Only `dual_ingest_bench.rs` and `cpmm_bench.rs` exist; hydration batch fan, route discovery and exact-quote hot loops have no benches.
+- **Required action**: Add benches before any optimization; baseline-first policy is binding.
+
+---
+
 ## 3. P1 Defects (High Priority)
 
 ### ISSUE-P1-01: Token-2022 Transfer Fee Double Counting Audit
