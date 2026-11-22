@@ -160,6 +160,27 @@ impl PostgresStore {
             expected_net: Lamports(exp_net.max(0) as u64),
             tip_lamports: tip.map(|t| Lamports(t.max(0) as u64)),
             decision: row.try_get(5).unwrap_or_default(),
+            borrow_amount: row
+                .try_get::<_, Option<i64>>(6)
+                .ok()
+                .flatten()
+                .map(|v| v.max(0) as u64),
+            flash_fee_raw: row
+                .try_get::<_, Option<i64>>(7)
+                .ok()
+                .flatten()
+                .map(|v| v.max(0) as u64),
+            priority_fee_lamports: row
+                .try_get::<_, Option<i64>>(8)
+                .ok()
+                .flatten()
+                .map(|v| v.max(0) as u64),
+            expected_output_raw: row
+                .try_get::<_, Option<i64>>(9)
+                .ok()
+                .flatten()
+                .map(|v| v.max(0) as u64),
+            pool_ids: row.try_get(10).unwrap_or_default(),
         }
     }
 }
@@ -173,6 +194,11 @@ impl Store for PostgresStore {
         let exp_net = record.expected_net.as_u64() as i64;
         let tip: Option<i64> = record.tip_lamports.map(|t| t.as_u64() as i64);
         let decision = record.decision.clone();
+        let borrow = record.borrow_amount.map(|v| v as i64);
+        let flash_fee = record.flash_fee_raw.map(|v| v as i64);
+        let priority_fee = record.priority_fee_lamports.map(|v| v as i64);
+        let expected_out = record.expected_output_raw.map(|v| v as i64);
+        let pool_ids = record.pool_ids.clone();
 
         self.block_on(async move {
             client
@@ -180,9 +206,23 @@ impl Store for PostgresStore {
                     // PIPE-11: plain INSERT — an id collision must fail loudly
                     // (caller refuses to dispatch) instead of overwriting a
                     // previous attempt's durable evidence.
-                    "INSERT INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision)
-                     VALUES ($1, $2, $3, $4, $5, $6)",
-                    &[&id, &slot, &route_id, &exp_net, &tip, &decision],
+                    "INSERT INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision,
+                                           borrow_amount, flash_fee_raw, priority_fee_lamports,
+                                           expected_output_raw, pool_ids)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    &[
+                        &id,
+                        &slot,
+                        &route_id,
+                        &exp_net,
+                        &tip,
+                        &decision,
+                        &borrow,
+                        &flash_fee,
+                        &priority_fee,
+                        &expected_out,
+                        &pool_ids,
+                    ],
                 )
                 .await
                 .map_err(|e| ArbError::Internal(format!("Failed to insert PG attempt: {e}")))?;
@@ -190,23 +230,29 @@ impl Store for PostgresStore {
         })
     }
 
-    fn record_outcome(
+    fn record_outcome_detail(
         &self,
         attempt_id: i64,
         status: &str,
         realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
+        actual_output_raw: Option<u64>,
+        failure_reason: Option<&str>,
     ) -> Result<()> {
         let client = self.client.clone();
         let status = status.to_string();
         let provenance = provenance.as_str().to_string();
         let net: Option<i64> = realized_net.map(|n| n.as_i64());
+        let actual = actual_output_raw.map(|v| v as i64);
+        let failure = failure_reason.map(|s| s.to_string());
 
         self.block_on(async move {
             client
                 .execute(
-                    "INSERT INTO outcomes (attempt_id, status, realized_net, provenance) VALUES ($1, $2, $3, $4)",
-                    &[&attempt_id, &status, &net, &provenance],
+                    "INSERT INTO outcomes (attempt_id, status, realized_net, provenance,
+                                           actual_output_raw, failure_reason)
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                    &[&attempt_id, &status, &net, &provenance, &actual, &failure],
                 )
                 .await
                 .map_err(|e| ArbError::Internal(format!("Failed to insert PG outcome: {e}")))?;
@@ -219,7 +265,9 @@ impl Store for PostgresStore {
         self.block_on(async move {
             let row = client
                 .query_opt(
-                    "SELECT id, slot, route_id, expected_net, tip_lamports, decision
+                    "SELECT id, slot, route_id, expected_net, tip_lamports, decision,
+                            borrow_amount, flash_fee_raw, priority_fee_lamports,
+                            expected_output_raw, pool_ids
                      FROM attempts WHERE id = $1",
                     &[&id],
                 )
@@ -235,7 +283,9 @@ impl Store for PostgresStore {
         self.block_on(async move {
             let rows = client
                 .query(
-                    "SELECT id, slot, route_id, expected_net, tip_lamports, decision
+                    "SELECT id, slot, route_id, expected_net, tip_lamports, decision,
+                            borrow_amount, flash_fee_raw, priority_fee_lamports,
+                            expected_output_raw, pool_ids
                      FROM attempts ORDER BY id DESC LIMIT $1",
                     &[&limit],
                 )
@@ -333,28 +383,30 @@ impl Store for PostgresStore {
 
     fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()> {
         let client = self.client.clone();
-        let (attempt_id, signature, provider, dispatch_slot, last_valid_block_height) = (
+        let (attempt_id, signature, provider, dispatch_slot, last_valid_block_height, bundle_id) = (
             intent.attempt_id,
             intent.signature.clone(),
             intent.provider.clone(),
             intent.dispatch_slot,
             intent.last_valid_block_height,
+            intent.bundle_id.clone(),
         );
         self.block_on(async move {
             client
                 .execute(
-                    "INSERT INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, last_valid_block_height, status)
-                     VALUES ($1, $2, $3, $4, $5, 'pending')
+                    "INSERT INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, last_valid_block_height, status, bundle_id)
+                     VALUES ($1, $2, $3, $4, $5, 'pending', $6)
                      ON CONFLICT (attempt_id) DO UPDATE SET
                         signature = $2, provider = $3, dispatch_slot = $4,
                         last_valid_block_height = $5, status = 'pending',
-                        resolved_status = NULL, resolved_at = NULL",
+                        resolved_status = NULL, resolved_at = NULL, bundle_id = $6",
                     &[
                         &attempt_id,
                         &signature,
                         &provider,
                         &dispatch_slot,
                         &last_valid_block_height,
+                        &bundle_id,
                     ],
                 )
                 .await
@@ -365,12 +417,30 @@ impl Store for PostgresStore {
         })
     }
 
+    fn set_dispatch_bundle_id(&self, attempt_id: i64, bundle_id: &str) -> Result<()> {
+        let client = self.client.clone();
+        let bundle_id = bundle_id.to_string();
+        self.block_on(async move {
+            client
+                .execute(
+                    "UPDATE dispatch_intents SET bundle_id = $2
+                     WHERE attempt_id = $1 AND status = 'pending'",
+                    &[&attempt_id, &bundle_id],
+                )
+                .await
+                .map_err(|e| {
+                    ArbError::Internal(format!("Failed to set PG dispatch bundle id: {e}"))
+                })?;
+            Ok(())
+        })
+    }
+
     fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>> {
         let client = self.client.clone();
         self.block_on(async move {
             let rows = client
                 .query(
-                    "SELECT attempt_id, signature, provider, dispatch_slot, last_valid_block_height FROM dispatch_intents
+                    "SELECT attempt_id, signature, provider, dispatch_slot, last_valid_block_height, bundle_id FROM dispatch_intents
                      WHERE status = 'pending' ORDER BY attempt_id ASC LIMIT $1",
                     &[&limit],
                 )
@@ -387,6 +457,7 @@ impl Store for PostgresStore {
                     dispatch_slot: row.try_get(3).unwrap_or(0),
                     last_valid_block_height: row.try_get(4).unwrap_or(None),
                     resolved_status: None,
+                    bundle_id: row.try_get(5).unwrap_or(None),
                 })
                 .collect())
         })
