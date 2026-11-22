@@ -257,3 +257,26 @@ solana account LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo --output json | \
 # borrow -> swap x3 -> repay -> conditional tip inside one composed tx
 # (release blobs must be hash-verified against the deployed on-chain program hash)
 ```
+
+---
+
+# Session 3 — Cross-Verification Sweep (2026-11-22)
+
+Scope: re-verify Session 1/2 claims against live web sources in a fresh session and
+deliver the Phase 1 research dossier under `docs/active/research/`.
+
+| Item | Outcome | Evidence |
+|---|---|---|
+| SIMD-0385 | Re-verified from the **raw proposal**: frontmatter `status: Activated`; wire layout, config mask bits [0,1]/[2]/[3]/[4], 4096/12/64/64/255 constraints, no ALTs, CB-instruction no-op semantics — all match the repo V1 compiler | raw fetch 2026-11-22 → `SOLANA_BEST_PRACTICES.md` |
+| V1 mainnet activation | epoch 1035, slot 447,120,000, ~2026-09-15; Agave ≥4.2.2 / Jito-Solana ≥4.2.2 required to avoid silent v1→v0 downgrade | solanacompass + xroot gate tracker, 2026-11-22 |
+| Jito | 8 tip accounts (getTipAccounts), min tip 1,000 lamports (engine-enforced), 50 ms auction ticks, acceptance ≠ landing, getInflightBundleStatuses ≤5 ids / 5-min lookback | docs.jito.wtf, mev-protos, Alchemy, 2026-11-22 |
+| Kamino | Program ID, borrowIxIndex semantics, klend-interface 0.6.0, U68F60 fee sf with 2^60 floor, wallet-balance repayment subsidy risk | kamino.com docs, docs.rs/klend-interface, 2026-11-22 |
+| LiteSVM/Mollusk | LiteSVM 0.18.x current (0.18 adds loaded_accounts_data_size field + SIMD-0437/0438 rent gates), Mollusk 0.16.x, bankrun deprecated in favor of LiteSVM — **repo pin 0.18.2 is current** (Session 1 "NOT INSPECTED" item resolved) | chainstack + dev-skill testing refs, 2026-11-22 |
+| Yellowstone | Rust client ≥13.1 built-in auto-reconnect + from_slot replay overlap dedup; repo pins 17.0.0 behind feature flag | docs.rs CHANGELOG + rpcedge, 2026-11-22 |
+| Tokio | bounded-channel backpressure + runtime isolation guidance re-confirmed | dial9 principles (upd. 2026-09), 2026-11-22 |
+| Supply chain | 2026 consensus: cargo-audit hard gate + cargo-deny policy; gitleaks Go binary remains MIT (only the action-wrapper relicensed) — repo posture compliant | pistack + codevetter, 2026-11-22 |
+
+Deliverables added this session:
+- `docs/active/research/README.md` + 7 domain documents (Solana, Jito, Yellowstone,
+  DEX, Flash Loan, Rust HFT, Security), each with facts vs REC separation and
+  required regression tests.
