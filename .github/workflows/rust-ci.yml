@@ -9,6 +9,11 @@ on:
     branches:
       - main
       - develop
+  # Weekly re-scan: RustSec advisories appear without any repo push, so
+  # push-triggered cargo-deny alone lets vulnerabilities accumulate silently.
+  # Scheduled runs only execute the two security jobs.
+  schedule:
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -21,21 +26,22 @@ concurrency:
 jobs:
   rust:
     name: Format, check, test, clippy
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install pinned Rust (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (pinned)
         with:
           toolchain: "1.99.1"
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
 
       - name: Verify formatting
         run: cargo fmt --all --check
@@ -62,21 +68,22 @@ jobs:
 
   webhook-service:
     name: Webhook service (fmt, build, test, clippy)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install pinned Rust (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (pinned)
         with:
           toolchain: "1.99.1"
           components: rustfmt, clippy
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
           workspaces: webhook-service
 
@@ -93,7 +100,7 @@ jobs:
         run: cargo clippy --manifest-path webhook-service/Cargo.toml --all-targets -- -D warnings
 
       - name: cargo-deny (webhook-service)
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@2b70cf22ed5701843749a917048c3aaaf420a7d9 # v2
         with:
           command: check advisories bans sources licenses
           manifest-path: webhook-service/Cargo.toml
@@ -105,10 +112,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: cargo-deny (workspace)
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@2b70cf22ed5701843749a917048c3aaaf420a7d9 # v2
         with:
           command: check advisories bans sources licenses
           arguments: --workspace
@@ -120,12 +127,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
       - name: gitleaks (full history, policy .gitleaks.toml)
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
@@ -134,15 +141,16 @@ jobs:
 
   web:
     name: Web app build (React + Vite)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@8f152de45cc393bb48ce5d89d36b731f54556e65 # v4.0.0
         with:
           node-version: "22"
           cache: npm
