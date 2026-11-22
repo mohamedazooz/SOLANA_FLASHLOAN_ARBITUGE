@@ -24,6 +24,7 @@ Every agent, engineer, and maintainer operating in this repository must consult 
 | [`COMPONENT_STATUS.md`](../../docs/active/COMPONENT_STATUS.md) | **Component Verification Matrix**: Implemented vs wired vs tested vs simulated vs production-verified. |
 | [`CALL_GRAPH.md`](../../docs/active/CALL_GRAPH.md) | **Runtime Call Graph**: Detailed execution trace from startup through ingestion, quoting, sizing, and dispatch. |
 | [`DOCUMENTATION_INVENTORY.md`](../../docs/active/DOCUMENTATION_INVENTORY.md) | **Repository Documentation Inventory**: Comprehensive classification of all active and archived files. |
+| [`research/`](../../docs/active/research/README.md) | **Phase 1 Research Dossier**: Verified online/open-source best-practice findings per domain (Solana core, Jito, Yellowstone, DEX, flash loans, HFT, security). |
 
 ---
 
