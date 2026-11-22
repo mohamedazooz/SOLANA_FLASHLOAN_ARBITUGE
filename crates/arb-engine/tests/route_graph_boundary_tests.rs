@@ -84,14 +84,14 @@ fn test_cycle_pathfinder_max_hop_limit_boundary_and_clamping() {
         "5-hop cycle must not be found when max_hops = 4"
     );
 
-    // At max_hops = 5, 5-hop cycle is discovered
+    // At max_hops = 5, 5-hop cycle is discovered (both directions)
     let cycles_5 = graph.enumerate_cycles(a, 5, 10);
     assert_eq!(
         cycles_5.len(),
-        1,
-        "5-hop cycle must be discovered when max_hops = 5"
+        2,
+        "5-hop cycle must be discovered in both directions when max_hops = 5"
     );
-    assert_eq!(cycles_5[0].hops.len(), 5);
+    assert!(cycles_5.iter().all(|c| c.hops.len() == 5));
 
     // Testing max_hops = 1 clamping to 2: 2-hop cycle discovered
     let p_rev = make_pool(6, b, a, 10_000_000, 10_000_000);
@@ -100,9 +100,10 @@ fn test_cycle_pathfinder_max_hop_limit_boundary_and_clamping() {
     let cycles_clamped = graph_2hop.enumerate_cycles(a, 1, 10); // clamped to 2
     assert_eq!(
         cycles_clamped.len(),
-        1,
-        "clamped to 2 must find 2-hop cycle"
+        2,
+        "clamped to 2 must find 2-hop cycle in both directions"
     );
+    assert!(cycles_clamped.iter().all(|c| c.hops.len() == 2));
     assert_eq!(cycles_clamped[0].hops.len(), 2);
 }
 
@@ -159,17 +160,19 @@ fn test_cycle_pathfinder_zero_profit_or_loss_pricing_rejection() {
 
     let graph = UnifiedRouteGraph::new(vec![p1, p2]);
     let cycles = graph.enumerate_cycles(a, 2, 10);
-    assert_eq!(cycles.len(), 1);
+    assert_eq!(cycles.len(), 2, "2-hop cycle discovered in both directions");
 
-    let quote = graph.quote_candidate(&cycles[0], 1_000_000).unwrap();
-    // Input is 1,000,000. Output will be strictly less due to CPMM formula and 25 bps fees
-    assert!(
-        quote.amount_out < 1_000_000,
-        "loss route must yield output < input"
-    );
-    let gross_profit = (quote.amount_out as i128) - (quote.amount_in as i128);
-    assert!(
-        gross_profit <= 0,
-        "gross profit must be <= 0 for losing cycle"
-    );
+    for cycle in &cycles {
+        let quote = graph.quote_candidate(cycle, 1_000_000).unwrap();
+        // Input is 1,000,000. Output will be strictly less due to CPMM formula and 25 bps fees
+        assert!(
+            quote.amount_out < 1_000_000,
+            "loss route must yield output < input"
+        );
+        let gross_profit = (quote.amount_out as i128) - (quote.amount_in as i128);
+        assert!(
+            gross_profit <= 0,
+            "gross profit must be <= 0 for losing cycle"
+        );
+    }
 }
