@@ -40,14 +40,20 @@ fn parse_args() -> Result<Args> {
     }
 
     if config_path.is_empty() {
-        if std::path::Path::new("config.toml").exists() {
-            config_path = "config.toml".to_string();
-        } else if std::path::Path::new("config/config.toml").exists() {
+        // Fail-closed auto-discovery (OPS-001/CFN-N1): the profiled production
+        // candidate lives in config/. The legacy root config.toml is only a
+        // fallback candidate. config.example.toml is NEVER auto-selected — a
+        // placeholder-values example must not silently drive a live bot. If no
+        // candidate exists, abort with an explicit error instead of inventing a
+        // path that will later produce a confusing loader message.
+        if std::path::Path::new("config/config.toml").exists() {
             config_path = "config/config.toml".to_string();
-        } else if std::path::Path::new("config/config.example.toml").exists() {
-            config_path = "config/config.example.toml".to_string();
-        } else {
+        } else if std::path::Path::new("config.toml").exists() {
             config_path = "config.toml".to_string();
+        } else {
+            anyhow::bail!(
+                "No configuration found. Provide --config <PATH>, set ARB_CONFIG, or create config/config.toml. Refusing to auto-select config.example.toml (placeholder values)."
+            );
         }
     }
 

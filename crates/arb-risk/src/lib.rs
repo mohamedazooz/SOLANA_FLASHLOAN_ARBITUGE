@@ -17,6 +17,12 @@ pub struct CircuitBreaker {
     state: Mutex<BreakerState>,
     consecutive_failures: Mutex<u64>,
     consecutive_successes: Mutex<u64>,
+    /// In-flight probe marker while HalfOpen (slot of the admitted probe).
+    /// Half-open must admit exactly one probe at a time; otherwise a recovering
+    /// breaker floods the provider with unbounded probe traffic (all requests
+    /// pass while HalfOpen). A probe older than one cooldown is treated as lost
+    /// so an abandoned probe cannot block recovery forever.
+    half_open_probe: Mutex<Option<Slot>>,
     max_consecutive_failures: u64,
     success_threshold: u64,
     cooldown_slots: u64,
@@ -36,6 +42,7 @@ impl CircuitBreaker {
             state: Mutex::new(BreakerState::Closed),
             consecutive_failures: Mutex::new(0),
             consecutive_successes: Mutex::new(0),
+            half_open_probe: Mutex::new(None),
             max_consecutive_failures,
             success_threshold: success_threshold.max(1),
             cooldown_slots,
@@ -52,18 +59,32 @@ impl CircuitBreaker {
                     Some(trip) if current_slot.0.saturating_sub(trip.0) >= self.cooldown_slots => {
                         *state = BreakerState::HalfOpen;
                         *self.consecutive_successes.lock() = 0;
+                        *self.half_open_probe.lock() = Some(current_slot);
                         true
                     }
                     _ => false,
                 }
             }
-            BreakerState::HalfOpen => true,
+            BreakerState::HalfOpen => {
+                let mut probe = self.half_open_probe.lock();
+                let stale = matches!(*probe, Some(s) if current_slot.0.saturating_sub(s.0) >= self.cooldown_slots);
+                if probe.is_none() || stale {
+                    *probe = Some(current_slot);
+                    true
+                } else {
+                    false
+                }
+            }
         }
     }
+
+    /// Marks a half-open probe as finished (success path): frees the single
+    /// half-open probe slot and applies the success-threshold recovery logic.
     pub fn record_success(&self) {
         let mut state = self.state.lock();
         let mut failures = self.consecutive_failures.lock();
         let mut successes = self.consecutive_successes.lock();
+        *self.half_open_probe.lock() = None;
         *failures = 0;
         match *state {
             BreakerState::HalfOpen => {
@@ -79,26 +100,47 @@ impl CircuitBreaker {
             }
         }
     }
+
+    /// Marks a probe/result as failed. While HalfOpen, a single failure MUST
+    /// re-trip the breaker immediately (standard circuit-breaker semantics);
+    /// previously the breaker stayed half-open until the failure counter
+    /// re-reached its max, letting full traffic through after one probe error
+    /// (RISK-001).
     pub fn record_failure(&self, current_slot: Slot) {
+        let mut state = self.state.lock();
         let mut failures = self.consecutive_failures.lock();
-        *failures += 1;
-        if *failures >= self.max_consecutive_failures {
-            *self.state.lock() = BreakerState::Open;
+        if *state == BreakerState::HalfOpen {
+            *state = BreakerState::Open;
             *self.last_trip_slot.lock() = Some(current_slot);
             *self.consecutive_successes.lock() = 0;
+            *self.half_open_probe.lock() = None;
+            *failures = 0;
+            warn!("circuit breaker re-opened: half-open probe failed");
+            return;
+        }
+        *failures += 1;
+        if *failures >= self.max_consecutive_failures {
+            *state = BreakerState::Open;
+            *self.last_trip_slot.lock() = Some(current_slot);
+            *self.consecutive_successes.lock() = 0;
+            *self.half_open_probe.lock() = None;
             warn!("circuit breaker opened after {} failures", *failures);
         }
     }
+
     pub fn trip(&self, current_slot: Slot, reason: &str) {
         *self.state.lock() = BreakerState::Open;
         *self.last_trip_slot.lock() = Some(current_slot);
         *self.consecutive_successes.lock() = 0;
+        *self.half_open_probe.lock() = None;
         warn!("circuit breaker tripped: {}", reason);
     }
+
     pub fn reset(&self) {
         *self.state.lock() = BreakerState::Closed;
         *self.consecutive_failures.lock() = 0;
         *self.consecutive_successes.lock() = 0;
+        *self.half_open_probe.lock() = None;
         *self.last_trip_slot.lock() = None;
     }
     pub fn state(&self) -> BreakerState {
@@ -1124,5 +1166,44 @@ mod tests {
         let res = evaluate_chronos_ev(input).expect("ev calculation");
         assert!(!res.is_eligible, "Low/Negative EV must be rejected");
         assert!(res.expected_value_lamports < 0.0);
+    }
+    #[test]
+    fn breaker_half_open_admits_single_probe_and_retrips_on_failure() {
+        let cb = CircuitBreaker::with_success_threshold(1, 2, 1);
+        cb.record_failure(Slot(1));
+        assert_eq!(cb.state(), BreakerState::Open);
+        assert!(!cb.is_allowed(Slot(2)));
+        assert!(cb.is_allowed(Slot(3)));
+        assert_eq!(cb.state(), BreakerState::HalfOpen);
+        assert!(!cb.is_allowed(Slot(4)));
+        cb.record_failure(Slot(4));
+        assert_eq!(cb.state(), BreakerState::Open);
+        assert!(!cb.is_allowed(Slot(5)));
+        assert!(cb.is_allowed(Slot(6)));
+    }
+
+    #[test]
+    fn breaker_half_open_stale_probe_is_released() {
+        let cb = CircuitBreaker::with_success_threshold(1, 2, 1);
+        cb.record_failure(Slot(1));
+        assert!(cb.is_allowed(Slot(3)));
+        assert!(!cb.is_allowed(Slot(4)));
+        assert!(!cb.is_allowed(Slot(4)));
+        assert!(cb.is_allowed(Slot(5)));
+        cb.record_success();
+        assert_eq!(cb.state(), BreakerState::Closed);
+    }
+
+    #[test]
+    fn breaker_half_open_success_frees_probe_slot() {
+        let cb = CircuitBreaker::with_success_threshold(2, 2, 2);
+        cb.record_failure(Slot(1));
+        cb.record_failure(Slot(1));
+        assert!(cb.is_allowed(Slot(3)));
+        cb.record_success();
+        assert_eq!(cb.state(), BreakerState::HalfOpen);
+        assert!(cb.is_allowed(Slot(4)));
+        cb.record_success();
+        assert_eq!(cb.state(), BreakerState::Closed);
     }
 }
