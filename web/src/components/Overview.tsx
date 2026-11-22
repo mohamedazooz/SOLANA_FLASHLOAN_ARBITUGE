@@ -224,6 +224,12 @@ export const Overview: React.FC<OverviewProps> = ({
               </div>
             </div>
             <div className="p-3 rounded-xl bg-[#0d1424] border border-[#19243e]">
+              <span className="text-[10px] font-bold uppercase text-slate-400">رفض الرصيد السابق</span>
+              <div className={`text-sm font-extrabold font-mono mt-1 ${status.observability.inventory_rejections_total > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                {status.observability.inventory_rejections_total}
+              </div>
+            </div>
+            <div className="p-3 rounded-xl bg-[#0d1424] border border-[#19243e]">
               <span className="text-[10px] font-bold uppercase text-slate-400">مدة التشغيل (Uptime)</span>
               <div className="text-sm font-extrabold font-mono text-slate-200 mt-1 flex items-center gap-1">
                 <Clock className="w-3 h-3 text-slate-400" />

@@ -65,6 +65,7 @@ export interface ObservabilitySnapshot {
   ws_subscriptions_active: number;
   ws_reconnects_total: number;
   stale_rejections_total: number;
+  inventory_rejections_total: number;
   fork_invalidations_total: number;
   resyncs_total: number;
   stream_gaps_total: number;

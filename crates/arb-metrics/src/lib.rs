@@ -18,6 +18,7 @@ pub mod metric_names {
     pub const RESYNCS_TOTAL: &str = "resyncs_total";
     pub const DECODE_ERRORS_TOTAL: &str = "decode_errors_total";
     pub const STALE_REJECTIONS_TOTAL: &str = "stale_rejections_total";
+    pub const INVENTORY_REJECTIONS_TOTAL: &str = "inventory_rejections_total";
     pub const CACHE_CONSISTENCY: &str = "cache_consistency";
     pub const OPPORTUNITIES_TOTAL: &str = "opportunities_total";
     pub const NET_PROFIT_TOTAL: &str = "net_profit_total";
@@ -84,6 +85,17 @@ static STALE_REJECTIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     )
     .unwrap_or_else(|_| {
         IntCounter::new(metric_names::STALE_REJECTIONS_TOTAL, "").expect("static metric")
+    });
+    let _ = REGISTRY.register(Box::new(counter.clone()));
+    counter
+});
+static INVENTORY_REJECTIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let counter = IntCounter::new(
+        metric_names::INVENTORY_REJECTIONS_TOTAL,
+        "Total capture rejections caused by pre-existing payer inventory",
+    )
+    .unwrap_or_else(|_| {
+        IntCounter::new(metric_names::INVENTORY_REJECTIONS_TOTAL, "").expect("static metric")
     });
     let _ = REGISTRY.register(Box::new(counter.clone()));
     counter
@@ -554,6 +566,12 @@ pub fn inc_decode_errors() {
 }
 pub fn inc_stale_rejections() {
     STALE_REJECTIONS_TOTAL.inc();
+}
+pub fn inc_inventory_rejections() {
+    INVENTORY_REJECTIONS_TOTAL.inc();
+}
+pub fn get_inventory_rejections_total() -> u64 {
+    INVENTORY_REJECTIONS_TOTAL.get()
 }
 pub fn set_cache_consistency(consistent: bool) {
     CACHE_CONSISTENCY.set(if consistent { 1.0 } else { 0.0 });

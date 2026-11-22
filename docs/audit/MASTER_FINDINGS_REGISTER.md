@@ -20,6 +20,14 @@
 | ARCH-001 | P1 | Supervisor execution assembly | INTEGRATION GAP | Execution-path proof (Phase 1C-2): supervisor production path = `compile_3leg_meme_dlmm_arb` (direct 3-leg, no flash) via `three_leg_meme_pipeline.rs` + `dlmm_flash_arb`/`meteora_atomic_builder` (flash 2-hop) via `dlmm_flash_arbitrage.rs`; flash-funded three-pool assembler + `arb-executor` CPI path remain unwired (no arb-engine/arb-bot callers) | repo-wide caller trace | OPEN — integration gap proven with evidence |
 | TOKEN-003 | P1 | ATA derivation call sites | CONFIRMED DEFECT | Token-program-aware ATA derivation across Orca/DLMM/CPMM/CLMM/DAMM/LaunchLab/PumpSwap/Kamino paths; legacy 2-arg helper documented SPL-only and restricted to WSOL/USDC contexts | `cargo test -p arb-tx` (ATA divergence tests) | FIXED IN PHASE 1F |
 
+## Phase 1B-2 — capture-rejection observability (wallet-state precondition)
+
+| ID | Severity | Source | Classification | Remediation | Regression evidence | Status |
+|---|---:|---|---|---|---|---|
+| OPS-002 | P2 | `crates/arb-bot/src/supervisor/run.rs` (3-leg subsidy guard) | CONFIRMED GAP | The subsidy guard silently rejected ALL 3-leg captures when the payer WSOL/intermediate ATAs hold any balance — invisible in dashboards. Added `inventory_rejections_total` counter (arb-metrics -> ObservabilitySnapshot -> web api.ts -> Overview card) and an actionable warn naming the exact remedy (unwrap WSOL / close intermediate ATA). Economic threshold unchanged — this is observability, not gate loosening. | `cargo test -p arb-metrics -p arb-bot` 85+1+6/0; `npm run build` (tsc+vite) pass | FIXED IN PHASE 1B-2 |
+
+NOTE (operator action): a payer WSOL ATA with any wrapped-SOL balance blocks every 3-leg capture BY DESIGN (flash-funded execution requires a zero pre-inventory settlement account). This is one likely contributor to "no opportunities seen" on wallets holding wrapped SOL dust.
+
 ## Other previously reported findings
 
 The remaining findings from the mission brief are not closed by this register entry. They remain subject to current-HEAD source verification, reproduction, regression testing, and runtime evidence. Do not interpret absence from the table as a pass.
