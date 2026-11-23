@@ -81,11 +81,9 @@ fn to_flash_pool(s: &PoolState) -> Option<DlmmFlashArbPool> {
 /// active, flash loans enabled, live liquidity ≥ `min_borrow`, lowest fee
 /// rate (ties → deepest liquidity). Fail-closed: no eligible reserve is an
 /// error, never a silent fallback to constants.
-async fn select_flash_reserve_live(
+async fn select_flash_reserve_candidates_live(
     rpc: &RpcPool,
-    borrow_mint: &Pubkey,
-    min_borrow: u64,
-) -> Result<(arb_tx::KaminoReserveCandidate, usize), Box<dyn std::error::Error>> {
+) -> Result<Vec<arb_tx::KaminoReserveCandidate>, Box<dyn std::error::Error>> {
     use base64::Engine as _;
     use std::str::FromStr;
     let reserves = [
@@ -140,10 +138,7 @@ async fn select_flash_reserve_live(
             &vault_bytes,
         )?);
     }
-    let swept = candidates.len();
-    arb_tx::select_kamino_flash_reserve(&candidates, borrow_mint, min_borrow)
-        .map(|best| (best, swept))
-        .map_err(|e| e.into())
+    Ok(candidates)
 }
 
 #[tokio::main]
@@ -325,27 +320,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Err(e) => return Err(e.into()),
     }
     // G6: replace the constant reserve/vault/fee/liquidity block with a live
-    // economic selection across the known main-market reserves. Disable with
-    // FLASH_RESERVE_SELECT=0 (offline dev only).
-    if std::env::var("FLASH_RESERVE_SELECT")
+    // economic selection across the known main-market reserves, wired PER
+    // BORROW ASSET: the sweep evaluates both WSOL- and USDC-denominated flash
+    // routes, so each candidate flash mint needs its own reserve/vault/fee
+    // wiring. A mint without a selectable reserve is skipped downstream with
+    // an explicit reason instead of failing inside evaluate() with
+    // FLASH_MINT_RESERVE_MISMATCH. Disable with FLASH_RESERVE_SELECT=0
+    // (offline dev only).
+    let reserve_select_enabled = std::env::var("FLASH_RESERVE_SELECT")
         .map(|v| !matches!(v.trim(), "0" | "false" | "no"))
-        .unwrap_or(true)
-    {
-        let (best, swept) =
-            select_flash_reserve_live(&rpc, &flash_cfg.flash_mint.0, flash_cfg.min_borrow).await?;
+        .unwrap_or(true);
+    let mut reserve_by_mint: HashMap<Pubkey, arb_tx::KaminoReserveCandidate> = HashMap::new();
+    if reserve_select_enabled {
+        let candidates = select_flash_reserve_candidates_live(&rpc).await?;
         println!(
-            "[2c] live Kamino reserve selection: reserve {} mint {} decimals {} fee_sf {} liquidity {} raw ({} candidate(s) swept)",
-            best.reserve,
-            best.mint,
-            best.decimals,
-            best.flash_loan_fee_sf,
-            best.available_liquidity,
-            swept
+            "[2c] live Kamino reserve sweep: {} candidate(s) decoded",
+            candidates.len()
         );
-        flash_cfg.flash_mint_decimals = best.decimals;
-        flash_cfg.kamino_flash_fee_sf = best.flash_loan_fee_sf;
-        flash_cfg.kamino_available_liquidity = best.available_liquidity;
-        flash_cfg.kamino = KaminoFlashParams::from_candidate(signer.pubkey(), &best);
+        let mut wanted_mints: Vec<Pubkey> = vec![flash_cfg.flash_mint.0, wsol, usdc];
+        wanted_mints.dedup();
+        for mint in wanted_mints {
+            match arb_tx::select_kamino_flash_reserve(&candidates, &mint, flash_cfg.min_borrow) {
+                Ok(best) => {
+                    println!(
+                        "[2c] reserve for mint {}: reserve {} decimals {} fee_sf {} liquidity {} raw",
+                        &mint.to_string()[..6],
+                        best.reserve,
+                        best.decimals,
+                        best.flash_loan_fee_sf,
+                        best.available_liquidity
+                    );
+                    reserve_by_mint.insert(mint, best);
+                }
+                Err(e) => println!(
+                    "[2c] no selectable Kamino reserve for mint {} ({e:?}) -- its flash routes are skipped",
+                    &mint.to_string()[..6]
+                ),
+            }
+        }
+        if let Some(best) = reserve_by_mint.get(&flash_cfg.flash_mint.0) {
+            flash_cfg.flash_mint_decimals = best.decimals;
+            flash_cfg.kamino_flash_fee_sf = best.flash_loan_fee_sf;
+            flash_cfg.kamino_available_liquidity = best.available_liquidity;
+            flash_cfg.kamino = KaminoFlashParams::from_candidate(signer.pubkey(), best);
+        }
     }
 
     let loops: usize = std::env::var("REHEARSAL_LOOPS")
@@ -447,7 +465,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     "2pool-usdc"
                 };
-                let pair_flash_cfg = DlmmFlashArbConfig {
+                let mut pair_flash_cfg = DlmmFlashArbConfig {
                     allowlist: DlmmPoolAllowlist::new(vec![pool_a, pool_b]),
                     flash_mint: MintId(fm),
                     flash_mint_decimals: dec,
@@ -455,6 +473,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     max_borrow: 100_000_000,
                     ..flash_cfg.clone()
                 };
+                // Per-borrow-asset Kamino wiring: borrowing USDC through the
+                // WSOL reserve would mix units across the whole evaluation,
+                // which evaluate() fails closed on. With live reserve
+                // selection the correct per-mint reserve is wired here; a
+                // mint with no selectable reserve is skipped with an explicit
+                // reason (config-level condition, not a per-quote failure).
+                if let Some(c) = reserve_by_mint.get(&fm) {
+                    pair_flash_cfg.flash_mint_decimals = c.decimals;
+                    pair_flash_cfg.kamino_flash_fee_sf = c.flash_loan_fee_sf;
+                    pair_flash_cfg.kamino_available_liquidity = c.available_liquidity;
+                    pair_flash_cfg.kamino = KaminoFlashParams::from_candidate(signer.pubkey(), c);
+                } else if !(reserve_select_enabled && fm != flash_cfg.flash_mint.0) {
+                    // Offline mode (FLASH_RESERVE_SELECT=0) with the env-wired
+                    // mint: flash_cfg already carries the constants; evaluate.
+                } else {
+                    println!(
+                        "    sweep {:<10} {tag}: SKIPPED -- no selectable Kamino reserve wired for this borrow mint",
+                        meme_label
+                    );
+                    continue;
+                }
                 let routes = enumerate_routes(
                     &[fp_a.clone(), fp_b.clone()],
                     &pair_flash_cfg.allowlist,
@@ -686,7 +725,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             let fp_a = to_flash_pool(&state_a).ok_or("missing execution accounts A")?;
             let fp_b = to_flash_pool(&state_b).ok_or("missing execution accounts B")?;
-            let pair_cfg = DlmmFlashArbConfig {
+            let mut pair_cfg = DlmmFlashArbConfig {
                 allowlist: DlmmPoolAllowlist::new(vec![pa, pb]),
                 flash_mint: fm,
                 flash_mint_decimals: dec,
@@ -694,6 +733,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_borrow: 100_000_000,
                 ..flash_cfg.clone()
             };
+            if let Some(c) = reserve_by_mint.get(&fm.0) {
+                pair_cfg.flash_mint_decimals = c.decimals;
+                pair_cfg.kamino_flash_fee_sf = c.flash_loan_fee_sf;
+                pair_cfg.kamino_available_liquidity = c.available_liquidity;
+                pair_cfg.kamino = KaminoFlashParams::from_candidate(signer.pubkey(), c);
+            }
             let routes = enumerate_routes(&[fp_a, fp_b], &pair_cfg.allowlist, fm);
             let route = routes
                 .iter()
@@ -813,15 +858,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         best.bins_b,
     )?;
 
+    let mut exec_cfg = flash_cfg.clone();
+    if let Some(c) = reserve_by_mint.get(&flash_mint.0) {
+        exec_cfg.flash_mint_decimals = c.decimals;
+        exec_cfg.kamino_flash_fee_sf = c.flash_loan_fee_sf;
+        exec_cfg.kamino_available_liquidity = c.available_liquidity;
+        exec_cfg.kamino = KaminoFlashParams::from_candidate(signer.pubkey(), c);
+    }
     let params = FlashArbParams {
         payer: signer.pubkey(),
-        kamino: flash_cfg.kamino.clone(),
+        kamino: exec_cfg.kamino.clone(),
         borrow_amount: best.borrow_amount,
         flash_fee: best.flash_fee,
         leg_a,
         leg_b,
-        cu_limit: flash_cfg.cu_limit,
-        priority_fee_micro_lamports: flash_cfg.priority_fee_micro_lamports,
+        cu_limit: exec_cfg.cu_limit,
+        priority_fee_micro_lamports: exec_cfg.priority_fee_micro_lamports,
     };
 
     let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&params)?;
