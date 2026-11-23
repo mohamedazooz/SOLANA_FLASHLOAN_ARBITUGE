@@ -532,6 +532,40 @@ NEXT_TASK: Mission §18 Phase 13 — CI/CD, Docker & VPS.
 ```
 
 ```markdown
+TASK_ID: TASK-M13-001
+PHASE: Mission §18 — CI/CD, Docker & VPS (Phase 13)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Audit all deployment workflows; pin deployable commit; add health-check + automatic rollback; remove duplicate compose; pin third-party Actions to SHAs; add weekly advisory re-scan; write DEPLOYMENT_ARCHITECTURE/VPS_RUNBOOK/ROLLBACK_PROCEDURE.
+FILES: .github/workflows/deploy-vps.yml, .github/workflows/rust-ci.yml, docker-compose.shadow.yml (deleted), docs/active/operations/{DEPLOYMENT_ARCHITECTURE,VPS_RUNBOOK,ROLLBACK_PROCEDURE}.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: deploy job remote script (deploy-vps.yml), rollback() closure, merge-base ancestry gate, schedule cron (rust-ci.yml:15), job if-guards
+CURRENT_BEHAVIOR (before): deploy-vps shipped `git reset --hard origin/main` — deployed whatever main pointed at at run time (race with concurrent merge), no health gate, no rollback; docker-compose.shadow.yml byte-identical to docker-compose.yml; third-party actions tag-pinned only; advisories only re-checked on pushes.
+ROOT_CAUSE: DEP-F-2026-11-23-N1 (P1): deploy SHA-race; DEP-F-2026-11-23-N2 (P1): no post-deploy health/rollback; DEP-F-2026-11-23-N3 (P3): duplicate compose; DEP-F-2026-11-23-N4 (P2): mutable action tags; DEP-F-2026-11-23-N5 (P2): no periodic advisory re-scan.
+REQUIRED_CHANGE: pinned github.sha deploy with ancestry verification; rollback() closure invoked on build/restart/health failure; `environment: production` approval hook; SHA pins for dtolnay/rust-toolchain, Swatinem/rust-cache, EmbarkStudios/cargo-deny-action, gitleaks/gitleaks-action, actions/checkout, actions/setup-node; weekly cron security-only re-scan (heavy jobs if-guarded); duplicate compose removed; 3 ops docs written.
+TEST_PLAN: YAML parse of both workflows; local yaml safety check; (live deploy runs are operator-dispatch only by mission §4.5).
+ACCEPTANCE_CRITERIA: Deploy can never build an unintended commit; failure auto-rolls back; all action refs immutable SHAs; advisories re-scanned weekly without pushes; no duplicate compose files; ops docs present.
+ACTUAL_RESULT: 2026-11-23 — both workflows YAML-valid; pins resolved from GitHub API and annotated; OK.
+PR: (this PR)
+REMAINING_RISKS: `production` GitHub Environment must be created by operator to activate the approval gate; SBOM artifact not yet generated (P3); StrictHostKeyChecking=accept-new is TOFU (documented, P3); live rollback path untested on the actual VPS (requires operator dispatch).
+NEXT_TASK: Mission §19 Phase 14 — Performance & reliability testing.
+
+TASK_ID: TASK-M14-001
+PHASE: Mission §19 — Performance & reliability testing (Phase 14)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Reproducible benchmark baseline (criterion + dual-ingest + live pre-flight) and reliability evidence report; no optimization claimed without comparable numbers.
+FILES: docs/active/performance/PERFORMANCE_REPORT.md, docs/active/performance/RELIABILITY_REPORT.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: cpmm_out (arb-math benches 16.97 ns), optimal_two_pool (194.15 ns criterion / 236 ns on live reserves), latency-bench movements 1–5, DualIngestShadow bench
+CURRENT_BEHAVIOR: local deterministic work (decode→quote→size→build→sign) ≈ 15 µs; network dominates (Helius 39 ms RTT; Jito Amsterdam 51.9 ms best vs Tokyo 719 ms).
+ROOT_CAUSE: N/A (measurement task). Perf/flamegraph not permitted in sandbox — recorded.
+REQUIRED_CHANGE: docs only; perf baseline recorded pre-optimization per mission §19.
+TEST_PLAN: cargo bench -p arb-math; cargo bench -p arb-ingest --bench dual_ingest_bench --features extra-ingest; 10 reliability suites executed (--release) 41/41 pass.
+ACCEPTANCE_CRITERIA: baseline recorded with exact commands; every pass claim backed by a fresh run; live RTL math parity via latency-bench (read-only, no broadcast).
+ACTUAL_RESULT: 2026-11-23 — bench + assertions listed in RELIABILITY_REPORT all pass; slot-budget conclusion: Frankfurt/Amsterdam colocation is the top latency lever.
+PR: (this PR)
+REMAINING_RISKS: live chaos testing + 24 h shadow soak remain operator actions; perf_event unavailable in sandbox.
+NEXT_TASK: Mission §20 Phase 16 — Final documentation rebuild + root README.
+
 TASK_ID: TASK-M16-001
 PHASE: Mission §20/§15–16 — Final documentation rebuild + root README (Phases 15–16)
 PRIORITY: P1
