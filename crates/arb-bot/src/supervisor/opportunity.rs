@@ -26,6 +26,20 @@ fn preflight_simulation_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// F-04 slippage authority: the opportunity's authored slippage — the exact
+/// value its profitability quote was computed under — survives stamping; a
+/// producer that never authored one (`0`) receives the general strategy
+/// default. This is the ONLY stamping rule: the old unconditional overwrite
+/// made the 3-leg DLMM transaction's min-out floors rest on `10 bps` while
+/// its quote and sizing rested on `15 bps`.
+pub(super) fn resolve_hop_slippage_bps(authored: u64, strategy_default: u64) -> u64 {
+    if authored == 0 {
+        strategy_default
+    } else {
+        authored
+    }
+}
+
 /// On-chain min-out for the split-route RETURN hop, in borrowed-mint raw units.
 ///
 /// Binds the stricter of the slippage bound and the economic floor
@@ -189,11 +203,20 @@ impl Supervisor {
                 continue;
             }
 
-            // Config is the single source of truth for the per-hop min-out
-            // floor: stamp it onto every candidate before any builder reads
-            // it. Builders further clamp to HOP_SLIPPAGE_MAX_BPS.
+            // Slippage authority (F-04): keep the slippage the quote was
+            // actually computed with. `0` means the producer did not author a
+            // value and the general strategy setting stamps it; a non-zero
+            // authored value (e.g. the 3-leg DLMM route quoted under
+            // `strategy.dlmm_three_leg.slippage_bps`) must survive to the
+            // builder unchanged — overwriting it made the transaction's
+            // min-out floors use different slippage assumptions than the
+            // profitability quote. Builders still clamp to
+            // `HOP_SLIPPAGE_MAX_BPS` via `effective_hop_slippage_bps`.
             let mut opp = opp.clone();
-            opp.hop_slippage_bps = self.config.strategy.hop_slippage_bps;
+            opp.hop_slippage_bps = resolve_hop_slippage_bps(
+                opp.hop_slippage_bps,
+                self.config.strategy.hop_slippage_bps,
+            );
             let t_risk_start = std::time::Instant::now();
             arb_metrics::inc_opportunities();
             let target_slot = Slot(current_slot.0.saturating_add(1));
@@ -272,15 +295,31 @@ impl Supervisor {
                 .join(" → ");
 
             // Fail-closed: if costs exceed gross, reject instead of saturating to 0.
-            let net_before_tip = gross
-                .checked_sub(flash_fee_raw)
-                .and_then(|v| v.checked_sub(BASE_FEE_LAMPORTS))
-                .and_then(|v| v.checked_sub(priority_fee_lamports));
+            // F-07 observability: the SAME ledger is computed in signed i128 so a
+            // rejection due to costs exceeding gross records the PRECISE
+            // negative pre-tip PnL instead of a bare reason string. The
+            // eligibility decision below is unchanged (still fail-closed):
+            // negative or overflowing signed nets map to `None` exactly like
+            // the previous `checked_sub` ladder did.
+            let net_before_tip_signed = gross as i128
+                - flash_fee_raw as i128
+                - BASE_FEE_LAMPORTS as i128
+                - priority_fee_lamports as i128;
+            let net_before_tip = u64::try_from(net_before_tip_signed).ok();
             let Some(net_before_tip) = net_before_tip else {
                 tracing::info!(
                     target: "arb_events",
-                    "OPPORTUNITY_REJECTED: route={} stage=CostsExceedGross reason=Costs exceed gross",
-                    route_label
+                    "OPPORTUNITY_REJECTED: route={} stage=CostsExceedGross reason=Costs exceed gross net_signed={} shortfall_signed={} gross={} flash_fee={} base_fee={} priority_fee={} slot={} slippage_bps={} pools={}",
+                    route_label,
+                    net_before_tip_signed,
+                    net_before_tip_signed.min(0),
+                    gross,
+                    flash_fee_raw,
+                    BASE_FEE_LAMPORTS,
+                    priority_fee_lamports,
+                    opp.slot.0,
+                    opp.hop_slippage_bps,
+                    opp.hops.iter().map(|h| h.pool_id.0.to_string()).collect::<Vec<_>>().join(",")
                 );
                 debug!("Opportunity rejected: costs exceed gross profit (fail-closed)");
                 continue;
@@ -505,6 +544,21 @@ impl Supervisor {
             )
             .ok()
             .filter(|net| *net > 0);
+            let real_net_base_raw_signed = arb_math::economic::calculate_net_profit_raw_signed(
+                opp.expected_out.as_u64(),
+                opp.size_in.as_u64(),
+                flash_fee_raw,
+                0,
+                0,
+                0,
+                0,
+                Lamports(BASE_FEE_LAMPORTS),
+                Lamports(priority_fee_lamports),
+                tip,
+                verified.lamports_per_base_raw.value,
+                verified.lamports_per_base_denom.value,
+            )
+            .ok();
             let Some(real_net_base_raw) = real_net_base_raw else {
                 tracing::info!(
                     target: "arb_events",
@@ -513,6 +567,26 @@ impl Supervisor {
                     tip
                 );
                 debug!("Opportunity rejected: net <= 0 with actual tip {tip}");
+                // F-07: audit-grade signed record — the exact shortfall is
+                // preserved; the negative PnL is NEVER replaced by zero.
+                if let Some(signed) = real_net_base_raw_signed {
+                    let shortfall = signed.min(0);
+                    tracing::info!(
+                        target: "arb_events",
+                        "OPPORTUNITY_REJECTED_ECONOMICS: route={} net_signed={} shortfall_signed={} gross={} flash_fee={} base_fee={} priority_fee={} jito_tip={} slot={} slippage_bps={} pools={}",
+                        route_label,
+                        signed,
+                        shortfall,
+                        gross,
+                        flash_fee_raw,
+                        BASE_FEE_LAMPORTS,
+                        priority_fee_lamports,
+                        tip,
+                        opp.slot.0,
+                        opp.hop_slippage_bps,
+                        opp.hops.iter().map(|h| h.pool_id.0.to_string()).collect::<Vec<_>>().join(",")
+                    );
+                }
                 if gross > 0 {
                     let reason = format!(
                         "تآكل الربح بالكامل: تكاليف الفلاش لوان + البقشيش + رسوم الشبكة فاقت الربح الإجمالي (الوحدة الأساسية: {})",
@@ -1009,7 +1083,10 @@ impl Supervisor {
 
                 for leg in &s.legs {
                     let estimated_out = leg.expected_out;
-                    let slippage_amount = estimated_out * slip / 10_000;
+                    // Overflow-safe (F-05): wide-intermediate u128 math; the
+                    // naive `estimated_out * slip` panics (debug) or wraps
+                    // (release) for raw amounts above u64::MAX / 10_000.
+                    let slippage_amount = arb_constants::slippage_amount_bps(estimated_out, slip);
                     let min_out = estimated_out.saturating_sub(slippage_amount);
                     match arb_tx::build_swap_hop_instruction(
                         &arb_types::SwapHop {
@@ -1832,5 +1909,43 @@ mod split_return_min_out_tests {
     fn saturating_at_extremes() {
         let out = split_return_min_out(u64::MAX, 100, u64::MAX - 3, 1, 1, 1);
         assert_eq!(out, u64::MAX);
+    }
+}
+
+#[cfg(test)]
+mod hop_slippage_authority_tests {
+    use super::resolve_hop_slippage_bps;
+
+    /// F-04: the 3-leg DLMM pipeline authors `tuning.slippage_bps` (15) at
+    /// quote time; the supervisor's general strategy setting (10) must NOT
+    /// overwrite it before the builder consumes it.
+    #[test]
+    fn authored_three_leg_slippage_survives_stamping() {
+        assert_eq!(
+            resolve_hop_slippage_bps(15, 10),
+            15,
+            "quote-time slippage must survive to the builder"
+        );
+    }
+
+    /// An unauthored (`0`) value receives the strategy default.
+    #[test]
+    fn unset_value_receives_strategy_default() {
+        assert_eq!(resolve_hop_slippage_bps(0, 10), 10);
+        assert_eq!(resolve_hop_slippage_bps(0, 15), 15);
+    }
+
+    /// The strategy default is never raised above its own setting and a
+    /// valid authored value is preserved bit-for-bit (quote/builder parity).
+    #[test]
+    fn general_two_hop_route_keeps_default_and_authored() {
+        // 2-hop producers that rely on the default.
+        assert_eq!(
+            resolve_hop_slippage_bps(0, 10),
+            resolve_hop_slippage_bps(10, 0)
+        );
+        // Any explicit value is authoritative.
+        assert_eq!(resolve_hop_slippage_bps(1_000, 10), 1_000);
+        assert_eq!(resolve_hop_slippage_bps(7, 7), 7);
     }
 }

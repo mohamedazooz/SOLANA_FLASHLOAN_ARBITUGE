@@ -112,7 +112,11 @@ impl DlmmBinArrayPlan {
 
 /// Build the exact bin-array plan for a swap of `bins_traversed` depth.
 ///
-/// `bins_traversed` must come from the DLMM quote's real `bins_crossed` value so the
+/// `bins_traversed` must come directly from the DLMM quote's `bins_crossed`
+/// (F-02 canonical semantics): the number of bin ADVANCES beyond the active
+/// bin. A quote consumed entirely inside the active bin has `bins_crossed ==
+/// 0` and plans exactly one array (the active one). The plan covers
+/// `active_bin_id .. active_bin_id ± bins_traversed` INCLUSIVE so the
 /// instruction carries exactly the arrays the swap will touch.
 pub fn plan_bin_arrays(
     lb_pair: &Pubkey,
@@ -120,9 +124,6 @@ pub fn plan_bin_arrays(
     swap_for_y: bool,
     bins_traversed: u32,
 ) -> Result<DlmmBinArrayPlan, BinArrayPlanError> {
-    if bins_traversed == 0 {
-        return Err(BinArrayPlanError::ZeroDepth);
-    }
     if bins_traversed > METEORA_MAX_BINS_PER_SWAP {
         return Err(BinArrayPlanError::DepthAboveSwapLimit {
             bins: bins_traversed,
@@ -133,8 +134,11 @@ pub fn plan_bin_arrays(
     let step: i64 = if swap_for_y { -1 } else { 1 };
     let first_bin_id = active_bin_id;
     let last_bin_id = active_bin_id
-        .checked_add((step as i32).saturating_mul((bins_traversed - 1) as i32))
-        .ok_or(BinArrayPlanError::ZeroDepth)?;
+        .checked_add(step as i32 * i32::try_from(bins_traversed).unwrap_or(0))
+        .ok_or(BinArrayPlanError::DepthAboveSwapLimit {
+            bins: bins_traversed,
+            limit: METEORA_MAX_BINS_PER_SWAP,
+        })?;
 
     let first_index = bin_array_index_for_bin(first_bin_id);
     let last_index = bin_array_index_for_bin(last_bin_id);
@@ -149,7 +153,10 @@ pub fn plan_bin_arrays(
         cursor += step;
         if indices.len() > 4096 {
             // Defensive: a pathological depth must never produce an unbounded plan.
-            return Err(BinArrayPlanError::ZeroDepth);
+            return Err(BinArrayPlanError::DepthAboveSwapLimit {
+                bins: bins_traversed,
+                limit: METEORA_MAX_BINS_PER_SWAP,
+            });
         }
     }
 
@@ -176,13 +183,12 @@ pub fn plan_bin_arrays(
     })
 }
 
-/// Number of bin arrays a traversal of `bins_traversed` depth requires.
+/// Number of bin arrays a traversal of `bins_traversed` advances requires:
+/// the visited bins are `bins_traversed + 1` (the active bin plus every
+/// advance), so the count is that deficit's ceiling over 70.
 #[inline]
 pub fn required_bin_array_count(bins_traversed: u32) -> usize {
-    if bins_traversed == 0 {
-        return 0;
-    }
-    (bins_traversed as usize).div_ceil(METEORA_BINS_PER_BIN_ARRAY as usize)
+    ((bins_traversed as usize + 1).div_ceil(METEORA_BINS_PER_BIN_ARRAY as usize)).max(1)
 }
 
 /// Verify that the loaded bin arrays fully cover the planned traversal.
@@ -337,8 +343,9 @@ mod tests {
 
     #[test]
     fn single_bin_traversal_needs_one_array() {
+        // One advance from a mid-array active bin stays inside that array.
         for swap_for_y in [true, false] {
-            let plan = plan_bin_arrays(&pool(), 0, swap_for_y, 1).unwrap();
+            let plan = plan_bin_arrays(&pool(), 7, swap_for_y, 1).unwrap();
             assert_eq!(plan.account_count(), 1);
             assert!(plan.is_single_array());
             assert!(!plan.requires_bitmap_extension);
@@ -353,16 +360,18 @@ mod tests {
         let plan = plan_bin_arrays(&pool(), 0, true, 70).unwrap();
         assert_eq!(plan.indices, vec![0, -1]);
         assert!(!plan.requires_bitmap_extension);
-        assert_eq!(plan.bin_span(), (0, -69));
+        assert_eq!(plan.bin_span(), (0, -70));
     }
 
     #[test]
-    fn upward_traversal_stays_inside_the_active_array() {
-        // Bins 0 .. 69 all live in array 0.
+    fn upward_traversal_crosses_into_the_next_array_at_the_boundary() {
+        // 70 advances from bin 0 visit bins 0..70; bin 70 lives in array 1
+        // (floor division), so the plan must cover arrays [0, 1]. Both are in
+        // the default bitmap window, so no extension is required.
         let plan = plan_bin_arrays(&pool(), 0, false, 70).unwrap();
-        assert_eq!(plan.indices, vec![0]);
+        assert_eq!(plan.indices, vec![0, 1]);
         assert!(!plan.requires_bitmap_extension);
-        assert_eq!(plan.bin_span(), (0, 69));
+        assert_eq!(plan.bin_span(), (0, 70));
     }
 
     #[test]
@@ -380,7 +389,7 @@ mod tests {
         // In-window boundaries never require it.
         for idx in [-512i64, -511, -1, 0, 1, 510, 511] {
             let active = (idx * 70) as i32;
-            let plan = plan_bin_arrays(&pool(), active, false, 1).unwrap();
+            let plan = plan_bin_arrays(&pool(), active, false, 0).unwrap();
             assert_eq!(plan.indices, vec![idx]);
             assert!(
                 !plan.requires_bitmap_extension,
@@ -390,7 +399,7 @@ mod tests {
         // Out-of-window boundaries always require it.
         for idx in [-513i64, -514, 512, 513] {
             let active = (idx * 70) as i32;
-            let plan = plan_bin_arrays(&pool(), active, false, 1).unwrap();
+            let plan = plan_bin_arrays(&pool(), active, false, 0).unwrap();
             assert_eq!(plan.indices, vec![idx]);
             assert!(
                 plan.requires_bitmap_extension,
@@ -407,9 +416,10 @@ mod tests {
         assert_eq!(plan.indices, vec![511, 512]);
         assert!(plan.requires_bitmap_extension);
 
-        // And symmetrically downward past -512.
+        // And symmetrically downward past -512: 71 advances of bins
+        // -35840..-35911, and bin -35911 is in array -514.
         let plan = plan_bin_arrays(&pool(), -512 * 70, true, 71).unwrap();
-        assert_eq!(plan.indices, vec![-512, -513]);
+        assert_eq!(plan.indices, vec![-512, -513, -514]);
         assert!(plan.requires_bitmap_extension);
     }
 

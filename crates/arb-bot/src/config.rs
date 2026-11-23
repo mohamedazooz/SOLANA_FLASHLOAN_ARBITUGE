@@ -550,6 +550,39 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
     }
 }
 
+/// Slippage policy validation (F-04): reject invalid configurations instead
+/// of silently clamping in multiple locations. The builder still clamps what
+/// it computes via `effective_hop_slippage_bps` as the last line of defence,
+/// but a config beyond the documented ceiling is an operator error and must
+/// fail at startup: `HOP_SLIPPAGE_MAX_BPS` (1_000 = 10%) is the safety
+/// ceiling; 10_000 would make min-outs meaningless.
+fn validate_slippage_policies(config: &Config) -> anyhow::Result<()> {
+    if !arb_constants::is_valid_slippage_bps(config.strategy.hop_slippage_bps) {
+        anyhow::bail!(
+            "strategy.hop_slippage_bps = {} must be <= 10_000",
+            config.strategy.hop_slippage_bps
+        );
+    }
+    if config.strategy.hop_slippage_bps > arb_constants::HOP_SLIPPAGE_MAX_BPS {
+        anyhow::bail!(
+            "strategy.hop_slippage_bps = {} exceeds the HOP_SLIPPAGE_MAX_BPS ceiling of {}",
+            config.strategy.hop_slippage_bps,
+            arb_constants::HOP_SLIPPAGE_MAX_BPS
+        );
+    }
+    if let Some(three_leg) = &config.strategy.dlmm_three_leg
+        && (!arb_constants::is_valid_slippage_bps(three_leg.slippage_bps)
+            || three_leg.slippage_bps > arb_constants::HOP_SLIPPAGE_MAX_BPS)
+    {
+        anyhow::bail!(
+            "strategy.dlmm_three_leg.slippage_bps = {} exceeds the ceiling of {}",
+            three_leg.slippage_bps,
+            arb_constants::HOP_SLIPPAGE_MAX_BPS
+        );
+    }
+    Ok(())
+}
+
 pub fn load(path: &str) -> anyhow::Result<Config> {
     if let Ok(arb) = arb_config::loader::load(path) {
         let config = from_arb_config(arb);
@@ -657,6 +690,8 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     if config.risk.max_tip_spend_ratio > 1.0 {
         anyhow::bail!("max_tip_spend_ratio must be <= 1.0");
     }
+
+    validate_slippage_policies(&config)?;
 
     // —— ChronosConfig validation ——
     if config.chronos.max_age_ms < 100 || config.chronos.max_age_ms > 5000 {
@@ -791,5 +826,77 @@ mod min_profit_floor_tests {
         unsafe { std::env::remove_var("MIN_NET_PROFIT_USD") };
         unsafe { std::env::remove_var("SOL_USD_PRICE") };
         assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
+    }
+}
+
+#[cfg(test)]
+mod slippage_policy_tests {
+    use super::{Config, validate_slippage_policies};
+
+    fn tracked_config() -> Config {
+        let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.toml");
+        let contents = std::fs::read_to_string(full).expect("tracked config.toml readable");
+        toml::from_str(&contents).expect("tracked config.toml deserializes")
+    }
+
+    /// F-04: the shipped production values (hop 10 bps, 3-leg 15 bps) are both
+    /// intentional, distinct-per-strategy parameters and both pass load-time
+    /// validation. Distinct values are NOT drift: the bug was the runtime
+    /// overwrite of the authored 3-leg value, not the existence of two.
+    #[test]
+    fn shipped_values_pass_validation() {
+        let cfg = tracked_config();
+        assert!(cfg.strategy.hop_slippage_bps > 0);
+        assert!(cfg.strategy.hop_slippage_bps <= 1_000);
+        validate_slippage_policies(&cfg).expect("shipped config must satisfy the slippage policy");
+    }
+
+    /// Matching values also pass (single-value setups).
+    #[test]
+    fn matching_values_pass_validation() {
+        let mut cfg = tracked_config();
+        cfg.strategy.hop_slippage_bps = 50;
+        if let Some(three) = &mut cfg.strategy.dlmm_three_leg {
+            three.slippage_bps = 50;
+        }
+        validate_slippage_policies(&cfg).expect("matching values must pass");
+    }
+
+    /// Above `HOP_SLIPPAGE_MAX_BPS` (1_000) => operator error => bail.
+    #[test]
+    fn values_above_ceiling_are_rejected() {
+        let mut cfg = tracked_config();
+        cfg.strategy.hop_slippage_bps = 1_001;
+        assert!(validate_slippage_policies(&cfg).is_err());
+
+        let mut cfg = tracked_config();
+        if let Some(three) = &mut cfg.strategy.dlmm_three_leg {
+            three.slippage_bps = 5_000;
+        }
+        assert!(validate_slippage_policies(&cfg).is_err());
+    }
+
+    /// Above the protocol maximum (10_000) is doubly invalid.
+    #[test]
+    fn values_above_protocol_maximum_are_rejected() {
+        let mut cfg = tracked_config();
+        cfg.strategy.hop_slippage_bps = 10_001;
+        assert!(validate_slippage_policies(&cfg).is_err());
+
+        // 10_000 is protocol-valid but above the strategy ceiling.
+        let mut cfg = tracked_config();
+        cfg.strategy.hop_slippage_bps = 10_000;
+        assert!(validate_slippage_policies(&cfg).is_err());
+    }
+
+    /// Zero slippage is valid input (0 bps => min-outs equal expected outs).
+    #[test]
+    fn zero_slippage_is_valid() {
+        let mut cfg = tracked_config();
+        cfg.strategy.hop_slippage_bps = 0;
+        if let Some(three) = &mut cfg.strategy.dlmm_three_leg {
+            three.slippage_bps = 0;
+        }
+        validate_slippage_policies(&cfg).expect("0 bps is a valid policy");
     }
 }

@@ -53,9 +53,10 @@ pub use meteora_size_optimizer::{
     MeteoraOptimalSizeResult,
 };
 pub use three_leg_meme_pipeline::{
-    ThreeLegMemeContextParams, ThreeLegMemeLegQuote, ThreeLegMemePipelineError,
-    ThreeLegMemePipelineResult, ThreeLegMemeSizeSearchResult, build_three_leg_meme_pipeline,
-    diagnose_missing_cycles, simulate_profitability_gate,
+    THREE_LEG_PIPELINE_TOP_K_MAX, ThreeLegMemeContextParams, ThreeLegMemeLegQuote,
+    ThreeLegMemePipelineError, ThreeLegMemePipelineResult, ThreeLegMemeSizeSearchResult,
+    build_three_leg_meme_pipeline, build_three_leg_meme_pipeline_top_k, diagnose_missing_cycles,
+    simulate_profitability_gate,
 };
 pub mod three_pool_router;
 pub use three_pool_router::*;

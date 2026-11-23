@@ -546,6 +546,48 @@ pub const DEFAULT_HOP_SLIPPAGE_BPS: u64 = 10;
 pub const HOP_SLIPPAGE_MAX_BPS: u64 = 1_000;
 
 // ============================================================================
+// Overflow-Safe Financial Arithmetic Helpers (F-05)
+// ============================================================================
+
+/// Validate a basis-points slippage parameter.
+///
+/// `true` only for `0 <= slippage_bps <= 10_000`. Callers that carry a
+/// stricter ceiling (e.g. `HOP_SLIPPAGE_MAX_BPS`) enforce it on top.
+#[inline]
+pub fn is_valid_slippage_bps(slippage_bps: u64) -> bool {
+    slippage_bps <= 10_000
+}
+
+/// Slippage amount: the size of the discount applied to `amount` for a given
+/// tolerance, i.e. `floor(amount * slippage_bps / 10_000)`.
+///
+/// Wide (u128) intermediate multiplication prevents the overflow that the
+/// naive `amount * slippage_bps` in u64 hits for large meme-token raw amounts
+/// (e.g. `u64::MAX` raw of a 6-decimal token at 100 bps). The result is
+/// always `<= amount`, so it always fits back into `u64`.
+#[inline]
+pub fn slippage_amount_bps(amount: u64, slippage_bps: u64) -> u64 {
+    debug_assert!(is_valid_slippage_bps(slippage_bps), "slippage bps > 10_000");
+    let bps = slippage_bps.min(10_000) as u128;
+    ((amount as u128 * bps) / 10_000u128) as u64
+}
+
+/// Slippage floor: the guaranteed minimum output after applying the
+/// tolerance, i.e. `floor(amount * (10_000 - slippage_bps) / 10_000)`.
+///
+/// Wide (u128) intermediates. The result is always `<= amount`, so the
+/// `as u64` conversion is lossless. CRITICAL: computing this as
+/// `amount.saturating_mul(10_000 - slippage_bps) / 10_000` silently
+/// collapses the floor to `u64::MAX / 10_000` (~4 orders of magnitude too
+/// small) for large amounts — a weakened safety floor, not a correct one.
+#[inline]
+pub fn slippage_floor_bps(amount: u64, slippage_bps: u64) -> u64 {
+    debug_assert!(is_valid_slippage_bps(slippage_bps), "slippage bps > 10_000");
+    let bps = slippage_bps.min(10_000) as u128;
+    ((amount as u128 * (10_000u128 - bps)) / 10_000u128) as u64
+}
+
+// ============================================================================
 // Compute Budget Limits
 // ============================================================================
 
@@ -760,5 +802,111 @@ mod tests {
         assert!(Pubkey::from_str(RAYDIUM_V4_DEVNET_PROGRAM_ID).is_ok());
         assert!(Pubkey::from_str(ARB_EXECUTOR_PROGRAM_ID).is_ok());
         assert!(Pubkey::from_str(DEFAULT_MAINNET_ALT_KEY).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod slippage_arithmetic_tests {
+    use super::*;
+
+    /// F-05: `u64::MAX` amounts must not overflow the `u64 * bps`
+    /// multiplication. The u128 intermediate keeps the exact quotient.
+    #[test]
+    fn slippage_helpers_are_overflow_safe_at_u64_max() {
+        for bps in [0u64, 1, 10, 100, 1_000, 10_000] {
+            let amount = u64::MAX;
+            // Exact math in u128 as the reference.
+            let exp_amount = (amount as u128 * bps as u128 / 10_000u128) as u64;
+            let exp_floor = (amount as u128 * (10_000u128 - bps as u128) / 10_000u128) as u64;
+            assert_eq!(slippage_amount_bps(amount, bps), exp_amount);
+            assert_eq!(slippage_floor_bps(amount, bps), exp_floor);
+        }
+    }
+
+    /// F-05 regression: the old `amount.saturating_mul(10_000 - bps) / 10_000`
+    /// collapsed the floor to ~u64::MAX/10_000 for large amounts. The helper
+    /// must never do that: floor == amount * (1e4 - bps) / 1e4 exactly.
+    #[test]
+    fn slippage_floor_does_not_saturating_collapse() {
+        let amount = u64::MAX;
+        let bps = 100u64; // 1 %
+        let collapsed = amount.saturating_mul(10_000 - bps) / 10_000; // broken legacy path
+        let correct = slippage_floor_bps(amount, bps);
+        // The legacy path saturates the product to u64::MAX first, so the
+        // collapsed floor is exactly u64::MAX / 10_000 (~18.4e15 lamports)
+        // regardless of bps; the corrected value is ~amount * 0.99.
+        assert_eq!(collapsed, u64::MAX / 10_000);
+        assert!(
+            correct > collapsed,
+            "the corrected floor ({correct}) must exceed the saturating \
+             collapse ({collapsed}) by orders of magnitude"
+        );
+        assert_eq!(correct, (amount as u128 * 9_900u128 / 10_000u128) as u64);
+    }
+
+    /// Round-trip invariants: both helpers stay within `amount`, and the
+    /// floor is never weaker than `amount - margin` (the sold-side floor
+    /// users derive with floor rounding may be at most 1 ulp below).
+    #[test]
+    fn slippage_invariants_hold() {
+        for amount in [0u64, 1, 9_999, 10_000, 123_456, u64::MAX / 2] {
+            for bps in [0u64, 1, 35, 999, 10_000] {
+                let margin = slippage_amount_bps(amount, bps);
+                let floor = slippage_floor_bps(amount, bps);
+                assert!(margin <= amount);
+                assert!(floor <= amount);
+                let residual_ok = amount.checked_sub(margin).is_some_and(|diff| floor <= diff);
+                assert!(
+                    residual_ok,
+                    "floor ({floor}) must never exceed amount - margin \
+                     (amount={amount}, bps={bps})"
+                );
+                // Zero slippage is the identity; 100 % slippage floors to zero.
+                if bps == 0 {
+                    assert_eq!(floor, amount);
+                }
+                if bps == 10_000 {
+                    assert_eq!(floor, 0);
+                }
+            }
+        }
+    }
+
+    /// Zero edges and rounding boundaries.
+    #[test]
+    fn slippage_zero_edges_and_rounding() {
+        assert_eq!(slippage_amount_bps(0, 100), 0);
+        assert_eq!(slippage_floor_bps(0, 100), 0);
+        // Sub-1-lamport discounts floor to zero (floor semantics).
+        assert_eq!(
+            slippage_amount_bps(9_999, 100),
+            99,
+            "9999*100/10000 = 99.99 -> 99"
+        );
+        assert_eq!(
+            slippage_floor_bps(9_999, 100),
+            9_899,
+            "9999*9900/10000 = 9899.01 floors to 9899 (floor semantics)"
+        );
+        assert_eq!(slippage_amount_bps(10_000, 100), 100);
+        assert_eq!(slippage_floor_bps(10_000, 100), 9_900);
+    }
+
+    /// Validation contract: the helper accepts the full 0..=10_000 range and
+    /// nothing above.
+    #[test]
+    fn is_valid_slippage_bps_contract() {
+        assert!(is_valid_slippage_bps(0));
+        assert!(is_valid_slippage_bps(10));
+        assert!(is_valid_slippage_bps(1_000));
+        assert!(is_valid_slippage_bps(10_000));
+        assert!(!is_valid_slippage_bps(10_001));
+        assert!(!is_valid_slippage_bps(u64::MAX));
+    }
+
+    /// The strategy ceiling constant is stricter than the protocol ceiling.
+    #[test]
+    fn hop_slippage_max_is_stricter_than_protocol_max() {
+        assert!(HOP_SLIPPAGE_MAX_BPS <= 10_000);
     }
 }

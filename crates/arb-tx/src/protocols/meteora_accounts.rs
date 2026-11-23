@@ -45,6 +45,10 @@ pub fn derive_meteora_bin_array_bitmap_extension_pda(pool: &Pubkey) -> Pubkey {
 /// in the swap direction from the active bin's array. Unbounded — the number
 /// of arrays scales with `bins_traversed`, replacing the old fixed 2..=4 cap.
 ///
+/// `bins_traversed` follows the F-02 canonical semantics (the quote's
+/// `bins_crossed`): the number of bin ADVANCES beyond the active bin — so the
+/// covered span is `active_bin_id .. active_bin_id ± bins_traversed` INCLUSIVE.
+///
 /// `swap_for_y == true` means selling X for Y (price moves down → lower array
 /// indices); `swap_for_y == false` means selling Y for X (price moves up →
 /// higher array indices).
@@ -54,12 +58,12 @@ pub fn meteora_bin_array_indices(
     bins_traversed: u32,
 ) -> Vec<i64> {
     let active_idx = bin_array_index_for_bin(active_bin_id);
-    // Derive the array span from the first and last bin of the traversal, exactly
-    // like `plan_bin_arrays`, so the legacy helper never under-provisions when
-    // the walk starts near an array boundary.
+    // Derive the array span from the first and last bin of the traversal,
+    // exactly like `plan_bin_arrays`, so the legacy helper never
+    // under-provisions when the walk starts near an array boundary.
     let step: i64 = if swap_for_y { -1 } else { 1 };
-    let last_bin_id = active_bin_id
-        .saturating_add((step as i32).saturating_mul((bins_traversed as i32).saturating_sub(1)));
+    let last_bin_id =
+        active_bin_id.saturating_add((step as i32).saturating_mul(bins_traversed as i32));
     let last_idx = bin_array_index_for_bin(last_bin_id);
     let arrays_needed = (last_idx - active_idx).abs() + 1;
     let actual_increment: i64 = if last_idx >= active_idx { 1 } else { -1 };

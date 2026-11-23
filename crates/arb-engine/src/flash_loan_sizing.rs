@@ -240,35 +240,39 @@ pub fn calculate_optimal_flash_loan(
         kamino_flash_fee_sf,
         network_costs,
     );
+    // Overflow-safe (F-05): wide (i128) intermediates; a u64-scale borrow
+    // times 10_000 overflows i64 and would corrupt the ROI comparison.
+    let borrow_i128 = i128::from(borrow_amount);
     let profit_bps = if borrow_amount > 0 {
-        (net_profit * 10_000) / borrow_amount as i64
+        ((i128::from(net_profit) * 10_000) / borrow_i128) as i64
     } else {
         0
     };
 
     // 10. If profit is below target, try to optimize
-    let outcome = if net_profit < config.target_profit_bps as i64 * borrow_amount as i64 / 10_000 {
-        optimize_size(
-            pool1,
-            pool2,
-            pool3,
-            borrow_amount,
-            config,
-            kamino_flash_fee_sf,
-            network_costs,
-        )
-    } else {
-        SizeSearchOutcome {
-            borrow: borrow_amount,
-            profit: net_profit,
-            bps: profit_bps,
-            amounts: leg_amounts,
-            min_outputs: leg_min_outputs,
-            bins: bins_crossed,
-            dex_fees,
-            expected_output: final_output,
-        }
-    };
+    let outcome =
+        if i128::from(net_profit) < i128::from(config.target_profit_bps) * borrow_i128 / 10_000 {
+            optimize_size(
+                pool1,
+                pool2,
+                pool3,
+                borrow_amount,
+                config,
+                kamino_flash_fee_sf,
+                network_costs,
+            )
+        } else {
+            SizeSearchOutcome {
+                borrow: borrow_amount,
+                profit: net_profit,
+                bps: profit_bps,
+                amounts: leg_amounts,
+                min_outputs: leg_min_outputs,
+                bins: bins_crossed,
+                dex_fees,
+                expected_output: final_output,
+            }
+        };
     let SizeSearchOutcome {
         borrow: final_borrow,
         profit: final_profit,
@@ -478,9 +482,15 @@ pub fn net_profit_lamports(
     }
 }
 
-/// Apply slippage to get conservative minimum output
+/// Apply slippage to get conservative minimum output.
+///
+/// Overflow-safe: the naive `amount.saturating_mul(10_000 - slippage_bps)`
+/// collapses to `u64::MAX` on saturation, dividing out to a floor ~4 orders
+/// of magnitude BELOW the true value for large amounts — a silently weakened
+/// safety floor. Wide (u128) intermediates keep the exact floor; the result
+/// is always `<= amount`.
 fn apply_slippage(amount: u64, slippage_bps: u64) -> u64 {
-    amount.saturating_mul(10_000 - slippage_bps.min(10_000)) / 10_000
+    arb_constants::slippage_floor_bps(amount, slippage_bps)
 }
 
 /// Calculate Kamino flash loan fee using U68F60 (60 fractional bits).

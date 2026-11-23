@@ -897,6 +897,15 @@ impl Supervisor {
                         let last_valid_height_task =
                             last_valid_block_height.unwrap_or(0).max(0) as u64;
 
+                        // F-01 settlement handles (cloned before the spawn so the
+                        // reconciliation task never captures `self`).
+                        let settle_opp_task = opp.clone();
+                        let settle_payer_task = payer;
+                        let settle_rpc_task = self.rpc_pool.clone();
+                        let settle_tx_rpc_task = self.tx_rpc.clone();
+                        let settle_signer_task = self.keypair().cloned();
+                        let settle_live_task = self.mode() == BotMode::Live;
+
                         tokio::spawn(async move {
                             // Dual-track landing verification:
                             // SWQoS queries getSignatureStatuses directly.
@@ -1114,6 +1123,28 @@ impl Supervisor {
                                         realized_provenance,
                                     );
                                     let _ = store.resolve_dispatch_intent(rec_id, "landed");
+                                    // F-01 post-landing settlement: reclaim rent
+                                    // from intermediate ATAs whose balances ended
+                                    // this route at zero. Separate live-only tx,
+                                    // probe-gated — never part of the arb tx.
+                                    if let Some(ref signer) = settle_signer_task {
+                                        let reclaimed =
+                                            Supervisor::settle_idle_intermediate_atas_with(
+                                                settle_rpc_task.clone(),
+                                                &settle_tx_rpc_task,
+                                                signer,
+                                                settle_live_task,
+                                                &settle_opp_task,
+                                                settle_payer_task,
+                                            )
+                                            .await;
+                                        if reclaimed > 0 {
+                                            debug!(
+                                                "intermediate ATA settlement: {} accounts reclaimed",
+                                                reclaimed
+                                            );
+                                        }
+                                    }
                                     if let Some(r) = rung_for_record {
                                         js.record(
                                             r,

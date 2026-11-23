@@ -261,20 +261,19 @@ impl Supervisor {
         };
 
         let t_exact = std::time::Instant::now();
-        let pipeline = arb_engine::build_three_leg_meme_pipeline(fresh_pools, &params);
+        let pipelines = arb_engine::build_three_leg_meme_pipeline_top_k(
+            fresh_pools,
+            &params,
+            arb_engine::THREE_LEG_PIPELINE_TOP_K_MAX,
+        );
         arb_metrics::observe_exact_quote_latency_us(t_exact.elapsed().as_micros() as f64);
-        let result = match pipeline {
+        let pipelines = match pipelines {
             Ok(r) => r,
             Err(e) => {
                 debug!("Meteora 3-leg DLMM capture skipped: {e}");
                 return Vec::new();
             }
         };
-
-        // Fail closed: only a strictly positive gross chain enters the set.
-        if result.gross_profit_lamports <= 0 {
-            return Vec::new();
-        }
 
         let by_id: std::collections::HashMap<Pubkey, &PoolState> =
             fresh_pools.iter().map(|p| (p.pool_id.0, p)).collect();
@@ -295,109 +294,123 @@ impl Supervisor {
             &wsol_pubkey,
             &params.wsol_token_program,
         );
-        let leg0_pool = by_id.get(&result.legs[0].pool_id.0).copied();
-        let leg2_pool = by_id.get(&result.legs[2].pool_id.0).copied();
-        let (Some(pool_a), Some(pool_b)) = (leg0_pool, leg2_pool) else {
-            return Vec::new();
-        };
-        let (Some(prog_a), Some(prog_b)) = (
-            Self::token_program_for_mint_pub(pool_a, result.meme_mints[0]),
-            Self::token_program_for_mint_pub(pool_b, result.meme_mints[1]),
-        ) else {
-            debug!("3-leg capture rejected: intermediate token program unresolvable");
-            return Vec::new();
-        };
-        let meme_a_ata = arb_tx::get_associated_token_address_with_program_id(
-            &payer,
-            &result.meme_mints[0].0,
-            &prog_a,
-        );
-        let meme_b_ata = arb_tx::get_associated_token_address_with_program_id(
-            &payer,
-            &result.meme_mints[1].0,
-            &prog_b,
-        );
-        let Some(balances) = self
-            .fetch_payer_token_balances(&[wsol_ata, meme_a_ata, meme_b_ata])
-            .await
-        else {
-            arb_metrics::inc_inventory_rejections();
-            debug!("3-leg capture rejected: ATA balances unfetchable (fail-closed)");
-            return Vec::new();
-        };
-        let balances: Vec<u64> = balances;
-        let wsol_bal = balances.first().copied().unwrap_or(u64::MAX);
-        let a_bal = balances.get(1).copied().unwrap_or(u64::MAX);
-        let b_bal = balances.get(2).copied().unwrap_or(u64::MAX);
-        if wsol_bal > 0 || a_bal > 0 || b_bal > 0 {
-            arb_metrics::inc_inventory_rejections();
-            warn!(
-                "3-leg capture rejected: pre-existing inventory would subsidize execution (wsol={wsol_bal}, meme_a={a_bal}, meme_b={b_bal}); remedy: wsol>0 requires unwrapping the WSOL ATA (converts WSOL back to SOL, e.g. syncNative-close flow), intermediate ATA dust requires closing that token account empty before 3-leg capture resumes"
-            );
-            return Vec::new();
-        }
-        let mut hops = Vec::with_capacity(3);
-        for leg in result.legs.iter() {
-            let Some(pool) = by_id.get(&leg.pool_id.0) else {
-                return Vec::new();
+        let mut opportunities = Vec::with_capacity(pipelines.len());
+        for result in &pipelines {
+            // Fail closed per candidate: only a strictly positive gross chain
+            // enters the set.
+            if result.gross_profit_lamports <= 0 {
+                continue;
+            }
+            let leg0_pool = by_id.get(&result.legs[0].pool_id.0).copied();
+            let leg2_pool = by_id.get(&result.legs[2].pool_id.0).copied();
+            let (Some(pool_a), Some(pool_b)) = (leg0_pool, leg2_pool) else {
+                continue;
             };
-            hops.push(SwapHop {
-                pool_id: leg.pool_id,
-                protocol: DexProtocol::MeteoraDlmm,
-                mint_in: leg.from_mint,
-                mint_out: leg.to_mint,
-                // Pipeline pre-filtered pools to those with a valid fee; a
-                // missing fee here can only mean a mid-tick state mutation, and
-                // the pipeline's own quote already priced the route.
-                fee_bps: pool.fee_bps().unwrap_or(0),
-                active_bin_id: pool.dlmm.as_ref().map(|d| d.active_bin_id),
-                // SwapHop contract (arb-types): token_programs is
-                // (mint_in, mint_out) — flip the pool's (base, quote) pair
-                // when this leg trades quote -> base.
-                token_programs: if leg.from_mint == pool.base_mint {
-                    pool.token_programs
-                } else {
-                    [pool.token_programs[1], pool.token_programs[0]]
-                },
-                trade_intent: Default::default(),
-                execution_accounts: pool.execution_accounts.clone(),
+            let (Some(prog_a), Some(prog_b)) = (
+                Self::token_program_for_mint_pub(pool_a, result.meme_mints[0]),
+                Self::token_program_for_mint_pub(pool_b, result.meme_mints[1]),
+            ) else {
+                debug!("3-leg capture candidate rejected: intermediate token program unresolvable");
+                continue;
+            };
+            let meme_a_ata = arb_tx::get_associated_token_address_with_program_id(
+                &payer,
+                &result.meme_mints[0].0,
+                &prog_a,
+            );
+            let meme_b_ata = arb_tx::get_associated_token_address_with_program_id(
+                &payer,
+                &result.meme_mints[1].0,
+                &prog_b,
+            );
+            let Some(balances) = self
+                .fetch_payer_token_balances(&[wsol_ata, meme_a_ata, meme_b_ata])
+                .await
+            else {
+                arb_metrics::inc_inventory_rejections();
+                debug!("3-leg capture candidate rejected: ATA balances unfetchable (fail-closed)");
+                continue;
+            };
+            let balances: Vec<u64> = balances;
+            let wsol_bal = balances.first().copied().unwrap_or(u64::MAX);
+            let a_bal = balances.get(1).copied().unwrap_or(u64::MAX);
+            let b_bal = balances.get(2).copied().unwrap_or(u64::MAX);
+            if wsol_bal > 0 || a_bal > 0 || b_bal > 0 {
+                arb_metrics::inc_inventory_rejections();
+                warn!(
+                    "3-leg capture candidate rejected: pre-existing inventory would subsidize execution (wsol={wsol_bal}, meme_a={a_bal}, meme_b={b_bal}); remedy: wsol>0 requires unwrapping the WSOL ATA (converts WSOL back to SOL, e.g. syncNative-close flow), intermediate ATA dust requires closing that token account empty before 3-leg capture resumes"
+                );
+                continue;
+            }
+            let mut hops = Vec::with_capacity(3);
+            let mut route_missing_pool = false;
+            for leg in result.legs.iter() {
+                let Some(pool) = by_id.get(&leg.pool_id.0) else {
+                    route_missing_pool = true;
+                    break;
+                };
+                hops.push(SwapHop {
+                    pool_id: leg.pool_id,
+                    protocol: DexProtocol::MeteoraDlmm,
+                    mint_in: leg.from_mint,
+                    mint_out: leg.to_mint,
+                    // Pipeline pre-filtered pools to those with a valid fee; a
+                    // missing fee here can only mean a mid-tick state mutation, and
+                    // the pipeline's own quote already priced the route.
+                    fee_bps: pool.fee_bps().unwrap_or(0),
+                    active_bin_id: pool.dlmm.as_ref().map(|d| d.active_bin_id),
+                    // SwapHop contract (arb-types): token_programs is
+                    // (mint_in, mint_out) — flip the pool's (base, quote) pair
+                    // when this leg trades quote -> base.
+                    token_programs: if leg.from_mint == pool.base_mint {
+                        pool.token_programs
+                    } else {
+                        [pool.token_programs[1], pool.token_programs[0]]
+                    },
+                    trade_intent: Default::default(),
+                    execution_accounts: pool.execution_accounts.clone(),
+                });
+            }
+            if route_missing_pool {
+                continue;
+            }
+
+            let size_in = result.size_search.best_input.max(1);
+            let expected_out = result.expected_final_out;
+            let expected_min_final_output = result.expected_min_final_output;
+            let hop_inputs = vec![
+                result.legs[0].amount_in,
+                result.legs[0].amount_out,
+                result.legs[1].amount_out,
+                result.legs[2].amount_out,
+            ];
+            let gross = result.gross_profit_lamports as u64;
+            let net = result.net_profit_lamports.max(0) as u64;
+
+            static THREE_LEG_ROUTE_ID: std::sync::atomic::AtomicU32 =
+                std::sync::atomic::AtomicU32::new(50_000);
+            let route_id =
+                RouteId(THREE_LEG_ROUTE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+
+            opportunities.push(ExecutionOpportunity {
+                hop_slippage_bps: tuning.slippage_bps,
+                route_id,
+                slot: current_slot,
+                size_in: TokenAmount(size_in),
+                expected_out: TokenAmount(expected_out),
+                hop_inputs,
+                // The authoritative economic gate re-derives net profit later with
+                // the actual tip; the pipeline's canonical net (flash fee + network
+                // cost already deducted, WSOL-anchored) ranks the merged set.
+                gross_profit: Lamports(gross),
+                net_profit: Lamports(net),
+                base_decimals: 9, // WSOL-anchored route
+                price_impact_bps: Bps(0),
+                hops,
+                expected_min_final_output,
             });
         }
-
-        let size_in = result.size_search.best_input.max(1);
-        let expected_out = result.expected_final_out;
-        let expected_min_final_output = result.expected_min_final_output;
-        let hop_inputs = vec![
-            result.legs[0].amount_in,
-            result.legs[0].amount_out,
-            result.legs[1].amount_out,
-            result.legs[2].amount_out,
-        ];
-        let gross = result.gross_profit_lamports as u64;
-        let net = result.net_profit_lamports.max(0) as u64;
-
-        static THREE_LEG_ROUTE_ID: std::sync::atomic::AtomicU32 =
-            std::sync::atomic::AtomicU32::new(50_000);
-        let route_id =
-            RouteId(THREE_LEG_ROUTE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-
-        vec![ExecutionOpportunity {
-            hop_slippage_bps: tuning.slippage_bps,
-            route_id,
-            slot: current_slot,
-            size_in: TokenAmount(size_in),
-            expected_out: TokenAmount(expected_out),
-            hop_inputs,
-            // The authoritative economic gate re-derives net profit later with
-            // the actual tip; the pipeline's canonical net (flash fee + network
-            // cost already deducted, WSOL-anchored) ranks the merged set.
-            gross_profit: Lamports(gross),
-            net_profit: Lamports(net),
-            base_decimals: 9, // WSOL-anchored route
-            price_impact_bps: Bps(0),
-            hops,
-            expected_min_final_output,
-        }]
+        opportunities
     }
 
     pub async fn run(&self) -> Result<()> {

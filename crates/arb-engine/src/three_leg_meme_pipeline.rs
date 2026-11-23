@@ -28,6 +28,7 @@ use arb_tx::meteora_dlmm::{SwapDirection, SwapMode, derive_directional_bin_array
 use arb_tx::{LegExecutionAccounts, LegSwapParams, ThreeLegMemeArbitrageContext};
 use arb_types::{DexProtocol, MintId, PoolExecutionAccounts, PoolId, PoolState, TokenProgramKind};
 use solana_pubkey::Pubkey;
+use tracing::debug;
 
 use crate::meteora_pair_discovery::MeteoraDlmmPoolPairDiscovery;
 use crate::meteora_quote_engine::MeteoraDlmmCrossPoolQuoteEngine;
@@ -512,16 +513,43 @@ fn enumerate_cycles(
     out
 }
 
-/// Run the integrated pipeline.
+/// Run the integrated pipeline (single best candidate retained).
 ///
 /// 1. Scans distinct 3-leg `WSOL -> A -> B -> WSOL` cycles at each candidate
 ///    borrow size.
 /// 2. Selects the route-size pair with the highest canonical net profit.
 /// 3. Resolves per-leg execution accounts into `ThreeLegMemeArbitrageContext`.
+///
+/// F-06: this is the k = 1 wrapper of [`build_three_leg_meme_pipeline_top_k`].
 pub fn build_three_leg_meme_pipeline(
     pools: &[PoolState],
     params: &ThreeLegMemeContextParams,
 ) -> Result<ThreeLegMemePipelineResult, ThreeLegMemePipelineError> {
+    let mut results = build_three_leg_meme_pipeline_top_k(pools, params, 1)?;
+    Ok(results.remove(0))
+}
+
+/// F-06: Top-K mode of the 3-leg pipeline.
+///
+/// The single-best pipeline discarded every non-winning candidate at
+/// discovery time, so a route rejected by the FINAL authoritative economics
+/// gate (actual base fee, priority fee, tip) left nothing to evaluate. This
+/// variant ranks every quoted (chain, size) candidate by canonical net profit
+/// and assembles up to `k` (bounded by [`THREE_LEG_PIPELINE_TOP_K_MAX`])
+/// fully-resolved results, ordered best-first. The supervisor evaluates each
+/// candidate's fresh economics; a candidate that fails construction
+/// (`build_context`, repayment guarantee) is skipped and the next-ranked one
+/// is evaluated instead of losing the whole opportunity set.
+///
+/// Errors preserve the single-best semantics: `NoCycleFound` when nothing
+/// quoted, `BelowNetProfitFloor` when the overall best net is under the
+/// configured floor.
+pub fn build_three_leg_meme_pipeline_top_k(
+    pools: &[PoolState],
+    params: &ThreeLegMemeContextParams,
+    k: usize,
+) -> Result<Vec<ThreeLegMemePipelineResult>, ThreeLegMemePipelineError> {
+    let k = k.clamp(1, THREE_LEG_PIPELINE_TOP_K_MAX);
     let candidates = valid_meteora_pools(pools);
     if candidates.is_empty() {
         return Err(ThreeLegMemePipelineError::NoEligiblePools);
@@ -532,17 +560,13 @@ pub fn build_three_leg_meme_pipeline(
         });
     }
 
-    // Discovery report (kept for journaling).
     let discovery = MeteoraDlmmPoolPairDiscovery::discover_pairs(&candidates);
 
-    // Candidate borrow sizes are bounded by verified Kamino vault liquidity.
-    // Route selection must be evaluated at each size: DLMM bin boundaries can
-    // change both route feasibility and the best route as input changes.
     let wsol = wsol_mint();
-    let discovery_size = params.input_size;
+    // Same size ladder as the single-best mode (shared with production).
     let sizes: Vec<u64> = {
         let all: Vec<u64> = if params.size_search_sizes.is_empty() {
-            vec![discovery_size]
+            vec![params.input_size]
         } else {
             params.size_search_sizes.clone()
         };
@@ -563,71 +587,126 @@ pub fn build_three_leg_meme_pipeline(
         }
     };
 
+    // Rank EVERY quoted (chain, size) candidate (F-06): the old loop collapsed
+    // each size to its winner and kept only the global best.
     let mut tested: Vec<(u64, i64)> = Vec::with_capacity(sizes.len());
-    let mut best_profit: i64 = i64::MIN;
-    let mut best_size = 0;
-    let mut best_candidate: Option<(Chain, ChainQuote)> = None;
+    let mut ranked: Vec<(i64, u64, Chain, ChainQuote)> = Vec::new();
+    let mut best_overall: i64 = i64::MIN;
     for size in &sizes {
         let cycles = enumerate_cycles(&candidates, *size, params.slippage_bps);
-        let mut best_at_size: Option<(Chain, ChainQuote, i64)> = None;
-        for (chain, quote) in cycles {
-            let net_profit = net_profit_of(quote, *size, params);
-            if best_at_size
-                .as_ref()
-                .is_none_or(|(_, _, current)| net_profit > *current)
-            {
-                best_at_size = Some((chain, quote, net_profit));
-            }
-        }
-
-        let net_at_size = best_at_size
-            .as_ref()
-            .map(|(_, _, profit)| *profit)
-            .unwrap_or(i64::MIN);
-        tested.push((*size, net_at_size));
-        if let Some((chain, quote, net_profit)) = best_at_size
-            && (best_candidate.is_none() || net_profit > best_profit)
+        let mut at_size: Vec<(i64, Chain, ChainQuote)> = cycles
+            .into_iter()
+            .map(|(chain, quote)| (net_profit_of(quote, *size, params), chain, quote))
+            .collect();
+        at_size.sort_by_key(|x| std::cmp::Reverse(x.0));
+        tested.push((*size, at_size.first().map_or(i64::MIN, |(net, _, _)| *net)));
+        if let Some((net, _, _)) = at_size.first()
+            && *net > best_overall
         {
-            best_profit = net_profit;
-            best_size = *size;
-            best_candidate = Some((chain, quote));
+            best_overall = *net;
+        }
+        // Bounded memory: only the top-k of this size can enter the final set.
+        for (net, chain, quote) in at_size.into_iter().take(k) {
+            ranked.push((net, *size, chain, quote));
         }
     }
-    let Some((best_chain, chosen_quote)) = best_candidate else {
+
+    if ranked.is_empty() {
         return Err(ThreeLegMemePipelineError::NoCycleFound {
             pools: candidates.len(),
         });
-    };
-    if best_profit < params.min_profit_lamports as i64 {
+    }
+    if best_overall < params.min_profit_lamports as i64 {
         return Err(ThreeLegMemePipelineError::BelowNetProfitFloor {
-            best_net: best_profit,
+            best_net: best_overall,
             floor: params.min_profit_lamports,
         });
     }
+    let floor = params.min_profit_lamports as i64;
+    ranked.retain(|(net, _, _, _)| *net >= floor);
+    // Stable sort: equal nets keep the earlier (smaller-size) candidate first,
+    // preserving the tie-breaking of the single-best mode at k = 1.
+    ranked.sort_by_key(|x| std::cmp::Reverse(x.0));
+
+    let mut results: Vec<ThreeLegMemePipelineResult> = Vec::new();
+    let mut seen: std::collections::HashSet<(usize, usize, usize, u64)> =
+        std::collections::HashSet::new();
+    let mut last_err: Option<ThreeLegMemePipelineError> = None;
+    for (net, size, chain, quote) in ranked {
+        if results.len() == k {
+            break;
+        }
+        if !seen.insert((chain.i, chain.j, chain.k, size)) {
+            continue;
+        }
+        match assemble_pipeline_result(
+            &candidates,
+            params,
+            wsol,
+            size,
+            &chain,
+            &quote,
+            net,
+            tested.clone(),
+            &discovery,
+        ) {
+            Ok(result) => results.push(result),
+            Err(e) => {
+                debug!(
+                    "top-k candidate (pools {}/{}/{}, size {size}) failed assembly,                      evaluating next-ranked candidate: {e}",
+                    chain.i, chain.j, chain.k
+                );
+                last_err = Some(e);
+            }
+        }
+    }
+    if results.is_empty() {
+        return Err(last_err.unwrap_or(ThreeLegMemePipelineError::NoCycleFound {
+            pools: candidates.len(),
+        }));
+    }
+    Ok(results)
+}
+
+/// Bound retained candidate set for the top-k pipeline.
+pub const THREE_LEG_PIPELINE_TOP_K_MAX: usize = 3;
+
+/// Assemble one pipeline result for a fully-quoted (chain, size) candidate.
+///
+/// Extracted from the former single-best loop so both the k = 1 wrapper and
+/// the top-k mode share one construction path (identical invariants: leg
+/// records, slippage-floor chain context, repayment guarantee).
+#[allow(clippy::too_many_arguments)]
+fn assemble_pipeline_result(
+    candidates: &[PoolState],
+    params: &ThreeLegMemeContextParams,
+    wsol: MintId,
+    size: u64,
+    chain: &Chain,
+    quote: &ChainQuote,
+    net_profit: i64,
+    tested: Vec<(u64, i64)>,
+    discovery: &crate::meteora_pair_discovery::MeteoraDlmmPairDiscoveryReport,
+) -> Result<ThreeLegMemePipelineResult, ThreeLegMemePipelineError> {
     let size_search = ThreeLegMemeSizeSearchResult {
         tested_sizes: tested,
-        best_input: best_size,
-        best_net_profit_lamports: best_profit,
+        best_input: size,
+        best_net_profit_lamports: net_profit,
     };
     let flash_fee_lamports =
-        crate::flash_loan_sizing::calculate_kamino_flash_fee(best_size, params.flash_loan_fee_sf);
+        crate::flash_loan_sizing::calculate_kamino_flash_fee(size, params.flash_loan_fee_sf);
 
-    // Per-leg quote records at the chosen size.
-    let p1 = &candidates[best_chain.i];
-    let p2 = &candidates[best_chain.j];
-    let p3 = &candidates[best_chain.k];
-    let legs = build_leg_records(p1, p2, p3, wsol, &chosen_quote, best_chain.a, best_chain.b)?;
+    let p1 = &candidates[chain.i];
+    let p2 = &candidates[chain.j];
+    let p3 = &candidates[chain.k];
+    let legs = build_leg_records(p1, p2, p3, wsol, quote, chain.a, chain.b)?;
 
-    let input = best_size;
+    let input = size;
     let final_out = legs[2].amount_out;
     let gross = final_out as i128 - input as i128;
 
-    // Account resolution: build the executable context.
-    let context = build_context(p1, p2, p3, &legs, params, best_chain.a, best_chain.b, wsol)?;
+    let context = build_context(p1, p2, p3, &legs, params, chain.a, chain.b, wsol)?;
 
-    // Repayment guarantee: even at the slippage floor of the final leg, the
-    // route must still cover principal + flash fee, otherwise the flash loan
-    // cannot be repaid atomically and the whole transaction would revert.
     let required_repayment = input.saturating_add(flash_fee_lamports);
     if context.expected_min_final_output < required_repayment {
         return Err(ThreeLegMemePipelineError::RepaymentNotGuaranteed {
@@ -639,15 +718,15 @@ pub fn build_three_leg_meme_pipeline(
     let expected_min_final_output = context.expected_min_final_output;
     Ok(ThreeLegMemePipelineResult {
         pool_ids: [p1.pool_id.0, p2.pool_id.0, p3.pool_id.0],
-        meme_mints: [best_chain.a, best_chain.b],
+        meme_mints: [chain.a, chain.b],
         legs,
         size_search,
         context,
-        discovery,
+        discovery: discovery.clone(),
         expected_final_out: final_out,
         gross_profit_lamports: gross as i64,
         flash_fee_lamports,
-        net_profit_lamports: best_profit,
+        net_profit_lamports: net_profit,
         expected_min_final_output,
     })
 }
@@ -751,9 +830,10 @@ fn build_context(
         &params.wsol_token_program,
     );
 
-    let slippage_mul = |amount: u64| -> u64 {
-        amount.saturating_mul(10_000u64.saturating_sub(params.slippage_bps)) / 10_000
-    };
+    // Overflow-safe (F-05): u128 intermediates keep the exact floor for large
+    // raw amounts instead of the saturating collapse that weakened it.
+    let slippage_mul =
+        |amount: u64| -> u64 { arb_constants::slippage_floor_bps(amount, params.slippage_bps) };
 
     // Floor for the whole chain: the final leg's quoted output minus slippage.
     let expected_min_final_output = slippage_mul(legs[2].amount_out);
@@ -969,7 +1049,9 @@ mod tests {
             amount_in: 1_000_000,
             amount_out: 1_100_000,
             fee: 1_000,
-            bins_traversed: 0,
+            // F-02 canonical semantics: this field is the quote engine's
+            // `bins_crossed` (bin advances beyond the active bin; >= 0).
+            bins_traversed: 2,
         }
     }
 
@@ -1162,7 +1244,7 @@ mod tests {
     #[test]
     fn quote_chain_inputs_are_conservative_min_outs() {
         let slippage_bps = 100u64;
-        let floor = |amt: u64| amt.saturating_mul(10_000 - slippage_bps) / 10_000;
+        let floor = |amt: u64| arb_constants::slippage_floor_bps(amt, slippage_bps);
         let wsol = wsol();
         let a = MintId(Pubkey::new_from_array([94u8; 32]));
         let b = MintId(Pubkey::new_from_array([95u8; 32]));

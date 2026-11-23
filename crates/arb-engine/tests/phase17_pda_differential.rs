@@ -183,13 +183,22 @@ fn precise_plan_is_never_under_provisioned_versus_the_legacy_helper() {
 #[test]
 fn the_legacy_helper_matches_the_precise_plan_exactly() {
     let pool = pk(POOL_A);
-    // Walking up from bin 0 for 70 bins touches bins 0..=69, which all live in
-    // array 0: the helper must not provision a phantom second array.
+    // F-02 corrected semantics: 70 ADVANCES from bin 0 visit bins 0..=70;
+    // bin 70 lives in array 1 (floor division), so both the precise plan and
+    // the legacy helper must cover arrays [0, 1] — the old visited-count
+    // semantics under-provisioned exactly one bin at the boundary.
     assert_eq!(
         plan_bin_arrays(&pool, 0, false, 70).unwrap().indices,
+        vec![0, 1]
+    );
+    assert_eq!(arb_tx::meteora_bin_array_indices(0, false, 70), vec![0, 1]);
+
+    // A single bin consumed inside the active bin (bins_crossed == 0) plans
+    // exactly the active array.
+    assert_eq!(
+        plan_bin_arrays(&pool, 0, false, 0).unwrap().indices,
         vec![0]
     );
-    assert_eq!(arb_tx::meteora_bin_array_indices(0, false, 70), vec![0]);
 
     // Boundary: 71 bins walk from bin 0 into bin 70 (array 1).
     assert_eq!(

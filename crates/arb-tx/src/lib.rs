@@ -493,8 +493,13 @@ mod tests {
             &[],
         )
         .unwrap();
-        // Base (9) + 1 Ephemeral ATA Create + 1 Ephemeral ATA Close = 11 instructions
-        assert_eq!(ixs_inter.len(), 11);
+        // Base (9) + 1 Ephemeral ATA Create = 10 instructions. Residual-safe
+        // lifecycle (F-01): the intermediate ATA is NEVER closed inside the
+        // atomic transaction — a leg's actual output can exceed the exact
+        // amount consumed by the next leg, and closing a non-empty token
+        // account reverts the whole transaction. Rent reclaim happens
+        // post-landing in a separate settlement tx.
+        assert_eq!(ixs_inter.len(), 10);
         assert_eq!(
             ixs_inter[2].program_id,
             Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap()
@@ -503,11 +508,12 @@ mod tests {
             ixs_inter[3].program_id,
             Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap()
         ); // CreateIdempotent (Intermediate)
-        assert_eq!(
-            ixs_inter[9].program_id,
-            Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap()
-        ); // CloseAccount (Rent Reclaimed to Payer)
-        assert_eq!(ixs_inter[9].data, vec![9]); // CloseAccount opcode
+        assert!(
+            ixs_inter.iter().all(|ix| !(ix.program_id
+                == Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap()
+                && ix.data == vec![9])),
+            "intermediate ATA must never be closed inside the atomic arb tx (F-01)"
+        ); // CloseAccount eliminated
     }
 
     #[test]

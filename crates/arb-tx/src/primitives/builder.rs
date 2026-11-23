@@ -362,8 +362,21 @@ impl TxBuilder {
             }
 
             // Slippage applied once per hop boundary, never deducted twice.
+            // Wide (u128) intermediates: `expected_out * slippage_bps` in u64
+            // overflows for large raw amounts (meme tokens can carry raw
+            // balances well beyond u64::MAX / 10_000), turning the safety
+            // floor into a panic (debug) or a wraparound (release). The
+            // ordering `slippage_floor <= expected_out` always fits u64.
+            if !arb_constants::is_valid_slippage_bps(slippage_bps) {
+                return Err(TxError::InvalidInput(format!(
+                    "hop {i} invalid slippage bps {slippage_bps} > 10_000"
+                )));
+            }
             let min_out_slippage = expected_out
-                .checked_sub((expected_out * slippage_bps) / 10_000)
+                .checked_sub(arb_constants::slippage_amount_bps(
+                    expected_out,
+                    slippage_bps,
+                ))
                 .ok_or_else(|| {
                     TxError::InvalidInput(format!("hop {i} slippage arithmetic overflow"))
                 })?;
@@ -388,7 +401,7 @@ impl TxBuilder {
     }
 
     /// Assemble atomic Kamino Flash Loan arbitrage transaction.
-    /// Order: ComputeBudget -> Ephemeral ATAs -> FlashBorrow -> Swaps -> FlashRepay -> Close ATAs (Rent Reclaim) -> Jito Tip.
+    /// Order: ComputeBudget -> Ephemeral ATAs -> FlashBorrow -> Swaps -> FlashRepay -> (provably-zero-only) ATA Close -> Jito Tip.
     pub fn assemble_flash_arbitrage(
         payer: Pubkey,
         tip_account: Pubkey,
@@ -399,7 +412,7 @@ impl TxBuilder {
         kamino_params: &KaminoFlashParams,
         flash_loan_fee_sf: u64,
         min_profit_raw: TokenAmount, // Profit floor in base-mint raw units
-        skip_close_intermediate_mints: &[Pubkey],
+        proven_zero_intermediate_mints: &[Pubkey],
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
 
@@ -558,17 +571,33 @@ impl TxBuilder {
             borrow_idx as u8,
         ));
 
-        // 5. Ephemeral ATA Close & 100% Rent Reclaim directly to payer.
-        // Mints listed in `skip_close_intermediate_mints` had a pre-existing ATA
-        // before this transaction: closing it would fail (or destroy external
-        // balances), so the caller must exclude them from the close list.
+        // 5. Residual-safe intermediate ATA lifecycle (F-01, Option B).
+        //
+        // Every per-leg `amount_in` is clamped to the previous hop's
+        // guaranteed min-out (`derive_swap_legs`), so the on-chain actual
+        // output (>= min_out, and strictly greater whenever the pool beats
+        // the quote by any margin) can exceed the consumed input. The
+        // difference REMAINS in the intermediate ATA, and a non-empty SPL
+        // token account cannot be closed: `CloseAccount` on it reverts the
+        // WHOLE atomic transaction (already past repayment) whenever the
+        // route beats its quote — turning every favorable fill into a failed
+        // transaction. The previously unconditional close for mints not
+        // pre-existing at probe time was therefore an execution blocker.
+        //
+        // Policy now: an intermediate ATA is closed ONLY for a mint the
+        // caller has PROVEN ends this route at a zero balance
+        // (`proven_zero_intermediate_mints`); live callers pass an empty list
+        // until the on-chain balance-delta executor (Option A) or the
+        // post-landing settlement path is verified on-chain). Rent stays
+        // parked in the open ATAs (no revert, no loss); the supervisor
+        // reclaims it post-landing via a SEPARATE settlement transaction
+        // that probes balances first (`settle_idle_intermediate_atas`).
         for (mint, ata, program) in &intermediate_atas {
-            if skip_close_intermediate_mints.contains(mint) {
-                continue;
+            if proven_zero_intermediate_mints.contains(mint) {
+                ixs.push(build_close_token_account_for_program(
+                    *ata, payer, payer, *program,
+                ));
             }
-            ixs.push(build_close_token_account_for_program(
-                *ata, payer, payer, *program,
-            ));
         }
 
         // 6. Jito Tip at the end
