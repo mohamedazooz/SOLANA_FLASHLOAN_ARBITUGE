@@ -548,4 +548,21 @@ ACTUAL_RESULT: 2026-11-23 — both workflows YAML-valid; pins resolved from GitH
 PR: (this PR)
 REMAINING_RISKS: `production` GitHub Environment must be created by operator to activate the approval gate; SBOM artifact not yet generated (P3); StrictHostKeyChecking=accept-new is TOFU (documented, P3); live rollback path untested on the actual VPS (requires operator dispatch).
 NEXT_TASK: Mission §19 Phase 14 — Performance & reliability testing.
+
+TASK_ID: TASK-M14-001
+PHASE: Mission §19 — Performance & reliability testing (Phase 14)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Reproducible benchmark baseline (criterion + dual-ingest + live pre-flight) and reliability evidence report; no optimization claimed without comparable numbers.
+FILES: docs/active/performance/PERFORMANCE_REPORT.md, docs/active/performance/RELIABILITY_REPORT.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: cpmm_out (arb-math benches 16.97 ns), optimal_two_pool (194.15 ns criterion / 236 ns on live reserves), latency-bench movements 1–5, DualIngestShadow bench
+CURRENT_BEHAVIOR: local deterministic work (decode→quote→size→build→sign) ≈ 15 µs; network dominates (Helius 39 ms RTT; Jito Amsterdam 51.9 ms best vs Tokyo 719 ms).
+ROOT_CAUSE: N/A (measurement task). Perf/flamegraph not permitted in sandbox — recorded.
+REQUIRED_CHANGE: docs only; perf baseline recorded pre-optimization per mission §19.
+TEST_PLAN: cargo bench -p arb-math; cargo bench -p arb-ingest --bench dual_ingest_bench --features extra-ingest; 10 reliability suites executed (--release) 41/41 pass.
+ACCEPTANCE_CRITERIA: baseline recorded with exact commands; every pass claim backed by a fresh run; live RTL math parity via latency-bench (read-only, no broadcast).
+ACTUAL_RESULT: 2026-11-23 — bench + assertions listed in RELIABILITY_REPORT all pass; slot-budget conclusion: Frankfurt/Amsterdam colocation is the top latency lever.
+PR: (this PR)
+REMAINING_RISKS: live chaos testing + 24 h shadow soak remain operator actions; perf_event unavailable in sandbox.
+NEXT_TASK: Mission §20 Phase 16 — Final documentation rebuild + root README.
 ```
