@@ -128,6 +128,25 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+### DIAG-F-2026-11-23-N1: Opaque `DLMM quote failed` on Pool 3gUa73kg (9hjBLBrc Pair) (P2, CLOSED AS CLASSIFIED)
+
+- **Files**: `crates/arb-engine/src/dlmm_flash_arbitrage.rs` (gate order), `crates/arb-ingest/src/decoders.rs:745` (`function_type = data[35]`).
+- **Observed Behavior**: live rehearsal rejected hop A/B with the detail-less string `DLMM quote failed`; neither the operator nor the log could tell whether the pool was broken, stale, or intentionally unsupported.
+- **Root Cause (live evidence, rehearsal run)**: the pool's `StaticParameters.function_type == 2`. CORRECTED AFTER OFFICIAL-SOURCE VERIFICATION: the on-chain stored `function_type` is the `FunctionType` enum (`0 = Undetermined`, `1 = LiquidityMining`, `2 = LimitOrder` -- dlmm-sdk `commons/src/conversions/function_type.rs` `TryFrom<u8>`; TS SDK `ts-client/src/dlmm/constants/index.ts`). The meteora-invent `dlmm_config.jsonc` maps the CREATION-time `ConcreteFunctionType` argument (0 = LO, 1 = LM), a DIFFERENT enum -- the initial "value 2 undocumented" classification was wrong. `function_type = 2` = LimitOrder is a first-class pool type whose exact-in fill layers (MM -> processed -> open orders) were already implemented in `arb-math::dlmm::swap` mirroring the official `get_exact_in_fill_amount_result`. The real defects were: (1) the engine gate rejected first-class pools, and (2) the rejection was labeled with an opaque "DLMM quote failed".
+- **Correction (final)**: gate widened to reject only values outside the official `FunctionType` set (`function_type > 2` -> `UnsupportedFunctionType`); the opaque-string failure replaced by the `QuoteGateRejection` taxonomy through `quote_failure_reason()` (single-sourced via `quote_inner()`); the repo decoder's `support_limit_order` match (`2 => true, 1 => false, 0 => reward-mints-default`) is VERIFIED IDENTICAL to the official `is_support_limit_order` (commons `extensions/lb_pair.rs`) -- no decoder change needed. Rails-comment conflict resolved: the two enums were conflated in the old gate doc comment; the decoder comment was correct all along.
+- **Correction (superseded intermediate)**: an initial commit on this branch labeled the pool "undocumented and correctly rejected" and only fixed the taxonomy; official-source verification then showed the ON-CHAIN `FunctionType` set includes `2 = LimitOrder` (see Root Cause above), so the gate was subsequently widened to `> 2`. The `quote()` re-factoring into `quote_inner() -> Result<DlmmHopQuote, QuoteGateRejection>` with `quote_failure_reason()` as the single-sourced 13-variant taxonomy stands as first implemented.
+- **Regression Tests**: `quote_gate_labels_each_rejection_precisely`, `quote_gate_order_puts_pair_state_before_fee_params`, `quote_and_quote_failure_reason_never_diverge`, `evaluate_surfaces_the_precise_quote_gate_reason` (arb-engine lib).
+- **Status**: FIXED (taxonomy + gate widening, source-verified from dlmm-sdk Rust commons and TS SDK). Residual: live LimitOrder-pool fee-split parity (the LO-layer fee shares `split_fee`) affects fee attribution only, not the swap output; differential-quote LO fixtures with NON-zero limit-order layers are queued as a follow-up test phase.
+
+### DIAG-F-2026-11-23-N2: USDC Borrows Always Died As `FLASH_MINT_RESERVE_MISMATCH` (P2, CLOSED AS CONFIG WIRING)
+
+- **Files**: `crates/arb-sim/examples/full_path_rehearsal.rs`, `crates/arb-tx/src/flash/kamino.rs` (`select_kamino_flash_reserve`).
+- **Observed Behavior**: every USDC-denominated 2-pool evaluation failed with `FLASH_MINT_RESERVE_MISMATCH` because the session wired exactly one (WSOL) Kamino reserve while `flash_mint_matches_kamino_reserve` correctly fails closed on `flash_is_wsol != reserve_is_wsol`.
+- **Correction**: `select_flash_reserve_candidates_live` now sweeps+decodes ALL configured reserves; rehearsal builds a per-mint `HashMap<Pubkey, KaminoReserveCandidate>` for {env flash mint, WSOL, USDC}; every evaluation site (sweep loop, dry-run, executor assembly) applies the per-mint reserve override; mints with no selectable reserve are skipped with an explicit printed reason instead of failing per-quote. Engine semantics unchanged and still fail closed.
+- **Status**: FIXED (wiring). USDC routes now either evaluate with a correctly-wired USDC reserve or are skipped with an explicit reason; no net-profit accounting unit mixing is possible because the reserve mint must still equal the flash mint.
+
+---
+
 ### HFT-F-2026-11-22-N1: Yellowstone gRPC Compile-Ready but Not Decision-Wired (P3)
 
 - **File**: `crates/arb-ingest/Cargo.toml`, `crates/arb-ingest/src/dual_ingest.rs`, `crates/arb-ingest/src/quote_readiness.rs`

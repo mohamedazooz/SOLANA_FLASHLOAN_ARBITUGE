@@ -1154,6 +1154,7 @@ async fn test_matrix_14_restart_unresolved_dispatch_intent_recovery() {
             expected_net: Lamports(10_000_000),
             tip_lamports: Some(Lamports(10_000)),
             decision: "Simulate".into(),
+            ..Default::default()
         })
         .expect("record attempt");
 
@@ -1166,6 +1167,7 @@ async fn test_matrix_14_restart_unresolved_dispatch_intent_recovery() {
             dispatch_slot: slot.0 as i64,
             last_valid_block_height: Some(slot.0 as i64 + 100),
             resolved_status: None,
+            ..Default::default()
         })
         .expect("record intent");
 

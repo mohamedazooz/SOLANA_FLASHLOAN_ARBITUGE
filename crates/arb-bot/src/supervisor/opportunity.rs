@@ -1390,6 +1390,29 @@ impl Supervisor {
                 ),
                 tip_lamports: Some(tip),
                 decision: format!("{}", self.mode()),
+                // Economic reconstruction fields (base-mint raw unless stated).
+                // A `u64::MAX` flash fee means the fee was uncomputable and the
+                // render must already have failed closed — record `None` rather
+                // than a poison value.
+                borrow_amount: Some(opp.size_in.as_u64()),
+                flash_fee_raw: if flash_fee_raw == u64::MAX {
+                    None
+                } else {
+                    Some(flash_fee_raw)
+                },
+                priority_fee_lamports: if priority_fee_lamports == u64::MAX {
+                    None
+                } else {
+                    Some(priority_fee_lamports)
+                },
+                expected_output_raw: Some(opp.expected_out.as_u64()),
+                pool_ids: Some(
+                    opp.hops
+                        .iter()
+                        .map(|h| h.pool_id.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
             };
             // PIPE-11 fail-closed: an attempt that cannot be persisted has no
             // durable evidence and is unreconcilable (R12 doctrine) — refuse
