@@ -141,6 +141,7 @@ mod tests {
             dispatch_slot: 1_000,
             last_valid_block_height: None,
             resolved_status: None,
+            ..Default::default()
         }
     }
 
@@ -234,6 +235,7 @@ mod tests {
             expected_net: arb_types::Lamports(0),
             tip_lamports: None,
             decision: "dispatch".into(),
+            ..Default::default()
         };
         store.record_attempt(&parent(1)).unwrap();
         store.record_attempt(&parent(2)).unwrap();

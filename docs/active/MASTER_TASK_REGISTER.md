@@ -492,6 +492,46 @@ NEXT_TASK: Mission §17 Phase 12 — Database & storage (DATA_MODEL.md + DATABAS
 ```
 
 ```markdown
+TASK_ID: TASK-M12-001
+PHASE: Mission §17 — Database & Storage (Phase 12)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Audit the persistence layer against the mission §17 contract; extend execution records
+so every attempt carries enough data to reconstruct the economic result; register and close the
+gap findings.
+FILES: crates/arb-store/migrations/001_init.sql, crates/arb-store/migrations/001_postgres_init.sql,
+crates/arb-store/src/lib.rs, crates/arb-store/src/postgres_store.rs,
+crates/arb-bot/src/supervisor/opportunity.rs, crates/arb-bot/src/supervisor/dispatch.rs,
+crates/arb-bot/src/supervisor/recovery.rs, docs/active/architecture/DATA_MODEL.md,
+docs/active/operations/DATABASE_RECOVERY.md
+FUNCTIONS: Store::record_attempt, Store::record_outcome_detail (new), Store::set_dispatch_bundle_id (new), SqliteStore::evolve_schema, postg_store::row_to_attempt, opportunity record site
+CURRENT_BEHAVIOR (pre-fix): attempts stored only (id, slot, route_id, expected_net, tip, decision);
+outcomes stored no actual_output/failure_reason; dispatch_intents had no bundle id. Economic
+reconstruction (borrow, flash fee, priority fee, expected output, pool ids) was impossible from
+the durable store.
+ROOT_CAUSE: Schema evolved feature-by-feature without a reconstruction contract.
+REQUIRED_CHANGE: add attempts.{borrow_amount,flash_fee_raw,priority_fee_lamports,expected_output_raw,pool_ids},
+outcomes.{actual_output_raw,failure_reason}, dispatch_intents.bundle_id to both SQLite and
+PostgreSQL schemas with idempotent evolution; populate from the production record sites; keep
+NULL = unknown (never assume zero costs).
+TEST_PLAN: cargo test -p arb-store -p arb-bot --all-targets.
+ACCEPTANCE_CRITERIA: roundtrip of all economic fields on backends covered by tests; outcome
+detail persistence + provenance-guarded PnL intact; bundle id captured after provider acceptance
+(pre-send intent stays signature-keyed); legacy databases open and evolve without failure.
+ACTUAL_RESULT: 2026-11-23 — 15/15 arb-store tests including 4 new (economic roundtrip,
+outcome detail + PnL guard, bundle-id roundtrip, legacy evolution). FOUND + FIXED real legacy-DB
+bug in the same phase: INIT_SQL created idx_outcomes_pnl on outcomes(status, provenance, …)
+BEFORE evolve_schema added `provenance`, so any database predating provenance failed the entire
+open() migration chain; index creation moved into evolve_schema after the column-add step and is
+covered by schema_evolution_adds_economic_columns_to_legacy_db.
+REMAINING_RISKS: PostgresStore evolution not end-to-end tested in CI (no PG service in sandbox);
+outcomes.actual_output_raw/failure_reason are recorded but not yet fed by all dispatch
+reconciliation paths (wired to record_outcome_detail call sites is a later pass).
+PR: (this PR)
+NEXT_TASK: Mission §18 Phase 13 — CI/CD, Docker & VPS.
+```
+
+```markdown
 TASK_ID: TASK-M13-001
 PHASE: Mission §18 — CI/CD, Docker & VPS (Phase 13)
 PRIORITY: P1

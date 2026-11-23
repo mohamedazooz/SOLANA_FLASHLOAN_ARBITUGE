@@ -738,6 +738,9 @@ impl Supervisor {
                             dispatch_slot: current_slot.0 as i64,
                             last_valid_block_height,
                             resolved_status: None,
+                            // The provider id only exists after acceptance;
+                            // the crash-recovery trace stays signature-keyed.
+                            bundle_id: None,
                         })
                 {
                     error!(
@@ -798,6 +801,9 @@ impl Supervisor {
                         } else {
                             info!("🚀 Bundle accepted by Jito Block Engine: {}", bundle_id);
                         }
+                        // Durable provider acceptance id on the pre-send intent:
+                        // reconciliation by signature plus bundle identifier.
+                        let _ = self.store.set_dispatch_bundle_id(record.id, &bundle_id);
                         self.telegram
                             .alert_opportunity_with_telemetry(
                                 route_label,

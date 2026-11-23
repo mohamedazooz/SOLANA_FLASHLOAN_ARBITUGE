@@ -209,20 +209,76 @@ impl DlmmFlashArbPool {
     /// Requires legacy SPL mints until the complete epoch-aware Token-2022
     /// transfer-fee and transfer-hook context is part of the route snapshot.
     pub fn quote(&self, amount_in: u64, from: &MintId, to: &MintId) -> Option<DlmmHopQuote> {
+        self.quote_inner(amount_in, from, to).ok()
+    }
+
+    /// Exact gate reason behind a `None` from [`Self::quote`], single-sourced
+    /// through the same inner path so the taxonomy can never drift from the
+    /// gate order actually enforced.
+    pub fn quote_failure_reason(
+        &self,
+        amount_in: u64,
+        from: &MintId,
+        to: &MintId,
+    ) -> Option<QuoteGateRejection> {
+        self.quote_inner(amount_in, from, to).err()
+    }
+
+    fn quote_inner(
+        &self,
+        amount_in: u64,
+        from: &MintId,
+        to: &MintId,
+    ) -> Result<DlmmHopQuote, QuoteGateRejection> {
         if amount_in == 0 {
-            return None;
+            return Err(QuoteGateRejection::ZeroInput);
         }
-        let swap_for_y = self.swap_for_y(from, to)?;
-        let dlmm = self.state.dlmm.as_ref()?;
-        let fp = dlmm.params.as_ref()?;
-        if dlmm.status != 0
-            || fp.function_type > 1
-            || fp.collect_fee_mode > 1
-            || self.state.has_risky_token
-            || self.state.transfer_fee_bps != 0
-            || self.transfer_fee_bps != [0, 0]
-        {
-            return None;
+        let swap_for_y = self
+            .swap_for_y(from, to)
+            .ok_or(QuoteGateRejection::MintNotInPool)?;
+        let dlmm = self
+            .state
+            .dlmm
+            .as_ref()
+            .ok_or(QuoteGateRejection::MissingDlmmState)?;
+        let fp = dlmm
+            .params
+            .as_ref()
+            .ok_or(QuoteGateRejection::MissingFeeParams)?;
+        if dlmm.status != 0 {
+            return Err(QuoteGateRejection::PoolDisabled {
+                status: dlmm.status,
+            });
+        }
+        // Source-verified on-chain `StaticParameters.function_type` semantics
+        // (dlmm-sdk commons/src/conversions/function_type.rs TryFrom<u8>):
+        // 0 = Undetermined (system decides LO vs LM by reward initialization,
+        // which the decoder folds into `support_limit_order`),
+        // 1 = LiquidityMining, 2 = LimitOrder. Limit-order pools are a
+        // first-class pool type whose exact-in fill layers (market-maker ->
+        // processed -> open) are implemented in `arb-math::dlmm::swap` so
+        // them. Only values outside the official `TryFrom` set fail closed.
+        // NOTE: the creation-time `ConcreteFunctionType` argument (0 = LO,
+        // 1 = LM per meteora-invent dlmm_config.jsonc) is a DIFFERENT enum
+        // from the stored `FunctionType`; do not conflate them here.
+        if fp.function_type > 2 {
+            return Err(QuoteGateRejection::UnsupportedFunctionType {
+                function_type: fp.function_type,
+            });
+        }
+        if fp.collect_fee_mode > 1 {
+            return Err(QuoteGateRejection::UnsupportedCollectFeeMode {
+                collect_fee_mode: fp.collect_fee_mode,
+            });
+        }
+        if self.state.has_risky_token {
+            return Err(QuoteGateRejection::RiskyToken);
+        }
+        if self.state.transfer_fee_bps != 0 || self.transfer_fee_bps != [0, 0] {
+            return Err(QuoteGateRejection::TransferFee {
+                state_bps: self.state.transfer_fee_bps,
+                pool_bps: self.transfer_fee_bps,
+            });
         }
         // Do not approximate Token-2022 with BPS and an unbounded maximum fee.
         // This route accepts legacy SPL mints only until epoch-aware mint configs
@@ -256,10 +312,14 @@ impl DlmmFlashArbPool {
 
         let mut bins: Vec<MathDlmmBin> = Vec::with_capacity(dlmm.bins.len());
         for b in &dlmm.bins {
+            let amount_x =
+                u64::try_from(b.amount_x).map_err(|_| QuoteGateRejection::BinAmountOverflow)?;
+            let amount_y =
+                u64::try_from(b.amount_y).map_err(|_| QuoteGateRejection::BinAmountOverflow)?;
             bins.push(MathDlmmBin {
                 id: b.bin_id,
-                amount_x: u64::try_from(b.amount_x).ok()?,
-                amount_y: u64::try_from(b.amount_y).ok()?,
+                amount_x,
+                amount_y,
                 price_q64: 0,
                 open_order_amount: b.open_order_amount,
                 processed_order_remaining_amount: b.processed_order_remaining_amount,
@@ -267,23 +327,27 @@ impl DlmmFlashArbPool {
             });
         }
         if bins.is_empty() {
-            return None;
+            return Err(QuoteGateRejection::EmptyBinWindow);
         }
 
         // The volatility decay is intentionally *not* applied: the on-chain
         // `volatility_reference` is the freshest known value and skipping the
         // decay keeps the variable fee at its upper bound (conservative).
-        let quote = quote_dlmm_view(&pool_state, &bins, net_in, swap_for_y, None).ok()?;
+        let quote = quote_dlmm_view(&pool_state, &bins, net_in, swap_for_y, None).map_err(|e| {
+            QuoteGateRejection::QuoteEngineError {
+                detail: e.to_string(),
+            }
+        })?;
         if quote.amount_out == 0 {
-            return None;
+            return Err(QuoteGateRejection::ZeroOutput);
         }
 
         let amount_out = quote.amount_out;
         if amount_out == 0 {
-            return None;
+            return Err(QuoteGateRejection::ZeroOutput);
         }
 
-        Some(DlmmHopQuote {
+        Ok(DlmmHopQuote {
             amount_in,
             amount_out,
             gross_out: quote.amount_out,
@@ -294,6 +358,33 @@ impl DlmmFlashArbPool {
             swap_for_y,
         })
     }
+}
+
+/// Exact reason a hop quote is refused. `DlmmFlashArbPool::quote` collapses
+/// these into `None`; diagnostics and rejection details carry the specific
+/// variant instead of an opaque "quote failed".
+///
+/// `UnsupportedFunctionType` covers on-chain `StaticParameters.function_type`
+/// values outside the official `FunctionType` set
+/// {0 = Undetermined, 1 = LiquidityMining, 2 = LimitOrder}
+/// (dlmm-sdk commons/src/conversions/function_type.rs). Limit-order pools
+/// (2) are quoted through the exact-in limit-order fill layers in
+/// `arb-math::dlmm::swap`; only undocumented values > 2 fail closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuoteGateRejection {
+    ZeroInput,
+    MintNotInPool,
+    MissingDlmmState,
+    MissingFeeParams,
+    PoolDisabled { status: u8 },
+    UnsupportedFunctionType { function_type: u8 },
+    UnsupportedCollectFeeMode { collect_fee_mode: u8 },
+    RiskyToken,
+    TransferFee { state_bps: u16, pool_bps: [u16; 2] },
+    BinAmountOverflow,
+    EmptyBinWindow,
+    QuoteEngineError { detail: String },
+    ZeroOutput,
 }
 
 /// A two-pool route: flash mint -> mid mint -> flash mint.
@@ -612,12 +703,14 @@ impl DlmmFlashArbEvaluator<'_> {
             .pool_a
             .quote(borrow, &route.flash_mint, &route.mid_mint)
         else {
+            let detail = route
+                .pool_a
+                .quote_failure_reason(borrow, &route.flash_mint, &route.mid_mint)
+                .map(|r| format!("DLMM quote failed: {r:?}"))
+                .unwrap_or_else(|| "DLMM quote failed".into());
             return DlmmFlashArbEvaluation::reject(
                 borrow,
-                FlashArbRejection::QuoteFailed {
-                    hop: "A",
-                    detail: "DLMM quote failed".into(),
-                },
+                FlashArbRejection::QuoteFailed { hop: "A", detail },
             );
         };
         if quote_a.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
@@ -671,12 +764,14 @@ impl DlmmFlashArbEvaluator<'_> {
             .pool_b
             .quote(hop_a_min_out, &route.mid_mint, &route.flash_mint)
         else {
+            let detail = route
+                .pool_b
+                .quote_failure_reason(hop_a_min_out, &route.mid_mint, &route.flash_mint)
+                .map(|r| format!("DLMM quote failed: {r:?}"))
+                .unwrap_or_else(|| "DLMM quote failed".into());
             return DlmmFlashArbEvaluation::reject(
                 borrow,
-                FlashArbRejection::QuoteFailed {
-                    hop: "B",
-                    detail: "DLMM quote failed".into(),
-                },
+                FlashArbRejection::QuoteFailed { hop: "B", detail },
             );
         };
         if quote_b.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
@@ -1451,5 +1546,227 @@ mod tests {
         let other = MintId(Pubkey::new_unique());
         let pool = dlmm_pool(100, vec![(100, 1_000_000, 1_000_000)]);
         assert_eq!(pool.traversable_max_input(&other, &pool_y()), None);
+    }
+
+    fn gate_pool() -> DlmmFlashArbPool {
+        dlmm_pool(100, vec![(100, 10_000_000u128, 10_000_000u128)])
+    }
+
+    #[test]
+    fn quote_gate_labels_each_rejection_precisely() {
+        let (from, to) = (pool_x(), pool_y());
+
+        let pool = gate_pool();
+        assert_eq!(
+            pool.quote_failure_reason(0, &from, &to),
+            Some(QuoteGateRejection::ZeroInput)
+        );
+
+        let unknown = MintId(Pubkey::new_unique());
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &unknown, &to),
+            Some(QuoteGateRejection::MintNotInPool)
+        );
+
+        let mut pool = gate_pool();
+        pool.state.dlmm = None;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::MissingDlmmState)
+        );
+
+        let mut pool = gate_pool();
+        pool.state.dlmm.as_mut().unwrap().params = None;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::MissingFeeParams)
+        );
+
+        let mut pool = gate_pool();
+        pool.state.dlmm.as_mut().unwrap().status = 1;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::PoolDisabled { status: 1 })
+        );
+
+        let mut pool = gate_pool();
+        pool.state
+            .dlmm
+            .as_mut()
+            .unwrap()
+            .params
+            .as_mut()
+            .unwrap()
+            .function_type = 3;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::UnsupportedFunctionType { function_type: 3 })
+        );
+
+        let mut pool = gate_pool();
+        pool.state
+            .dlmm
+            .as_mut()
+            .unwrap()
+            .params
+            .as_mut()
+            .unwrap()
+            .collect_fee_mode = 2;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::UnsupportedCollectFeeMode {
+                collect_fee_mode: 2
+            })
+        );
+
+        let mut pool = gate_pool();
+        pool.state.has_risky_token = true;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::RiskyToken)
+        );
+
+        let mut pool = gate_pool();
+        pool.state.transfer_fee_bps = 30;
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::TransferFee {
+                state_bps: 30,
+                pool_bps: [0, 0]
+            })
+        );
+
+        let mut pool = gate_pool();
+        pool.state.dlmm.as_mut().unwrap().bins.clear();
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::EmptyBinWindow)
+        );
+    }
+
+    #[test]
+    fn quote_gate_order_puts_pair_state_before_fee_params() {
+        // status != 0 AND function_type = 3: the disabled status must win
+        // because it describes the pool globally, not the fee config.
+        let mut pool = gate_pool();
+        {
+            let dlmm = pool.state.dlmm.as_mut().unwrap();
+            dlmm.status = 7;
+            dlmm.params.as_mut().unwrap().function_type = 3;
+        }
+        let (from, to) = (pool_x(), pool_y());
+        assert_eq!(
+            pool.quote_failure_reason(1_000, &from, &to),
+            Some(QuoteGateRejection::PoolDisabled { status: 7 })
+        );
+    }
+
+    #[test]
+    fn function_type_2_limit_order_pool_quotes_like_the_official_sdk() {
+        // Source-verified: StaticParameters.function_type == 2 is
+        // FunctionType::LimitOrder (dlmm-sdk commons function_type.rs), a
+        // first-class pool type. With empty limit-order layers the official
+        // exact-in fill reduces to the market-maker-only path, so the quote
+        // must be identical to an Undetermined pool over the same bins.
+        let maker_only = gate_pool();
+        let mut lo_pool = gate_pool();
+        lo_pool
+            .state
+            .dlmm
+            .as_mut()
+            .unwrap()
+            .params
+            .as_mut()
+            .unwrap()
+            .function_type = 2;
+        let (from, to) = (pool_x(), pool_y());
+        for amount in [1u64, 5_000_000u64, 9_500_000u64] {
+            assert_eq!(
+                lo_pool.quote_failure_reason(amount, &from, &to),
+                maker_only.quote_failure_reason(amount, &from, &to),
+                "LO pool must gate identically to the maker-only pool"
+            );
+            let (Some(a), Some(b)) = (
+                lo_pool.quote(amount, &from, &to),
+                maker_only.quote(amount, &from, &to),
+            ) else {
+                continue;
+            };
+            assert_eq!(
+                a.amount_out, b.amount_out,
+                "LO layers empty => identical out"
+            );
+            assert_eq!(a.fee_amount, b.fee_amount);
+        }
+        assert!(
+            lo_pool.quote(5_000_000, &from, &to).is_some(),
+            "function_type=2 must quote, not be rejected"
+        );
+    }
+
+    #[test]
+    fn quote_and_quote_failure_reason_never_diverge() {
+        // Single-source drift test: whatever the inner gate returns, the
+        // Option-based quote() must be Some exactly when the taxonomy is None.
+        let (from, to) = (pool_x(), pool_y());
+
+        let pool = gate_pool();
+        let amount = 5_000_000u64;
+        assert_eq!(
+            pool.quote(amount, &from, &to).is_some(),
+            pool.quote_failure_reason(amount, &from, &to).is_none()
+        );
+        assert!(
+            pool.quote(amount, &from, &to).is_some(),
+            "deep single-bin happy path must still quote"
+        );
+
+        let mut disabled = gate_pool();
+        disabled.state.dlmm.as_mut().unwrap().status = 3;
+        assert!(disabled.quote(amount, &from, &to).is_none());
+        assert_eq!(
+            disabled.quote_failure_reason(amount, &from, &to),
+            Some(QuoteGateRejection::PoolDisabled { status: 3 })
+        );
+    }
+
+    #[test]
+    fn evaluate_surfaces_the_precise_quote_gate_reason() {
+        // Undocumented function_type values (e.g. 3) must surface
+        // UnsupportedFunctionType in the evaluation detail, not an opaque
+        // "DLMM quote failed". (The live 9hjBLBrc pair has function_type=2 =
+        // FunctionType::LimitOrder and is now supported, not rejected.)
+        let a = gate_pool();
+        let mut b = gate_pool();
+        b.state
+            .dlmm
+            .as_mut()
+            .unwrap()
+            .params
+            .as_mut()
+            .unwrap()
+            .function_type = 3;
+        let fm = pool_x();
+        let cfg = DlmmFlashArbConfig {
+            allowlist: DlmmPoolAllowlist::new(vec![a.pool_id, b.pool_id]),
+            flash_mint: fm,
+            ..Default::default()
+        };
+        let routes = enumerate_routes(&[a, b], &cfg.allowlist, fm);
+        let evaluator = DlmmFlashArbEvaluator { config: &cfg };
+        let mut found = false;
+        for route in &routes {
+            let e = evaluator.evaluate(route, cfg.min_borrow);
+            if let Some(FlashArbRejection::QuoteFailed { hop, detail }) = &e.rejection {
+                assert!(!detail.is_empty(), "detail must never be empty");
+                if (*hop == "A" || *hop == "B")
+                    && detail.contains("UnsupportedFunctionType")
+                    && detail.contains("function_type: 3")
+                {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "function_type=3 must surface in an evaluate detail");
     }
 }
