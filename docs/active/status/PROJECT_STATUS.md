@@ -12,7 +12,7 @@ The workspace is a Rust-2024 (pinned 1.99.1) HFT arbitrage engine around a Kamin
 |---|---|---|
 | Multi-DEX decode (Raydium v4/CPMM/CLMM, Orca Whirlpool, Meteora DLMM, PumpSwap, Kamino reserve) | `arb-ingest`, `arb-dex` | byte-level fixtures + real mainnet decode (4 ns/op) |
 | Integer quote math + optimal borrow (closed-form / GSS / split-routing) | `arb-math`, `arb-engine` | criterion 194 ns/op, exhaustive-differential tests |
-| Kamino flash-loan assembly (borrow→swaps→repay, single reserve, fee exact-formula) | `arb-tx/flash/*` | lifecycle + isolation suites; 0x1773 root-caused (pricing, not size) |
+| Kamino flash-loan assembly (borrow→swaps→repay, single reserve, fee exact-formula) | `arb-tx/flash/*` | lifecycle + isolation suites; 0x1773 classified (min-out enforcement revert, pricing-class) though its root cause REMAINS UNPROVEN — see `docs/active/audit/0X1773_ROOT_CAUSE_INVESTIGATION.md` |
 | V0/V1 compiler (SIMD-0385 context), 4096-byte ladder | `arb-tx` | v1 size ladder + property/fuzz tests; V1 simulate-accepted evidence 2026-11-13 |
 | Risk gates, kill switch, quota/failover, WS backpressure & reconnect | `arb-risk`, `arb-ingest` | 41 fault-injection assertions green |
 | Dispatch: SWQoS + Jito bundles, intent-before-send, reconciliation-never-blind-retry | `arb-bot/supervisor`, `arb-land` | cross-dex supervisor suites |
