@@ -1217,7 +1217,6 @@ mod tests {
             pools_count: 2,
             loan_size_sol: 12.5,
             net_sol: Some(-0.001),
-            ..Default::default()
         };
         let stats = DigestStats {
             slot: 312_456_789,
