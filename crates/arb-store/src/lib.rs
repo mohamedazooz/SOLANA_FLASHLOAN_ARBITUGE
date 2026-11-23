@@ -25,6 +25,36 @@ pub struct AttemptRecord {
     pub expected_net: Lamports,
     pub tip_lamports: Option<Lamports>,
     pub decision: String,
+    /// Borrow principal in base-mint raw atomic units. `None` = unknown.
+    pub borrow_amount: Option<u64>,
+    /// Provider flash-loan fee in base-mint raw units. `None` = unknown or
+    /// uncomputable (the caller must already have failed closed on `u64::MAX`).
+    pub flash_fee_raw: Option<u64>,
+    /// Priority fee in lamports (network cost, never base-mint units).
+    pub priority_fee_lamports: Option<u64>,
+    /// Expected route output in base-mint raw units (quote-time estimate).
+    pub expected_output_raw: Option<u64>,
+    /// Canonical ordered pool ids (`Pubkey` base58, comma-separated) so the
+    /// economic result is reconstructable without the original route object.
+    pub pool_ids: Option<String>,
+}
+
+impl Default for AttemptRecord {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            slot: 0,
+            route_id: String::new(),
+            expected_net: Lamports(0),
+            tip_lamports: None,
+            decision: String::new(),
+            borrow_amount: None,
+            flash_fee_raw: None,
+            priority_fee_lamports: None,
+            expected_output_raw: None,
+            pool_ids: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -72,7 +102,7 @@ impl NetProvenance {
 /// Durable record of one signed-transaction dispatch (R12). Written **before**
 /// the send so a crash/timeout leaves a recoverable trace: reconciliation
 /// checks the signature on-chain first and never blindly resubmits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DispatchIntentRecord {
     pub attempt_id: i64,
     /// Base58 transaction signature (extracted from the signed bytes).
@@ -88,6 +118,9 @@ pub struct DispatchIntentRecord {
     pub last_valid_block_height: Option<i64>,
     /// `pending` until reconciliation resolves it; then the on-chain outcome.
     pub resolved_status: Option<String>,
+    /// Provider bundle/acceptance id captured after transport acceptance;
+    /// `None` until then.
+    pub bundle_id: Option<String>,
 }
 
 pub trait Store: Send + Sync {
@@ -98,12 +131,32 @@ pub trait Store: Send + Sync {
         status: &str,
         realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
+    ) -> Result<()> {
+        self.record_outcome_detail(attempt_id, status, realized_net, provenance, None, None)
+    }
+    /// Outcome with post-execution reconstruction data. Stores must tolerate
+    /// `None` for both fields (legacy call sites) but never invent values.
+    fn record_outcome_detail(
+        &self,
+        attempt_id: i64,
+        status: &str,
+        realized_net: Option<SignedLamports>,
+        provenance: NetProvenance,
+        actual_output_raw: Option<u64>,
+        failure_reason: Option<&str>,
     ) -> Result<()>;
     fn get_attempt(&self, id: i64) -> Result<Option<AttemptRecord>>;
     fn get_recent_attempts(&self, limit: i64) -> Result<Vec<AttemptRecord>>;
     fn fills(&self, attempt_id: i64) -> Result<Vec<FillRecord>>;
     fn pnl_daily(&self, day: &str) -> Result<PnlDaily>;
     fn record_fill(&self, fill: &FillRecord) -> Result<()>;
+    /// Attach the provider bundle/acceptance id to a pending intent after the
+    /// transport confirms acceptance. Ignored for unknown attempt ids.
+    fn set_dispatch_bundle_id(&self, attempt_id: i64, bundle_id: &str) -> Result<()> {
+        let _ = (attempt_id, bundle_id);
+        Ok(())
+    }
+
     fn record_dispatch_intent(&self, intent: &DispatchIntentRecord) -> Result<()>;
     fn pending_dispatch_intents(&self, limit: i64) -> Result<Vec<DispatchIntentRecord>>;
     fn resolve_dispatch_intent(&self, attempt_id: i64, resolved_status: &str) -> Result<()>;
@@ -181,14 +234,45 @@ impl SqliteStore {
         })
     }
 
+    /// Map one attempts row (already typed by the caller) to an [`AttemptRecord`].
+    #[allow(clippy::too_many_arguments)]
+    fn row_to_attempt_full(
+        id: i64,
+        slot: i64,
+        route_id: String,
+        exp_net: i64,
+        tip: Option<i64>,
+        decision: String,
+        borrow_amount: Option<i64>,
+        flash_fee_raw: Option<i64>,
+        priority_fee_lamports: Option<i64>,
+        expected_output_raw: Option<i64>,
+        pool_ids: String,
+    ) -> AttemptRecord {
+        AttemptRecord {
+            id,
+            slot,
+            route_id,
+            expected_net: Lamports(exp_net.max(0) as u64),
+            tip_lamports: tip.map(|t| Lamports(t.max(0) as u64)),
+            decision,
+            borrow_amount: borrow_amount.map(|v| v.max(0) as u64),
+            flash_fee_raw: flash_fee_raw.map(|v| v.max(0) as u64),
+            priority_fee_lamports: priority_fee_lamports.map(|v| v.max(0) as u64),
+            expected_output_raw: expected_output_raw.map(|v| v.max(0) as u64),
+            pool_ids: Some(pool_ids),
+        }
+    }
+
     /// Safe schema evolution for databases created by older builds:
     /// `CREATE TABLE IF NOT EXISTS` cannot add columns to an existing table,
     /// so column presence is checked via `PRAGMA table_info` and missing
     /// columns are added idempotently.
     fn evolve_schema(conn: &Connection) -> Result<()> {
-        let has_column = |name: &str| -> Result<bool> {
+        let table_has_column = |table: &str, name: &str| -> Result<bool> {
+            let sql = format!("PRAGMA table_info({table})");
             let mut stmt = conn
-                .prepare("PRAGMA table_info(dispatch_intents)")
+                .prepare(&sql)
                 .map_err(|e| ArbError::Internal(e.to_string()))?;
             let mut rows = stmt
                 .query([])
@@ -201,29 +285,20 @@ impl SqliteStore {
             }
             Ok(false)
         };
-        if !has_column("last_valid_block_height")? {
+        if !table_has_column("dispatch_intents", "last_valid_block_height")? {
             conn.execute_batch(
                 "ALTER TABLE dispatch_intents ADD COLUMN last_valid_block_height INTEGER",
             )
             .map_err(|e| ArbError::Internal(format!("schema evolution failed: {e}")))?;
         }
+        if !table_has_column("dispatch_intents", "bundle_id")? {
+            conn.execute_batch("ALTER TABLE dispatch_intents ADD COLUMN bundle_id TEXT")
+                .map_err(|e| ArbError::Internal(format!("schema evolution failed: {e}")))?;
+        }
+
         // outcomes.provenance gates financial aggregation to on-chain-actual
         // figures only (see NetProvenance). Missing on older databases.
-        let has_provenance = |name: &str| -> Result<bool> {
-            let mut stmt = conn
-                .prepare("PRAGMA table_info(outcomes)")
-                .map_err(|e| ArbError::Internal(e.to_string()))?;
-            let mut rows = stmt
-                .query([])
-                .map_err(|e| ArbError::Internal(e.to_string()))?;
-            while let Some(row) = rows.next().map_err(|e| ArbError::Internal(e.to_string()))? {
-                let col: String = row.get(1).map_err(|e| ArbError::Internal(e.to_string()))?;
-                if col == name {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        };
+        let has_provenance = |name: &str| -> Result<bool> { table_has_column("outcomes", name) };
         if !has_provenance("provenance")? {
             conn.execute_batch("ALTER TABLE outcomes ADD COLUMN provenance TEXT")
                 .map_err(|e| ArbError::Internal(format!("schema evolution failed: {e}")))?;
@@ -234,6 +309,34 @@ impl SqliteStore {
                 "UPDATE outcomes SET provenance = 'estimated' WHERE provenance IS NULL",
             )
             .map_err(|e| ArbError::Internal(format!("provenance backfill failed: {e}")))?;
+        }
+        // Financial-aggregation index references `provenance`; it must be
+        // created AFTER the column-evolution step above, otherwise opening a
+        // legacy database that predates provenance fails the whole migration
+        // chain at INIT time (found by the legacy-economics test, 2026-11-23).
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_pnl\n                 ON outcomes(status, provenance, created_at);",
+        )
+        .map_err(|e| ArbError::Internal(format!("pnl index creation failed: {e}")))?;
+        for col in ["actual_output_raw INTEGER", "failure_reason TEXT"] {
+            let (name, decl) = col.split_once(' ').unwrap_or((col, ""));
+            if !table_has_column("outcomes", name)? {
+                conn.execute_batch(&format!("ALTER TABLE outcomes ADD COLUMN {name} {decl}"))
+                    .map_err(|e| ArbError::Internal(format!("schema evolution failed: {e}")))?;
+            }
+        }
+        for col in [
+            "borrow_amount INTEGER",
+            "flash_fee_raw INTEGER",
+            "priority_fee_lamports INTEGER",
+            "expected_output_raw INTEGER",
+            "pool_ids TEXT",
+        ] {
+            let (name, decl) = col.split_once(' ').unwrap_or((col, ""));
+            if !table_has_column("attempts", name)? {
+                conn.execute_batch(&format!("ALTER TABLE attempts ADD COLUMN {name} {decl}"))
+                    .map_err(|e| ArbError::Internal(format!("schema evolution failed: {e}")))?;
+            }
         }
         Ok(())
     }
@@ -248,9 +351,39 @@ impl Store for SqliteStore {
         // PIPE-11: plain INSERT — an id collision must fail loudly here so
         // the caller refuses to dispatch, not silently REPLACE durable
         // evidence of a previous attempt (outcomes/fills keep referencing it).
+        let borrow = record
+            .borrow_amount
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ArbError::InvalidInput("borrow_amount exceeds SQLite INTEGER range".into())
+            })?;
+        let flash_fee = record
+            .flash_fee_raw
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ArbError::InvalidInput("flash_fee_raw exceeds SQLite INTEGER range".into())
+            })?;
+        let priority_fee = record
+            .priority_fee_lamports
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ArbError::InvalidInput("priority_fee_lamports exceeds SQLite INTEGER range".into())
+            })?;
+        let expected_out = record
+            .expected_output_raw
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ArbError::InvalidInput("expected_output_raw exceeds SQLite INTEGER range".into())
+            })?;
         conn.execute(
-            "INSERT INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO attempts (id, slot, route_id, expected_net, tip_lamports, decision,
+                                   borrow_amount, flash_fee_raw, priority_fee_lamports,
+                                   expected_output_raw, pool_ids)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 record.id,
                 record.slot,
@@ -258,26 +391,48 @@ impl Store for SqliteStore {
                 record.expected_net.as_u64() as i64,
                 record.tip_lamports.map(|t| t.as_u64() as i64),
                 record.decision,
+                borrow,
+                flash_fee,
+                priority_fee,
+                expected_out,
+                record.pool_ids,
             ],
         )
         .map_err(|e| ArbError::Internal(format!("Failed to insert attempt: {e}")))?;
         Ok(())
     }
 
-    fn record_outcome(
+    fn record_outcome_detail(
         &self,
         attempt_id: i64,
         status: &str,
         realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
+        actual_output_raw: Option<u64>,
+        failure_reason: Option<&str>,
     ) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        let actual = actual_output_raw
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| {
+                ArbError::InvalidInput("actual_output_raw exceeds SQLite INTEGER range".into())
+            })?;
         conn.execute(
-            "INSERT INTO outcomes (attempt_id, status, realized_net, provenance) VALUES (?1, ?2, ?3, ?4)",
-            params![attempt_id, status, realized_net.map(|n| n.as_i64()), provenance.as_str()],
+            "INSERT INTO outcomes (attempt_id, status, realized_net, provenance,
+                                   actual_output_raw, failure_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                attempt_id,
+                status,
+                realized_net.map(|n| n.as_i64()),
+                provenance.as_str(),
+                actual,
+                failure_reason,
+            ],
         )
         .map_err(|e| ArbError::Internal(format!("Failed to insert outcome: {e}")))?;
         Ok(())
@@ -289,7 +444,12 @@ impl Store for SqliteStore {
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         let mut stmt = conn
-            .prepare("SELECT id, slot, route_id, expected_net, tip_lamports, decision FROM attempts WHERE id = ?1")
+            .prepare(
+                "SELECT id, slot, route_id, expected_net, tip_lamports, decision,
+                        borrow_amount, flash_fee_raw, priority_fee_lamports,
+                        expected_output_raw, pool_ids
+                 FROM attempts WHERE id = ?1",
+            )
             .map_err(|e| ArbError::Internal(e.to_string()))?;
 
         let mut rows = stmt
@@ -299,14 +459,19 @@ impl Store for SqliteStore {
         if let Some(row) = rows.next().map_err(|e| ArbError::Internal(e.to_string()))? {
             let exp_net: i64 = row.get(3).unwrap_or(0);
             let tip: Option<i64> = row.get(4).unwrap_or(None);
-            Ok(Some(AttemptRecord {
-                id: row.get(0).unwrap_or(0),
-                slot: row.get(1).unwrap_or(0),
-                route_id: row.get(2).unwrap_or_default(),
-                expected_net: Lamports(exp_net.max(0) as u64),
-                tip_lamports: tip.map(|t| Lamports(t.max(0) as u64)),
-                decision: row.get(5).unwrap_or_default(),
-            }))
+            Ok(Some(Self::row_to_attempt_full(
+                row.get(0).unwrap_or(0),
+                row.get(1).unwrap_or(0),
+                row.get(2).unwrap_or_default(),
+                exp_net,
+                tip,
+                row.get(5).unwrap_or_default(),
+                row.get(6).ok().flatten(),
+                row.get(7).ok().flatten(),
+                row.get(8).ok().flatten(),
+                row.get(9).ok().flatten(),
+                row.get(10).unwrap_or_default(),
+            )))
         } else {
             Ok(None)
         }
@@ -318,7 +483,12 @@ impl Store for SqliteStore {
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         let mut stmt = conn
-            .prepare("SELECT id, slot, route_id, expected_net, tip_lamports, decision FROM attempts ORDER BY id DESC LIMIT ?1")
+            .prepare(
+                "SELECT id, slot, route_id, expected_net, tip_lamports, decision,
+                        borrow_amount, flash_fee_raw, priority_fee_lamports,
+                        expected_output_raw, pool_ids
+                 FROM attempts ORDER BY id DESC LIMIT ?1",
+            )
             .map_err(|e| ArbError::Internal(e.to_string()))?;
 
         let rows = stmt
@@ -332,6 +502,11 @@ impl Store for SqliteStore {
                     expected_net: Lamports(exp_net.max(0) as u64),
                     tip_lamports: tip.map(|t| Lamports(t.max(0) as u64)),
                     decision: row.get(5)?,
+                    borrow_amount: row.get(6).ok().flatten().map(|v: i64| v.max(0) as u64),
+                    flash_fee_raw: row.get(7).ok().flatten().map(|v: i64| v.max(0) as u64),
+                    priority_fee_lamports: row.get(8).ok().flatten().map(|v: i64| v.max(0) as u64),
+                    expected_output_raw: row.get(9).ok().flatten().map(|v: i64| v.max(0) as u64),
+                    pool_ids: row.get(10).ok().flatten(),
                 })
             })
             .map_err(|e| ArbError::Internal(e.to_string()))?;
@@ -441,17 +616,31 @@ impl Store for SqliteStore {
             .lock()
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         conn.execute(
-            "INSERT OR REPLACE INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, last_valid_block_height, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+            "INSERT OR REPLACE INTO dispatch_intents (attempt_id, signature, provider, dispatch_slot, last_valid_block_height, status, bundle_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
             params![
                 intent.attempt_id,
                 intent.signature,
                 intent.provider,
                 intent.dispatch_slot,
                 intent.last_valid_block_height,
+                intent.bundle_id,
             ],
         )
         .map_err(|e| ArbError::Internal(format!("Failed to insert dispatch intent: {e}")))?;
+        Ok(())
+    }
+
+    fn set_dispatch_bundle_id(&self, attempt_id: i64, bundle_id: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
+        conn.execute(
+            "UPDATE dispatch_intents SET bundle_id = ?2 WHERE attempt_id = ?1 AND status = 'pending'",
+            params![attempt_id, bundle_id],
+        )
+        .map_err(|e| ArbError::Internal(format!("Failed to set dispatch bundle id: {e}")))?;
         Ok(())
     }
 
@@ -462,7 +651,7 @@ impl Store for SqliteStore {
             .map_err(|_| ArbError::Internal("Database lock poisoned".into()))?;
         let mut stmt = conn
             .prepare(
-                "SELECT attempt_id, signature, provider, dispatch_slot, last_valid_block_height FROM dispatch_intents
+                "SELECT attempt_id, signature, provider, dispatch_slot, last_valid_block_height, bundle_id FROM dispatch_intents
                  WHERE status = 'pending' ORDER BY attempt_id ASC LIMIT ?1",
             )
             .map_err(|e| ArbError::Internal(e.to_string()))?;
@@ -475,6 +664,7 @@ impl Store for SqliteStore {
                     dispatch_slot: row.get(3).unwrap_or(0),
                     last_valid_block_height: row.get(4).ok().flatten(),
                     resolved_status: None,
+                    bundle_id: row.get(5).ok().flatten(),
                 })
             })
             .map_err(|e| ArbError::Internal(e.to_string()))?;
@@ -966,12 +1156,14 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    fn record_outcome(
+    fn record_outcome_detail(
         &self,
         attempt_id: i64,
         status: &str,
         realized_net: Option<SignedLamports>,
         provenance: NetProvenance,
+        _actual_output_raw: Option<u64>,
+        _failure_reason: Option<&str>,
     ) -> Result<()> {
         let mut o = self
             .outcomes
@@ -1134,6 +1326,7 @@ mod tests {
             expected_net: Lamports(0),
             tip_lamports: None,
             decision: "dispatch".into(),
+            ..Default::default()
         };
         store.record_attempt(&r).expect("invariant");
         store
@@ -1144,6 +1337,7 @@ mod tests {
                 dispatch_slot: 1_000,
                 last_valid_block_height: Some(1_100),
                 resolved_status: None,
+                ..Default::default()
             })
             .expect("evolved column must accept writes");
         let pending = store.pending_dispatch_intents(10).expect("invariant");
@@ -1162,6 +1356,7 @@ mod tests {
             expected_net: Lamports(50_000),
             tip_lamports: Some(Lamports(10_000)),
             decision: "sent".into(),
+            ..Default::default()
         };
         store.record_attempt(&r).expect("invariant");
         let fetched = store
@@ -1203,6 +1398,7 @@ mod tests {
                 expected_net: Lamports(50_000),
                 tip_lamports: Some(Lamports(61_000)),
                 decision: "sent".into(),
+                ..Default::default()
             })
             .unwrap();
         store
@@ -1237,6 +1433,7 @@ mod tests {
                     expected_net: Lamports(1),
                     tip_lamports: None,
                     decision: "sent".into(),
+                    ..Default::default()
                 })
                 .unwrap();
         }
@@ -1297,6 +1494,7 @@ mod tests {
             expected_net: Lamports(expected),
             tip_lamports: None,
             decision: "sent".into(),
+            ..Default::default()
         };
         store.record_attempt(&mk(111)).expect("first write ok");
         assert!(
@@ -1339,6 +1537,7 @@ mod tests {
             dispatch_slot: 700,
             last_valid_block_height: Some(1_000 + id),
             resolved_status: None,
+            ..Default::default()
         };
 
         for store in [
@@ -1355,6 +1554,7 @@ mod tests {
                         expected_net: Lamports(1),
                         tip_lamports: None,
                         decision: "sent".into(),
+                        ..Default::default()
                     })
                     .unwrap();
             }
@@ -1390,6 +1590,7 @@ mod tests {
                     expected_net: Lamports(1),
                     tip_lamports: None,
                     decision: "sent".into(),
+                    ..Default::default()
                 })
                 .unwrap();
             store
@@ -1415,6 +1616,7 @@ mod tests {
                     dispatch_slot: 700,
                     last_valid_block_height: None,
                     resolved_status: None,
+                    ..Default::default()
                 })
                 .unwrap();
         }
@@ -1441,5 +1643,177 @@ mod tests {
         assert!(store.get_attempt(1).unwrap().is_none());
         assert!(store.get_attempt(2).unwrap().is_some());
         assert_eq!(store.prune_older_than_days(30).unwrap(), 0);
+    }
+
+    #[test]
+    fn attempt_economic_fields_roundtrip_through_sqlite() {
+        let store = SqliteStore::open_in_memory().expect("invariant");
+        let record = AttemptRecord {
+            id: 900,
+            slot: 12_000,
+            route_id: "route-ec".into(),
+            expected_net: Lamports(123_456),
+            tip_lamports: Some(Lamports(42_000)),
+            decision: "test".into(),
+            borrow_amount: Some(777_000),
+            flash_fee_raw: Some(1_234),
+            priority_fee_lamports: Some(9_876),
+            expected_output_raw: Some(999_111),
+            pool_ids: Some("PoolA,PoolB".into()),
+        };
+        store.record_attempt(&record).expect("revenues");
+        let got = store.get_attempt(900).expect("read").expect("row");
+        assert_eq!(got.borrow_amount, record.borrow_amount);
+        assert_eq!(got.flash_fee_raw, record.flash_fee_raw);
+        assert_eq!(got.priority_fee_lamports, record.priority_fee_lamports);
+        assert_eq!(got.expected_output_raw, record.expected_output_raw);
+        assert_eq!(got.pool_ids, record.pool_ids);
+        assert_eq!(got.expected_net, record.expected_net);
+        let recent = store.get_recent_attempts(5).expect("recent");
+        assert!(
+            recent
+                .iter()
+                .any(|a| a.id == 900 && a.borrow_amount == record.borrow_amount)
+        );
+    }
+
+    #[test]
+    fn outcome_detail_persists_actual_output_and_failure_reason() {
+        let store = SqliteStore::open_in_memory().expect("invariant");
+        store
+            .record_attempt(&AttemptRecord {
+                id: 901,
+                slot: 1,
+                route_id: "r".into(),
+                expected_net: Lamports(5_000),
+                tip_lamports: None,
+                decision: "test".into(),
+                ..Default::default()
+            })
+            .expect("attempt");
+        store
+            .record_outcome_detail(
+                901,
+                "landed",
+                Some(SignedLamports::new(-1_000)),
+                NetProvenance::Actual,
+                Some(4_444),
+                Some("slippage_floor_refused"),
+            )
+            .expect("outcome detail");
+        let (actual, reason): (Option<i64>, Option<String>) = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT actual_output_raw, failure_reason FROM outcomes WHERE attempt_id = 901",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("row")
+        };
+        assert_eq!(actual, Some(4_444));
+        assert_eq!(reason.as_deref(), Some("slippage_floor_refused"));
+        // Provenance filtering must still hold: realized PnL only from actual.
+        let pnl = store.pnl_daily("all").expect("pnl");
+        assert_eq!(pnl.realized_net.as_i64(), -1_000);
+        assert_eq!(pnl.attempts, 1);
+        assert_eq!(pnl.successful, 1);
+    }
+
+    #[test]
+    fn dispatch_bundle_id_roundtrip_through_pending_intents() {
+        let store = SqliteStore::open_in_memory().expect("invariant");
+        store
+            .record_attempt(&AttemptRecord {
+                id: 902,
+                slot: 2,
+                route_id: "r".into(),
+                expected_net: Lamports(1),
+                tip_lamports: None,
+                decision: "test".into(),
+                ..Default::default()
+            })
+            .expect("attempt");
+        store
+            .record_dispatch_intent(&DispatchIntentRecord {
+                attempt_id: 902,
+                signature: "sig902".into(),
+                provider: "jito".into(),
+                dispatch_slot: 2,
+                last_valid_block_height: Some(90),
+                resolved_status: None,
+                bundle_id: None,
+            })
+            .expect("intent");
+        let before = store.pending_dispatch_intents(5).expect("pending");
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].bundle_id, None);
+        store
+            .set_dispatch_bundle_id(902, "bundle-123")
+            .expect("set bundle");
+        let after = store.pending_dispatch_intents(5).expect("pending");
+        assert_eq!(after[0].bundle_id.as_deref(), Some("bundle-123"));
+        // Resolution keeps the audit trail intact.
+        store
+            .resolve_dispatch_intent(902, "landed")
+            .expect("resolve");
+        assert!(
+            store
+                .pending_dispatch_intents(5)
+                .expect("pending")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn schema_evolution_adds_economic_columns_to_legacy_db() {
+        let path = std::env::temp_dir().join(format!(
+            "arb_evolve_econ_{}.db",
+            std::process::id() as u64
+                + std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+        ));
+        {
+            let conn = Connection::open(&path).expect("raw open");
+            conn.execute_batch(
+                "CREATE TABLE attempts (
+                    id INTEGER PRIMARY KEY,
+                    slot INTEGER NOT NULL,
+                    route_id TEXT NOT NULL,
+                    expected_net INTEGER NOT NULL,
+                    tip_lamports INTEGER,
+                    decision TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE outcomes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    attempt_id INTEGER NOT NULL REFERENCES attempts(id),
+                    status TEXT NOT NULL,
+                    realized_net INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );",
+            )
+            .expect("legacy schema");
+        }
+        let store = SqliteStore::open(path.to_str().unwrap()).expect("open legacy db");
+        let record = AttemptRecord {
+            id: 5,
+            slot: 10,
+            route_id: "legacy".into(),
+            expected_net: Lamports(9),
+            tip_lamports: None,
+            decision: "test".into(),
+            borrow_amount: Some(111),
+            flash_fee_raw: Some(2),
+            priority_fee_lamports: Some(3),
+            expected_output_raw: Some(120),
+            pool_ids: Some("P1".into()),
+        };
+        store.record_attempt(&record).expect("write on legacy db");
+        let got = store.get_attempt(5).expect("read").expect("row");
+        assert_eq!(got.borrow_amount, Some(111));
+        assert_eq!(got.expected_output_raw, Some(120));
+        let _ = std::fs::remove_file(&path);
     }
 }

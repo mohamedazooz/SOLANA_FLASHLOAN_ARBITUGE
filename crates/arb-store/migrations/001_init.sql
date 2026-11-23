@@ -6,7 +6,15 @@ CREATE TABLE IF NOT EXISTS attempts (
     expected_net INTEGER NOT NULL,
     tip_lamports INTEGER,
     decision TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Economic reconstruction fields (base-mint raw atomic units unless the
+    -- column name states lamports). NULL = unknown; financial aggregation
+    -- must tolerate NULLs and never assume zero costs.
+    borrow_amount INTEGER,
+    flash_fee_raw INTEGER,
+    priority_fee_lamports INTEGER,
+    expected_output_raw INTEGER,
+    pool_ids TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -15,10 +23,12 @@ CREATE TABLE IF NOT EXISTS outcomes (
     status TEXT NOT NULL,
     realized_net INTEGER,
     provenance TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Post-execution reconstruction: actual route output (base-mint raw) and
+    -- the machine-readable failure reason for errored outcomes.
+    actual_output_raw INTEGER,
+    failure_reason TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_outcomes_pnl
-    ON outcomes(status, provenance, created_at);
 
 CREATE TABLE IF NOT EXISTS fills (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,6 +57,9 @@ CREATE TABLE IF NOT EXISTS dispatch_intents (
     status TEXT NOT NULL DEFAULT 'pending',
     resolved_status TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP
+    resolved_at TIMESTAMP,
+    -- Jito bundle id (or SWQoS acceptance id) returned by the provider after
+    -- acceptance; NULL until the transport confirms acceptance.
+    bundle_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_intents_status ON dispatch_intents(status);
