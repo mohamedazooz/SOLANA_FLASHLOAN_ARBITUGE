@@ -1042,11 +1042,13 @@ impl Supervisor {
                 self.risk_gate.maybe_reset_periodic();
             }
 
-            // Periodic 1-minute Performance & Rejections Digest to Telegram and local disk
+            // Periodic Performance & Rejections Digest to Telegram and local disk.
+            // Default 300 s (5 min) matches .env.example; override via env.
             let digest_interval_secs = std::env::var("TELEGRAM_DIGEST_INTERVAL_SECS")
                 .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60);
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|s| *s >= 5)
+                .unwrap_or(300);
             if last_snapshot_digest.elapsed() >= Duration::from_secs(digest_interval_secs) {
                 self.emit_five_minute_digest(current_slot.0).await;
                 self.emit_market_snapshot(current_slot.0, false).await;
