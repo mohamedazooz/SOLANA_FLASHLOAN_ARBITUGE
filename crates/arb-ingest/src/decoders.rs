@@ -398,12 +398,29 @@ pub fn dlmm_bin_array_indices(active_id: i32, bin_step: u16) -> Vec<i64> {
     let index = bin_id_to_bin_array_index(active_id);
     let step = u32::from(bin_step.max(1));
     let bins_traversed = 500u32 / step + 1;
-    let arrays_needed = (bins_traversed as i64).div_euclid(METEORA_BINS_PER_ARRAY) + 1;
+    // Canonical span derivation (matches `arb_tx::plan_bin_arrays`):
+    // hydration must cover the worst-case traversal in BOTH directions from
+    // the active bin. `bins_traversed` counts bin ADVANCES beyond the active
+    // bin (quote `bins_crossed` semantics), so the covered arrays are every
+    // array index containing a bin in `[active - t, active + t]`. The old
+    // `div_euclid(70) + 1` count under-provisioned whenever the walk crossed
+    // an array boundary (e.g. active 20, step 10 → bins ±50 → arrays {-1,0,1},
+    // not just {0}). Floor (Euclidean) division handles negative bin ids.
+    let walk = bins_traversed as i32;
+    let low_index = bin_id_to_bin_array_index(active_id.saturating_sub(walk));
+    let high_index = bin_id_to_bin_array_index(active_id.saturating_add(walk));
     let mut seen = std::collections::BTreeSet::new();
-    (0..arrays_needed)
-        .flat_map(|i| [index - i, index + i])
-        .filter(move |i| seen.insert(*i))
-        .collect()
+    let mut out = Vec::new();
+    // Emit arrays ordered by distance from the active array (active first,
+    // then alternating lower/higher) so hydration prioritizes the active one.
+    for offset in 0..=(high_index - low_index) {
+        for idx in [index - offset, index + offset] {
+            if (low_index..=high_index).contains(&idx) && seen.insert(idx) {
+                out.push(idx);
+            }
+        }
+    }
+    out
 }
 
 pub fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32, bin_step: u16) -> Vec<Pubkey> {
@@ -622,10 +639,30 @@ mod fee_decoder_tests {
         d[56..64].copy_from_slice(&123u64.to_le_bytes());
         d[64..72].copy_from_slice(&456u64.to_le_bytes());
         let bins = decode_bin_array(&d);
-        assert_eq!(bins.len(), 1);
+        // ALL 70 bins are preserved; the other 69 are existing-but-empty bins.
+        assert_eq!(bins.len(), 70);
         assert_eq!(bins[0].bin_id, 140); // index 2 * 70 + 0
         assert_eq!(bins[0].amount_x, 123);
         assert_eq!(bins[0].amount_y, 456);
+        assert!(bins[1..].iter().all(|b| b.amount_x == 0 && b.amount_y == 0));
+        assert_eq!(bins[1].bin_id, 141);
+        assert_eq!(bins[69].bin_id, 209);
+    }
+
+    #[test]
+    fn decode_bin_array_preserves_all_seventy_bins_with_limit_order_fields() {
+        let mut d = vec![0u8; METEORA_BIN_ARRAY_HEADER + 70 * METEORA_BIN_SIZE];
+        d[8..16].copy_from_slice(&0i64.to_le_bytes());
+        // A bin carrying ONLY limit-order fields (curve liquidity zero) is a
+        // bin, not an empty record: keep its identity.
+        let off = METEORA_BIN_ARRAY_HEADER + 5 * METEORA_BIN_SIZE;
+        d[off + 112..off + 120].copy_from_slice(&77u64.to_le_bytes()); // open_order
+        d[off + 140] = 1; // ask side
+        let bins = decode_bin_array(&d);
+        assert_eq!(bins.len(), 70);
+        let b5 = bins.iter().find(|b| b.bin_id == 5).expect("bin 5 kept");
+        assert_eq!(b5.open_order_amount, 77);
+        assert!(b5.limit_order_ask_side);
     }
 
     #[test]
@@ -836,13 +873,13 @@ pub fn decode_bin_array(data: &[u8]) -> Vec<arb_types::DlmmBin> {
         let processed_order_remaining_amount =
             u64::from_le_bytes(data[off + 128..off + 136].try_into().unwrap_or([0; 8]));
         let limit_order_ask_side = data.get(off + 140).copied().unwrap_or(0) != 0;
-        if amount_x == 0
-            && amount_y == 0
-            && open_order_amount == 0
-            && processed_order_remaining_amount == 0
-        {
-            continue;
-        }
+        // Preserve ALL 70 bins of the array, including zero-liquidity bins.
+        // The quote engine advances through an empty bin by consuming zero
+        // liquidity and stepping to the next bin; a dropped active bin made
+        // the quote fail with `BinNotFound(active_bin_id)` and a dropped
+        // interior bin made multi-bin traversal fail even though the loaded
+        // coverage was sufficient. An empty bin is an existing-but-unfilled
+        // bin, never an absent one.
         out.push(arb_types::DlmmBin {
             bin_id: base_bin_id.saturating_add(i as i32),
             amount_x: amount_x as u128,

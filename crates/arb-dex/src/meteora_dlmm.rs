@@ -107,13 +107,29 @@ impl MeteoraDlmmPool {
     pub fn bin_array_pdas_around_active(&self) -> Vec<Pubkey> {
         let idx = Self::bin_id_to_array_index(self.active_id);
         let step = u32::from(self.bin_step.max(1));
-        let bins_traversed = 500u32 / step + 1;
-        let arrays_needed = (bins_traversed as i64).div_euclid(METEORA_BINS_PER_BIN_ARRAY) + 1;
-        let mut indices = Vec::with_capacity(arrays_needed as usize * 2);
-        indices.push(idx);
-        for i in 1..arrays_needed {
-            indices.push(idx - i);
-            indices.push(idx + i);
+        let bins_traversed = 500i64 / i64::from(step) + 1;
+        // Canonical span derivation (matches `arb_tx::plan_bin_arrays`): cover
+        // every array index that contains a bin in the worst-case traversal
+        // range `[active - t, active + t]` — `bins_traversed` counts bin
+        // ADVANCES beyond the active bin (quote `bins_crossed` semantics), so
+        // the walk reaches exactly `t` bins on each side. Floor (Euclidean)
+        // division handles negative bin ids; boundary crossings are covered
+        // exactly instead of by the old under-provisioning count formula.
+        let walk = bins_traversed;
+        let low_index = Self::bin_id_to_array_index(
+            i32::try_from(i64::from(self.active_id).saturating_sub(walk)).unwrap_or(self.active_id),
+        );
+        let high_index = Self::bin_id_to_array_index(
+            i32::try_from(i64::from(self.active_id).saturating_add(walk)).unwrap_or(self.active_id),
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        let mut indices = Vec::with_capacity(((high_index - low_index + 1) * 2) as usize);
+        for offset in 0..=(high_index - low_index) {
+            for i in [idx - offset, idx + offset] {
+                if (low_index..=high_index).contains(&i) && seen.insert(i) {
+                    indices.push(i);
+                }
+            }
         }
         indices
             .into_iter()

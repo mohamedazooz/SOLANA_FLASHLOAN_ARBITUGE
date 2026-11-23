@@ -239,14 +239,45 @@ pub fn derive_directional_bin_arrays(
 ) -> Result<DirectionalBinArrays, DlmmError> {
     let active_index = active_bin_array_index(active_id);
 
-    // Determine direction increment: X→Y goes lower, Y→X goes higher.
+    // Direction increment: X→Y walks to lower bin ids (arrays decrease),
+    // Y→X walks to higher bin ids (arrays increase).
     let increment: i64 = match direction {
         SwapDirection::XtoY => -1,
         SwapDirection::YtoX => 1,
     };
 
-    // Number of arrays needed to cover the bins traversed, starting from the active array.
-    let arrays_needed = (bins_traversed as i64).div_euclid(MAX_BIN_PER_ARRAY) + 1;
+    // Canonical span semantics (F-02, shared with `plan_bin_arrays`):
+    // `bins_traversed` is the quote engine's `bins_crossed` — the number of
+    // bin ADVANCES beyond the active bin. A swap fully consumed inside the
+    // active bin has `bins_traversed == 0` and requires only the active bin's
+    // array. The execution account set must therefore cover
+    // `active_id .. active_id + increment * bins_traversed` INCLUSIVE. Walking
+    // only `bins_traversed - 1` under-provisioned exactly one bin whenever the
+    // last advance lands on an array boundary (e.g. active 0, X→Y, 1 crossed
+    // reaches bin -1 in array -1, where the old formula returned only [0]).
+    let walk: i32 = i32::try_from(bins_traversed).map_err(|_| DlmmError::TooManyBinArrays {
+        needed: usize::MAX,
+        max: 4,
+    })?;
+    let last_bin_id = if increment < 0 {
+        active_id
+            .checked_sub(walk)
+            .ok_or(DlmmError::TooManyBinArrays {
+                needed: usize::MAX,
+                max: 4,
+            })?
+    } else {
+        active_id
+            .checked_add(walk)
+            .ok_or(DlmmError::TooManyBinArrays {
+                needed: usize::MAX,
+                max: 4,
+            })?
+    };
+    let end_index = active_bin_array_index(last_bin_id);
+
+    // Number of arrays needed to cover the traversed bin span.
+    let arrays_needed = (end_index - active_index).abs() + 1;
 
     // Policy: max four Bin Arrays per leg (up to 280 bins).
     if arrays_needed > 4 {
@@ -263,7 +294,8 @@ pub fn derive_directional_bin_arrays(
     indices.push(active_index);
     pdas.push(derive_bin_array_pda(lb_pair, active_index));
 
-    // Add adjacent arrays in the swap direction.
+    // Add adjacent arrays in the swap direction, up to and including the array
+    // holding the last visited bin.
     for i in 1..arrays_needed {
         let idx = active_index + increment * i;
         indices.push(idx);
@@ -490,6 +522,8 @@ pub enum DlmmError {
     TooManyBinArrays { needed: usize, max: usize },
     #[error("Invalid account configuration: {0}")]
     InvalidConfiguration(String),
+    #[error("traversal depth must be at least one bin")]
+    ZeroTraversalDepth,
 }
 
 #[cfg(test)]
