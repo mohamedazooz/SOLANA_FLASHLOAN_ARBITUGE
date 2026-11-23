@@ -504,7 +504,7 @@ ROOT_CAUSE: N/A (measurement task). Perf/flamegraph not permitted in sandbox —
 REQUIRED_CHANGE: docs only; perf baseline recorded pre-optimization per mission §19.
 TEST_PLAN: cargo bench -p arb-math; cargo bench -p arb-ingest --bench dual_ingest_bench --features extra-ingest; 10 reliability suites executed (--release) 41/41 pass.
 ACCEPTANCE_CRITERIA: baseline recorded with exact commands; every pass claim backed by a fresh run; live RTL math parity via latency-bench (read-only, no broadcast).
-ACTUAL_RESULT: 2026-11-23 — bench + 41041Assertions listed in RELIABILITY_REPORT all pass; slot-budget conclusion: Frankfurt/Amsterdam colocation is the top latency lever.
+ACTUAL_RESULT: 2026-11-23 — bench + assertions listed in RELIABILITY_REPORT all pass; slot-budget conclusion: Frankfurt/Amsterdam colocation is the top latency lever.
 PR: (this PR)
 REMAINING_RISKS: live chaos testing + 24 h shadow soak remain operator actions; perf_event unavailable in sandbox.
 NEXT_TASK: Mission §20 Phase 16 — Final documentation rebuild + root README.
