@@ -1,8 +1,9 @@
 name: Deploy to VPS
 
-# Deployment is manual via workflow_dispatch until mainnet PR approval & full test validation.
+# Deployments are ALWAYS manual (workflow_dispatch) and ALWAYS pinned to the
+# exact commit being reviewed. Nothing deploys automatically on merge.
 on:
-  workflow_dispatch:
+  workflow_dispatch
 
 permissions:
   contents: read
@@ -13,61 +14,88 @@ concurrency:
 
 jobs:
   deploy:
-    name: "🚀 Build & Deploy arb-bot on VPS"
+    name: "🚀 Build & Deploy arb-bot on VPS (pinned commit)"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    # Approval separation: create the `production` GitHub Environment with
+    # required reviewers (Settings > Environments > production). No run can
+    # reach the VPS until a reviewer approves that environment gate.
+    environment: production
 
     steps:
-      - name: "🔑 Connect & Deploy over SSH"
+      - name: "🔒 Connect over SSH and deploy pinned commit"
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          PIN_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [ -n "${VPS_HOST}" ] && [ -n "${VPS_USER}" ] || {
             echo "::error::Set VPS_HOST and VPS_USER secrets (Settings > Secrets > Actions)"
             exit 1
           }
+          [ -n "${VPS_SSH_KEY}" ] || { echo "::error::Set VPS_SSH_KEY secret"; exit 1; }
           PORT="${VPS_PORT:-22}"
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          SSH="ssh -i ~/.ssh/deploy_key -p ${PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
 
-          if [ -n "${VPS_SSH_KEY}" ]; then
-            printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/deploy_key
-            chmod 600 ~/.ssh/deploy_key
-            SSH="ssh -i ~/.ssh/deploy_key -p ${PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes"
-          else
-            echo "::error::Set VPS_SSH_KEY secret"; exit 1
-          fi
-
-          $SSH "${VPS_USER}@${VPS_HOST}" bash -s << 'REMOTE'
+          # Deploy ONLY the dispatched commit: fetch main, verify the pinned SHA
+          # is reachable from it, then detach exactly onto it. A concurrent
+          # merge after dispatch can therefore never change what is built.
+          # Previous commit is stashed and used by the automatic rollback below.
+          $SSH "${VPS_USER}@${VPS_HOST}" bash -s -- "${PIN_SHA}" << 'REMOTE'
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           . "$HOME/.cargo/env" 2>/dev/null || true
 
+          PIN_SHA="$1"
           REPO_DIR="$HOME/SOLANA_FLASHLOAN_ARBITUGE"
           cd "$REPO_DIR"
 
-          echo "==> [1/4] Pulling latest code from main"
+          echo "==> [1/6] Fetching and pinning commit $PIN_SHA"
+          git stash push --include-untracked --quiet . 2>/dev/null || true
           git fetch origin main
-          git reset --hard origin/main
-          COMMIT=$(git rev-parse --short HEAD)
-          echo "==> Deploying commit: $COMMIT"
+          git rev-parse --quiet --verify "${PIN_SHA}^{commit}" >/dev/null || true
+          git merge-base --is-ancestor "${PIN_SHA}" origin/main \
+            || { echo "::error::Pinned commit ${PIN_SHA} is not on origin/main — refusing to deploy"; exit 1; }
+          PREV_SHA="$(git rev-parse HEAD)"
+          echo "${PREV_SHA}" > .deploy_previous_commit
+          git checkout --detach "${PIN_SHA}"
+          echo "==> Deploying commit: $(git rev-parse --short HEAD) (previous: $(echo "${PREV_SHA}" | cut -c1-7))"
 
-          echo "==> [2/4] Cleaning old target artifacts > 7 days"
+          echo "==> [2/6] Cleaning old target artifacts > 7 days"
           find target/release/deps -name '*.d' -mtime +7 -delete 2>/dev/null || true
 
-          echo "==> [3/4] Release build (mode controlled by env: ARB_MODE / ARB_LIVE)"
-          cargo build --release --locked -p arb-bot --bin arb-bot
-          echo "==> Build SUCCESS: $(./target/release/arb-bot --version 2>/dev/null || echo 'binary ready')"
+          rollback() {
+            echo "::error::Health check failed — rolling back to ${PREV_SHA}"
+            git checkout --detach "${PREV_SHA}"
+            cargo build --release --locked -p arb-bot --bin arb-bot
+            if systemctl list-unit-files arb-bot.service &>/dev/null; then
+              sudo systemctl restart arb-bot
+            else
+              pkill -f 'target/release/arb-bot' 2>/dev/null || true
+              sleep 2
+              mkdir -p logs data/warm
+              set -a; . ./.env; set +a
+              nohup ./target/release/arb-bot >> logs/arb_live.log 2>&1 &
+            fi
+            sleep 5
+            echo "==> Rollback attempted on previous commit ${PREV_SHA} — investigate before next deploy"
+          }
 
-          echo "==> [4/4] Restart bot"
+          echo "==> [3/6] Release build (--locked, reproducible against Cargo.lock)"
+          if ! cargo build --release --locked -p arb-bot --bin arb-bot; then
+            rollback
+            exit 1
+          fi
+
+          echo "==> [4/6] Restart"
           if systemctl list-unit-files arb-bot.service &>/dev/null; then
             sudo systemctl restart arb-bot
-            sleep 5
-            systemctl is-active arb-bot && echo '==> arb-bot service: ACTIVE'
-            journalctl -u arb-bot -n 10 --no-pager || true
           else
             pkill -f 'target/release/arb-bot' 2>/dev/null || true
             sleep 2
@@ -75,17 +103,27 @@ jobs:
             set -a; . ./.env; set +a
             nohup ./target/release/arb-bot >> logs/arb_live.log 2>&1 &
             BOT_PID=$!
-            sleep 5
-            if kill -0 $BOT_PID 2>/dev/null; then
-              echo "==> arb-bot running (PID: $BOT_PID)"
-            else
-              echo "::error::Bot failed to start — check logs/arb_live.log"
-              tail -20 logs/arb_live.log || true
+          fi
+          sleep 5
+
+          echo "==> [5/6] Health check"
+          if systemctl list-unit-files arb-bot.service &>/dev/null; then
+            if ! systemctl is-active --quiet arb-bot; then
+              journalctl -u arb-bot -n 20 --no-pager || true
+              rollback
               exit 1
             fi
+            systemctl is-active arb-bot && echo '==> arb-bot service: ACTIVE'
+          else
+            if ! kill -0 "${BOT_PID}" 2>/dev/null; then
+              tail -20 logs/arb_live.log || true
+              rollback
+              exit 1
+            fi
+            echo "==> arb-bot running (PID: ${BOT_PID})"
           fi
 
-          echo "==> Deploy complete! Commit: $COMMIT"
+          echo "==> [6/6] Deploy complete. Commit: $(git rev-parse --short HEAD)"
           echo "==> Disk usage:"
           df -h / | tail -1
           REMOTE
