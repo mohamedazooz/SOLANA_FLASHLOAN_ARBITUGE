@@ -563,6 +563,79 @@ pub fn calculate_net_profit_raw(
     lamports_to_base_mint_rate: u128,
     lamports_to_base_rate_denom: u128,
 ) -> Result<u64> {
+    // F-07 compatibility contract: costs exceeding gross keep failing the
+    // unsigned surface (never a plausible profit) — a negative net converts
+    // into `ArbError::Overflow` exactly as before. Callers that need the
+    // precise signed shortfall for telemetry use
+    // `calculate_net_profit_raw_signed`.
+    let net = signed_net_profit(
+        final_received_raw,
+        borrow_principal_raw,
+        flash_fee_raw,
+        dex_fees_raw,
+        transfer_fees_raw,
+        account_creation_cost_raw,
+        other_verified_costs_raw,
+        network_fee_lamports,
+        priority_fee_lamports,
+        jito_tip_lamports,
+        lamports_to_base_mint_rate,
+        lamports_to_base_rate_denom,
+    )?;
+    u64::try_from(net).map_err(|_| ArbError::Overflow)
+}
+
+/// F-07: signed variant of [`calculate_net_profit_raw`]. Identical cost
+/// ledger — every lamport-denominated cost converted at the SAME rate — but
+/// a NEGATIVE net is returned as a signed i128 instead of collapsing into
+/// `ArbError::Overflow`, so audit/telemetry records preserve the precise
+/// shortfall instead of hiding it behind an error.
+#[allow(clippy::too_many_arguments)]
+pub fn calculate_net_profit_raw_signed(
+    final_received_raw: u64,
+    borrow_principal_raw: u64,
+    flash_fee_raw: u64,
+    dex_fees_raw: u64,
+    transfer_fees_raw: u64,
+    account_creation_cost_raw: u64,
+    other_verified_costs_raw: u64,
+    network_fee_lamports: Lamports,
+    priority_fee_lamports: Lamports,
+    jito_tip_lamports: Lamports,
+    lamports_to_base_mint_rate: u128,
+    lamports_to_base_rate_denom: u128,
+) -> Result<i128> {
+    signed_net_profit(
+        final_received_raw,
+        borrow_principal_raw,
+        flash_fee_raw,
+        dex_fees_raw,
+        transfer_fees_raw,
+        account_creation_cost_raw,
+        other_verified_costs_raw,
+        network_fee_lamports,
+        priority_fee_lamports,
+        jito_tip_lamports,
+        lamports_to_base_mint_rate,
+        lamports_to_base_rate_denom,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn signed_net_profit(
+    final_received_raw: u64,
+    borrow_principal_raw: u64,
+    flash_fee_raw: u64,
+    dex_fees_raw: u64,
+    transfer_fees_raw: u64,
+    account_creation_cost_raw: u64,
+    other_verified_costs_raw: u64,
+    network_fee_lamports: Lamports,
+    priority_fee_lamports: Lamports,
+    jito_tip_lamports: Lamports,
+    lamports_to_base_mint_rate: u128,
+    lamports_to_base_rate_denom: u128,
+) -> Result<i128> {
     let network_raw = lamports_to_base_raw(
         network_fee_lamports,
         lamports_to_base_mint_rate,
@@ -579,30 +652,31 @@ pub fn calculate_net_profit_raw(
         lamports_to_base_rate_denom,
     )?;
 
-    let final_received = U256::from(final_received_raw);
-    let borrow = U256::from(borrow_principal_raw);
-    let flash_fee = U256::from(flash_fee_raw);
-    let dex_fees = U256::from(dex_fees_raw);
-    let transfer_fees = U256::from(transfer_fees_raw);
-    let acct_cost = U256::from(account_creation_cost_raw);
-    let other_costs = U256::from(other_verified_costs_raw);
+    // Signed ledger in i128: u64 components convert losslessly, and the
+    // lamport-denominated costs (u128 after rate conversion) are admitted
+    // only when they fit i128 — an absurd rate conversion fails closed
+    // instead of wrapping. No saturation, no wraparound, no swallowed zero.
+    let cost = |raw: u128| -> Result<i128> { i128::try_from(raw).map_err(|_| ArbError::Overflow) };
 
-    let gross = final_received
-        .checked_sub(borrow)
+    let gross = (final_received_raw as i128)
+        .checked_sub(borrow_principal_raw as i128)
         .ok_or(ArbError::Overflow)?;
 
-    let total_costs = flash_fee
-        .checked_add(dex_fees)
-        .and_then(|v| v.checked_add(transfer_fees))
-        .and_then(|v| v.checked_add(U256::from(acct_cost)))
-        .and_then(|v| v.checked_add(U256::from(other_costs)))
-        .and_then(|v| v.checked_add(U256::from(network_raw)))
-        .and_then(|v| v.checked_add(U256::from(priority_raw)))
-        .and_then(|v| v.checked_add(U256::from(tip_raw)))
+    let network = cost(network_raw)?;
+    let priority = cost(priority_raw)?;
+    let tip = cost(tip_raw)?;
+
+    let total_costs = (flash_fee_raw as i128)
+        .checked_add(dex_fees_raw as i128)
+        .and_then(|v| v.checked_add(transfer_fees_raw as i128))
+        .and_then(|v| v.checked_add(account_creation_cost_raw as i128))
+        .and_then(|v| v.checked_add(other_verified_costs_raw as i128))
+        .and_then(|v| v.checked_add(network))
+        .and_then(|v| v.checked_add(priority))
+        .and_then(|v| v.checked_add(tip))
         .ok_or(ArbError::Overflow)?;
 
-    let net = gross.checked_sub(total_costs).ok_or(ArbError::Overflow)?;
-    u64::try_from(net).map_err(|_| ArbError::Overflow)
+    gross.checked_sub(total_costs).ok_or(ArbError::Overflow)
 }
 
 /// Calculate the Kamino flash loan fee in base-mint raw units from the raw
@@ -1170,5 +1244,105 @@ mod tests {
         let fee_10sol = kamino_flash_fee_checked(ten_sol, mainnet_wsol_sf).unwrap();
         // 10e9 * 1e-5 = 100_000 lamports
         assert_eq!(fee_10sol, 100_000);
+    }
+}
+
+#[cfg(test)]
+mod signed_net_profit_tests {
+    use super::*;
+    use arb_types::Lamports;
+
+    /// F-07 helper: fixed 1:1 WSOL rate so lamport costs are raw units.
+    fn np_signed(
+        final_received: u64,
+        borrow: u64,
+        flash_fee: u64,
+        priority: u64,
+        tip: u64,
+    ) -> i128 {
+        calculate_net_profit_raw_signed(
+            final_received,
+            borrow,
+            flash_fee,
+            0, // dex fees are already inside the quoted output
+            0,
+            0,
+            0,
+            Lamports(0),
+            Lamports(priority),
+            Lamports(tip),
+            1,
+            1,
+        )
+        .expect("signed net is always computable when the ledger fits")
+    }
+
+    /// Positive net: signed and unsigned surfaces agree.
+    #[test]
+    fn signed_matches_unsigned_for_profitable_route() {
+        let unsigned = calculate_net_profit_raw(
+            1_050_000_000,
+            1_000_000_000,
+            1_000,
+            0,
+            0,
+            0,
+            0,
+            Lamports(0),
+            Lamports(2_000),
+            Lamports(3_000),
+            1,
+            1,
+        )
+        .unwrap();
+        let signed = np_signed(1_050_000_000, 1_000_000_000, 1_000, 2_000, 3_000);
+        assert_eq!(unsigned as i128, signed);
+        assert_eq!(
+            signed, 49_994_000,
+            "gross 50M - flash 1k - priority 2k - tip 3k"
+        );
+    }
+
+    /// Zero net is representable.
+    #[test]
+    fn zero_net_is_representable() {
+        let signed = np_signed(1_000_000_000, 1_000_000_000, 0, 0, 0);
+        assert_eq!(signed, 0);
+    }
+
+    /// F-07 core: costs exceeding gross are preserved as the PRECISE negative
+    /// value; the unsigned compatibility surface still fails closed.
+    #[test]
+    fn shortfall_is_preserved_not_collapsed() {
+        // gross = 4M; flash fee 5M + priority 1k + tip 1k => net = -1_002_000.
+        let signed = np_signed(1_004_000_000, 1_000_000_000, 5_000_000, 1_000, 1_000);
+        assert_eq!(
+            signed, -1_002_000,
+            "exact shortfall must survive for monitoring"
+        );
+
+        let unsigned = calculate_net_profit_raw(
+            1_004_000_000,
+            1_000_000_000,
+            5_000_000,
+            0,
+            0,
+            0,
+            0,
+            Lamports(0),
+            Lamports(1_000),
+            Lamports(1_000),
+            1,
+            1,
+        );
+        assert!(unsigned.is_err(), "eligibility gate must still reject");
+    }
+
+    /// Large shortfalls (deeply unprofitable routes) stay exact in i128.
+    #[test]
+    fn large_shortfall_stays_exact() {
+        let signed = np_signed(0, u64::MAX, u64::MAX - 1, 0, 0);
+        // gross = -u64::MAX; costs = u64::MAX - 1 -> net = -(2*u64::MAX - 1)
+        assert_eq!(signed, -2 * (u64::MAX as i128) + 1);
     }
 }
