@@ -490,3 +490,22 @@ PR: (this PR)
 REMAINING_RISKS: Redis-outage dedup behavior untested at integration level; in-memory rate limiter per-instance (N2).
 NEXT_TASK: Mission §17 Phase 12 — Database & storage (DATA_MODEL.md + DATABASE_RECOVERY.md).
 ```
+
+```markdown
+TASK_ID: TASK-M16-001
+PHASE: Mission §20/§15–16 — Final documentation rebuild + root README (Phases 15–16)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Complete the ACTIVE status/operations tree (PROJECT_STATUS, PRODUCTION_READINESS, KNOWN_ISSUES, SHADOW_MODE_RUNBOOK, INCIDENT_RESPONSE) and rebuild the root README to the 30-section mission spec with only verified claims.
+FILES: docs/active/status/{PROJECT_STATUS,PRODUCTION_READINESS,KNOWN_ISSUES}.md, docs/active/operations/{SHADOW_MODE_RUNBOOK,INCIDENT_RESPONSE}.md, README.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: N/A (documentation + verification-of-links task; every referenced path existence-checked).
+CURRENT_BEHAVIOR (before): status/ contained only INACTIVE_FEATURES; no readiness verdict, no incident response, README predated phases 13–14 evidence and carried 3 broken doc links.
+ROOT_CAUSE: N/A.
+REQUIRED_CHANGE: docs only; verdict SIMULATION READY / SHADOW REQUIRED pending 24h operator soak recorded explicitly; README restructured 1–30 with link-existence validation.
+TEST_PLAN: file-existence check of all referenced docs; content cross-check against register entries and fresh phase-14 measurements.
+ACCEPTANCE_CRITERIA: no empty placeholder docs; ACTIVE/INACTIVE/ARCHIVE intact; every claim labeled to evidence; README distinguishes Quote vs Execution / Shadow vs Live / simulated vs mainnet-verified.
+ACTUAL_RESULT: 2026-11-23 — all 5 new docs written from register evidence; README rebuilt (30 sections), 3 stale links corrected to real files after existence check.
+PR: (this PR)
+REMAINING_RISKS: 24h live shadow soak + production-environment approval gate remain operator actions (recorded in PRODUCTION_READINESS.md).
+NEXT_TASK: Mission §22 Phase 17 — shadow soak authorization request (operator).
+```
