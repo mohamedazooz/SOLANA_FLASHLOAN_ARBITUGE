@@ -349,7 +349,7 @@ pub fn assemble_cross_dex_opportunity(
     kamino_params: &KaminoFlashParams,
     flash_loan_fee_sf: u64,
     min_profit_raw: TokenAmount,
-    skip_close_intermediate_mints: &[Pubkey],
+    proven_zero_intermediate_mints: &[Pubkey],
 ) -> crate::Result<Vec<CompiledInstruction>> {
     // 1. Validate cross-DEX invariants
     let platforms = validate_cross_dex_opportunity(opportunity)
@@ -366,7 +366,7 @@ pub fn assemble_cross_dex_opportunity(
         kamino_params,
         flash_loan_fee_sf,
         min_profit_raw,
-        skip_close_intermediate_mints,
+        proven_zero_intermediate_mints,
     )?;
 
     tracing::info!(
