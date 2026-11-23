@@ -171,11 +171,16 @@ fn f01_intermediate_ata_is_never_closed_by_default_supervisor_path() {
     let ixs = assemble_supervisor_path(payer, &opp, &[]);
 
     // 2 CU + WSOL ATA create + intermediate ATA create + borrow + 2 swaps
-    // + profit guard + repay + tip. NO CloseAccount.
+    // + repay + tip. No executor guard or CloseAccount instruction.
     assert_eq!(
         ixs.len(),
-        10,
-        "residual-safe lifecycle: no close instruction"
+        9,
+        "residual-safe lifecycle: no executor dependency or close instruction"
+    );
+    let executor_program = Pubkey::from_str(arb_tx::ARB_EXECUTOR_PROGRAM_ID_STR).unwrap();
+    assert!(
+        ixs.iter().all(|ix| ix.program_id != executor_program),
+        "generic flash assembly must not reference the unverified executor deployment"
     );
     assert!(
         !ixs.iter().any(is_close_account),
@@ -186,6 +191,11 @@ fn f01_intermediate_ata_is_never_closed_by_default_supervisor_path() {
     );
 
     // The intermediate ATA is still created idempotently (route needs it).
+    assert_eq!(
+        &ixs[0].data[1..5],
+        &400_000u32.to_le_bytes(),
+        "effective CU limit is encoded exactly once"
+    );
     let ata_program = Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap();
     assert_eq!(
         ixs[3].program_id, ata_program,
@@ -194,7 +204,40 @@ fn f01_intermediate_ata_is_never_closed_by_default_supervisor_path() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: the cross-dex Supervisor entry (assemble_cross_dex_opportunity)
+// Test 2: the non-flash/native assembler follows the same residual-safe rule.
+// ---------------------------------------------------------------------------
+#[test]
+fn f01_plain_arbitrage_builder_never_closes_intermediate_ata_atomically() {
+    let payer = Pubkey::new_unique();
+    let meme = Pubkey::new_from_array([89; 32]);
+    let opp = make_intermediate_route(meme);
+
+    let ixs = TxBuilder::assemble_arbitrage(
+        payer,
+        Pubkey::new_unique(),
+        Lamports(10_000),
+        400_000,
+        1_000,
+        &opp,
+        TokenAmount(30_000),
+    )
+    .expect("plain arbitrage assembly should accept the closed WSOL route");
+
+    assert!(
+        !ixs.iter().any(is_close_account),
+        "non-flash atomic route must not close a potentially non-empty intermediate ATA"
+    );
+    assert!(
+        ixs.iter().any(|ix| {
+            ix.program_id
+                == Pubkey::from_str("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL").unwrap()
+        }),
+        "intermediate ATA must still be created idempotently"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: the cross-dex Supervisor entry (assemble_cross_dex_opportunity)
 // delegates to the same residual-safe builder.
 // ---------------------------------------------------------------------------
 #[test]

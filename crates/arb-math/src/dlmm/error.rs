@@ -19,6 +19,8 @@ pub enum DlmmError {
     #[error("insufficient liquidity in pool: required {required}, provided {available}")]
     InsufficientLiquidity { required: u64, available: u64 },
 
+    #[error("swap bin traversal {attempted} exceeds protocol maximum {limit}")]
+    TooManyBins { attempted: u32, limit: u32 },
     #[error("zero input amount")]
     ZeroInput,
 
@@ -29,6 +31,19 @@ pub enum DlmmError {
     InvalidCollectFeeMode(u8),
 }
 
+/// Validate whether a mathematically valid quote can be represented by one
+/// executable Meteora DLMM swap instruction. Kept separate from quote math so
+/// SDK differential tests can still compare deep theoretical quotes.
+pub fn validate_swap_depth(bins_crossed: u32) -> Result<(), DlmmError> {
+    let limit = arb_constants::METEORA_MAX_BINS_PER_SWAP;
+    if bins_crossed > limit {
+        return Err(DlmmError::TooManyBins {
+            attempted: bins_crossed,
+            limit,
+        });
+    }
+    Ok(())
+}
 /// Explicit CollectFeeMode enum, named after the official Meteora IDL field
 /// `StaticParameters.collect_fee_mode` (IDL constant values 0 and 1).
 ///

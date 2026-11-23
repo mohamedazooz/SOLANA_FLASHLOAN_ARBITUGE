@@ -53,6 +53,7 @@ impl std::str::FromStr for BotMode {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "observe" => Ok(BotMode::Observe),
+            "shadow" => Ok(BotMode::Simulate),
             "analyze" => Ok(BotMode::Analyze),
             "simulate" => Ok(BotMode::Simulate),
             "paper" | "paper_trade" | "papertrade" => Ok(BotMode::PaperTrade),
@@ -60,7 +61,7 @@ impl std::str::FromStr for BotMode {
             "canary" => Ok(BotMode::Canary),
             other => {
                 anyhow::bail!(
-                    "Unknown bot mode: '{other}'. Allowed modes: observe, analyze, simulate, paper_trade, live, canary"
+                    "Unknown bot mode: '{other}'. Allowed modes: shadow, observe, analyze, simulate, paper_trade, live, canary"
                 )
             }
         }
@@ -82,10 +83,19 @@ impl std::fmt::Display for BotMode {
 
 /// LIVE execution is opt-in only when `ARB_LIVE` or `LIVE_TRADING` is explicitly truthy.
 pub fn live_execution_enabled() -> bool {
-    is_truthy_flag(std::env::var("ARB_LIVE").ok().as_deref())
-        || is_truthy_flag(std::env::var("LIVE_TRADING").ok().as_deref())
-        || is_truthy_flag(std::env::var("LIVE").ok().as_deref())
-        || is_truthy_flag(std::env::var("EXECUTE_LIVE").ok().as_deref())
+    // A shadow-only build must never arm live dispatch, even through a runtime
+    // control command or an accidentally inherited environment variable.
+    #[cfg(feature = "shadow-only")]
+    {
+        false
+    }
+    #[cfg(not(feature = "shadow-only"))]
+    {
+        is_truthy_flag(std::env::var("ARB_LIVE").ok().as_deref())
+            || is_truthy_flag(std::env::var("LIVE_TRADING").ok().as_deref())
+            || is_truthy_flag(std::env::var("LIVE").ok().as_deref())
+            || is_truthy_flag(std::env::var("EXECUTE_LIVE").ok().as_deref())
+    }
 }
 
 pub fn is_truthy_flag(value: Option<&str>) -> bool {
@@ -93,4 +103,21 @@ pub fn is_truthy_flag(value: Option<&str>) -> bool {
         value.map(str::trim),
         Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
     )
+}
+
+#[cfg(test)]
+mod bot_mode_tests {
+    use super::BotMode;
+
+    #[test]
+    fn shadow_mode_alias_selects_non_broadcast_simulation() {
+        assert_eq!("shadow".parse::<BotMode>().unwrap(), BotMode::Simulate);
+        assert_eq!(" SHADOW ".parse::<BotMode>().unwrap(), BotMode::Simulate);
+    }
+
+    #[cfg(feature = "shadow-only")]
+    #[test]
+    fn shadow_only_build_cannot_arm_live_execution() {
+        assert!(!super::live_execution_enabled());
+    }
 }

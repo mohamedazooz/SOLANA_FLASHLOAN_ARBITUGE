@@ -1,15 +1,40 @@
 # Program Deployment Verification — Phase 6 (Mission §11)
 
-- **Date:** 2026-11-22 · Verdict: **NOT VERIFIED — no deployment evidence exists that this session can confirm.**
+- **Verification date:** 2026-11-23
+- **Verdict:** **NOT DEPLOYED / NOT VERIFIED.** The active generic flash route no longer depends on this program; the separate CPI executor remains inactive.
 
-| Item | Finding |
+## Read-only Mainnet probe
+
+The configured RPC endpoints in the local `.env` were used for read-only `getAccountInfo` requests. No endpoint URL, API key, wallet secret, or private key is recorded in this report.
+
+| Item | Result |
 |---|---|
-| Declared program ID | `ArbExec1111111111111111111111111111111111111` (`arb-constants:658`) — **vanity placeholder**, tests only assert it parses as a Pubkey |
-| On-chain identity (source↔binary) | **NOT VERIFIED.** No RPC lookup was performed in this session; no deployed build was observed; upgrade-authority status unknown. |
-| Deploy/upgrade performed | **None.** Safety rules forbid deployment/upgrade without explicit operator authorization; none was given. |
-| Binary build | SBF toolchain absent this session → `cargo-build-sbf` NOT RUN (earlier sessions built hash-pinned blobs per repo logs; treat as stale until re-run) |
-| What must be true before ANY live routing uses the on-chain executor | (1) A real deployment identity (program ID + upgrade authority) recorded; (2) `arb-constants` updated to the real place; (3) cross-check test asserting the constant equals the deployed ID and that the deployed binary buffer hash matches a locally built SBF workspace binary; (4) upgrade authority under a multisig or cold key, documented. |
+| Program ID used by Rust client | `ArbExec1111111111111111111111111111111111111` |
+| Mainnet account lookup | `null` from SOLANA_RPC_PRIMARY, HELIUS_RPC_URL, SOLAMI_RPC_URL, SHYFT_RPC_URL and NODIT_SOLANA_RPC |
+| Alternative ID previously in Anchor.toml | `9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m` — rejected by RPCs as an invalid-size/base58 public key |
+| Anchor.toml after local correction | Matches the Rust build-time placeholder above in all cluster sections; this is configuration consistency only, **not deployment evidence** |
+| Deployed executable / owner / upgrade authority | Not available because `getAccountInfo` returned null |
+| Local SBF build and deployed-binary hash comparison | Not run; no current `cargo-build-sbf`/Anchor deployment evidence was established in this session |
+| Deployment or upgrade | **None** |
 
-Consequence: with the program unverified on-chain, the live routing plan must use the standalone `profit_guard`/native route instructions ONLY on the builder's own guarantees, or must treat on-chain executor CPI paths as DISABLED. The supervisor currently assembles routes with the executor instruction only when explicitly configured; failure/capture evidence (Phase 2) still gates everything.
+## Production-path correction
 
-Findings cross-ref: EXEC-F-2026-11-22-N1 (placeholder ID, P2), EXEC-F-2026-11-22-N2 (SBF build unverified this session, P3).
+The generic WSOL/Kamino flash assemblers previously appended a standalone `profit_guard` instruction using the placeholder executor ID. That instruction would fail on Mainnet while the program account is absent. The active generic flash builders no longer append that instruction.
+
+Instead, the final hop's `min_amount_out` is constructed from checked integer arithmetic and includes:
+
+`borrow principal + Kamino flash fee + base transaction fee + priority fee + Jito tip + retained minimum net profit`.
+
+The active generic assembler is WSOL-anchored and uses the exact same effective CU limit that it encodes. This makes the final swap itself enforce the return floor without relying on an undeployed program. The standalone guard helper and CPI executor source remain available only for a future, explicitly activated deployment path. The cross-DEX builder delegates to this same generic assembler. The inactive split-routing builder is not eligible for activation: its route-level min-out and aggregate cost proof are still incomplete, and the Supervisor currently leaves split allocation hard-disabled.
+
+## Requirements before activating arb-executor CPI
+
+1. Generate and record a real program keypair/public ID; never ship the vanity placeholder as a deployment identity.
+2. Build the SBF program with the pinned toolchain and hash the resulting binary.
+3. Deploy only after explicit operator approval, using a controlled deploy key and documented upgrade authority (preferably multisig/cold custody).
+4. Verify `getAccountInfo` shows an executable program on Mainnet from at least two independent RPC providers.
+5. Verify deployed program data/buffer hash against the locally built artifact and record program owner, loader, upgrade authority, slot, and hashes.
+6. Add a live identity regression check before any config can enable the executor route.
+7. Add LiteSVM/fork integration tests and run shadow soak before any live enablement.
+
+**Safety status:** live trading remains disabled. RPC checks were read-only. No wallet signing, transaction submission, deployment, or upgrade was performed.

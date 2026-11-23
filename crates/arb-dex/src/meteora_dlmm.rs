@@ -531,6 +531,9 @@ impl AmmPool for MeteoraDlmmPool {
             },
         )
         .map_err(|e| ArbError::InvalidInput(format!("DLMM quote error: {e:?}")))?;
+        arb_math::dlmm::validate_swap_depth(q.bins_crossed).map_err(|e| {
+            ArbError::InsufficientLiquidity(format!("DLMM swap is not executable: {e}"))
+        })?;
         Ok(q.amount_out)
     }
 }

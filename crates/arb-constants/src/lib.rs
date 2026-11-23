@@ -696,7 +696,7 @@ pub const DEFAULT_METRICS_BIND_ADDR: &str = "127.0.0.1:9100";
 /// Default local binding address for the Administrative control server.
 pub const DEFAULT_ADMIN_BIND_ADDR: &str = "127.0.0.1:9101";
 
-/// Arbitrage on-chain executor program ID.
+/// Build-time placeholder only; not verified as deployed on any Solana cluster.
 pub const ARB_EXECUTOR_PROGRAM_ID: &str = "ArbExec1111111111111111111111111111111111111";
 /// Default mainnet Address Lookup Table key.
 pub const DEFAULT_MAINNET_ALT_KEY: &str = "ALT1111111111111111111111111111111111111111";

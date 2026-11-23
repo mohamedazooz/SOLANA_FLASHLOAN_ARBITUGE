@@ -15,13 +15,13 @@ impl Supervisor {
         opp: &ExecutionOpportunity,
         kamino_params: &KaminoFlashParams,
         flash_loan_fee_sf: u64,
+        min_profit_raw: TokenAmount,
     ) -> anyhow::Result<Vec<arb_tx::CompiledInstruction>> {
         if self.config.strategy.use_flash_loan {
-            // min_profit_raw from economic config (in base-mint raw units)
-            let min_profit_raw = {
-                let graph = self.graph.lock();
-                graph.min_profit_raw()
-            };
+            // The caller supplies the denomination-checked retained-profit
+            // hurdle plus the configured contingency buffer in base-mint raw units.
+            // Do not substitute the graph's discovery floor here: execution must
+            // enforce the exact floor that passed the live economic gate.
             // Residual-safe ATA lifecycle (F-01, Option B): the atomic arb
             // transaction NEVER closes intermediate ATAs. A leg's actual
             // on-chain output can exceed the exact amount consumed by the
@@ -60,11 +60,8 @@ impl Supervisor {
                 &proven_zero_intermediate_mints,
             )?)
         } else {
-            // min_profit_raw from economic config (in base-mint raw units)
-            let min_profit_raw = {
-                let graph = self.graph.lock();
-                graph.min_profit_raw()
-            };
+            // Use the same live-gate retained-profit hurdle and contingency
+            // buffer as the flash path.
             Ok(TxBuilder::assemble_arbitrage(
                 payer,
                 tip_account,
@@ -133,8 +130,8 @@ impl Supervisor {
         opp: &ExecutionOpportunity,
         payer: Pubkey,
     ) -> usize {
-        if !live {
-            debug!("settlement skipped: mode is not Live (no broadcast, plan only)");
+        if !live || !crate::live_execution_enabled() {
+            debug!("settlement skipped: live execution is not armed (no broadcast, plan only)");
             return 0;
         }
         let probes = {
@@ -414,12 +411,25 @@ impl Supervisor {
             &store
         };
 
+        // Discovery uses a fresh landed-tip p50 capped by the configured
+        // ceiling. If the oracle is stale/missing, retain the ceiling rather
+        // than assuming a zero tip. The dispatch gate rechecks the actual bid.
+        let fresh_tip_p50 = self
+            .jito_service
+            .oracle()
+            .current(arb_land::now_ms())
+            .map(|floor| floor.p50);
+        let discovery_tip = crate::verified_config::bounded_jito_tip_discovery_estimate(
+            Lamports(self.config.jito.max_tip_lamports),
+            fresh_tip_p50,
+        );
+
         let inputs = crate::verified_config::build_verified_inputs_from_snapshots(
             active_store,
             &base_mint,
             &reserve,
             &base_mint.0,
-            Lamports(self.config.jito.max_tip_lamports),
+            discovery_tip,
             eval_slot,
             self.live_sol_price(),
         )

@@ -43,19 +43,6 @@ use execution::max_state_age_slots;
 /// Re-exported from canonical `arb_constants::SOLANA_BASE_FEE_LAMPORTS`.
 pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
-/// A pre-warmed signed transaction template persisted in Redis.
-///
-/// Holds the wire bytes plus the blockhash and tip they were built with, so
-/// `PreWarmedTxTemplate::from_precompiled_bytes` can re-locate the mutable
-/// offsets (borrow amount, repay amount, tip, blockhash) and patch them in place
-/// at fire time — skipping the full instruction rebuild on the critical path.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct CachedTemplate {
-    wire: Vec<u8>,
-    blockhash: Vec<u8>,
-    tip: u64,
-}
-
 type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
 
 pub struct Supervisor {
@@ -88,8 +75,6 @@ pub struct Supervisor {
     /// Atomic, externally verifiable process liveness record. Written from the
     /// main loop so a wedged loop is visible as a stale `heartbeat_seq`.
     heartbeat: Arc<crate::heartbeat::Heartbeat>,
-    /// Shared short-TTL Redis / in-memory cache for sub-ms dedup of pools & quotes.
-    redis_cache: Arc<arb_store::RedisStore>,
     /// Adaptive Jito tip pricing + leader gating + landing evidence.
     jito_service: Arc<JitoService>,
     /// Maps slots onto the local monotonic clock so a bundle leaves at
@@ -108,9 +93,6 @@ pub struct Supervisor {
     previous_tips: parking_lot::Mutex<std::collections::HashMap<(u64, u32), Lamports>>,
     /// Measured CU consumption per route signature for actual CU tracking (Phase E).
     measured_cu: Arc<parking_lot::Mutex<std::collections::HashMap<String, u32>>>,
-    /// Tier-1 in-memory pre-warmed transaction templates for zero-copy in-place signing
-    ram_templates:
-        parking_lot::Mutex<std::collections::HashMap<String, arb_tx::PreWarmedTxTemplate>>,
     /// Dedicated fallback snapshot store for RPC-refreshed Kamino reserve & WSOL mint
     /// accounts so live WS provider invariants in `AccountSnapshotStore` remain intact.
     kamino_fallback_store: arb_ingest::AccountSnapshotStore,
@@ -463,17 +445,12 @@ impl Supervisor {
             rpc_pool,
             health_monitor,
             heartbeat,
-            redis_cache: Arc::new(arb_store::RedisStore::new(
-                std::env::var("REDIS_URL").ok(),
-                10,
-            )),
             jito_service,
             slot_clock: parking_lot::Mutex::new(SlotClock::new()),
             rtt: parking_lot::Mutex::new((RttTracker::new(300.0), None)),
             blockhash_cache: parking_lot::Mutex::new(None),
             previous_tips: parking_lot::Mutex::new(std::collections::HashMap::new()),
             measured_cu: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-            ram_templates: parking_lot::Mutex::new(std::collections::HashMap::new()),
             kamino_fallback_store: arb_ingest::AccountSnapshotStore::default(),
             capability_registry: Arc::new({
                 let mut reg = arb_ingest::ProviderCapabilityRegistry::new();

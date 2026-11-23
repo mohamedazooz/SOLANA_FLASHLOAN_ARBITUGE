@@ -59,12 +59,13 @@ pub fn cap_cu_price_by_profit(
     if cu_limit == 0 || max_share_bps == 0 {
         return 0;
     }
-    // Whole-lamport priority budget: `ceil(profit * share_bps / 10_000)`.
-    let budget = profit_lamports
-        .saturating_mul(max_share_bps)
-        .div_ceil(10_000);
+    // Use u128 throughout: saturating u64 multiplication here can turn an
+    // overflow into a smaller-than-real budget after the division, or into a
+    // misleading cap. u64 × u64 fits exactly in u128.
+    let budget = (u128::from(profit_lamports) * u128::from(max_share_bps)).div_ceil(10_000);
     // Largest per-CU price whose total cost stays within `budget`.
-    let max_price = budget.saturating_mul(1_000_000) / u64::from(cu_limit);
+    let max_price = budget.saturating_mul(1_000_000) / u128::from(cu_limit);
+    let max_price = u64::try_from(max_price).unwrap_or(u64::MAX);
     desired_cu_price.min(max_price)
 }
 
@@ -79,9 +80,11 @@ pub fn cap_cu_price_by_profit(
 /// rejects rather than silently clamping a cost downward.
 #[must_use]
 pub fn priority_fee_lamports(cu_price_micro_lamports: u64, cu_limit: u32) -> u64 {
-    cu_price_micro_lamports
-        .saturating_mul(u64::from(cu_limit))
-        .div_ceil(1_000_000)
+    // The shared V1 fee converter uses checked u128 arithmetic and returns
+    // None on an unrepresentable result. Preserve a fail-closed sentinel:
+    // never saturate the product in u64 and then divide the saturated value.
+    crate::adaptive::total_priority_fee_lamports(cu_price_micro_lamports, u64::from(cu_limit))
+        .unwrap_or(u64::MAX)
 }
 
 /// Per-hop compute units by protocol. A CLMM crosses ticks and a DLMM walks
@@ -112,8 +115,11 @@ pub fn estimate_route_cu(
 ) -> u32 {
     let base_overhead: u32 = 450; // ComputeBudget + tip
     let flash_overhead: u32 = if has_flash_loan { 28_000 } else { 0 }; // borrow + repay
-    let swaps: u32 = hops.iter().map(|p| per_hop_cu(*p)).sum();
-    let atas = (ephemeral_atas as u32).saturating_mul(20_000); // create + close each
+    let swaps = hops.iter().fold(0u32, |total, protocol| {
+        total.saturating_add(per_hop_cu(*protocol))
+    });
+    let ata_count = u32::try_from(ephemeral_atas).unwrap_or(u32::MAX);
+    let atas = ata_count.saturating_mul(20_000); // create + close each
     base_overhead
         .saturating_add(flash_overhead)
         .saturating_add(swaps)

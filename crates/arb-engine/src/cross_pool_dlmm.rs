@@ -230,7 +230,9 @@ fn pair_breakpoint_seeds(
                         dir1,
                         None,
                     ) {
-                        raw.push(q.amount_in);
+                        if arb_math::dlmm::validate_swap_depth(q.bins_crossed).is_ok() {
+                            raw.push(q.amount_in);
+                        }
                     }
                 }
             }

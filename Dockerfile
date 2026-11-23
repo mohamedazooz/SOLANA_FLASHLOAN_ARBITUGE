@@ -69,4 +69,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/arb-bot"]
-CMD ["--config", "/app/config/config.toml", "--mode", "shadow"]
+CMD ["--config", "/app/config/config.toml"]

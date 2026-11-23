@@ -181,6 +181,7 @@ fn params(input_size: u64) -> ThreeLegMemeContextParams {
         snapshot_slot: 467_000_000,
         cu_limit: arb_constants::COMPUTE_BUDGET_LIMIT_3HOP,
         priority_fee_micro_lamports: 1_000,
+        priority_fee_max_share_bps: arb_constants::DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS,
         jito_tip_account: Pubkey::from_str(arb_constants::JITO_TIP_ACCOUNTS[0]).unwrap(),
         jito_tip_lamports: 10_000,
         recent_blockhash: [42u8; 32],

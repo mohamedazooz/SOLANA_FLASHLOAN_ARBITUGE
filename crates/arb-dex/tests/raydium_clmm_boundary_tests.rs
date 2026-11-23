@@ -88,10 +88,10 @@ fn test_raydium_clmm_zero_liquidity_and_zero_price_fails_closed() {
     let engine = RaydiumClmmQuoteEngine::new();
 
     // Sub-case A: liquidity = 0
-    let (pool_zero_liq, base_liq, _) = make_clmm_pool(0, 1u128 << 64, true);
+    let (pool_zero_liq, base_liq, quote_liq) = make_clmm_pool(0, 1u128 << 64, true);
     let req = QuoteRequest {
         input_mint: base_liq,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_liq,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -105,10 +105,10 @@ fn test_raydium_clmm_zero_liquidity_and_zero_price_fails_closed() {
     }
 
     // Sub-case B: sqrt_price = 0
-    let (pool_zero_price, base_price, _) = make_clmm_pool(10_000_000, 0, true);
+    let (pool_zero_price, base_price, quote_price) = make_clmm_pool(10_000_000, 0, true);
     let req2 = QuoteRequest {
         input_mint: base_price,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_price,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -147,10 +147,10 @@ fn test_raydium_clmm_exact_out_unsupported_operation() {
 #[test]
 fn test_raydium_clmm_disabled_pool_fails_closed() {
     let engine = RaydiumClmmQuoteEngine::new();
-    let (pool, base, _) = make_clmm_pool(10_000_000, 1u128 << 64, false);
+    let (pool, base, quote) = make_clmm_pool(10_000_000, 1u128 << 64, false);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -168,11 +168,11 @@ fn test_raydium_clmm_disabled_pool_fails_closed() {
 #[test]
 fn test_raydium_clmm_mismatched_mint_fails_closed() {
     let engine = RaydiumClmmQuoteEngine::new();
-    let (pool, _, _) = make_clmm_pool(10_000_000, 1u128 << 64, true);
+    let (pool, _, quote) = make_clmm_pool(10_000_000, 1u128 << 64, true);
     let foreign_mint = MintId(Pubkey::new_unique());
     let req = QuoteRequest {
         input_mint: foreign_mint,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,

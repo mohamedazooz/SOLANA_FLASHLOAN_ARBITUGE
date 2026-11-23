@@ -685,11 +685,17 @@ impl Supervisor {
                 self.config.strategy.min_net_profit_abs,
                 verified.lamports_per_base_raw.value,
                 verified.lamports_per_base_denom.value,
-                current_slot.0,
+                verified.lamports_per_base_raw.observed_slot.0,
                 current_slot.0,
                 self.config.strategy.max_state_age_slots,
             ) {
-                Ok(v) => v as u64,
+                Ok(v) => match u64::try_from(v) {
+                    Ok(raw) => raw,
+                    Err(e) => {
+                        debug!("Minimum profit floor does not fit base-mint u64 raw units: {e}");
+                        continue;
+                    }
+                },
                 Err(e) => {
                     debug!("Cannot convert min profit floor to base mint: {e}; failing closed");
                     if gross > 0 {
@@ -717,6 +723,47 @@ impl Supervisor {
                             )
                             .await;
                     }
+                    continue;
+                }
+            };
+
+            // The opportunity gate reserves a contingency buffer when sizing
+            // the maximum Jito bid. Enforce that same reserve in the actual
+            // on-chain final-hop min-out; otherwise a landed fill could retain
+            // only min_net_profit_abs and consume the contingency allowance.
+            // Convert through the same verified rational rate and use the
+            // observed price slot, then add with checked u64 arithmetic.
+            let contingency_buffer_base_raw =
+                match arb_types::dimensional::lamports_to_base_raw_checked(
+                    self.config.strategy.contingency_buffer_lamports,
+                    verified.lamports_per_base_raw.value,
+                    verified.lamports_per_base_denom.value,
+                    verified.lamports_per_base_raw.observed_slot.0,
+                    current_slot.0,
+                    self.config.strategy.max_state_age_slots,
+                ) {
+                    Ok(value) => match u64::try_from(value) {
+                        Ok(raw) => raw,
+                        Err(error) => {
+                            debug!("Contingency buffer does not fit base-mint raw units: {error}");
+                            continue;
+                        }
+                    },
+                    Err(error) => {
+                        debug!(
+                            "Cannot convert contingency buffer to base mint: {error}; failing closed"
+                        );
+                        continue;
+                    }
+                };
+            let execution_min_profit_raw = match min_net_base_raw
+                .checked_add(contingency_buffer_base_raw)
+            {
+                Some(value) => value,
+                None => {
+                    debug!(
+                        "Execution profit floor plus contingency buffer overflowed; failing closed"
+                    );
                     continue;
                 }
             };
@@ -1132,7 +1179,7 @@ impl Supervisor {
                         opp.size_in.as_u64(),
                         flash_fee_raw,
                         tip.as_u64(),
-                        min_net_base_raw,
+                        execution_min_profit_raw,
                     );
                     match arb_tx::build_swap_hop_instruction(return_hop, payer, total_out, min_out)
                     {
@@ -1171,6 +1218,7 @@ impl Supervisor {
                         &opp,
                         kamino_params,
                         verified.flash_loan_fee_sf.value,
+                        TokenAmount(execution_min_profit_raw),
                     )
                     .await
                 {
@@ -1193,6 +1241,7 @@ impl Supervisor {
                     &opp,
                     kamino_params,
                     verified.flash_loan_fee_sf.value,
+                    TokenAmount(execution_min_profit_raw),
                 )
                 .await
             {
@@ -1209,15 +1258,6 @@ impl Supervisor {
             // V1-only profile: never consume fabricated/static ALTs and never
             // reuse Legacy/V0 pre-warmed templates. Rebuild all inline account
             // metas from the current route state before RPC simulation.
-            let route_sig = format!(
-                "prewarm:{}",
-                opp.hops
-                    .iter()
-                    .map(|h| format!("{}-{:?}", h.pool_id.0, h.protocol))
-                    .collect::<Vec<_>>()
-                    .join("_")
-            );
-
             let blockhash_b58;
             let mut last_valid_block_height: Option<i64> = None;
             let tx_bytes = if let Some(ref signer) = self.keypair {
@@ -1257,6 +1297,8 @@ impl Supervisor {
                 // This build is V1-only. Both direct RPC/SWQoS and Jito bundle paths
                 // are supported when explicitly enabled via their respective env flags.
                 let direct_v1_enabled = is_swqos_route
+                    // Both flags are required: feature enablement alone does
+                    // not prove that this provider/region accepts V1 ingress.
                     && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
                         .map(|v| {
                             matches!(
@@ -1264,9 +1306,28 @@ impl Supervisor {
                                 "1" | "true" | "yes" | "on"
                             )
                         })
+                        .unwrap_or(false)
+                    && std::env::var("SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
                         .unwrap_or(false);
+                // The public Jito sendBundle documentation does not promise
+                // V1 ingress on every Block Engine path. Keep it disabled until
+                // this exact endpoint/region has passed a controlled V1 canary.
                 let jito_v1_enabled = !is_swqos_route
                     && std::env::var("SOLANA_TX_V1_JITO_ENABLED")
+                        .map(|v| {
+                            matches!(
+                                v.trim().to_ascii_lowercase().as_str(),
+                                "1" | "true" | "yes" | "on"
+                            )
+                        })
+                        .unwrap_or(false)
+                    && std::env::var("SOLANA_TX_V1_JITO_INGRESS_VERIFIED")
                         .map(|v| {
                             matches!(
                                 v.trim().to_ascii_lowercase().as_str(),
@@ -1277,101 +1338,42 @@ impl Supervisor {
                 let v1_transport_enabled = matches!(self.mode(), BotMode::Simulate)
                     || (is_swqos_route && direct_v1_enabled)
                     || (!is_swqos_route && jito_v1_enabled);
-                // Tier-1: Ultra-fast Zero-Copy In-Memory RAM template pre-signing (< 5 microseconds)
-                let patched_ram = if v1_transport_enabled {
-                    None
-                } else {
-                    let mut guard = self.ram_templates.lock();
-                    guard.get_mut(&route_sig).map(|tpl| {
-                        tpl.patch_and_sign_with_swaps(
-                            opp.size_in.as_u64(),
-                            tip.as_u64(),
-                            blockhash,
-                            signer,
-                            Some(opp.size_in.as_u64()), // swap amount_in = borrow amount
-                            Some(real_net_base_raw),    // swap min_out = borrow + profit floor
+                // Do not use signed Legacy/V0 RAM or Redis templates here.
+                // The old cache path patched a net-profit-only value into the
+                // swap min_amount_out, and the Redis loader did not resolve
+                // swap offsets at all. Heuristic byte scanning is not a safe
+                // substitute for protocol-specific instruction data.
+                // Live dispatch is V1-only and requires feature enablement plus
+                // provider/region ingress verification. Without that proof,
+                // reject the opportunity rather than reuse a stale signed tx.
+                let build_result = if v1_transport_enabled {
+                    let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+                    if priority_fee_lamports == u64::MAX {
+                        Err(arb_tx::TxError::Serialization(
+                            "V1 priority fee exceeds u64 lamports".into(),
+                        ))
+                    } else {
+                        let v1_config = arb_tx::V1ConfigParams {
+                            priority_fee_lamports: Some(priority_fee_lamports),
+                            compute_unit_limit: Some(cu_limit),
+                            loaded_accounts_data_size_limit: Some(67_108_864),
+                            heap_size: None,
+                        };
+                        arb_tx::AdaptiveTxCompiler::compile_v1_only(
+                            signer, &ixs, blockhash, v1_config,
                         )
-                        .to_vec()
-                    })
-                };
-
-                let patched = if v1_transport_enabled {
-                    None
-                } else {
-                    match patched_ram {
-                        Some(b) => Some(b),
-                        None => {
-                            // Tier-2: Redis shared cache fallback (legacy only).
-                            self.redis_cache
-                                .get_json::<CachedTemplate>(&route_sig)
-                                .and_then(|c| {
-                                    let bh: [u8; 32] = c.blockhash.as_slice().try_into().ok()?;
-                                    let mut tpl =
-                                        arb_tx::PreWarmedTxTemplate::from_precompiled_bytes(
-                                            c.wire,
-                                            &bh,
-                                            c.tip,
-                                            verified.flash_loan_fee_sf.value,
-                                        )
-                                        .ok()?;
-                                    let signed = tpl
-                                        .patch_and_sign_with_swaps(
-                                            opp.size_in.as_u64(),
-                                            tip.as_u64(),
-                                            blockhash,
-                                            signer,
-                                            Some(opp.size_in.as_u64()),
-                                            Some(real_net_base_raw),
-                                        )
-                                        .to_vec();
-                                    self.ram_templates.lock().insert(route_sig.clone(), tpl);
-                                    Some(signed)
-                                })
-                        }
+                        .map(|compiled| compiled.wire_bytes)
                     }
+                } else {
+                    Err(arb_tx::TxError::UnsupportedTransactionVersion(0))
                 };
-
-                match patched {
-                    Some(bytes) => bytes,
-                    None => {
-                        // Tier-3: V1-only full transaction compilation.
-                        // No Legacy/V0/ALT fallback is permitted in this release.
-                        let build_result = if v1_transport_enabled {
-                            // Same authoritative ceiling conversion used by the
-                            // gate; saturates instead of overflowing.
-                            let priority_fee_lamports =
-                                arb_tx::priority_fee_lamports(cu_price, cu_limit);
-                            if priority_fee_lamports == u64::MAX {
-                                Err(arb_tx::TxError::Serialization(
-                                    "V1 priority fee exceeds u64 lamports".into(),
-                                ))
-                            } else {
-                                let v1_config = arb_tx::V1ConfigParams {
-                                    priority_fee_lamports: Some(priority_fee_lamports),
-                                    compute_unit_limit: Some(cu_limit),
-                                    loaded_accounts_data_size_limit: Some(67_108_864),
-                                    heap_size: None,
-                                };
-                                arb_tx::AdaptiveTxCompiler::compile_v1_only(
-                                    signer, &ixs, blockhash, v1_config,
-                                )
-                                .map(|compiled| compiled.wire_bytes)
-                            }
-                        } else {
-                            Err(arb_tx::TxError::UnsupportedTransactionVersion(0))
-                        };
-                        let bytes = match build_result {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                debug!(
-                                    "Failed to compile/sign transaction: {e}; skipping opportunity"
-                                );
-                                continue;
-                            }
-                        };
-                        // V1 messages are rebuilt from current inline account metas.
-                        // Legacy/V0 pre-warmed templates are intentionally not reused.
-                        bytes
+                match build_result {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        debug!(
+                            "V1 ingress is not verified or fresh compilation failed ({error}); skipping opportunity"
+                        );
+                        continue;
                     }
                 }
             } else {

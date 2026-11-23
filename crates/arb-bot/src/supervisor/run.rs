@@ -2,6 +2,20 @@
 use super::*;
 
 impl Supervisor {
+    /// Accept only correctly owned legacy SPL Token WSOL accounts for bootstrap hydration.
+    /// This validates the owner program and mint before account bytes enter the shared store.
+    fn is_verified_spl_wsol_account(owner: &Pubkey, data: &[u8]) -> bool {
+        let Ok(token_program) = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID) else {
+            return false;
+        };
+        if owner != &token_program {
+            return false;
+        }
+        let Ok(wsol_mint) = Pubkey::from_str(arb_tx::WSOL_MINT) else {
+            return false;
+        };
+        arb_tx::kamino::decode_supply_vault_liquidity(data, &wsol_mint).is_ok()
+    }
     /// Cumulative user+system CPU ticks for this process (Linux `/proc/self/stat`).
     /// Field indices 11/12 after `(comm)` correspond to utime/stime (fields 14/15).
     #[cfg(target_os = "linux")]
@@ -78,10 +92,9 @@ impl Supervisor {
         arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &wsol).ok()
     }
 
-    /// Conservative flat network cost used by the 3-leg size search:
-    /// dynamic Jito tip floor (p50 from TipOracle or fallback to verified tip).
-    /// Base transaction fees and priority fees are evaluated downstream at the
-    /// authoritative economic dispatch gate to eliminate duplicate fee deductions.
+    /// Discovery-time Jito tip estimate (fresh p50, bounded by the verified
+    /// ceiling). The 3-leg engine adds base fee and candidate-specific capped
+    /// priority fee itself; dispatch later re-evaluates the actual planned bid.
     fn three_leg_network_cost_lamports(&self, tip_lamports: u64) -> u64 {
         self.jito_service
             .oracle()
@@ -224,13 +237,31 @@ impl Supervisor {
             .map(|f| f.p50.0.min(verified_tip_lamports))
             .unwrap_or(verified_tip_lamports);
 
+        // Match the final Supervisor gate's route-shaped CU estimate and
+        // profit-share-capped CU price. These values are used to rank every
+        // (route, size) candidate after all known execution costs.
+        let route_protocols = [arb_types::DexProtocol::MeteoraDlmm; 3];
+        let estimated_cu = arb_tx::estimate_route_cu(
+            self.config.strategy.use_flash_loan,
+            &route_protocols,
+            2, // two intermediate token ATAs for WSOL -> A -> B -> WSOL
+        );
+        let effective_cu_limit = arb_tx::calculate_dynamic_cu_limit(estimated_cu);
+        let recent_landed_cu = self.recent_landed_cu.lock().clone();
+        let desired_cu_price = self.tip_strategy.adaptive_cu_price(&recent_landed_cu);
+        let competition_factor = self.jito_service.competition_factor();
+        let priority_fee_max_share_bps = ((self.config.strategy.priority_fee_base_share_bps as f64
+            * competition_factor) as u64)
+            .clamp(
+                self.config.strategy.priority_fee_base_share_bps,
+                self.config.strategy.priority_fee_max_share_bps,
+            );
+
         let params = arb_engine::ThreeLegMemeContextParams {
             snapshot_slot: current_slot.0,
-            cu_limit: arb_tx::COMPUTE_BUDGET_LIMIT_3HOP,
-            priority_fee_micro_lamports: {
-                let recent = self.recent_landed_cu.lock().clone();
-                self.tip_strategy.adaptive_cu_price(&recent)
-            },
+            cu_limit: effective_cu_limit,
+            priority_fee_micro_lamports: desired_cu_price,
+            priority_fee_max_share_bps,
             jito_tip_account: self.jito_service.tip_account_for_slot(current_slot),
             jito_tip_lamports: dynamic_tip_lamports,
             recent_blockhash: [0u8; 32],
@@ -791,6 +822,14 @@ impl Supervisor {
                         data_arr.first().and_then(|s| s.as_str()),
                     ) {
                         if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                            if !Self::is_verified_spl_wsol_account(&owner, &bytes) {
+                                warn!(
+                                    pubkey = %target_pk,
+                                    owner = %owner,
+                                    "Rejected startup WSOL hydration: unexpected token program or mint"
+                                );
+                                continue;
+                            }
                             let snap = arb_ingest::AccountSnapshot {
                                 pubkey: target_pk,
                                 owner,
@@ -804,14 +843,21 @@ impl Supervisor {
                                 generation: self.ingest.stream_generation(),
                                 data: Arc::new(bytes),
                             };
-                            self.ingest.account_store().apply(snap);
-                            if idx == 0 {
-                                info!(
-                                    "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={context_slot})"
-                                );
+                            if self.ingest.account_store().apply(snap) {
+                                if idx == 0 {
+                                    info!(
+                                        "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={context_slot})"
+                                    );
+                                } else {
+                                    info!(
+                                        "💧 Payer WSOL settlement ATA successfully hydrated at startup ({target_pk}, slot={context_slot})"
+                                    );
+                                }
                             } else {
-                                info!(
-                                    "💧 Payer WSOL settlement ATA successfully hydrated at startup ({target_pk}, slot={context_slot})"
+                                debug!(
+                                    pubkey = %target_pk,
+                                    slot = context_slot,
+                                    "Startup RPC snapshot was not applied; existing live/newer state or invalidation was retained"
                                 );
                             }
                         }
@@ -910,22 +956,39 @@ impl Supervisor {
                                     ) {
                                         use base64::prelude::*;
                                         if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
-                                            let snap = arb_ingest::AccountSnapshot {
-                                                pubkey: supply_vault,
-                                                owner,
-                                                slot: context_slot,
-                                                write_version: arb_ingest::next_pool_write_version(
-                                                ),
-                                                // RPC refreshes can seed a missing
-                                                // snapshot, but cannot masquerade as
-                                                // live WebSocket state.
-                                                is_startup: true,
-                                                provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
-                                                bank_id: None,
-                                                generation: ingest_worker_res.stream_generation(),
-                                                data: Arc::new(bytes),
-                                            };
-                                            ingest_worker_res.account_store().apply(snap);
+                                            if Supervisor::is_verified_spl_wsol_account(
+                                                &owner, &bytes,
+                                            ) {
+                                                let snap = arb_ingest::AccountSnapshot {
+                                                    pubkey: supply_vault,
+                                                    owner,
+                                                    slot: context_slot,
+                                                    write_version:
+                                                        arb_ingest::next_pool_write_version(),
+                                                    // RPC refreshes can seed a missing
+                                                    // snapshot, but cannot masquerade as
+                                                    // live WebSocket state.
+                                                    is_startup: true,
+                                                    provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
+                                                    bank_id: None,
+                                                    generation: ingest_worker_res
+                                                        .stream_generation(),
+                                                    data: Arc::new(bytes),
+                                                };
+                                                if !ingest_worker_res.account_store().apply(snap) {
+                                                    debug!(
+                                                        pubkey = %supply_vault,
+                                                        slot = context_slot,
+                                                        "Kamino RPC refresh was not applied; live/newer state or invalidation was retained"
+                                                    );
+                                                }
+                                            } else {
+                                                warn!(
+                                                    pubkey = %supply_vault,
+                                                    owner = %owner,
+                                                    "Rejected Kamino WSOL refresh: unexpected token program or mint"
+                                                );
+                                            }
                                         }
                                     }
                                 }

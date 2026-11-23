@@ -11,12 +11,12 @@ if [[ ! -f .env.shadow.local ]]; then
   echo "Created .env.shadow.local. Add read-only provider credentials, then run ./run-shadow.sh again."
   exit 2
 fi
-if grep -Eq '^(SOLANA_PRIVATE_KEY|OPERATOR_PRIVATE_KEY|JITO_AUTH|ARB_LIVE)=.*[^=[:space:]]' .env.shadow.local; then
-  echo "Refusing unsafe env file: remove wallet/private-key/live execution variables." >&2
+if grep -Eiq '^(SOLANA_PRIVATE_KEY|OPERATOR_PRIVATE_KEY|WALLET_PRIVATE_KEY|PRIVATE_KEY|KEYPAIR|KEYPAIR_PATH|SOLANA_KEYPAIR_PATH|JITO_AUTH|JITO_AUTH_TOKEN|ARB_LIVE|LIVE_TRADING|LIVE|EXECUTE_LIVE|ARB_CANARY)=.*[^=[:space:]]' .env.shadow.local; then
+  echo "Refusing unsafe env file: remove wallet/key material, Jito auth, and live/canary variables." >&2
   exit 3
 fi
 mkdir -p data
 chmod 700 data
-docker compose -f docker-compose.shadow.yml build
-docker compose -f docker-compose.shadow.yml up -d
-docker compose -f docker-compose.shadow.yml ps
+docker compose -f docker-compose.yml build
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml ps

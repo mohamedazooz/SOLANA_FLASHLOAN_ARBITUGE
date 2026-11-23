@@ -28,7 +28,7 @@ pub use breakpoints::{DlmmDrainBreakpoint, dlmm_breakpoint_seed_sizes, dlmm_drai
 pub use capacity::{
     dlmm_active_bin_max_input, dlmm_multi_bin_max_input, scale_dlmm_three_hop_input,
 };
-pub use error::{CollectFeeMode, DlmmError, dlmm_fee_on_input};
+pub use error::{CollectFeeMode, DlmmError, dlmm_fee_on_input, validate_swap_depth};
 pub use fee::{
     compute_base_fee, compute_fee_from_amount, compute_fee_to_add, compute_protocol_fee,
     compute_total_fee_rate, compute_variable_fee, included_fee_amount,

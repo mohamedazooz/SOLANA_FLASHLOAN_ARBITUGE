@@ -135,6 +135,9 @@ pub struct KaminoBundleParams<'a> {
     pub tip_account: Pubkey,
     pub tip_lamports: Lamports,
     pub priority_fee_micro_lamports: u64,
+    /// Minimum net profit to retain after principal, flash fee, base fee,
+    /// priority fee and Jito tip have been paid (base-mint raw units).
+    pub min_profit_raw: TokenAmount,
     pub opportunity: &'a ExecutionOpportunity,
     pub kamino_params: &'a KaminoFlashParams,
     pub recent_blockhash: [u8; 32],

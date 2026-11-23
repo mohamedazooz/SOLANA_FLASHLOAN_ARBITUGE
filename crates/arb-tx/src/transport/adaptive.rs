@@ -34,6 +34,9 @@ pub const MAX_V1_INSTRUCTIONS: usize = 64;
 /// Maximum static address count for v1 transactions (SIMD-0385).
 pub const MAX_V1_ADDRESSES: usize = 64;
 
+/// Maximum signature count for V1 transactions (SIMD-0385).
+pub const MAX_V1_SIGNATURES: usize = 12;
+
 /// Version discriminator byte for Solana Transaction v0.
 pub const V0_VERSION_DISCRIMINATOR: u8 = 0x80;
 
@@ -508,7 +511,13 @@ impl AdaptiveTxCompiler {
             }
         }
 
-        let num_required_signatures = (writable_signers.len() + readonly_signers.len()) as u8;
+        let required_signature_count = writable_signers.len() + readonly_signers.len();
+        if required_signature_count > MAX_V1_SIGNATURES {
+            return Err(TxError::SanitizationError(format!(
+                "SIMD-0385 signature limit exceeded: {required_signature_count} > {MAX_V1_SIGNATURES}"
+            )));
+        }
+        let num_required_signatures = required_signature_count as u8;
         let num_readonly_signed_accounts = readonly_signers.len() as u8;
         let num_readonly_unsigned_accounts = readonly_non_signers.len() as u8;
 
@@ -636,12 +645,6 @@ impl AdaptiveTxCompiler {
         recent_blockhash: [u8; 32],
         config: V1ConfigParams,
     ) -> Result<CompiledAdaptiveTransaction, TxError> {
-        let unique_accounts = count_unique_accounts(signer.pubkey(), instructions);
-        if unique_accounts > MAX_V1_ADDRESSES {
-            return Err(TxError::SanitizationError(format!(
-                "V1-only inline account limit exceeded: {unique_accounts} > {MAX_V1_ADDRESSES}; reduce route/bin-array footprint"
-            )));
-        }
         let tx = Self::build_signed_v1_transaction(
             signer,
             instructions,
@@ -681,6 +684,14 @@ impl AdaptiveTxCompiler {
         {
             return Err(TxError::SanitizationError(
                 "V1 simulation requires loaded-account data limit in 1..=64 MiB".into(),
+            ));
+        }
+        if config
+            .heap_size
+            .is_some_and(|v| !(32_768..=262_144).contains(&v) || v % 1_024 != 0)
+        {
+            return Err(TxError::SanitizationError(
+                "V1 simulation heap request must be a 1 KiB multiple in 32..=256 KiB".into(),
             ));
         }
         for ix in instructions {

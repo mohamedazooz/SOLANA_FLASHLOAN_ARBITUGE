@@ -17,8 +17,10 @@
 | Rate limits | default 1 request/s/IP/region; 429 on exceed | register Session 1 (inherited) |
 | Jito-Solana stake share | ~88% of stake sorts bundles by tip | [devrels priority fees 2026](https://devrels.xyz/articles/solana-priority-fees-2026) (S3) |
 
-## Existing implementation
+## Existing implementation (re-verified 2026-11-23)
 
+- Jito tip accounts are now excluded from `default_static_entries`; both ALT provisioning APIs filter official tip addresses even when supplied manually. The compiler also forces the selected tip account inline, including when a legacy on-chain ALT still contains that address. This corrects the former master-ALT manifest policy.
+- Any already-created on-chain ALT that still contains tip addresses is append-only and cannot be pruned in place; provision a replacement ALT without tip accounts before routing V0 transactions through it. The compiler-side inline override is already active.
 - `crates/arb-land/` Jito transports (`jito-client 0.3.5`, `jito-sdk-rust 0.3.2`), tip floor default 10,000 lamports (stricter than the 1,000-lamport engine minimum — safe direction).
 - On-chain conditional tip: `programs/arb-executor` `execute_three_leg_with_tip` — tip paid only after the three-leg body succeeds; canonical tip-account validation + WSOL guard + retained-edge floor (register Session 2). Bundle all-or-nothing semantics make this the safe cost posture.
 - Landing reconciliation treats acceptance ≠ landed; signature + bundle id reconciliation in `arb-bot/src/supervisor/recovery.rs` (ISSUE-P1-02).

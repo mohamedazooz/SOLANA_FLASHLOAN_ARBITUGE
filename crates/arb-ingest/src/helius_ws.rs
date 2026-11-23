@@ -26,6 +26,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// Maximum time allowed for a provider WebSocket handshake before rotating.
+const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// Hard ceiling on concurrent `accountSubscribe` streams per connection.
 ///
 /// With 160+ registered pools this budget is the binding coverage constraint:
@@ -157,10 +160,11 @@ impl HeliusWsClient {
             "WS_URL_PRIMARY",
             "WS_URL_SECONDARY",
             "WS_URL_FALLBACK",
-            "SOLAMI_WS_URL",
+            "SOLAMI_RPC_WS_URL",
             "SOLAMI_WS",
             "SHYFT_WS",
             "SHYFT_WS_URL",
+            "SHYFT_RPC_WS_URL",
             "SOLANA_RPC_WS_URL",
             "HELIUS_WS_URL",
             "HELIUS_WS",
@@ -189,7 +193,6 @@ impl HeliusWsClient {
             "FAST_WEBSOCKET".to_string(),
             "HELIUS_WS_URL".to_string(),
             "SOLAMI_RPC_WS_URL".to_string(),
-            "SOLAMI_WS_URL".to_string(),
         ]);
 
         for key in &ordered_keys {
@@ -284,11 +287,26 @@ impl HeliusWsClient {
         best
     }
 
-    fn redact_url(url: &str) -> String {
-        if let Some((base, _)) = url.split_once('?') {
-            format!("{base}?***")
+    fn redact_url(_url: &str) -> String {
+        // Do not log provider URLs: credentials may be in query strings, userinfo,
+        // or path segments depending on the provider.
+        "configured WebSocket endpoint".to_string()
+    }
+
+    fn classify_connect_error(error_text: &str) -> &'static str {
+        let lower = error_text.to_ascii_lowercase();
+        if lower.contains("429") || lower.contains("too many") {
+            "429 rate limited"
+        } else if lower.contains("401") {
+            "401 Unauthorized"
+        } else if lower.contains("403") {
+            "403 Forbidden"
+        } else if lower.contains("400") {
+            "400 Bad Request"
+        } else if lower.contains("405") {
+            "405 Method Not Allowed"
         } else {
-            url.to_string()
+            "websocket transport error"
         }
     }
 
@@ -644,7 +662,14 @@ impl HeliusWsClient {
             let endpoint_num = idx + 1;
             let total_endpoints = self.ws_urls.len();
 
-            match connect_async(&url_str).await {
+            let connect_result =
+                match tokio::time::timeout(WS_CONNECT_TIMEOUT, connect_async(&url_str)).await {
+                    Ok(Ok(connection)) => Ok(connection),
+                    Ok(Err(error)) => Err(Self::classify_connect_error(&error.to_string())),
+                    Err(_) => Err("websocket connection timeout"),
+                };
+
+            match connect_result {
                 Ok((mut ws_stream, _)) => {
                     self.reset_connection_state(idx, &ingest);
                     info!(
@@ -841,14 +866,14 @@ impl HeliusWsClient {
                         total_endpoints
                     );
                 }
-                Err(e) => {
+                Err(error_label) => {
                     self.is_connected.store(false, Ordering::Release);
-                    self.record_connect_backoff(idx, &e.to_string());
+                    self.record_connect_backoff(idx, error_label);
                     let next_idx = self.rotate_endpoint();
                     arb_metrics::inc_ws_reconnects();
                     consecutive_failures += 1;
                     warn!(
-                        "WebSocket [{endpoint_num}/{total_endpoints}] connect failed on {safe_url} ({e}); rotating to [{}/{}] (attempt={attempt})",
+                        "WebSocket [{endpoint_num}/{total_endpoints}] connect failed ({error_label}); rotating to [{}/{}] (attempt={attempt})",
                         next_idx + 1,
                         total_endpoints
                     );
@@ -1544,8 +1569,8 @@ mod tests {
             "wss://mainnet.helius-rpc.com/?api-key=test".into(),
         );
         vars.insert(
-            "SOLAMI_WS_URL",
-            "wss://ws.solami.dev/data/subscribe?api_key=test".into(),
+            "SOLAMI_RPC_WS_URL",
+            "wss://rpc.solami.dev/?api_key=test".into(),
         );
         vars.insert("SHYFT_WS", "wss://rpc.fra.shyft.to?api_key=test".into());
         vars.insert("SOLANA_WS_PRIMARY", "wss://solana-ws-primary.com".into());
@@ -1554,7 +1579,7 @@ mod tests {
         assert_eq!(
             urls,
             vec![
-                "wss://ws.solami.dev/data/subscribe?api_key=test",
+                "wss://rpc.solami.dev/?api_key=test",
                 "wss://rpc.fra.shyft.to?api_key=test",
                 "wss://mainnet.helius-rpc.com/?api-key=test",
                 "wss://solana-ws-primary.com",
@@ -1562,6 +1587,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn collect_ws_urls_excludes_solami_custom_event_stream_from_json_rpc_pool() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "SOLAMI_WS_URL",
+            "wss://ws.solami.dev/data/subscribe?api_key=must-not-be-forwarded".to_string(),
+        );
+        let urls = HeliusWsClient::collect_ws_urls(|k| vars.get(k).cloned());
+        assert!(
+            urls.is_empty(),
+            "custom Solami event stream is not JSON-RPC"
+        );
+    }
     #[test]
     fn collect_ws_urls_resolves_helius_api_when_key_unset() {
         let mut vars = HashMap::new();
@@ -2046,6 +2084,23 @@ mod tests {
     /// Phase 3 task 3 — reconnection/backoff lifecycle. `record_connect_backoff`
     /// classifies provider failure text into escalating cooldowns: 429/"too many"
     /// → 60s, 4xx auth/capability codes → 120s, transient errors → 5s.
+    #[test]
+    fn connect_error_classifier_preserves_cooldown_without_leaking_provider_details() {
+        assert_eq!(
+            HeliusWsClient::classify_connect_error(
+                "HTTP 429 Too Many Requests: api_key=do-not-log"
+            ),
+            "429 rate limited"
+        );
+        assert_eq!(
+            HeliusWsClient::classify_connect_error("HTTP 401 Unauthorized: secret"),
+            "401 Unauthorized"
+        );
+        assert_eq!(
+            HeliusWsClient::classify_connect_error("connection reset by peer"),
+            "websocket transport error"
+        );
+    }
     #[test]
     fn record_connect_backoff_classifies_provider_error_classes() {
         let client = HeliusWsClient::new(vec![

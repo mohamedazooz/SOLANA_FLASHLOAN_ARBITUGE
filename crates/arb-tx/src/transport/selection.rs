@@ -137,34 +137,171 @@ pub fn parse_transaction_wire_header(
         return Err(TransportSelectionError::EmptyPayload);
     }
 
-    // Inspect first byte:
-    // SIMD-0385 Transaction V1 wire format begins with discriminator 0x81.
-    // Legacy / V0 format: first byte is number of signatures (compact-u16).
+    // SIMD-0385 V1 starts with a dedicated 0x81 discriminator. Its header
+    // keeps the fixed account-count offset at byte 41; config values are
+    // serialized AFTER the inline address array, not before it.
     if tx_bytes[0] == 0x81 {
-        // V1 Format Header parsing (SIMD-0385):
-        // [0]: 0x81 discriminator
-        // [1]: num_required_signatures
-        // [2]: num_readonly_signed_accounts
-        // [3]: num_readonly_unsigned_accounts
-        // [4..8]: TransactionConfigMask (4 bytes LE)
-        // [8..40]: LifetimeSpecifier (32 bytes recent blockhash)
-        // [40]: NumInstructions (u8)
-        // [41]: NumAddresses (u8) -> inline accounts count
-        // [42..]: Inline Addresses array (NumAddresses * 32 bytes)
-        // ... ConfigValues, InstructionHeaders, InstructionPayloads
-        // ... Trailing signatures (num_required_signatures * 64 bytes)
         if tx_bytes.len() < 42 {
             return Err(TransportSelectionError::InvalidWireFormat(
-                "truncated V1 envelope before message accounts count".into(),
+                "truncated V1 fixed header".into(),
             ));
         }
-        let accounts_count = tx_bytes[41] as usize;
+
+        let required_signatures = usize::from(tx_bytes[1]);
+        let readonly_signed = usize::from(tx_bytes[2]);
+        let readonly_unsigned = usize::from(tx_bytes[3]);
+        let config_mask = u32::from_le_bytes(tx_bytes[4..8].try_into().map_err(|_| {
+            TransportSelectionError::InvalidWireFormat("truncated V1 config mask".into())
+        })?);
+        let instruction_count = usize::from(tx_bytes[40]);
+        let accounts_count = usize::from(tx_bytes[41]);
+
+        // There must be a payer signature and at least one instruction/account.
+        if required_signatures == 0
+            || accounts_count == 0
+            || instruction_count == 0
+            || required_signatures > accounts_count
+            || readonly_signed > required_signatures
+            || readonly_unsigned > accounts_count.saturating_sub(required_signatures)
+        {
+            return Err(TransportSelectionError::InvalidWireFormat(
+                "invalid V1 signature, instruction, or account counts".into(),
+            ));
+        }
+
+        // Only defined config bits are valid. Priority fee occupies bits 0 and
+        // 1 together and contributes one u64 value; a partial pair is invalid.
+        const VALID_CONFIG_MASK: u32 = 0x1f;
+        const PRIORITY_FEE_MASK: u32 = 0x03;
+        const CU_LIMIT_MASK: u32 = 0x04;
+        const LOADED_DATA_MASK: u32 = 0x08;
+        const HEAP_SIZE_MASK: u32 = 0x10;
+        let priority_bits = config_mask & PRIORITY_FEE_MASK;
+        if config_mask & !VALID_CONFIG_MASK != 0
+            || (priority_bits != 0 && priority_bits != PRIORITY_FEE_MASK)
+        {
+            return Err(TransportSelectionError::InvalidWireFormat(
+                "unknown or partially-set V1 transaction config mask".into(),
+            ));
+        }
+
+        let config_values_len = if priority_bits == PRIORITY_FEE_MASK {
+            8usize
+        } else {
+            0
+        } + if config_mask & CU_LIMIT_MASK != 0 {
+            4
+        } else {
+            0
+        } + if config_mask & LOADED_DATA_MASK != 0 {
+            4
+        } else {
+            0
+        } + if config_mask & HEAP_SIZE_MASK != 0 {
+            4
+        } else {
+            0
+        };
+
+        // Fixed header (42) -> inline addresses -> config values -> instruction
+        // headers -> instruction payloads -> trailing signatures.
+        let address_bytes = accounts_count.checked_mul(32).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat("V1 address array length overflow".into())
+        })?;
+        let addresses_end = 42usize.checked_add(address_bytes).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat("V1 address array offset overflow".into())
+        })?;
+        let config_end = addresses_end
+            .checked_add(config_values_len)
+            .ok_or_else(|| {
+                TransportSelectionError::InvalidWireFormat(
+                    "V1 config values offset overflow".into(),
+                )
+            })?;
+        let instruction_headers_bytes = instruction_count.checked_mul(4).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat(
+                "V1 instruction header length overflow".into(),
+            )
+        })?;
+        let instruction_headers_end = config_end
+            .checked_add(instruction_headers_bytes)
+            .ok_or_else(|| {
+                TransportSelectionError::InvalidWireFormat(
+                    "V1 instruction header offset overflow".into(),
+                )
+            })?;
+        let signature_bytes = required_signatures.checked_mul(64).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat("V1 signature length overflow".into())
+        })?;
+        if instruction_headers_end > tx_bytes.len()
+            || signature_bytes > tx_bytes.len().saturating_sub(instruction_headers_end)
+        {
+            return Err(TransportSelectionError::InvalidWireFormat(
+                "truncated V1 addresses, config values, instruction headers, or signatures".into(),
+            ));
+        }
+
+        let mut payload_offset = instruction_headers_end;
+        for index in 0..instruction_count {
+            let header_offset = config_end + index * 4;
+            let program_index = usize::from(tx_bytes[header_offset]);
+            let instruction_accounts = usize::from(tx_bytes[header_offset + 1]);
+            let data_len = usize::from(u16::from_le_bytes([
+                tx_bytes[header_offset + 2],
+                tx_bytes[header_offset + 3],
+            ]));
+            if program_index >= accounts_count {
+                return Err(TransportSelectionError::InvalidWireFormat(
+                    "V1 instruction program index is outside the address table".into(),
+                ));
+            }
+            let accounts_end = payload_offset
+                .checked_add(instruction_accounts)
+                .ok_or_else(|| {
+                    TransportSelectionError::InvalidWireFormat(
+                        "V1 instruction account offset overflow".into(),
+                    )
+                })?;
+            let data_end = accounts_end.checked_add(data_len).ok_or_else(|| {
+                TransportSelectionError::InvalidWireFormat(
+                    "V1 instruction data offset overflow".into(),
+                )
+            })?;
+            if data_end > tx_bytes.len().saturating_sub(signature_bytes) {
+                return Err(TransportSelectionError::InvalidWireFormat(
+                    "truncated V1 instruction payload".into(),
+                ));
+            }
+            if tx_bytes[payload_offset..accounts_end]
+                .iter()
+                .any(|account_index| usize::from(*account_index) >= accounts_count)
+            {
+                return Err(TransportSelectionError::InvalidWireFormat(
+                    "V1 instruction account index is outside the address table".into(),
+                ));
+            }
+            payload_offset = data_end;
+        }
+
+        let expected_wire_end = payload_offset.checked_add(signature_bytes).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat("V1 wire length overflow".into())
+        })?;
+        if expected_wire_end != tx_bytes.len() {
+            return Err(TransportSelectionError::InvalidWireFormat(
+                "V1 transaction has trailing bytes or an inconsistent signature section".into(),
+            ));
+        }
 
         Ok((TransactionVersion::V1, accounts_count))
     } else {
-        // Parse compact-u16 num_signatures
+        // Legacy / V0: compact-u16 signature count precedes the message.
         let (num_sigs, sig_bytes_read) = decode_compact_u16(tx_bytes)?;
-        let msg_start = sig_bytes_read + num_sigs * 64;
+        let signature_bytes = num_sigs.checked_mul(64).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat("signature section length overflow".into())
+        })?;
+        let msg_start = sig_bytes_read.checked_add(signature_bytes).ok_or_else(|| {
+            TransportSelectionError::InvalidWireFormat("message start overflow".into())
+        })?;
         if tx_bytes.len() <= msg_start {
             return Err(TransportSelectionError::InvalidWireFormat(
                 "truncated legacy/v0 envelope before message".into(),
@@ -184,14 +321,13 @@ pub fn parse_transaction_wire_header(
             TransactionVersion::Legacy
         };
 
-        // For V0 / legacy, estimate account count
         let accounts_start = if version == TransactionVersion::V0 {
-            msg_start + 1 + 3 // prefix + 3 header bytes
+            msg_start + 1 + 3
         } else {
-            msg_start + 3 // 3 header bytes
+            msg_start + 3
         };
         let accounts_count = if tx_bytes.len() > accounts_start {
-            (tx_bytes[accounts_start] & 0x7f) as usize
+            usize::from(tx_bytes[accounts_start] & 0x7f)
         } else {
             0
         };
@@ -341,15 +477,30 @@ mod tests {
     use super::*;
 
     fn dummy_v1_header(num_accounts: u8, total_len: usize) -> Vec<u8> {
-        let mut bytes = vec![0u8; total_len.max(70)];
+        // Construct a structurally valid V1 envelope with one no-account
+        // instruction. Any extra test length is represented as instruction data.
+        let address_bytes = usize::from(num_accounts) * 32;
+        let fixed_wire_len = 42 + address_bytes + 4 + 64;
+        let wire_len = total_len.max(fixed_wire_len);
+        let data_len = wire_len - fixed_wire_len;
+        assert!(data_len <= u16::MAX as usize);
+
+        let mut bytes = vec![0u8; wire_len];
         bytes[0] = 0x81; // V1 discriminator
         bytes[1] = 1; // num_required_signatures
         bytes[2] = 0; // num_readonly_signed
         bytes[3] = 0; // num_readonly_unsigned
-        // bytes[4..8]: config_mask
-        // bytes[8..40]: recent_blockhash
+        // bytes[4..8]: zero config mask; no config values
+        // bytes[8..40]: recent blockhash
         bytes[40] = 1; // num_instructions
         bytes[41] = num_accounts; // num_addresses (inline accounts count)
+
+        let instruction_header = 42 + address_bytes;
+        bytes[instruction_header] = 0; // program account index
+        bytes[instruction_header + 1] = 0; // instruction account count
+        bytes[instruction_header + 2..instruction_header + 4]
+            .copy_from_slice(&(data_len as u16).to_le_bytes());
+        // The payload and trailing 64-byte signature slot are zero-filled.
         bytes
     }
 
@@ -495,6 +646,40 @@ mod tests {
         let cap = TransportCapability::mainnet_v1_capable("Helius");
         let err = select_authoritative_transport(&[], true, true, true, &cap).unwrap_err();
         assert_eq!(err, TransportSelectionError::EmptyPayload);
+    }
+
+    #[test]
+    fn test_v1_parser_rejects_truncated_address_table() {
+        let mut tx = dummy_v1_header(32, 1_500);
+        tx.truncate(42 + 31 * 32);
+        assert!(matches!(
+            parse_transaction_wire_header(&tx),
+            Err(TransportSelectionError::InvalidWireFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_v1_parser_rejects_partial_priority_fee_mask() {
+        let mut tx = dummy_v1_header(3, 250);
+        tx[4..8].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(
+            parse_transaction_wire_header(&tx),
+            Err(TransportSelectionError::InvalidWireFormat(_))
+        ));
+    }
+
+    #[test]
+    fn test_v1_parser_rejects_out_of_range_instruction_account_index() {
+        let mut tx = dummy_v1_header(3, 208);
+        let instruction_header = 42 + 3 * 32;
+        tx[instruction_header + 1] = 1; // one instruction account
+        tx[instruction_header + 2..instruction_header + 4].copy_from_slice(&1u16.to_le_bytes()); // one data byte
+        let payload_offset = instruction_header + 4;
+        tx[payload_offset] = 3; // valid indexes are 0..=2
+        assert!(matches!(
+            parse_transaction_wire_header(&tx),
+            Err(TransportSelectionError::InvalidWireFormat(_))
+        ));
     }
 
     #[test]

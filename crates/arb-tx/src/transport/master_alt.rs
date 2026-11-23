@@ -2,8 +2,12 @@
 //!
 //! This module owns a single, operator-provisioned Mainnet ALT that holds every address
 //! that repeats across transactions: program IDs, the DLMM event authority, memo program,
-//! token programs, common mints (WSOL/USDC/USDT), wallet-specific bot ATAs, all eight
-//! Jito tip accounts, and operator-configured static bridge-pool addresses.
+//! token programs, common mints (WSOL/USDC/USDT), wallet-specific bot ATAs, and
+//! operator-configured static bridge-pool addresses.
+//!
+//! Jito tip accounts are deliberately NEVER stored in or loaded from an ALT:
+//! Jito's low-latency transaction guidance requires the tip account to remain
+//! inline in the transaction.
 //!
 //! Newly discovered Meme A / Meme B pool accounts, meme mints, meme ATAs, and their Bin
 //! Arrays are NEVER placed in this ALT — they are inlined per-transaction in the V0 message.
@@ -28,6 +32,15 @@ use std::str::FromStr;
 
 /// Maximum number of addresses an ALT can hold (Solana protocol limit).
 pub const MAX_ALT_ADDRESSES: usize = 256;
+
+/// Jito tip destinations must remain inline, even if a legacy ALT contains them.
+fn is_jito_tip_address(address: &Pubkey) -> bool {
+    JITO_TIP_ACCOUNTS.iter().any(|tip| {
+        Pubkey::from_str(tip)
+            .map(|parsed| parsed == *address)
+            .unwrap_or(false)
+    })
+}
 
 /// Meteora DLMM program ID on Mainnet.
 const METEORA_DLMM_PROGRAM_ID_STR: &str = arb_constants::METEORA_DLMM_PROGRAM_ID;
@@ -188,6 +201,8 @@ pub enum AddressCategory {
     BotWsolAta,
     BotUsdcAta,
     BotUsdtAta,
+    /// Retained for decoding/reporting legacy ALT snapshots only. New tables
+    /// and transaction compilers must keep Jito tips inline.
     JitoTipAccount,
     StaticBridgePool,
 }
@@ -271,26 +286,37 @@ impl StaticMasterAlt {
         self.addresses.iter().position(|a| a == address)
     }
 
-    /// Verify that all required static address categories are present.
+    /// Verify that every required static address is present in the table.
+    ///
+    /// Categories are an in-memory provisioning/reporting aid and are not part
+    /// of the on-chain ALT account format. An ALT loaded with
+    /// `from_onchain_readonly` therefore has no categories; safety must be
+    /// based on the actual Pubkeys, never on sidecar metadata.
     pub fn verify_required_present(&self) -> Result<(), MasterAltError> {
-        let required: &[AddressCategory] = &[
-            AddressCategory::MeteoraProgram,
-            AddressCategory::MeteoraEventAuthority,
-            AddressCategory::MemoProgram,
-            AddressCategory::SplTokenProgram,
-            AddressCategory::Token2022Program,
-            AddressCategory::AssociatedTokenProgram,
-            AddressCategory::SystemProgram,
-            AddressCategory::ComputeBudgetProgram,
-            AddressCategory::WsolMint,
-            AddressCategory::UsdcMint,
-            AddressCategory::UsdtMint,
+        let required: &[(&str, &str)] = &[
+            ("Meteora DLMM program", METEORA_DLMM_PROGRAM_ID_STR),
+            ("Meteora event authority", EXPECTED_DLMM_EVENT_AUTHORITY),
+            ("Memo program", MEMO_PROGRAM_ID_STR),
+            ("SPL Token program", TOKEN_PROGRAM_ID),
+            ("Token-2022 program", TOKEN_2022_PROGRAM_ID),
+            ("Associated Token program", ASSOCIATED_TOKEN_PROGRAM_ID),
+            ("System program", "11111111111111111111111111111111"),
+            (
+                "Compute Budget program",
+                "ComputeBudget111111111111111111111111111111",
+            ),
+            ("WSOL mint", WSOL_MINT),
+            ("USDC mint", USDC_MINT),
+            ("USDT mint", USDT_MINT),
         ];
-        for cat in required {
-            if !self.categories.contains(cat) {
+
+        for (label, address_str) in required {
+            let address = Pubkey::from_str(address_str).map_err(|error| {
+                MasterAltError::InvalidAddress(format!("required {label} address: {error}"))
+            })?;
+            if !self.contains(&address) {
                 return Err(MasterAltError::MissingRequiredAddress(format!(
-                    "required category {:?} not present in ALT",
-                    cat
+                    "required {label} ({address}) not present in ALT"
                 )));
             }
         }
@@ -523,18 +549,8 @@ impl StaticMasterAlt {
             });
         }
 
-        // --- Jito tip accounts (all eight verified official accounts) ---
-        for (i, tip_str) in JITO_TIP_ACCOUNTS.iter().enumerate() {
-            let tip_addr = Pubkey::from_str(tip_str).map_err(|e| {
-                MasterAltError::InvalidAddress(format!("jito tip account {i} {tip_str}: {e}"))
-            })?;
-            entries.push(StaticAddressEntry {
-                category: AddressCategory::JitoTipAccount,
-                address: tip_addr,
-                owner_program: Some(system_program),
-                label: "Jito tip account",
-            });
-        }
+        // Jito tip accounts are intentionally excluded. Jito documentation
+        // requires the tip account to be a static/inline account, not ALT-loaded.
 
         // --- Static bridge accounts (operator-configured, verified) ---
         if let Some(bridge) = static_bridge_sol_usdc {
@@ -576,6 +592,14 @@ impl StaticMasterAlt {
         let mut seen: BTreeSet<Pubkey> = BTreeSet::new();
 
         for entry in entries {
+            // Do not provision Jito tip accounts through this API, even if a
+            // caller manually supplies them or labels them as another category.
+            if entry.category == AddressCategory::JitoTipAccount
+                || is_jito_tip_address(&entry.address)
+            {
+                skipped += 1;
+                continue;
+            }
             if !seen.insert(entry.address) {
                 // Duplicate within the entry list itself.
                 skipped += 1;
@@ -753,6 +777,13 @@ pub fn build_or_extend_master_alt_ixs(
     let mut seen: HashSet<Pubkey> = HashSet::new();
     let mut duplicates_skipped = 0usize;
     for entry in entries {
+        // Keep the provisioner fail-closed too: manual/operator entries cannot
+        // put Jito tip accounts into a newly created or extended ALT.
+        if entry.category == AddressCategory::JitoTipAccount || is_jito_tip_address(&entry.address)
+        {
+            duplicates_skipped += 1;
+            continue;
+        }
         if !seen.insert(entry.address) {
             duplicates_skipped += 1;
             continue;
@@ -850,7 +881,7 @@ pub fn administrative_refresh(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arb_constants::TOKEN_PROGRAM_ID as SPL;
+    use arb_constants::{JITO_TIP_ACCOUNTS, TOKEN_PROGRAM_ID as SPL};
 
     fn test_payer() -> Pubkey {
         Pubkey::new_from_array([1u8; 32])
@@ -1024,15 +1055,81 @@ mod tests {
         assert!(cats.contains(&AddressCategory::BotWsolAta));
         assert!(cats.contains(&AddressCategory::BotUsdcAta));
         assert!(cats.contains(&AddressCategory::BotUsdtAta));
-        assert!(cats.contains(&AddressCategory::JitoTipAccount));
-        // Exactly 8 Jito tip accounts
+        assert!(!cats.contains(&AddressCategory::JitoTipAccount));
+        // No Jito tip address may be provisioned into a new ALT.
         assert_eq!(
             entries
                 .iter()
-                .filter(|e| matches!(e.category, AddressCategory::JitoTipAccount))
+                .filter(|e| {
+                    JITO_TIP_ACCOUNTS
+                        .iter()
+                        .any(|tip| Pubkey::from_str(tip).unwrap() == e.address)
+                })
                 .count(),
-            8
+            0
         );
+    }
+
+    #[test]
+    fn test_manual_jito_tip_entries_are_filtered_from_both_provisioners() {
+        let payer = test_payer();
+        let authority = test_authority();
+        let mut entries =
+            StaticMasterAlt::default_static_entries(&payer, None, None, None, None, None).unwrap();
+        let tip0 = Pubkey::from_str(JITO_TIP_ACCOUNTS[0]).unwrap();
+        let tip1 = Pubkey::from_str(JITO_TIP_ACCOUNTS[1]).unwrap();
+        entries.push(StaticAddressEntry {
+            category: AddressCategory::JitoTipAccount,
+            address: tip0,
+            owner_program: None,
+            label: "manual tip category",
+        });
+        // Also test the address-based guard if a caller mislabels the category.
+        entries.push(StaticAddressEntry {
+            category: AddressCategory::StaticBridgePool,
+            address: tip1,
+            owner_program: None,
+            label: "mislabelled tip account",
+        });
+
+        let expected_added = entries.len() - 2;
+        let mut alt = StaticMasterAlt::new();
+        let report = alt
+            .populate_from_entries(Pubkey::new_unique(), authority, entries.clone(), 100_000)
+            .unwrap();
+        assert_eq!(report.addresses_added, expected_added);
+        assert_eq!(report.addresses_skipped, 2);
+        assert!(!alt.contains(&tip0));
+        assert!(!alt.contains(&tip1));
+
+        let (_address, _ixs, provision_report) =
+            build_or_extend_master_alt_ixs(&payer, &authority, 100_001, entries).unwrap();
+        assert_eq!(provision_report.addresses_added, expected_added);
+        assert_eq!(provision_report.addresses_skipped, 2);
+    }
+
+    #[test]
+    fn test_onchain_readonly_alt_verifies_required_pubkeys_without_categories() {
+        let payer = test_payer();
+        let entries =
+            StaticMasterAlt::default_static_entries(&payer, None, None, None, None, None).unwrap();
+        let addresses: Vec<Pubkey> = entries.iter().map(|entry| entry.address).collect();
+        let alt = StaticMasterAlt::from_onchain_readonly(
+            Pubkey::new_unique(),
+            ParsedAltAccount {
+                deactivation_slot: u64::MAX,
+                last_extended_slot: 100,
+                last_extended_slot_start_index: 0,
+                authority: None,
+                addresses,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(alt.categories.is_empty());
+        assert!(alt.verify_required_present().is_ok());
     }
 
     #[test]
@@ -1134,13 +1231,13 @@ mod tests {
             },
             StaticAddressEntry {
                 category: AddressCategory::SystemProgram,
-                address: Pubkey::new_from_array([3u8; 32]),
+                address: Pubkey::new_from_array(SYSTEM_PROGRAM_ID),
                 owner_program: None,
                 label: "system",
             },
             StaticAddressEntry {
                 category: AddressCategory::ComputeBudgetProgram,
-                address: Pubkey::new_from_array([4u8; 32]),
+                address: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
                 owner_program: None,
                 label: "compute_budget",
             },
@@ -1169,7 +1266,7 @@ mod tests {
         // new_from_array([i as u8]) wraps at 256, so use new_unique() for filler.
         for _ in 0..(MAX_ALT_ADDRESSES + 5) {
             entries.push(StaticAddressEntry {
-                category: AddressCategory::JitoTipAccount,
+                category: AddressCategory::StaticBridgePool,
                 address: Pubkey::new_unique(),
                 owner_program: None,
                 label: "filler",
@@ -1282,7 +1379,7 @@ mod tests {
         for i in 0..65u8 {
             let addr = Pubkey::new_from_array([i; 32]);
             entries.push(StaticAddressEntry {
-                category: AddressCategory::JitoTipAccount,
+                category: AddressCategory::StaticBridgePool,
                 address: addr,
                 owner_program: None,
                 label: "filler",
@@ -1342,7 +1439,7 @@ mod tests {
             },
             StaticAddressEntry {
                 category: AddressCategory::SystemProgram,
-                address: Pubkey::new_from_array([3u8; 32]),
+                address: Pubkey::new_from_array(SYSTEM_PROGRAM_ID),
                 owner_program: None,
                 label: "system",
             },
@@ -1360,7 +1457,7 @@ mod tests {
             },
             StaticAddressEntry {
                 category: AddressCategory::ComputeBudgetProgram,
-                address: Pubkey::new_from_array([4u8; 32]),
+                address: Pubkey::new_from_array(COMPUTE_BUDGET_PROGRAM_ID),
                 owner_program: None,
                 label: "compute_budget",
             },

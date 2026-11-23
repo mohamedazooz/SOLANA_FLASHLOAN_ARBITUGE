@@ -4,6 +4,36 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+## Resolved during second-pass hardening (2026-11-23)
+
+### TX-CORR-2026-11-23-N1: Jito Tip Account Must Stay Inline, Not ALT-Loaded
+
+- **Status**: Fixed locally on `fix/local-economic-execution-hardening`.
+- **Source rule**: Jito low-latency transaction documentation warns not to ALT-load tip accounts; tip account must remain a static/inline account.
+- **Root cause**: `StaticMasterAlt::default_static_entries` previously inserted all eight canonical Jito tip accounts; one compiler test encoded that as an expected behavior.
+- **Fix**: New ALT defaults omit all tip accounts; both `populate_from_entries` and `build_or_extend_master_alt_ixs` filter official tip addresses even when manually supplied or mislabeled; transaction account partitioning forces the selected tip inline even if a legacy on-chain ALT still contains it. Regression tests cover both fresh and legacy ALT contents.
+- **Operator caveat**: Existing on-chain ALTs are append-only; the old entries cannot be removed in place. Provision a replacement clean ALT before relying on it for V0 compilation. The compiler inline override is active regardless.
+- **Test**: `arb-tx::flash::compiler::test_partition_accounts_alt_vs_inline`; `arb-tx::transport::master_alt::test_manual_jito_tip_entries_are_filtered_from_both_provisioners`.
+
+### TX-CORR-2026-11-23-N2: V0 ALT Lookup Indices and Read-Only ALT Validation
+
+- **Status**: Fixed locally on `fix/local-economic-execution-hardening`.
+- **Root causes**:
+  1. V0 compiler built the lookup table from only the per-transaction filtered addresses. Solana lookup indices are positions in the complete on-chain ALT; compacting this list can resolve a different account.
+  2. Required-address validation depended on in-memory `AddressCategory` tags, which are not stored in on-chain ALT accounts and are empty after read-only decoding.
+  3. V0 compilation called a metadata activation check instead of verifying that the route snapshot slot was strictly later than `last_extended_slot`.
+- **Fix**: V0 compilation validates membership, passes the complete on-chain address vector in its original order, checks required Pubkeys directly, and rejects same-slot ALT use via `verify_warmup(ctx.snapshot_slot)`.
+- **Tests**: `test_v0_lookup_indices_use_full_onchain_alt_order`; `test_onchain_readonly_alt_verifies_required_pubkeys_without_categories`; `test_v0_compile_rejects_alt_extended_in_same_snapshot_slot`; read-only `from_onchain_readonly` V0 compiler regression.
+
+### EXEC-CORR-2026-11-23-N1: Execution Min-Out Must Include the Gate's Contingency Buffer
+
+- **Status**: Fixed locally on `fix/local-economic-execution-hardening`.
+- **Root cause**: The Supervisor's bid ceiling subtracted both configured minimum net profit and the contingency buffer, while the actual native builder received only the graph's minimum-profit setting. The final-hop floor therefore did not explicitly reserve the same buffer used by the economic gate.
+- **Fix**: Convert minimum net profit and contingency buffer separately from lamports into base-mint raw units using the verified rational rate and observed price slot; reject stale/overflow/unrepresentable results; checked-add them and pass that exact execution hurdle to both flash and non-flash native builders. WSOL is the active loan anchor, so the denomination is verified.
+- **Related fail-closed change**: Signed Legacy/V0 RAM and Redis template fallback has been removed from the active Supervisor. The old RAM path patched a net-profit-only amount into swap min-out; the Redis loader did not resolve swap amount/min-out offsets. Active live compilation now requires the V1 enable flag AND provider/region ingress verification; otherwise it skips the opportunity. A future fast path must use typed unsigned instructions and protocol-specific offsets, not heuristic scans of signed transaction bytes.
+
+---
+
 ## 1. Issue Priority Definitions
 
 - **P0 — Critical / Blocker**: Causes false opportunities, inverted routes, incorrect borrow sizing, underfunded repayments, loss-making trades, or unsafe transactions. Blocks live execution.
@@ -113,14 +143,15 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ### TXC-F-2026-11-22-N1: V1 Transport Toggles Pending Live Landing Observation (P3)
 
-- **File**: `crates/arb-tx/src/transport/selection.rs` (env gates `SOLANA_TX_V1_DIRECT_ENABLED` / `SOLANA_TX_V1_JITO_ENABLED`, default OFF).
-- **Behavior**: V1 compile is spec-complete and fuzz/differential-tested, but enabling submission requires an on-cluster observation of a V1 land on Agave ≥4.2.2 — not available in the sandbox. Gate is correct and fail-closed; do not toggle before evidence.
+- **File**: `crates/arb-tx/src/transport/selection.rs`, `crates/arb-bot/src/supervisor/opportunity.rs`, `dispatch.rs`.
+- **Behavior**: V1 submission requires BOTH an enable flag and a provider/region ingress-verification flag: `SOLANA_TX_V1_DIRECT_ENABLED` + `SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED`, or `SOLANA_TX_V1_JITO_ENABLED` + `SOLANA_TX_V1_JITO_INGRESS_VERIFIED`. All default OFF. Generic Jito `/api/v1/sendBundle` documentation is not proof of transaction-format V1 ingress. Do not set the verification flags until a controlled, non-economic V1 canary has passed against that exact provider/endpoint/region and the returned signature is confirmed on-chain. The V1 wire parser now rejects malformed counts, masks, account indices, truncation, and trailing bytes before transport selection.
 
 ### EXEC-F-2026-11-22-N1: Vanity Placeholder Program ID masquerading as Deployment Identity (P2)
 
 - **File**: `crates/arb-constants/src/lib.rs:658` (`ARB_EXECUTOR_PROGRAM_ID = "ArbExec1111…111"`).
-- **Observed Behavior**: the workspace test only asserts pubkey parseability; nothing ties the constant to any real deployment. Claiming "deployed program verified" today would be false.
-- **Required Fix**: on any real deployment, record the true program ID + upgrade authority here and add a cross-check test (constant == deployed ID; deployed buffer slot's binary descriptor hash == locally built SBF workspace binary hash). Until then, on-chain executor CPI paths must be treated as UNVERIFIED for live routing.
+- **Observed Behavior**: the constant is a vanity placeholder, not a deployment identity. Read-only Mainnet `getAccountInfo` returned `null` on 2026-11-23 from SOLANA_RPC_PRIMARY, Helius, Solami, Shyft and Nodit. The former Anchor.toml ID was malformed and has been corrected to match the Rust placeholder; this does not mean the program is deployed.
+- **Production-path remediation (2026-11-23)**: the active generic WSOL flash assemblers no longer emit the standalone `profit_guard` instruction. Their final-hop min-out now includes principal + flash fee + base fee + priority fee + tip + retained min profit. The optional arb-executor CPI feature remains inactive and must not be enabled.
+- **Required before CPI activation**: record a real deployed program ID + upgrade authority; build/hash the SBF artifact; verify executable account + loader + upgrade authority and compare deployed binary hash against the local build from at least two RPC providers; add a live identity guard. Deployment/upgrade requires explicit operator approval.
 
 ### EXEC-F-2026-11-22-N2: SBF Build Unverified This Session (P3)
 

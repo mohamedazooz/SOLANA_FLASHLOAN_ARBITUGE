@@ -28,6 +28,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
     }
 
     fn quote_exact_in(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
+        request.validate(state)?;
         let start_time = Instant::now();
 
         if !state.is_active {

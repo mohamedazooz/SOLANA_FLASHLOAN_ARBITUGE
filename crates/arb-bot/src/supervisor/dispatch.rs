@@ -417,23 +417,39 @@ impl Supervisor {
                 // Authoritative transport selection with explicit capability verification.
                 let cap = arb_tx::TransportCapability::mainnet_v1_capable("Mainnet-RPC-Pool");
                 let direct_v1_enabled = matches!(self.mode(), BotMode::Simulate)
-                    || std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
+                    || (std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
                         .map(|v| {
                             matches!(
                                 v.trim().to_ascii_lowercase().as_str(),
                                 "1" | "true" | "yes" | "on"
                             )
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        && std::env::var("SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED")
+                            .map(|v| {
+                                matches!(
+                                    v.trim().to_ascii_lowercase().as_str(),
+                                    "1" | "true" | "yes" | "on"
+                                )
+                            })
+                            .unwrap_or(false));
                 let jito_v1_enabled = matches!(self.mode(), BotMode::Simulate)
-                    || std::env::var("SOLANA_TX_V1_JITO_ENABLED")
+                    || (std::env::var("SOLANA_TX_V1_JITO_ENABLED")
                         .map(|v| {
                             matches!(
                                 v.trim().to_ascii_lowercase().as_str(),
                                 "1" | "true" | "yes" | "on"
                             )
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        && std::env::var("SOLANA_TX_V1_JITO_INGRESS_VERIFIED")
+                            .map(|v| {
+                                matches!(
+                                    v.trim().to_ascii_lowercase().as_str(),
+                                    "1" | "true" | "yes" | "on"
+                                )
+                            })
+                            .unwrap_or(false));
 
                 if let Err(err) = arb_tx::select_authoritative_transport(
                     tx_bytes,

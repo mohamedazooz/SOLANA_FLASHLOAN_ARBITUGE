@@ -4,13 +4,13 @@ anchor_version = "0.31.0"
 solana_version = "2.1.14"
 
 [programs]
-arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+arb_executor = "ArbExec1111111111111111111111111111111111111"
 
 [programs.devnet]
-arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+arb_executor = "ArbExec1111111111111111111111111111111111111"
 
 [programs.testnet]
-arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+arb_executor = "ArbExec1111111111111111111111111111111111111"
 
 [registry]
 url = "https://registry.anchor-lang.com"
@@ -45,7 +45,7 @@ color = true
 path = "~/.cargo/bin/anchor`
 
 [programs.localnet]
-arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+arb_executor = "ArbExec1111111111111111111111111111111111111"
 
 [programs.mainnet-beta]
-arb_executor = "9xeescXJ8aobZViWxKcMCafJKDdTk85kVL2kQYbABtT9m"
+arb_executor = "ArbExec1111111111111111111111111111111111111"

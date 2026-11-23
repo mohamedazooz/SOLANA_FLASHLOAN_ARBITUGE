@@ -116,23 +116,36 @@ pub struct TokenSemantics {
 }
 
 impl TokenSemantics {
-    /// Parse token mint account data and validate extensions.
+    /// Parse token mint account data conservatively.
+    ///
+    /// Token-2022 extension-bearing mints use an 83-byte padding region and
+    /// AccountType byte after the 82-byte base Mint. Absolute TLV offset is
+    /// therefore 166 (not 82). This lightweight type cannot represent epoch-
+    /// selected transfer-fee schedules or dynamic TransferHook accounts, so
+    /// every non-empty extension set is deliberately rejected for execution.
+    /// The active quote path has its own fail-closed decoder and eligibility
+    /// gate; do not treat this metadata parser as execution authorization.
     pub fn parse(mint: Pubkey, data: &[u8]) -> Self {
+        let rejected = |is_token_2022: bool, detected_extensions: Vec<u16>, reason: String| Self {
+            mint,
+            is_token_2022,
+            transfer_fee_config: TransferFeeConfig::ZERO,
+            detected_extensions,
+            is_execution_eligible: false,
+            rejection_reason: Some(reason),
+        };
+
         if data.len() < BASE_MINT_DATA_SIZE {
-            return Self {
-                mint,
-                is_token_2022: false,
-                transfer_fee_config: TransferFeeConfig::ZERO,
-                detected_extensions: Vec::new(),
-                is_execution_eligible: false,
-                rejection_reason: Some(format!(
-                    "Account data length {} < base mint size 82",
-                    data.len()
-                )),
-            };
+            return rejected(
+                false,
+                Vec::new(),
+                format!("Account data length {} < base mint size 82", data.len()),
+            );
         }
 
-        // Standard legacy SPL Token mint is exactly 82 bytes
+        // An 82-byte mint has no extension trailer. Whether it is owned by the
+        // legacy Token Program or Token-2022 must be checked by the account
+        // loader, because the owner is not available to this pure parser.
         if data.len() == BASE_MINT_DATA_SIZE {
             return Self {
                 mint,
@@ -144,72 +157,76 @@ impl TokenSemantics {
             };
         }
 
-        // Token-2022 with extension data
-        let mut offset = BASE_MINT_DATA_SIZE;
-        let mut detected_extensions = Vec::new();
-        let mut transfer_fee_config = TransferFeeConfig::ZERO;
-        let mut rejection_reason = None;
-
-        while offset + 4 <= data.len() {
-            let ext_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
-            let ext_len = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as usize;
-            let payload_start = offset + 4;
-            let payload_end = payload_start + ext_len;
-
-            if payload_end > data.len() {
-                break;
-            }
-
-            detected_extensions.push(ext_type);
-
-            if DANGEROUS_EXTENSIONS.contains(&ext_type) {
-                rejection_reason = Some(format!(
-                    "Mint carries dangerous/unsupported Token-2022 extension id: {ext_type}"
-                ));
-            }
-
-            if ext_type == EXTENSION_TRANSFER_FEE_CONFIG {
-                // TransferFeeConfig layout in SPL Token-2022:
-                // [0..32]: transfer_fee_config_authority (Pubkey)
-                // [32..64]: withdraw_withheld_authority (Pubkey)
-                // [64..72]: withheld_amount (u64)
-                // [72..74]: older_transfer_fee epoch (u16)
-                // [74..82]: older_transfer_fee maximum_fee (u64)
-                // [82..84]: older_transfer_fee transfer_fee_basis_points (u16)
-                // [84..86]: newer_transfer_fee epoch (u16)
-                // [86..94]: newer_transfer_fee maximum_fee (u64)
-                // [94..96]: newer_transfer_fee transfer_fee_basis_points (u16)
-                let p = &data[payload_start..payload_end];
-                if p.len() >= 96 {
-                    let max_fee = u64::from_le_bytes(p[86..94].try_into().unwrap_or([0; 8]));
-                    let fee_bps = u16::from_le_bytes(p[94..96].try_into().unwrap_or([0; 2]));
-                    transfer_fee_config = TransferFeeConfig {
-                        transfer_fee_basis_points: fee_bps,
-                        maximum_fee: max_fee,
-                    };
-                }
-            }
-
-            // Move to next extension aligned to 4 bytes
-            let next_offset = (payload_end + 3) & !3;
-            if next_offset <= offset || next_offset > data.len() {
-                break;
-            }
-            offset = next_offset;
-
-            if ext_type == EXTENSION_UNINITIALIZED && ext_len == 0 {
-                break;
-            }
+        const ACCOUNT_TYPE_MINT: u8 = 1;
+        const TLV_START: usize = 166;
+        if data.len() < TLV_START || data.get(165).copied() != Some(ACCOUNT_TYPE_MINT) {
+            return rejected(
+                true,
+                Vec::new(),
+                "Malformed Token-2022 mint: missing padding/account-type header".into(),
+            );
         }
 
-        let is_eligible = rejection_reason.is_none();
+        let offset = TLV_START;
+        let mut detected_extensions = Vec::new();
+        if offset < data.len() {
+            let remaining = &data[offset..];
+            if !remaining.iter().all(|byte| *byte == 0) {
+                let Some(header_end) = offset.checked_add(4) else {
+                    return rejected(
+                        true,
+                        detected_extensions,
+                        "Token-2022 TLV offset overflow".into(),
+                    );
+                };
+                if header_end > data.len() {
+                    return rejected(
+                        true,
+                        detected_extensions,
+                        "Truncated Token-2022 TLV header".into(),
+                    );
+                }
+
+                let ext_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
+                let ext_len = usize::from(u16::from_le_bytes([data[offset + 2], data[offset + 3]]));
+                if !(ext_type == EXTENSION_UNINITIALIZED && ext_len == 0) {
+                    let Some(payload_end) = header_end.checked_add(ext_len) else {
+                        return rejected(
+                            true,
+                            detected_extensions,
+                            "Token-2022 TLV length overflow".into(),
+                        );
+                    };
+                    if payload_end > data.len() {
+                        return rejected(
+                            true,
+                            detected_extensions,
+                            format!("Token-2022 extension {ext_type} is truncated"),
+                        );
+                    }
+
+                    detected_extensions.push(ext_type);
+                    // Until current-epoch TransferFeeConfig and TransferHook extra
+                    // account resolution are wired into BOTH quote and execution paths,
+                    // every extension stays ineligible. Unknown extensions also fail
+                    // closed; a permissive allow-list would become stale as SPL evolves.
+                    return rejected(
+                        true,
+                        detected_extensions,
+                        format!(
+                            "Token-2022 extension {ext_type} is not enabled for execution; verified epoch-aware fees and transfer-hook account resolution are required"
+                        ),
+                    );
+                }
+            }
+        }
         Self {
             mint,
             is_token_2022: true,
-            transfer_fee_config,
+            transfer_fee_config: TransferFeeConfig::ZERO,
             detected_extensions,
-            is_execution_eligible: is_eligible,
-            rejection_reason,
+            is_execution_eligible: true,
+            rejection_reason: None,
         }
     }
 }
@@ -250,17 +267,51 @@ mod tests {
     }
 
     #[test]
-    fn test_dangerous_extension_rejection() {
+    fn test_dangerous_extension_rejection_uses_official_mint_tlv_offset() {
         let mint = Pubkey::new_unique();
-        let mut data = vec![0u8; 82]; // Base mint
-        // Add Extension type 10 (PermanentDelegate)
-        data.extend_from_slice(&10u16.to_le_bytes()); // ext_type = 10
-        data.extend_from_slice(&32u16.to_le_bytes()); // ext_len = 32
-        data.extend_from_slice(&[1u8; 32]); // payload
+        // Extension-bearing Token-2022 mint layout:
+        // 82-byte Mint + 83-byte padding + AccountType(Mint) + TLV.
+        let mut data = vec![0u8; 166];
+        data[165] = 1; // AccountType::Mint
+        data.extend_from_slice(&10u16.to_le_bytes()); // PermanentDelegate
+        data.extend_from_slice(&32u16.to_le_bytes());
+        data.extend_from_slice(&[1u8; 32]);
+
+        let semantics = TokenSemantics::parse(mint, &data);
+        assert!(semantics.is_token_2022);
+        assert_eq!(
+            semantics.detected_extensions,
+            vec![EXTENSION_PERMANENT_DELEGATE]
+        );
+        assert!(!semantics.is_execution_eligible);
+        assert!(semantics.rejection_reason.is_some());
+        assert_eq!(semantics.transfer_fee_config, TransferFeeConfig::ZERO);
+    }
+
+    #[test]
+    fn test_token2022_malformed_tlv_fails_closed() {
+        let mint = Pubkey::new_unique();
+        let mut data = vec![0u8; 166];
+        data[165] = 1;
+        data.extend_from_slice(&EXTENSION_TRANSFER_FEE_CONFIG.to_le_bytes());
+        data.extend_from_slice(&108u16.to_le_bytes());
+        data.extend_from_slice(&[0u8; 12]); // truncated payload
 
         let semantics = TokenSemantics::parse(mint, &data);
         assert!(semantics.is_token_2022);
         assert!(!semantics.is_execution_eligible);
-        assert!(semantics.rejection_reason.is_some());
+        assert!(semantics.rejection_reason.unwrap().contains("truncated"));
+    }
+
+    #[test]
+    fn test_token2022_with_no_extensions_has_empty_tlv_area() {
+        let mint = Pubkey::new_unique();
+        let mut data = vec![0u8; 166];
+        data[165] = 1;
+
+        let semantics = TokenSemantics::parse(mint, &data);
+        assert!(semantics.is_token_2022);
+        assert!(semantics.is_execution_eligible);
+        assert!(semantics.detected_extensions.is_empty());
     }
 }

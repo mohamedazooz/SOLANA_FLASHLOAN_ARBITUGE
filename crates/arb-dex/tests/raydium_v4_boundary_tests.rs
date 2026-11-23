@@ -51,10 +51,10 @@ fn test_raydium_v4_quote_zero_reserves_fails_closed() {
     let engine = RaydiumAmmV4QuoteEngine::new();
 
     // Sub-case A: reserve_in = 0
-    let (pool_zero_in, base_in, _) = make_v4_pool(0, 10_000_000_000, true);
+    let (pool_zero_in, base_in, quote_in) = make_v4_pool(0, 10_000_000_000, true);
     let req = QuoteRequest {
         input_mint: base_in,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_in,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -68,10 +68,10 @@ fn test_raydium_v4_quote_zero_reserves_fails_closed() {
     }
 
     // Sub-case B: reserve_out = 0
-    let (pool_zero_out, base_out, _) = make_v4_pool(10_000_000_000, 0, true);
+    let (pool_zero_out, base_out, quote_out) = make_v4_pool(10_000_000_000, 0, true);
     let req2 = QuoteRequest {
         input_mint: base_out,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_out,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -89,10 +89,10 @@ fn test_raydium_v4_quote_zero_reserves_fails_closed() {
 #[test]
 fn test_raydium_v4_quote_max_slippage_10000_bps() {
     let engine = RaydiumAmmV4QuoteEngine::new();
-    let (pool, base, _) = make_v4_pool(10_000_000_000, 10_000_000_000, true);
+    let (pool, base, quote) = make_v4_pool(10_000_000_000, 10_000_000_000, true);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 10_000, // 100% slippage
         input_transfer_fee_config: None,
@@ -152,10 +152,10 @@ fn test_raydium_v4_quote_exact_out_exceeds_reserve() {
 #[test]
 fn test_raydium_v4_zero_input_fails_closed() {
     let engine = RaydiumAmmV4QuoteEngine::new();
-    let (pool, base, _) = make_v4_pool(10_000_000_000, 10_000_000_000, true);
+    let (pool, base, quote) = make_v4_pool(10_000_000_000, 10_000_000_000, true);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 0,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -176,10 +176,10 @@ fn test_raydium_v4_disabled_pool_and_mismatched_mint() {
     let engine = RaydiumAmmV4QuoteEngine::new();
 
     // Sub-case A: is_active = false
-    let (pool_inactive, base, _) = make_v4_pool(10_000_000_000, 10_000_000_000, false);
+    let (pool_inactive, base, quote_inactive) = make_v4_pool(10_000_000_000, 10_000_000_000, false);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_inactive,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -193,11 +193,11 @@ fn test_raydium_v4_disabled_pool_and_mismatched_mint() {
     }
 
     // Sub-case B: mismatched input mint
-    let (pool_active, _, _) = make_v4_pool(10_000_000_000, 10_000_000_000, true);
+    let (pool_active, _, quote_active) = make_v4_pool(10_000_000_000, 10_000_000_000, true);
     let foreign = MintId(Pubkey::new_unique());
     let req_foreign = QuoteRequest {
         input_mint: foreign,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_active,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
