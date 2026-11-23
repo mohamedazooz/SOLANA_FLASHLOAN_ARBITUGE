@@ -53,11 +53,12 @@ pub const EXECUTE_THREE_LEG_DISCRIMINATOR: [u8; 8] = [173, 221, 98, 44, 189, 21,
 /// (sha256("arb_executor:execute_three_leg_with_tip")[..8]).
 pub const EXECUTE_THREE_LEG_WITH_TIP_DISCRIMINATOR: [u8; 8] = [124, 34, 60, 60, 78, 94, 133, 177];
 
-/// Build the on-chain standalone `profit_guard` instruction.
+/// Build the standalone `profit_guard` instruction for the inactive arb-executor program.
 ///
-/// Verifies that `token_account` holds at least `min_balance_after`.
-/// If not, the instruction aborts and reverts the transaction before
-/// any repayment instruction can seize pre-existing funds.
+/// The current program ID is a vanity placeholder and has no verified Mainnet deployment.
+/// Do not append this instruction to a production transaction until the executor is
+/// deployed and its on-chain program identity and binary are verified.
+/// When deployed, the instruction verifies `token_account >= min_balance_after`.
 pub fn build_profit_guard_instruction(
     token_account: Pubkey,
     min_balance_after: u64,

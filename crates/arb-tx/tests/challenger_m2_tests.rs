@@ -4,7 +4,7 @@
 //! Objectives:
 //! 1. Introspection & Indexing: Verify borrow_instruction_index == 2 in 7-ix and 8-ix bundles.
 //! 2. AccountMetas Ordering: Test all 12 accounts against Kamino Anchor IDL requirements.
-//! 3. CU Budget Boundaries: Verify 260k (2-hop) and 320k (3-hop) enforcement across edge cases.
+//! 3. CU Budget Boundaries: Verify route-specific protocol estimates, one 15% safety buffer, and runtime clamping.
 //! 4. Kamino On-Chain Invariant Oracle: Emulate Kamino's on-chain sysvar introspection checks.
 //! 5. Pre-warmed Template Fuzzing & MTU Verification.
 
@@ -18,7 +18,7 @@ use arb_tx::{
     COMPUTE_BUDGET_LIMIT_2HOP, COMPUTE_BUDGET_LIMIT_3HOP, JITO_TIP_ACCOUNTS, KaminoBundleParams,
     KaminoFlashAccounts, KaminoFlashParams, KeypairSigner, MAX_COMPUTE_UNIT_LIMIT,
     SOLANA_PACKET_MTU_LIMIT, SYSVAR_INSTRUCTIONS_ID, TOKEN_PROGRAM_ID, TxBuilder, TxError,
-    WSOL_MINT, get_cu_limit_for_hops,
+    WSOL_MINT, calculate_dynamic_cu_limit, estimate_route_cu, get_cu_limit_for_hops,
 };
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolId, RouteId, Slot, SwapHop,
@@ -137,8 +137,8 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
 
     assert_eq!(
         ixs_2hop.len(),
-        8,
-        "2-hop bundle must have exactly 8 instructions (with profit guard)"
+        7,
+        "2-hop bundle must have exactly 7 instructions without executor dependency"
     );
 
     // Borrow MUST be strictly at index 2
@@ -149,11 +149,8 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
     );
     assert_eq!(&borrow_ix.data[..8], &FLASH_BORROW_DISCRIMINATOR);
 
-    // Standalone Profit Guard is strictly at index 5
-    assert_eq!(ixs_2hop[5].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
-
-    // Repay MUST be strictly at index 6 and specify borrow_instruction_index = 2
-    let repay_ix = &ixs_2hop[6];
+    // Repay follows the two swap legs directly at index 5.
+    let repay_ix = &ixs_2hop[5];
     assert_eq!(
         repay_ix.program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
@@ -180,8 +177,8 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
 
     assert_eq!(
         ixs_3hop.len(),
-        9,
-        "3-hop bundle must have exactly 9 instructions (with profit guard)"
+        8,
+        "3-hop bundle must have exactly 8 instructions without executor dependency"
     );
 
     // In 3-hop, Borrow is still strictly at index 2
@@ -192,11 +189,8 @@ fn test_adversarial_instruction_indexing_2hop_and_3hop() {
     );
     assert_eq!(&borrow_ix_3hop.data[..8], &FLASH_BORROW_DISCRIMINATOR);
 
-    // Standalone Profit Guard is strictly at index 6
-    assert_eq!(ixs_3hop[6].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
-
-    // Repay is at index 7, but its borrow_instruction_index MUST STILL be 2!
-    let repay_ix_3hop = &ixs_3hop[7];
+    // Repay follows the three swap legs at index 6; borrow index remains 2.
+    let repay_ix_3hop = &ixs_3hop[6];
     assert_eq!(
         repay_ix_3hop.program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
@@ -232,12 +226,12 @@ fn test_instruction_indexing_with_zero_priority_fee_and_zero_tip() {
     )
     .expect("assembly with 0 priority fee should succeed");
 
-    assert_eq!(ixs_zero_pf.len(), 8);
+    assert_eq!(ixs_zero_pf.len(), 7);
     assert_eq!(ixs_zero_pf[1].data[0], 3); // SetComputeUnitPrice instruction present
     assert_eq!(&ixs_zero_pf[1].data[1..9], &0u64.to_le_bytes());
     // Crucial: Borrow index is STILL 2 because SetComputeUnitPrice is not omitted
     assert_eq!(&ixs_zero_pf[2].data[..8], &FLASH_BORROW_DISCRIMINATOR);
-    assert_eq!(ixs_zero_pf[6].data[16], 2);
+    assert_eq!(ixs_zero_pf[5].data[16], 2);
 
     // Case B: Zero Tip Amount
     let ixs_zero_tip = TxBuilder::assemble_atomic_bundle(
@@ -255,12 +249,12 @@ fn test_instruction_indexing_with_zero_priority_fee_and_zero_tip() {
     // Tip instruction is omitted when tip == 0
     assert_eq!(
         ixs_zero_tip.len(),
-        7,
-        "Without tip, bundle has 7 instructions (with profit guard)"
+        6,
+        "Without tip, bundle has 6 instructions and no executor dependency"
     );
-    // Borrow is still index 2, repay is index 6 pointing to 2
+    // Borrow is still index 2, repay is index 5 pointing to 2.
     assert_eq!(&ixs_zero_tip[2].data[..8], &FLASH_BORROW_DISCRIMINATOR);
-    assert_eq!(ixs_zero_tip[6].data[16], 2);
+    assert_eq!(ixs_zero_tip[5].data[16], 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +407,10 @@ fn test_adversarial_cu_budget_enforcement() {
     )
     .unwrap();
     let cu_bytes_2hop: [u8; 4] = ixs_2hop[0].data[1..5].try_into().unwrap();
-    assert_eq!(u32::from_le_bytes(cu_bytes_2hop), 1_400_000);
+    let route_2hop: Vec<_> = opp_2hop.hops.iter().map(|hop| hop.protocol).collect();
+    let expected_2hop_cu = calculate_dynamic_cu_limit(estimate_route_cu(true, &route_2hop, 0));
+    assert_eq!(u32::from_le_bytes(cu_bytes_2hop), expected_2hop_cu);
+    assert!(expected_2hop_cu <= MAX_COMPUTE_UNIT_LIMIT);
 
     // 3-Hop
     let opp_3hop = create_n_hop_opportunity(3, 1_000_000_000);
@@ -429,7 +426,10 @@ fn test_adversarial_cu_budget_enforcement() {
     )
     .unwrap();
     let cu_bytes_3hop: [u8; 4] = ixs_3hop[0].data[1..5].try_into().unwrap();
-    assert_eq!(u32::from_le_bytes(cu_bytes_3hop), 1_400_000);
+    let route_3hop: Vec<_> = opp_3hop.hops.iter().map(|hop| hop.protocol).collect();
+    let expected_3hop_cu = calculate_dynamic_cu_limit(estimate_route_cu(true, &route_3hop, 0));
+    assert_eq!(u32::from_le_bytes(cu_bytes_3hop), expected_3hop_cu);
+    assert!(expected_3hop_cu <= MAX_COMPUTE_UNIT_LIMIT);
 
     // 4.4 Boundary rejections: 0, 1, 4, 10 hops
     for invalid_hops in [0, 1, 4, 5, 10] {
@@ -584,7 +584,7 @@ fn test_oracle_verification_of_atomic_bundles() {
 
     // Adversarial Mutation A: Tamper with borrow_instruction_index (e.g. set to 1)
     let mut tampered_ixs = ixs_2hop.clone();
-    tampered_ixs[6].data[16] = 1; // Corrupt index (repay is at index 6)
+    tampered_ixs[5].data[16] = 1; // Corrupt index (repay is at index 5)
     assert_eq!(
         kamino_onchain_introspection_oracle(&tampered_ixs),
         Err("borrow_instruction_index does not match actual borrow instruction index")
@@ -601,7 +601,7 @@ fn test_oracle_verification_of_atomic_bundles() {
 
     // Adversarial Mutation C: Mismatch account pubkey at index 6 (user ATA)
     let mut mismatched_accounts = ixs_2hop.clone();
-    mismatched_accounts[6].accounts[6].pubkey = Pubkey::new_from_array([99; 32]);
+    mismatched_accounts[5].accounts[6].pubkey = Pubkey::new_from_array([99; 32]);
     assert_eq!(
         kamino_onchain_introspection_oracle(&mismatched_accounts),
         Err("Account pubkey mismatch between borrow and repay")
@@ -626,6 +626,7 @@ fn test_prewarmed_template_fuzzing_and_cryptographic_soundness() {
         tip_account: tip_acc,
         tip_lamports: Lamports(50_000),
         priority_fee_micro_lamports: 1_000,
+        min_profit_raw: arb_types::TokenAmount(0),
         opportunity: &opp,
         kamino_params: &kamino_params,
         recent_blockhash: [0x11; 32],
@@ -705,6 +706,7 @@ fn test_prewarmed_template_hotpath_sub_microsecond_benchmark() {
         tip_account: tip_acc,
         tip_lamports: Lamports(50_000),
         priority_fee_micro_lamports: 1_000,
+        min_profit_raw: arb_types::TokenAmount(0),
         opportunity: &opp,
         kamino_params: &kamino_params,
         recent_blockhash: [0xEE; 32],

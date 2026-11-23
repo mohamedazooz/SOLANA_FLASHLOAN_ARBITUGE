@@ -22,10 +22,18 @@ reactivation requires, and the risks of reactivation.
     `TxBuilder::assemble_flash_arbitrage` (generic N-hop flash), or non-flash
     `TxBuilder::assemble_arbitrage`. Nothing in `arb-bot`/`arb-engine` calls the
     executor builders (repo-wide caller trace).
-  - The program is **not deployed**: `ArbExec1111111111111111111111111111111111111`
-    (`crates/arb-constants/src/lib.rs:658`) returns `null` from mainnet
-    `getAccountInfo` (verified via RPC read, 2026-11-22). Even if wired, every
-    CPI would fail with `ProgramAccountNotFound`.
+  - The program is **not deployed/verified**: read-only Mainnet `getAccountInfo`
+    returned `null` for `ArbExec1111111111111111111111111111111111111` on
+    2026-11-23 from SOLANA_RPC_PRIMARY, Helius, Solami, Shyft and Nodit. The
+    previous Anchor.toml ID was malformed; all cluster sections now match the
+    Rust placeholder, which is only configuration consistency, not deployment.
+    A call to the separate executor CPI path would still fail with
+    `ProgramAccountNotFound` until a real program is deployed and verified.
+  - The generic production flash assemblers no longer append the standalone
+    `profit_guard` instruction. Their final-hop `min_amount_out` now includes
+    principal, flash fee, base fee, priority fee, Jito tip and retained minimum
+    profit in WSOL raw units. This removes the generic path's dependency on the
+    missing executor; it does NOT activate the executor CPI feature.
 - **What it buys if activated:** single top-level instruction per 3-hop route;
   balance-delta validation and intermediate-inventory isolation enforced ON-chain
   (`verify_sequential_balance_transitions`), immune to client assembly drift;
@@ -33,11 +41,12 @@ reactivation requires, and the risks of reactivation.
   handling the Jito tip post-validation.
 - **Why the direct flash path was chosen instead (operator rationale, recorded):**
   a Solana transaction is already atomic; the direct flash assembly
-  (borrow -> N swaps -> repay -> close -> tip) needs no program deployment,
+  (borrow -> N swaps -> repay -> tip) needs no program deployment,
   no upgrade-authority custody, no deployed-binary/source correspondence
-  maintenance, and its solvency contract is enforced by the shared fail-closed
-  validator (`validate_flash_funded_three_pool_params`) plus per-leg min-out
-  chaining. Fewer moving parts for the same atomicity.
+  maintenance. The active generic builder now requires the final-hop min-out
+  to cover the complete checked execution-cost floor, and chains each hop's
+  input to the previous hop's guaranteed min-out. This avoids adding a
+  non-existent custom program to an otherwise atomic transaction.
 - **Reactivation requirements:**
   1. Generate a REAL program keypair (the current vanity placeholder is not
      deployed and must not ship), fund deploy rent (~0.5-1.5 SOL), and deploy the

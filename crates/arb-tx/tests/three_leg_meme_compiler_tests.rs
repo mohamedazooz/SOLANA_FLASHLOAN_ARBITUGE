@@ -361,12 +361,13 @@ fn test_reusable_static_addresses_resolve_from_alt() {
     assert!(alt.contains(&ctx.wsol_mint));
     // Bot WSOL ATA must be in ALT
     assert!(alt.contains(&ctx.bot_wsol_ata()));
-    // All 8 Jito tip accounts must be in ALT
+    // Jito tip accounts must stay inline, never ALT-loaded.
     let jito_in_alt: Vec<_> = JITO_TIP_ACCOUNTS
         .iter()
         .filter(|s| alt.contains(&Pubkey::from_str(s).unwrap()))
         .collect();
-    assert_eq!(jito_in_alt.len(), 8);
+    assert!(jito_in_alt.is_empty());
+    assert!(!alt.contains(&ctx.jito_tip_account));
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +718,10 @@ fn test_v1_oversized_rejection() {
 
 #[test]
 fn test_v1_unsupported_transport_rejection() {
-    let ctx = build_test_ctx(false, false, false); // V1 not supported
+    let mut ctx = build_test_ctx(false, false, false); // V1 not supported
+    // The fixture ALT was extended at slot 250_000_001; the route snapshot
+    // must be from a strictly later slot for all ALT addresses to be usable.
+    ctx.snapshot_slot = 250_000_002;
     let alt = build_fake_master_alt();
     let signer = KeypairSigner::new_random();
 
@@ -772,11 +776,11 @@ fn test_alt_capacity_limit() {
         },
     ];
 
-    // Fill the rest with Jito tip account entries up to and beyond capacity.
+    // Fill the rest with generic static bridge entries up to and beyond capacity.
     // Use new_unique() to avoid u8 wraparound duplicates.
     for _ in 0..(MAX_ALT_ADDRESSES + 10) {
         entries.push(StaticAddressEntry {
-            category: AddressCategory::JitoTipAccount,
+            category: AddressCategory::StaticBridgePool,
             address: Pubkey::new_unique(),
             owner_program: None,
             label: "filler",

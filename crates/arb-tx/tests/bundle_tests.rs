@@ -1,6 +1,6 @@
 //! Comprehensive Integration and Unit Test Suite for Milestone M2.
 //! Verifies:
-//! 1. Compute Budget Realignment: 260,000 CU (2-hop) and 320,000 CU (3-hop).
+//! 1. Protocol-aware Compute Budget with a single 15% route-specific safety buffer.
 //! 2. Atomic 7-Instruction (2-hop) and 8-Instruction (3-hop) bundle assembly.
 //! 3. Kamino Flash Loan Instructions Overhaul:
 //!    - 16-byte Borrow ([135, 231, 52, 167, 7, 52, 212, 193] + amount: u64).
@@ -16,9 +16,9 @@ use arb_tx::kamino::{
 };
 use arb_tx::template::PreWarmedTxTemplate;
 use arb_tx::{
-    COMPUTE_BUDGET_LIMIT_2HOP, COMPUTE_BUDGET_LIMIT_3HOP, JITO_TIP_ACCOUNTS, KaminoBundleParams,
-    KaminoFlashParams, KeypairSigner, ORCA_SOL_USDC_POOL, SOLANA_PACKET_MTU_LIMIT,
-    SYSVAR_INSTRUCTIONS_ID, TOKEN_PROGRAM_ID, TxBuilder, TxError, WSOL_MINT, get_cu_limit_for_hops,
+    JITO_TIP_ACCOUNTS, KaminoBundleParams, KaminoFlashParams, KeypairSigner,
+    MAX_COMPUTE_UNIT_LIMIT, ORCA_SOL_USDC_POOL, SOLANA_PACKET_MTU_LIMIT, SYSVAR_INSTRUCTIONS_ID,
+    TOKEN_PROGRAM_ID, TxBuilder, TxError, WSOL_MINT, calculate_dynamic_cu_limit, estimate_route_cu,
     get_next_jito_tip_account,
 };
 use arb_types::{
@@ -197,7 +197,10 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
     let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
     let usdc = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
     let kamino_params = KaminoFlashParams::default();
-    let opp = create_2hop_opportunity(wsol, usdc, 10_000_000_000); // 10 SOL
+    let mut opp = create_2hop_opportunity(wsol, usdc, 10_000_000_000); // 10 SOL
+    // Regression: projected net profit is not the retained-profit policy floor.
+    // An intentionally large projected value must not be re-used as min_profit_raw.
+    opp.net_profit = Lamports(9_999_999_999);
     let alt = TxBuilder::create_default_mainnet_alt();
     let recent_blockhash = [0x55; 32];
 
@@ -207,6 +210,7 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         tip_account: tip_acc,
         tip_lamports: Lamports(50_000),
         priority_fee_micro_lamports: 1_000,
+        min_profit_raw: arb_types::TokenAmount(30_000),
         opportunity: &opp,
         kamino_params: &kamino_params,
         recent_blockhash,
@@ -214,7 +218,7 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         flash_loan_fee_sf: 0,
     };
 
-    // 1. Verify assemble_atomic_bundle outputs EXACTLY 8 instructions (with profit guard)
+    // 1. Verify assemble_atomic_bundle emits compute budget, borrow, swaps, repay and tip (no undeployed executor dependency)
     let ixs = TxBuilder::assemble_atomic_bundle(
         payer,
         tip_acc,
@@ -229,15 +233,17 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
 
     assert_eq!(
         ixs.len(),
-        8,
-        "2-hop bundle must contain strictly 8 instructions (with profit guard)"
+        7,
+        "2-hop bundle must contain 7 instructions without a standalone executor program"
     );
 
-    // [0] SetComputeUnitLimit: 1_400_000 CU (runtime max fallback)
-    assert_eq!(get_cu_limit_for_hops(2), COMPUTE_BUDGET_LIMIT_2HOP);
+    // [0] Route-specific CU limit: protocol estimate + one 15% buffer.
+    let route_protocols: Vec<_> = opp.hops.iter().map(|hop| hop.protocol).collect();
+    let expected_cu_limit =
+        calculate_dynamic_cu_limit(estimate_route_cu(true, &route_protocols, 0));
     assert_eq!(ixs[0].data[0], 2); // SetComputeUnitLimit tag
-    assert_eq!(&ixs[0].data[1..5], &COMPUTE_BUDGET_LIMIT_2HOP.to_le_bytes());
-    assert_eq!(&ixs[0].data[1..5], &[0xC0, 0x5C, 0x15, 0x00]); // 1,400,000 = 0x00155CC0
+    assert_eq!(&ixs[0].data[1..5], &expected_cu_limit.to_le_bytes());
+    assert!(expected_cu_limit <= MAX_COMPUTE_UNIT_LIMIT);
 
     // [1] SetComputeUnitPrice
     assert_eq!(ixs[1].data[0], 3); // SetComputeUnitPrice tag
@@ -283,47 +289,27 @@ fn test_2hop_bundle_exact_7_instructions_and_260k_cu() {
         Pubkey::from_str("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc").unwrap()
     );
 
-    // [5] Standalone On-Chain Profit Guard: Index = 5
+    // [5] KaminoFlashRepay: borrow_instruction_index = 2
     assert_eq!(
         ixs[5].program_id,
-        Pubkey::from_str(arb_tx::ARB_EXECUTOR_PROGRAM_ID_STR).unwrap()
-    );
-    assert_eq!(ixs[5].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
-
-    // [6] KaminoFlashRepay: Index = 6, pointing to borrow_instruction_index = 2
-    assert_eq!(
-        ixs[6].program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
     );
+    assert_eq!(ixs[5].data.len(), 17, "Repay data must be 17 bytes");
+    assert_eq!(&ixs[5].data[0..8], &FLASH_REPAY_DISCRIMINATOR);
+    assert_eq!(&ixs[5].data[8..16], &10_000_000_000u64.to_le_bytes());
+    assert_eq!(ixs[5].data[16], 2, "borrow_instruction_index must be 2");
+    assert_eq!(ixs[5].accounts.len(), 12);
     assert_eq!(
-        ixs[6].data.len(),
-        17,
-        "Repay data must be strictly 17 bytes"
-    );
-    assert_eq!(&ixs[6].data[0..8], &FLASH_REPAY_DISCRIMINATOR);
-    // Repay `amount` == borrow principal; the origination fee is collected
-    // separately, on top, from the same source ATA at repay time.
-    assert_eq!(&ixs[6].data[8..16], &10_000_000_000u64.to_le_bytes());
-    assert_eq!(
-        ixs[6].data[16], 2,
-        "borrow_instruction_index must be strictly 2"
-    );
-    assert_eq!(
-        ixs[6].accounts.len(),
-        12,
-        "Repay must have canonical 12 accounts"
-    );
-    assert_eq!(
-        ixs[6].accounts[10].pubkey,
+        ixs[5].accounts[10].pubkey,
         Pubkey::from_str(SYSVAR_INSTRUCTIONS_ID).unwrap()
     );
 
-    // [7] Jito Tip Transfer
-    assert_eq!(ixs[7].program_id, Pubkey::new_from_array([0; 32])); // System Program
-    assert_eq!(&ixs[7].data[0..4], &2u32.to_le_bytes());
-    assert_eq!(&ixs[7].data[4..12], &50_000u64.to_le_bytes());
-    assert_eq!(ixs[7].accounts[0].pubkey, payer);
-    assert_eq!(ixs[7].accounts[1].pubkey, tip_acc);
+    // [6] Jito Tip Transfer
+    assert_eq!(ixs[6].program_id, Pubkey::new_from_array([0; 32]));
+    assert_eq!(&ixs[6].data[0..4], &2u32.to_le_bytes());
+    assert_eq!(&ixs[6].data[4..12], &50_000u64.to_le_bytes());
+    assert_eq!(ixs[6].accounts[0].pubkey, payer);
+    assert_eq!(ixs[6].accounts[1].pubkey, tip_acc);
 
     // 2. Build signed VersionedTransaction and assert wire format & MTU compliance
     let v0_tx = TxBuilder::build_kamino_bundle(&params).unwrap();
@@ -360,6 +346,7 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
         tip_account: tip_acc,
         tip_lamports: Lamports(100_000),
         priority_fee_micro_lamports: 2_000,
+        min_profit_raw: arb_types::TokenAmount(30_000),
         opportunity: &opp,
         kamino_params: &kamino_params,
         recent_blockhash,
@@ -381,14 +368,17 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
 
     assert_eq!(
         ixs.len(),
-        9,
-        "3-hop bundle must contain strictly 9 instructions (with profit guard)"
+        8,
+        "3-hop bundle must contain 8 instructions without a standalone executor program"
     );
 
-    // [0] SetComputeUnitLimit: 1_400_000 CU (runtime max fallback)
+    // [0] Route-specific CU limit: protocol estimate + one 15% buffer.
+    let route_protocols: Vec<_> = opp.hops.iter().map(|hop| hop.protocol).collect();
+    let expected_cu_limit =
+        calculate_dynamic_cu_limit(estimate_route_cu(true, &route_protocols, 0));
     assert_eq!(ixs[0].data[0], 2);
-    assert_eq!(&ixs[0].data[1..5], &COMPUTE_BUDGET_LIMIT_3HOP.to_le_bytes());
-    assert_eq!(&ixs[0].data[1..5], &[0xC0, 0x5C, 0x15, 0x00]); // 1,400,000 = 0x00155CC0
+    assert_eq!(&ixs[0].data[1..5], &expected_cu_limit.to_le_bytes());
+    assert!(expected_cu_limit <= MAX_COMPUTE_UNIT_LIMIT);
 
     // [2] KaminoFlashBorrow at index 2
     assert_eq!(
@@ -410,26 +400,19 @@ fn test_3hop_bundle_exact_8_instructions_and_320k_cu() {
         Pubkey::from_str("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8").unwrap()
     );
 
-    // [6] Standalone On-Chain Profit Guard: Index = 6
+    // [6] KaminoFlashRepay with borrow_instruction_index = 2
     assert_eq!(
         ixs[6].program_id,
-        Pubkey::from_str(arb_tx::ARB_EXECUTOR_PROGRAM_ID_STR).unwrap()
-    );
-    assert_eq!(ixs[6].data[0], arb_tx::DISCRIMINATOR_PROFIT_GUARD);
-
-    // [7] KaminoFlashRepay with borrow_instruction_index = 2
-    assert_eq!(
-        ixs[7].program_id,
         Pubkey::from_str(KAMINO_KLEND_PROGRAM_ID).unwrap()
     );
-    assert_eq!(ixs[7].data.len(), 17);
+    assert_eq!(ixs[6].data.len(), 17);
     assert_eq!(
-        ixs[7].data[16], 2,
+        ixs[6].data[16], 2,
         "borrow_instruction_index in 3-hop must still be 2"
     );
 
-    // [8] Jito Tip Transfer
-    assert_eq!(ixs[8].program_id, Pubkey::new_from_array([0; 32]));
+    // [7] Jito Tip Transfer
+    assert_eq!(ixs[7].program_id, Pubkey::new_from_array([0; 32]));
 
     // Build and verify signed transaction
     let v0_tx = TxBuilder::build_kamino_bundle(&params).unwrap();
@@ -496,6 +479,7 @@ fn test_prewarmed_template_patch_and_verify() {
         tip_account: tip_acc,
         tip_lamports: Lamports(initial_tip),
         priority_fee_micro_lamports: 1_000,
+        min_profit_raw: arb_types::TokenAmount(30_000),
         opportunity: &opp,
         kamino_params: &kamino_params,
         recent_blockhash: initial_blockhash,

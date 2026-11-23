@@ -4,7 +4,7 @@
 //! pipeline:
 //!
 //! * the size-search objective is NET profit (gross - Kamino flash fee -
-//!   network cost), never gross output
+//!   base fee - capped priority fee - Jito tip), never gross output
 //! * candidates above the actual available Kamino flash liquidity are rejected
 //! * a gross-positive / net-negative route fails closed
 //! * a network cost larger than the gross edge fails closed
@@ -31,10 +31,19 @@ fn net_profit_deducts_flash_fee_and_network_cost() {
     let result = build_three_leg_meme_pipeline(&pools, &p).unwrap();
     let gross = result.gross_profit_lamports;
     let fee = result.flash_fee_lamports;
+    let capped_price = arb_tx::cap_cu_price_by_profit(
+        gross.max(0) as u64,
+        p.cu_limit,
+        p.priority_fee_micro_lamports,
+        p.priority_fee_max_share_bps,
+    );
+    let priority_fee = arb_tx::priority_fee_lamports(capped_price, p.cu_limit);
+    let total_network_cost =
+        p.network_cost_lamports + arb_constants::SOLANA_BASE_FEE_LAMPORTS + priority_fee;
     assert_eq!(
         result.net_profit_lamports,
-        gross - fee as i64 - 25_000,
-        "net must be gross - flash fee - network cost"
+        gross - fee as i64 - total_network_cost as i64,
+        "net must deduct flash fee, Jito tip, base fee and capped priority fee exactly once"
     );
     assert_eq!(
         fee,

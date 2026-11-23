@@ -22,7 +22,7 @@ impl TxBuilder {
     /// Excludes ephemeral ATA creation from the hot path.
     ///
     /// Instruction Layout:
-    /// [0] SetComputeUnitLimit (260,000 for 2-hop / 320,000 for 3-hop)
+    /// [0] SetComputeUnitLimit (protocol-aware route estimate + one 15% buffer)
     /// [1] SetComputeUnitPrice (priority fee micro-lamports)
     /// [2] Kamino FlashBorrow (amount: d*)
     /// [3] Swap Leg 1
@@ -48,7 +48,9 @@ impl TxBuilder {
         if d_star == 0 {
             return Err(TxError::ZeroBorrowAmount);
         }
-        // P0 #4: ensure the route returns to the borrowed mint.
+        // P0 #4: ensure the route closes in the borrowed WSOL mint. Network
+        // fees are lamport-denominated; only the verified WSOL anchor has an
+        // exact 1:1 raw-unit conversion in this builder.
         if let (Some(first), Some(last)) = (opportunity.hops.first(), opportunity.hops.last()) {
             if first.mint_in != last.mint_out {
                 return Err(TxError::NonClosingRoute {
@@ -56,12 +58,26 @@ impl TxBuilder {
                     out_mint: last.mint_out.0.to_string(),
                 });
             }
+            if first.mint_in.0 != Pubkey::from_str(WSOL_MINT).unwrap() {
+                return Err(TxError::NonWsolFlashLoan(first.mint_in.0.to_string()));
+            }
         }
 
         let mut ixs = Vec::with_capacity(if hops_count == 2 { 7 } else { 8 });
 
-        // [0] SetComputeUnitLimit: 260_000 (2-hop) or 320_000 (3-hop)
-        let cu_limit = get_cu_limit_for_hops(hops_count);
+        // Size compute budget from the actual DEX path. Fixed 2/3-hop
+        // constants undercount DLMM/CLMM-heavy routes and therefore also
+        // understate the non-refundable priority fee used in the profit floor.
+        // This hot-path assembler assumes all required ATAs already exist.
+        let route_protocols: Vec<DexProtocol> =
+            opportunity.hops.iter().map(|hop| hop.protocol).collect();
+        let estimated_cu = estimate_route_cu(true, &route_protocols, 0);
+        let cu_limit = calculate_dynamic_cu_limit(estimated_cu);
+        if cu_limit == 0 || cu_limit > MAX_COMPUTE_UNIT_LIMIT {
+            return Err(TxError::InvalidInput(format!(
+                "invalid route CU limit {cu_limit}"
+            )));
+        }
         ixs.push(build_compute_unit_limit(cu_limit));
 
         // [1] SetComputeUnitPrice
@@ -76,9 +92,13 @@ impl TxBuilder {
         let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let fee = calculate_kamino_flash_fee(d_star, flash_loan_fee_sf);
         let tip_raw = tip_amount.as_u64();
-        let legs = Self::derive_swap_legs(
+        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+            .checked_add(priority_fee_lamports(priority_fee_micro_lamports, cu_limit))
+            .ok_or_else(|| TxError::InvalidInput("network fee arithmetic overflow".into()))?;
+        let legs = Self::derive_swap_legs_with_costs(
             opportunity,
             fee,
+            network_fee_raw,
             tip_raw,
             min_profit_raw.as_u64(),
             slippage_bps,
@@ -89,16 +109,10 @@ impl TxBuilder {
             )?);
         }
 
-        // On-Chain Standalone Profit Guard: assert settlement account covers repay + min net profit
-        let min_balance_after = d_star
-            .checked_add(fee)
-            .and_then(|f| f.checked_add(min_profit_raw.as_u64()))
-            .ok_or_else(|| TxError::InvalidInput("min_balance_after overflow".into()))?;
-        ixs.push(crate::build_profit_guard_instruction(
-            accounts.user_liquidity_ata,
-            min_balance_after,
-        ));
-
+        // The final swap's min_amount_out already enforces the complete
+        // WSOL-denominated economic floor. Do not append the standalone
+        // arb-executor ProfitGuard here: its configured program ID is not a
+        // verified Mainnet deployment, and would make transactions fail.
         // [6] (or [7]) Kamino FlashRepay (borrow_instruction_index = 2).
         // The repay instruction's `amount` argument MUST equal the borrow
         // principal: klend's `flash_repay_checks` enforces
@@ -127,8 +141,10 @@ impl TxBuilder {
     pub fn build_kamino_bundle(
         params: &KaminoBundleParams,
     ) -> Result<VersionedTransaction, TxError> {
-        // min_profit_raw from opportunity (base-mint raw units)
-        let min_profit_raw = TokenAmount(params.opportunity.net_profit.as_u64());
+        // The retained-profit hurdle is an explicit policy input. Do not
+        // substitute opportunity.net_profit here: that value is already a
+        // projected net result, not the operator's minimum required profit.
+        let min_profit_raw = params.min_profit_raw;
         let ixs = Self::assemble_atomic_bundle(
             params.payer,
             params.tip_account,
@@ -195,9 +211,15 @@ impl TxBuilder {
             }
         }
 
-        // 1. Compute Budget: CU limit with safety buffer, and authoritative priority fee price
-        let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        ixs.push(build_compute_unit_limit(effective_cu));
+        // The Supervisor passes an already-buffered CU limit. Encode it
+        // verbatim: buffering again here would make the charged priority fee
+        // exceed the amount evaluated by the economic gate.
+        if cu_limit == 0 || cu_limit > MAX_COMPUTE_UNIT_LIMIT {
+            return Err(
+                TxError::InvalidInput(format!("invalid effective CU limit {cu_limit}")).into(),
+            );
+        }
+        ixs.push(build_compute_unit_limit(cu_limit));
         ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
@@ -237,9 +259,13 @@ impl TxBuilder {
         // 2. Arbitrage Swap Hops (Injected after Compute Budget and ATA creation)
         let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let tip_raw = tip_amount.as_u64();
-        let legs = Self::derive_swap_legs(
+        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+            .checked_add(priority_fee_lamports(priority_fee_micro_lamports, cu_limit))
+            .ok_or_else(|| TxError::InvalidInput("network fee arithmetic overflow".into()))?;
+        let legs = Self::derive_swap_legs_with_costs(
             opportunity,
             0,
+            network_fee_raw,
             tip_raw,
             min_profit_raw.as_u64(),
             slippage_bps,
@@ -284,15 +310,11 @@ impl TxBuilder {
             ixs.push(build_close_token_account(user_wsol_ata, payer, payer));
         }
 
-        // 3. Close Ephemeral ATAs to reclaim 100% of the rent deposit (0.00203928 SOL) directly to payer
-        for (_, ata, token_program) in &intermediate_atas {
-            ixs.push(build_close_token_account_for_program(
-                *ata,
-                payer,
-                payer,
-                *token_program,
-            ));
-        }
+        // Never close intermediate ATAs in the atomic swap transaction.
+        // A venue may pay more than min_out while the next hop consumes only
+        // its guaranteed minimum; a non-zero residual makes CloseAccount
+        // revert the entire route. The post-landing settlement worker probes
+        // balances and closes only accounts proven empty in a separate tx.
 
         // 4. Jito Tip at the end of the atomic transaction
         if tip_amount.as_u64() > 0 {
@@ -314,8 +336,9 @@ impl TxBuilder {
     ///   the previous hop guarantees, never the raw input amount.
     /// - `min_amount_out` discounts `expected_out` by slippage tolerance only,
     ///   applied once per hop (never deducted twice).
-    /// - The final hop's `min_out` is raised to the profit floor
-    ///   (`borrow + flash_fee + tip + min_profit`).
+    /// - Production assemblers use `derive_swap_legs_with_costs` so the final
+    ///   hop floor includes principal, flash fee, base fee, priority fee, tip,
+    ///   and retained minimum profit. This legacy helper assumes zero network fee.
     ///
     /// Routes whose nominal next input exceeds the previous min-out are
     /// rejected upstream by the supervisor's dispatch guard; this clamp is the
@@ -331,6 +354,28 @@ impl TxBuilder {
         min_profit_raw: u64,
         slippage_bps: u64,
     ) -> Result<Vec<(u64, u64)>, TxError> {
+        Self::derive_swap_legs_with_costs(
+            opportunity,
+            flash_fee_raw,
+            0,
+            tip_raw,
+            min_profit_raw,
+            slippage_bps,
+        )
+    }
+
+    /// Derive swap legs with the complete WSOL-denominated execution cost
+    /// floor. network_fee_raw is base + priority fee in the borrowed mint's
+    /// raw units (currently WSOL: 1 lamport equals 1 raw unit).
+    #[allow(clippy::too_many_arguments)]
+    pub fn derive_swap_legs_with_costs(
+        opportunity: &ExecutionOpportunity,
+        flash_fee_raw: u64,
+        network_fee_raw: u64,
+        tip_raw: u64,
+        min_profit_raw: u64,
+        slippage_bps: u64,
+    ) -> Result<Vec<(u64, u64)>, TxError> {
         if opportunity.hops.is_empty() {
             return Ok(Vec::new());
         }
@@ -341,9 +386,12 @@ impl TxBuilder {
         }
 
         let borrow = inputs[0];
-        // Enforce full on-chain solvent floor: borrow + flash_fee + jito_tip + net_retained_profit
+        // Enforce the whole net-profit identity at the final swap:
+        // principal + Kamino fee + base fee + priority fee + Jito tip
+        // + retained minimum profit. All are WSOL raw units on this path.
         let floor = borrow
             .checked_add(flash_fee_raw)
+            .and_then(|v| v.checked_add(network_fee_raw))
             .and_then(|v| v.checked_add(tip_raw))
             .and_then(|v| v.checked_add(min_profit_raw))
             .ok_or_else(|| TxError::InvalidInput("profit floor arithmetic overflow".into()))?;
@@ -416,9 +464,15 @@ impl TxBuilder {
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
 
-        // 1. Compute Budget Limit & Authoritative Priority Fee (Injected BEFORE Swaps & Borrow)
-        let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        ixs.push(build_compute_unit_limit(effective_cu));
+        // The Supervisor supplies the effective CU limit after applying
+        // its single safety buffer. Re-applying it here underestimates the
+        // priority fee in the earlier economic gate.
+        if cu_limit == 0 || cu_limit > MAX_COMPUTE_UNIT_LIMIT {
+            return Err(
+                TxError::InvalidInput(format!("invalid effective CU limit {cu_limit}")).into(),
+            );
+        }
+        ixs.push(build_compute_unit_limit(cu_limit));
         ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
@@ -491,9 +545,13 @@ impl TxBuilder {
         let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let fee = calculate_kamino_flash_fee(borrow_amount, flash_loan_fee_sf);
         let tip_raw = tip_amount.as_u64();
-        let legs = Self::derive_swap_legs(
+        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+            .checked_add(priority_fee_lamports(priority_fee_micro_lamports, cu_limit))
+            .ok_or_else(|| TxError::InvalidInput("network fee arithmetic overflow".into()))?;
+        let legs = Self::derive_swap_legs_with_costs(
             opportunity,
             fee,
+            network_fee_raw,
             tip_raw,
             min_profit_raw.as_u64(),
             slippage_bps,
@@ -553,15 +611,9 @@ impl TxBuilder {
             ixs.push(build_sync_native(user_wsol_ata));
         }
 
-        // On-Chain Standalone Profit Guard: assert settlement account covers repay_funding + min_profit
-        let min_balance_after = repay_funding
-            .checked_add(min_profit_raw.as_u64())
-            .ok_or_else(|| TxError::InvalidInput("min_balance_after overflow".into()))?;
-        ixs.push(crate::build_profit_guard_instruction(
-            user_wsol_ata,
-            min_balance_after,
-        ));
-
+        // The final hop's min_out enforces repayment, every execution cost,
+        // and the retained net-profit floor. A separate arb-executor
+        // instruction is not emitted because its Mainnet ID is not deployed.
         // 5. Kamino Flash Repay (amount == principal; fee collected on top)
         let repay_idx = ixs.len();
         ixs.push(build_kamino_flash_repay_with_index(
@@ -632,53 +684,25 @@ impl TxBuilder {
         Ok(ixs)
     }
 
-    /// Assemble Kamino flash loan with split DEX swap legs.
-    /// Order: ComputeBudget -> FlashBorrow -> Split Swaps -> Return Swap -> FlashRepay -> Jito Tip
+    /// Split routing is intentionally unavailable until its aggregate return-hop
+    /// min-out is proven against the full transaction cost model. This legacy
+    /// assembler accepts prebuilt instructions and cannot safely derive that
+    /// floor, so it must fail closed rather than emit an under-guarded flash loan.
     #[allow(clippy::too_many_arguments)]
     pub fn assemble_split_flash_arbitrage(
-        payer: Pubkey,
-        tip_account: Pubkey,
-        tip_amount: Lamports,
-        cu_limit: u32,
-        priority_fee_micro_lamports: u64,
-        total_loan: u64,
-        legs: &[CompiledInstruction],
-        kamino_params: &KaminoFlashParams,
+        _payer: Pubkey,
+        _tip_account: Pubkey,
+        _tip_amount: Lamports,
+        _cu_limit: u32,
+        _priority_fee_micro_lamports: u64,
+        _total_loan: u64,
+        _legs: &[CompiledInstruction],
+        _kamino_params: &KaminoFlashParams,
         _flash_loan_fee_sf: u64,
     ) -> Result<Vec<CompiledInstruction>> {
-        let mut ixs = Vec::new();
-        let effective_cu = calculate_dynamic_cu_limit(cu_limit);
-        ixs.push(build_compute_unit_limit(effective_cu));
-        ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
-
-        // 1. Kamino Flash Borrow
-        let borrow_idx = ixs.len();
-        ixs.push(build_kamino_flash_borrow(kamino_params, payer, total_loan));
-
-        // 2. Parallel / Split DEX Legs
-        for leg in legs {
-            ixs.push(leg.clone());
-        }
-
-        // 3. Kamino Flash Repay — `amount` is the principal; the origination fee
-        // is debited separately, on top, from the same source ATA by the handler.
-        ixs.push(build_kamino_flash_repay_with_index(
-            kamino_params,
-            payer,
-            total_loan,
-            borrow_idx as u8,
-        ));
-
-        // 4. Standalone Jito Tip
-        if tip_amount.as_u64() > 0 {
-            ixs.push(build_marked_jito_tip_instruction(
-                payer,
-                tip_account,
-                tip_amount,
-            ));
-        }
-
-        Ok(ixs)
+        Err(TxError::InvalidInput(
+            "split flash routing is disabled until aggregate min-out covers principal, flash fee, base fee, priority fee, Jito tip and retained profit".into(),
+        ).into())
     }
 
     /// Compact-u16 encoder according to Solana binary serialization spec.

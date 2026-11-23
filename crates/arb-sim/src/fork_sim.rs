@@ -569,13 +569,42 @@ pub fn parse_landed_balance_changes(
 ) -> LandedBalanceChanges {
     let meta_obj = meta.get("meta").unwrap_or(meta);
 
-    let pre = parse_u64_array(meta_obj.get("preBalances"));
-    let post = parse_u64_array(meta_obj.get("postBalances"));
-    let fee_payer_lamport_delta = match (pre.first(), post.first()) {
-        (Some(p), Some(q)) => *q as i128 - *p as i128,
-        _ => 0,
+    // Verify that balance index 0 is actually this payer in the returned
+    // transaction message. Solana places the fee payer first, but metadata
+    // without its transaction/message cannot safely be attributed to a wallet.
+    let message_payer = meta
+        .get("transaction")
+        .and_then(|tx| tx.get("message"))
+        .and_then(|message| message.get("accountKeys"))
+        .and_then(Value::as_array)
+        .and_then(|keys| keys.first())
+        .and_then(|key| {
+            key.as_str()
+                .or_else(|| key.get("pubkey").and_then(Value::as_str))
+        });
+    let fee_payer_is_verified = message_payer == Some(payer);
+
+    // Parse arrays strictly. filter_map would silently shift account indices
+    // if an RPC response contained a malformed entry and could attribute a
+    // different account's balance delta to the payer.
+    let strict_u64_array = |value: Option<&Value>| -> Option<Vec<u64>> {
+        value?
+            .as_array()?
+            .iter()
+            .map(Value::as_u64)
+            .collect::<Option<Vec<_>>>()
     };
-    let has_lamport_evidence = !pre.is_empty() && !post.is_empty();
+    let pre = strict_u64_array(meta_obj.get("preBalances"));
+    let post = strict_u64_array(meta_obj.get("postBalances"));
+    let has_lamport_evidence = fee_payer_is_verified
+        && matches!((&pre, &post), (Some(a), Some(b)) if !a.is_empty() && a.len() == b.len());
+    let fee_payer_lamport_delta = if has_lamport_evidence {
+        let pre = pre.as_ref().expect("checked above");
+        let post = post.as_ref().expect("checked above");
+        post[0] as i128 - pre[0] as i128
+    } else {
+        0
+    };
 
     let payer_token_delta = |side: &Value| -> HashMap<u8, i128> {
         let mut map = HashMap::new();
@@ -592,9 +621,11 @@ pub fn parse_landed_balance_changes(
                 if mint != wsol_mint {
                     continue;
                 }
-                if let Some(owner) = b.get("owner").and_then(Value::as_str)
-                    && owner != payer
-                {
+                // jsonParsed token-balance entries expose the token-account
+                // authority. Missing owner is not evidence that the account
+                // belongs to our payer: exclude it rather than risk counting a
+                // pool/vault WSOL balance as realized wallet PnL.
+                if b.get("owner").and_then(Value::as_str) != Some(payer) {
                     continue;
                 }
                 if let Some(amount) = b
@@ -695,6 +726,15 @@ mod tests {
         post_tokens: Value,
     ) -> Value {
         json!({
+            "transaction": {
+                "message": {
+                    "accountKeys": [{
+                        "pubkey": PAYER,
+                        "signer": true,
+                        "writable": true,
+                    }]
+                }
+            },
             "meta": {
                 "preBalances": pre_balances,
                 "postBalances": post_balances,
@@ -784,6 +824,50 @@ mod tests {
         let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
         assert_eq!(c.wsol_token_delta, None);
         assert_eq!(c.realized_net_wsol, Some(-1_000_000));
+    }
+
+    #[test]
+    fn missing_token_owner_is_not_attributed_to_payer() {
+        let mut entry = payer_wsol_entry(1, "9000000");
+        entry.as_object_mut().unwrap().remove("owner");
+        let meta = landed_meta(
+            vec![1_000_000_000, 0],
+            vec![999_000_000, 0],
+            json!([entry.clone()]),
+            json!([entry]),
+        );
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.wsol_token_delta, None);
+        assert_eq!(c.realized_net_wsol, Some(-1_000_000));
+    }
+
+    #[test]
+    fn fee_payer_delta_requires_account_key_zero_to_match_payer() {
+        let mut meta = landed_meta(
+            vec![1_000_000_000],
+            vec![999_000_000],
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+        );
+        meta["transaction"]["message"]["accountKeys"][0]["pubkey"] =
+            json!("DifferentWallet111111111111111111111111111111");
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.fee_payer_lamport_delta, 0);
+        assert_eq!(c.realized_net_wsol, None);
+    }
+
+    #[test]
+    fn malformed_balance_array_does_not_shift_payer_index() {
+        let mut meta = landed_meta(
+            vec![1_000_000_000],
+            vec![999_000_000],
+            Value::Array(vec![]),
+            Value::Array(vec![]),
+        );
+        meta["meta"]["preBalances"] = json!(["not-a-lamport-value", 1_000_000_000]);
+        let c = parse_landed_balance_changes(&meta, PAYER, WSOL);
+        assert_eq!(c.fee_payer_lamport_delta, 0);
+        assert_eq!(c.realized_net_wsol, None);
     }
 
     #[test]

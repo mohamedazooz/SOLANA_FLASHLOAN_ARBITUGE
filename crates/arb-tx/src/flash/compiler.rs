@@ -696,7 +696,11 @@ pub fn partition_accounts(
         if !seen.insert(addr) {
             continue;
         }
-        if master_alt.contains(&addr) {
+        // Jito requires the tip account to be present inline, not loaded
+        // through an Address Lookup Table. This explicit exclusion also protects
+        // against operator-provisioned legacy ALTs that still contain old tip
+        // addresses.
+        if addr != ctx.jito_tip_account && master_alt.contains(&addr) {
             // Verify no ALT account is used as a signer (checked at compile time below).
             alt_addresses.push(addr);
         } else {
@@ -933,6 +937,37 @@ fn measure_v1_message_components(
     Ok(budget)
 }
 
+/// Construct the V0 lookup table using the complete on-chain address order.
+///
+/// `alt_accounts` is only the filtered set of referenced addresses. It
+/// MUST NOT replace the full ALT address vector: lookup indices in a V0
+/// message are indices into the complete on-chain table, not into a compacted
+/// per-transaction subset.
+fn authoritative_v0_lookup_table(
+    master_alt: &StaticMasterAlt,
+    alt_accounts: &[Pubkey],
+) -> Result<crate::AddressLookupTable, TxError> {
+    let key = master_alt
+        .alt_address
+        .ok_or_else(|| TxError::InvalidInput("No ALT address configured".to_string()))?;
+
+    for address in alt_accounts {
+        if !master_alt.contains(address) {
+            return Err(TxError::InvalidInput(format!(
+                "referenced ALT address {address} is absent from the authoritative table"
+            )));
+        }
+    }
+
+    Ok(crate::AddressLookupTable {
+        key,
+        // Preserve the full on-chain ordering. Filtering this list changes
+        // every subsequent index and would point the transaction at the wrong
+        // account when the validator resolves the actual table.
+        addresses: master_alt.addresses.clone(),
+    })
+}
+
 fn try_compile_v0(
     ctx: &ThreeLegMemeArbitrageContext,
     instructions: &[CompiledInstruction],
@@ -947,24 +982,30 @@ fn try_compile_v0(
         .verify_no_signers(&signer_addresses)
         .map_err(|e| TxError::InvalidInput(format!("ALT signer violation: {e}")))?;
 
-    // Verify ALT activation.
-    master_alt.verify_activation().map_err(|_| {
-        TxError::InvalidInput("Static Master ALT is not activated on-chain".to_string())
-    })?;
+    // ALT address additions are not usable in the slot in which they were
+    // extended. Verify the route snapshot is from a later slot than the
+    // ALT last_extended_slot. verify_activation() only compares in-memory
+    // provisioning metadata and cannot establish on-chain warmup for a
+    // read-only ALT snapshot.
+    master_alt
+        .verify_warmup(ctx.snapshot_slot)
+        .map_err(|error| {
+            TxError::InvalidInput(format!(
+                "Static Master ALT is not warmed up for route snapshot slot {}: {error}",
+                ctx.snapshot_slot
+            ))
+        })?;
 
     // Verify required addresses exist in ALT.
     master_alt
         .verify_required_present()
         .map_err(|e| TxError::InvalidInput(format!("ALT missing required address: {e}")))?;
 
-    // Build the ALT lookup table for the V0 message.
-    let alt_key = master_alt
-        .alt_address
-        .ok_or_else(|| TxError::InvalidInput("No ALT address configured".to_string()))?;
-    let alt_table = crate::AddressLookupTable {
-        key: alt_key,
-        addresses: alt_accounts.to_vec(),
-    };
+    // Use the full on-chain table ordering; `alt_accounts` is
+    // only a referenced-address subset and must never be compacted into
+    // the serialized lookup table.
+    let alt_table = authoritative_v0_lookup_table(master_alt, alt_accounts)?;
+    let alt_key = alt_table.key;
 
     let message_bytes = crate::TxBuilder::compile_v0_message(
         ctx.payer,
@@ -1225,7 +1266,7 @@ mod tests {
             meme_b_is_token_2022: false,
             meme_a_withheld_fees: 0,
             meme_b_withheld_fees: 0,
-            snapshot_slot: 250_000_000,
+            snapshot_slot: 250_000_002, // later than the fixture ALT last_extended_slot
             instruction_version: 0,
             cu_limit: COMPUTE_BUDGET_LIMIT_3HOP,
             priority_fee_micro_lamports: 1_000,
@@ -1322,7 +1363,7 @@ mod tests {
         let alt = test_master_alt();
         let (alt_accs, inline_accs) = partition_accounts(&ctx, &alt).unwrap();
 
-        // Static addresses (programs, mints, WSOL ATA, Jito tips) should be in ALT.
+        // Reusable static program addresses and common mints are in ALT.
         assert!(
             alt_accs
                 .iter()
@@ -1330,22 +1371,36 @@ mod tests {
         );
         // Payer is a signer, not in the ALT.
         assert!(!alt_accs.contains(&ctx.payer));
-        // The context references 1 Jito tip account, which should be in ALT.
-        let jito_count = alt_accs
-            .iter()
-            .filter(|a| {
-                JITO_TIP_ACCOUNTS
-                    .iter()
-                    .any(|s| Pubkey::from_str(s).unwrap() == **a)
-            })
-            .count();
-        assert_eq!(jito_count, 1);
-        // All 8 Jito tip accounts should be in the master_alt itself.
+        // Jito tip accounts must remain inline, even if an old ALT contains them.
+        assert!(inline_accs.contains(&ctx.jito_tip_account));
+        assert!(!alt_accs.contains(&ctx.jito_tip_account));
         let jito_in_alt: usize = JITO_TIP_ACCOUNTS
             .iter()
             .filter(|s| alt.contains(&Pubkey::from_str(s).unwrap()))
             .count();
-        assert_eq!(jito_in_alt, 8);
+        assert_eq!(jito_in_alt, 0);
+
+        // Regression: a legacy ALT containing the tip account must not cause
+        // the compiler to load it through a lookup table.
+        let mut legacy_addresses = alt.addresses.clone();
+        legacy_addresses.push(ctx.jito_tip_account);
+        let legacy_alt = StaticMasterAlt::from_onchain_readonly(
+            Pubkey::new_unique(),
+            crate::master_alt::ParsedAltAccount {
+                deactivation_slot: u64::MAX,
+                last_extended_slot: ctx.snapshot_slot,
+                last_extended_slot_start_index: 0,
+                authority: None,
+                addresses: legacy_addresses,
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        let (legacy_alt_accounts, legacy_inline_accounts) =
+            partition_accounts(&ctx, &legacy_alt).unwrap();
+        assert!(!legacy_alt_accounts.contains(&ctx.jito_tip_account));
+        assert!(legacy_inline_accounts.contains(&ctx.jito_tip_account));
 
         // Dynamic meme pool accounts should be inline.
         assert!(inline_accs.contains(&ctx.pool_1.0));
@@ -1353,6 +1408,57 @@ mod tests {
         // Meme mints (not in ALT) should be inline.
         assert!(inline_accs.contains(&ctx.meme_a_mint.0));
         assert!(inline_accs.contains(&ctx.meme_b_mint.0));
+    }
+
+    #[test]
+    fn test_v0_lookup_indices_use_full_onchain_alt_order() {
+        let ctx = test_ctx();
+        let mut alt = test_master_alt();
+
+        // Simulate an address earlier in the on-chain table that this route
+        // does not use. The route's filtered ALT subset begins at a different
+        // position, so using that subset would serialize an invalid index.
+        let unrelated = Pubkey::new_unique();
+        alt.addresses.insert(0, unrelated);
+        alt.categories
+            .insert(0, crate::master_alt::AddressCategory::StaticBridgePool);
+        alt.address_set.insert(unrelated);
+
+        let meteora_program = Pubkey::from_str(METEORA_DLMM_PROGRAM_ID).unwrap();
+        let onchain_index = alt.index_of(&meteora_program).unwrap();
+        let (referenced_alt_accounts, _) = partition_accounts(&ctx, &alt).unwrap();
+        let filtered_index = referenced_alt_accounts
+            .iter()
+            .position(|address| *address == meteora_program)
+            .unwrap();
+        assert_ne!(
+            onchain_index, filtered_index,
+            "fixture must expose the compacted-subset index bug"
+        );
+
+        let lookup_table = authoritative_v0_lookup_table(&alt, &referenced_alt_accounts).unwrap();
+        assert_eq!(lookup_table.addresses, alt.addresses);
+        assert_eq!(lookup_table.addresses[onchain_index], meteora_program);
+
+        // Build a minimal v0 message whose only lookup is the Meteora program.
+        // The final readonly lookup index must equal its true on-chain index.
+        let instruction = CompiledInstruction {
+            program_id: meteora_program,
+            accounts: Vec::new(),
+            data: Vec::new(),
+        };
+        let message = crate::TxBuilder::compile_v0_message(
+            ctx.payer,
+            &[instruction],
+            [7u8; 32],
+            std::slice::from_ref(&lookup_table),
+        )
+        .unwrap();
+        assert_eq!(
+            message.last().copied(),
+            Some(onchain_index as u8),
+            "serialized lookup must use the full table index, not the filtered subset index"
+        );
     }
 
     #[test]
@@ -1377,9 +1483,23 @@ mod tests {
     fn test_v0_is_primary_when_transport_unsupported() {
         let mut ctx = test_ctx();
         ctx.v1_transport_supported = false;
-        let alt = test_master_alt();
-        let signer = KeypairSigner::new_random();
+        let provisioned = test_master_alt();
+        let alt = StaticMasterAlt::from_onchain_readonly(
+            provisioned.alt_address.unwrap(),
+            crate::master_alt::ParsedAltAccount {
+                deactivation_slot: u64::MAX,
+                last_extended_slot: 250_000_001,
+                last_extended_slot_start_index: 0,
+                authority: None,
+                addresses: provisioned.addresses.clone(),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(alt.categories.is_empty());
 
+        let signer = KeypairSigner::new_random();
         let result = compile_3leg_meme_dlmm_arb(&ctx, &alt, &signer).unwrap();
         match &result {
             CompileResult::V0JitoCompatible(v0) => {
@@ -1387,6 +1507,34 @@ mod tests {
             }
             other => panic!("V0 must be primary without a proven V1 transport, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_v0_compile_rejects_alt_extended_in_same_snapshot_slot() {
+        let mut ctx = test_ctx();
+        ctx.v1_transport_supported = false;
+        ctx.snapshot_slot = 250_000_001;
+        let provisioned = test_master_alt();
+        let alt = StaticMasterAlt::from_onchain_readonly(
+            provisioned.alt_address.unwrap(),
+            crate::master_alt::ParsedAltAccount {
+                deactivation_slot: u64::MAX,
+                last_extended_slot: 250_000_001,
+                last_extended_slot_start_index: 0,
+                authority: None,
+                addresses: provisioned.addresses.clone(),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+
+        let signer = KeypairSigner::new_random();
+        let err = compile_3leg_meme_dlmm_arb(&ctx, &alt, &signer).unwrap_err();
+        assert!(
+            err.to_string().contains("not warmed up"),
+            "same-slot ALT use must be rejected, got {err}"
+        );
     }
 
     #[test]

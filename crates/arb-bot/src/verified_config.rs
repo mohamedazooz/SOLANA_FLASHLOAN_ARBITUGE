@@ -46,9 +46,10 @@ pub struct VerifiedQuoteInputs {
     pub lamports_per_base_raw: VerifiedValue<u128>,
     /// Base-mint raw units per lamport denominator (1 for WSOL).
     pub lamports_per_base_denom: VerifiedValue<u128>,
-    /// Configured Jito tip ceiling, lamports. This deliberately overstates the
-    /// expected cost until a fresh tip-floor feed is wired into the same slot-aware
-    /// input contract.
+    /// Discovery-only Jito tip estimate in lamports: fresh landed-tip p50,
+    /// bounded by the configured maximum. Falls back to the configured ceiling
+    /// when the oracle snapshot is absent or stale. Dispatch always re-prices
+    /// the candidate with the actual planned tip before sending.
     pub tip_lamports: VerifiedValue<Lamports>,
 }
 
@@ -227,11 +228,24 @@ pub fn build_verified_inputs_from_snapshots(
         ),
         tip_lamports: VerifiedValue::new(
             tip_lamports,
-            "configured-jito-tip-ceiling",
+            "jito-tip-discovery-estimate",
             current_slot,
             current_slot,
         ),
     })
+}
+
+/// Select a conservative discovery-only Jito tip estimate. A fresh p50 is
+/// useful for route discovery but is capped by the operator's configured
+/// maximum; if the feed is stale or absent, retain the conservative ceiling.
+pub fn bounded_jito_tip_discovery_estimate(
+    configured_max: Lamports,
+    fresh_p50: Option<Lamports>,
+) -> Lamports {
+    match fresh_p50 {
+        Some(p50) => Lamports(p50.as_u64().min(configured_max.as_u64())),
+        None => configured_max,
+    }
 }
 
 /// Well-known mints used by the WSOL-first execution path.
@@ -309,6 +323,22 @@ mod tests {
         assert_eq!(inputs.lamports_per_base_raw.value, 1);
         assert_eq!(inputs.lamports_per_base_denom.value, 1);
         assert_eq!(inputs.tip_lamports.value, Lamports(50_000));
+    }
+
+    #[test]
+    fn jito_discovery_tip_uses_fresh_p50_and_never_exceeds_configured_max() {
+        assert_eq!(
+            bounded_jito_tip_discovery_estimate(Lamports(100_000), Some(Lamports(40_000))),
+            Lamports(40_000)
+        );
+        assert_eq!(
+            bounded_jito_tip_discovery_estimate(Lamports(100_000), Some(Lamports(150_000))),
+            Lamports(100_000)
+        );
+        assert_eq!(
+            bounded_jito_tip_discovery_estimate(Lamports(100_000), None),
+            Lamports(100_000)
+        );
     }
 
     #[test]

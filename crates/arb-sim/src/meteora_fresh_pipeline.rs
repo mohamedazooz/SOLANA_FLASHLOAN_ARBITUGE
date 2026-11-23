@@ -511,9 +511,13 @@ impl MeteoraDlmmFreshStatePipeline {
             };
 
             // 5. Simulate immediately against Mainnet (non-broadcast)
-            let priority_fee_lamports = (self.config.priority_fee_micro_lamports
-                * (self.config.cu_limit as u64))
-                / 1_000_000;
+            // Match the canonical transaction builder: ceiling division
+            // prevents the simulation profitability gate from understating
+            // the non-refundable priority fee by a fractional lamport.
+            let priority_fee_lamports = arb_tx::priority_fee_lamports(
+                self.config.priority_fee_micro_lamports,
+                self.config.cu_limit,
+            );
             let costs = ExecutionCostBreakdown::standard(
                 priority_fee_lamports,
                 0, // no jito tip in simulation

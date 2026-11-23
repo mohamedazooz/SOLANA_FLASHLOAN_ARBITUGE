@@ -55,8 +55,12 @@ pub struct ThreeLegMemeContextParams {
     pub meme_a_token_program: Pubkey,
     pub meme_b_token_program: Pubkey,
     pub snapshot_slot: u64,
+    /// Effective CU limit already includes the route's single safety buffer.
     pub cu_limit: u32,
+    /// Adaptive priority price before applying the same profit-share cap as dispatch.
     pub priority_fee_micro_lamports: u64,
+    /// Maximum priority-fee share of each candidate's gross profit (basis points).
+    pub priority_fee_max_share_bps: u64,
     pub jito_tip_account: Pubkey,
     pub jito_tip_lamports: u64,
     pub recent_blockhash: [u8; 32],
@@ -69,8 +73,9 @@ pub struct ThreeLegMemeContextParams {
     /// (`ReserveConfig.fees.flash_loan_fee_sf`). `0` disables the fee term
     /// (non-flash-funded evaluation only).
     pub flash_loan_fee_sf: u64,
-    /// Conservative flat network cost per transaction (base fee + priority
-    /// fee + Jito tip) in lamports, deducted from every size candidate.
+    /// Fixed discovery network cost in lamports (currently the Jito tip).
+    /// Base and candidate-specific capped priority fees are added in
+    /// `candidate_network_cost_lamports` so Top-K ordering matches dispatch.
     pub network_cost_lamports: u64,
     /// Actual available Kamino flash liquidity decoded from the reserve
     /// supply-vault token account. `None` means the snapshot was unavailable;
@@ -108,6 +113,7 @@ impl Default for ThreeLegMemeContextParams {
             snapshot_slot: 0,
             cu_limit: arb_constants::COMPUTE_BUDGET_LIMIT_3HOP,
             priority_fee_micro_lamports: 1_000,
+            priority_fee_max_share_bps: arb_constants::DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS,
             jito_tip_account: Pubkey::new_unique(),
             jito_tip_lamports: 10_000,
             recent_blockhash: [42u8; 32],
@@ -731,17 +737,38 @@ fn assemble_pipeline_result(
     })
 }
 
+/// Candidate-specific total network cost (base fee + capped priority fee + Jito tip).
+/// Uses the same ceil fee calculation and profit-share cap as the Supervisor
+/// dispatch gate. Overflow saturates to u64::MAX so the candidate fails closed.
+fn candidate_network_cost_lamports(
+    gross_profit_lamports: u64,
+    params: &ThreeLegMemeContextParams,
+) -> u64 {
+    let capped_price = arb_tx::cap_cu_price_by_profit(
+        gross_profit_lamports,
+        params.cu_limit,
+        params.priority_fee_micro_lamports,
+        params.priority_fee_max_share_bps,
+    );
+    let priority_fee = arb_tx::priority_fee_lamports(capped_price, params.cu_limit);
+    params
+        .network_cost_lamports
+        .checked_add(arb_constants::SOLANA_BASE_FEE_LAMPORTS)
+        .and_then(|cost| cost.checked_add(priority_fee))
+        .unwrap_or(u64::MAX)
+}
+
 /// NET profit of a fully-quoted chain at `input`: gross output minus input,
-/// minus the Kamino flash fee at the on-chain U68F60 rate, minus the
-/// configured flat network cost. All integer, all checked.
+/// Kamino's U68F60 flash fee, base fee, capped priority fee and Jito tip.
+/// The final dispatch gate re-evaluates the actual planned tip and actual CU
+/// price/limit before the transaction can be sent.
 fn net_profit_of(quote: ChainQuote, input: u64, params: &ThreeLegMemeContextParams) -> i64 {
-    // Delegates to the canonical accounting in flash_loan_sizing (single
-    // source of truth for net profit across the optimizer and this pipeline).
+    let gross_profit = quote.out[2].saturating_sub(input);
     crate::flash_loan_sizing::net_profit_lamports(
         quote.out[2],
         input,
         params.flash_loan_fee_sf,
-        params.network_cost_lamports,
+        candidate_network_cost_lamports(gross_profit, params),
     )
 }
 
@@ -1076,6 +1103,7 @@ mod tests {
             snapshot_slot: 467_000_000,
             cu_limit: 400_000,
             priority_fee_micro_lamports: 1_000,
+            priority_fee_max_share_bps: arb_constants::DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS,
             jito_tip_account: Pubkey::from_str(arb_constants::JITO_TIP_ACCOUNTS[0]).unwrap(),
             jito_tip_lamports: 10_000,
             recent_blockhash: [42u8; 32],
@@ -1088,6 +1116,44 @@ mod tests {
             input_size: 1_000_000,
             size_search_sizes: vec![1_000_000],
         }
+    }
+
+    #[test]
+    fn topk_network_cost_includes_base_priority_and_tip_once() {
+        let mut params = context_params();
+        params.cu_limit = 320_000;
+        params.priority_fee_micro_lamports = 1_000;
+        params.priority_fee_max_share_bps = 10_000;
+        params.network_cost_lamports = 40_000;
+
+        // 1,000 micro-lamports/CU * 320,000 CU = 320 lamports.
+        // Add 5,000 base fee and 40,000 Jito discovery tip.
+        assert_eq!(
+            candidate_network_cost_lamports(100_000_000, &params),
+            45_320
+        );
+    }
+
+    #[test]
+    fn topk_priority_fee_uses_the_same_candidate_profit_share_cap_as_dispatch() {
+        let mut params = context_params();
+        params.cu_limit = 320_000;
+        params.priority_fee_micro_lamports = 1_000_000;
+        params.priority_fee_max_share_bps = 1_000; // 10% of gross profit
+        params.network_cost_lamports = 40_000;
+
+        // Uncapped fee would be 320,000 lamports; 10% of 100,000 gross is 10,000.
+        assert_eq!(candidate_network_cost_lamports(100_000, &params), 55_000);
+    }
+
+    #[test]
+    fn topk_network_cost_overflow_fails_closed() {
+        let mut params = context_params();
+        params.network_cost_lamports = u64::MAX;
+        assert_eq!(
+            candidate_network_cost_lamports(1_000_000, &params),
+            u64::MAX
+        );
     }
 
     /// A pool whose DLMM snapshot is absent must fail closed with

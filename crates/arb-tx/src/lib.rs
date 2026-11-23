@@ -173,6 +173,24 @@ mod tests {
         assert_eq!(priority_fee_lamports(1, 1_000_001), 2);
         // Zero price costs nothing.
         assert_eq!(priority_fee_lamports(0, 400_000), 0);
+        // A value that cannot be represented as u64 lamports must fail closed;
+        // dividing a u64-saturated product would dangerously understate it.
+        assert_eq!(priority_fee_lamports(u64::MAX, u32::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn cu_profit_cap_and_route_estimator_are_overflow_safe() {
+        // u64 × u64 is evaluated in u128; a huge budget must not wrap into
+        // a tiny or zero per-CU ceiling.
+        assert_eq!(
+            cap_cu_price_by_profit(u64::MAX, 1_400_000, u64::MAX, u64::MAX),
+            u64::MAX
+        );
+
+        let many_dlmm_hops = vec![DexProtocol::MeteoraDlmm; 40_000];
+        let estimate = estimate_route_cu(true, &many_dlmm_hops, usize::MAX);
+        assert_eq!(estimate, u32::MAX);
+        assert_eq!(calculate_dynamic_cu_limit(estimate), MAX_COMPUTE_UNIT_LIMIT);
     }
 
     /// §6.3 regression: the builder must encode the caller's authoritative price
@@ -431,15 +449,17 @@ mod tests {
             &[],
         )
         .unwrap();
-        // Base route: CU limit + CU price + WSOL ATA Create + Kamino Borrow + 2 Swaps + Profit Guard + Kamino Repay + Jito Tip = 9 instructions
-        assert_eq!(ixs_base.len(), 9);
-        assert_eq!(&ixs_base[0].data[1..5], &184_000u32.to_le_bytes()); // 160k + 15% buffer = 184k
+        // Base route encodes the caller's already-effective CU limit once.
+        // Final-hop min_out carries the complete net-profit floor; no custom
+        // executor program is required in the production flash path.
+        assert_eq!(ixs_base.len(), 8);
+        assert_eq!(&ixs_base[0].data[1..5], &160_000u32.to_le_bytes());
         assert_eq!(ixs_base[3].accounts[0].pubkey, payer); // Borrow user authority (signer)
         assert_eq!(ixs_base[3].accounts[2].pubkey, params.lending_market); // Borrow lending market
-        assert_eq!(ixs_base[7].accounts[0].pubkey, payer); // Repay user authority (signer)
-        assert_eq!(ixs_base[7].accounts[2].pubkey, params.lending_market); // Repay lending market
+        assert_eq!(ixs_base[6].accounts[0].pubkey, payer); // Repay user authority (signer)
+        assert_eq!(ixs_base[6].accounts[2].pubkey, params.lending_market); // Repay lending market
 
-        // 2. Route with intermediate trending token (Ephemeral ATA Create -> Swaps -> Profit Guard -> Repay -> Close & Rent Reclaim)
+        // 2. Route with intermediate trending token (Ephemeral ATA Create -> Swaps -> Repay -> Close & Rent Reclaim)
         let intermediate_token = Pubkey::new_from_array([88; 32]);
         let opp_intermediate = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
@@ -493,13 +513,13 @@ mod tests {
             &[],
         )
         .unwrap();
-        // Base (9) + 1 Ephemeral ATA Create = 10 instructions. Residual-safe
+        // Base (8) + 1 Ephemeral ATA Create = 9 instructions. Residual-safe
         // lifecycle (F-01): the intermediate ATA is NEVER closed inside the
         // atomic transaction — a leg's actual output can exceed the exact
         // amount consumed by the next leg, and closing a non-empty token
         // account reverts the whole transaction. Rent reclaim happens
         // post-landing in a separate settlement tx.
-        assert_eq!(ixs_inter.len(), 10);
+        assert_eq!(ixs_inter.len(), 9);
         assert_eq!(
             ixs_inter[2].program_id,
             Pubkey::from_str(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap()
@@ -922,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn test_final_hop_onchain_balance_assertion_guarantee() {
+    fn test_final_hop_min_out_includes_all_execution_costs() {
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
 
@@ -970,12 +990,20 @@ mod tests {
         let min_profit = 10_000_000; // 0.01 SOL
         let slippage_bps = 50; // 0.5%
 
-        let legs = TxBuilder::derive_swap_legs(&opp, flash_fee, jito_tip, min_profit, slippage_bps)
-            .unwrap();
+        let network_fee = 25_000; // 5,000 base + 20,000 priority fee
+        let legs = TxBuilder::derive_swap_legs_with_costs(
+            &opp,
+            flash_fee,
+            network_fee,
+            jito_tip,
+            min_profit,
+            slippage_bps,
+        )
+        .unwrap();
         assert_eq!(legs.len(), 2);
 
-        // Required floor = borrow + flash_fee + jito_tip + min_profit = 1_018_000_000
-        let floor = 1_000_000_000 + flash_fee + jito_tip + min_profit;
+        // Required floor includes base + priority fees as well as flash fee, tip, and retained profit.
+        let floor = 1_000_000_000 + flash_fee + network_fee + jito_tip + min_profit;
         let final_min_out = legs[1].1;
         assert!(
             final_min_out >= floor,
@@ -985,18 +1013,41 @@ mod tests {
         // If expected_out cannot meet the floor, derive_swap_legs must reject pre-flight
         let failing_opp = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
-            expected_out: TokenAmount(1_015_000_000), // below floor of 1_018_000_000
+            expected_out: TokenAmount(1_015_000_000), // below full cost floor
             hop_inputs: vec![1_000_000_000, 200_000_000, 1_015_000_000],
             ..opp
         };
-        let err = TxBuilder::derive_swap_legs(
+        let err = TxBuilder::derive_swap_legs_with_costs(
             &failing_opp,
             flash_fee,
+            network_fee,
             jito_tip,
             min_profit,
             slippage_bps,
         );
         assert!(matches!(err, Err(TxError::ProfitFloorNotMet { .. })));
+    }
+
+    #[test]
+    fn split_flash_assembler_fails_closed_until_full_economic_floor_is_proven() {
+        let result = TxBuilder::assemble_split_flash_arbitrage(
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Lamports(0),
+            300_000,
+            1_000,
+            1_000_000,
+            &[],
+            &KaminoFlashParams::default(),
+            0,
+        );
+        let error = result.expect_err("split routing must remain fail-closed");
+        assert!(
+            error
+                .to_string()
+                .contains("split flash routing is disabled"),
+            "unexpected split-routing rejection: {error}"
+        );
     }
 
     #[test]
