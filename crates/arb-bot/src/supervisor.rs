@@ -1467,6 +1467,7 @@ mod tests {
                 expected_net: Lamports(1),
                 tip_lamports: None,
                 decision: "test".into(),
+                ..Default::default()
             })
             .expect("write must succeed");
         drop(store);
@@ -1508,6 +1509,7 @@ mod tests {
                 expected_net: Lamports(100),
                 tip_lamports: None,
                 decision: "test".into(),
+                ..Default::default()
             })
             .expect("record attempt");
         drop(store);

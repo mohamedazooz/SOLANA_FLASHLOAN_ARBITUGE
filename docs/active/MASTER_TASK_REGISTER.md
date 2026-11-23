@@ -490,3 +490,96 @@ PR: (this PR)
 REMAINING_RISKS: Redis-outage dedup behavior untested at integration level; in-memory rate limiter per-instance (N2).
 NEXT_TASK: Mission §17 Phase 12 — Database & storage (DATA_MODEL.md + DATABASE_RECOVERY.md).
 ```
+
+```markdown
+TASK_ID: TASK-M12-001
+PHASE: Mission §17 — Database & Storage (Phase 12)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Audit the persistence layer against the mission §17 contract; extend execution records
+so every attempt carries enough data to reconstruct the economic result; register and close the
+gap findings.
+FILES: crates/arb-store/migrations/001_init.sql, crates/arb-store/migrations/001_postgres_init.sql,
+crates/arb-store/src/lib.rs, crates/arb-store/src/postgres_store.rs,
+crates/arb-bot/src/supervisor/opportunity.rs, crates/arb-bot/src/supervisor/dispatch.rs,
+crates/arb-bot/src/supervisor/recovery.rs, docs/active/architecture/DATA_MODEL.md,
+docs/active/operations/DATABASE_RECOVERY.md
+FUNCTIONS: Store::record_attempt, Store::record_outcome_detail (new), Store::set_dispatch_bundle_id (new), SqliteStore::evolve_schema, postg_store::row_to_attempt, opportunity record site
+CURRENT_BEHAVIOR (pre-fix): attempts stored only (id, slot, route_id, expected_net, tip, decision);
+outcomes stored no actual_output/failure_reason; dispatch_intents had no bundle id. Economic
+reconstruction (borrow, flash fee, priority fee, expected output, pool ids) was impossible from
+the durable store.
+ROOT_CAUSE: Schema evolved feature-by-feature without a reconstruction contract.
+REQUIRED_CHANGE: add attempts.{borrow_amount,flash_fee_raw,priority_fee_lamports,expected_output_raw,pool_ids},
+outcomes.{actual_output_raw,failure_reason}, dispatch_intents.bundle_id to both SQLite and
+PostgreSQL schemas with idempotent evolution; populate from the production record sites; keep
+NULL = unknown (never assume zero costs).
+TEST_PLAN: cargo test -p arb-store -p arb-bot --all-targets.
+ACCEPTANCE_CRITERIA: roundtrip of all economic fields on backends covered by tests; outcome
+detail persistence + provenance-guarded PnL intact; bundle id captured after provider acceptance
+(pre-send intent stays signature-keyed); legacy databases open and evolve without failure.
+ACTUAL_RESULT: 2026-11-23 — 15/15 arb-store tests including 4 new (economic roundtrip,
+outcome detail + PnL guard, bundle-id roundtrip, legacy evolution). FOUND + FIXED real legacy-DB
+bug in the same phase: INIT_SQL created idx_outcomes_pnl on outcomes(status, provenance, …)
+BEFORE evolve_schema added `provenance`, so any database predating provenance failed the entire
+open() migration chain; index creation moved into evolve_schema after the column-add step and is
+covered by schema_evolution_adds_economic_columns_to_legacy_db.
+REMAINING_RISKS: PostgresStore evolution not end-to-end tested in CI (no PG service in sandbox);
+outcomes.actual_output_raw/failure_reason are recorded but not yet fed by all dispatch
+reconciliation paths (wired to record_outcome_detail call sites is a later pass).
+PR: (this PR)
+NEXT_TASK: Mission §18 Phase 13 — CI/CD, Docker & VPS.
+```
+
+```markdown
+TASK_ID: TASK-M13-001
+PHASE: Mission §18 — CI/CD, Docker & VPS (Phase 13)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Audit all deployment workflows; pin deployable commit; add health-check + automatic rollback; remove duplicate compose; pin third-party Actions to SHAs; add weekly advisory re-scan; write DEPLOYMENT_ARCHITECTURE/VPS_RUNBOOK/ROLLBACK_PROCEDURE.
+FILES: .github/workflows/deploy-vps.yml, .github/workflows/rust-ci.yml, docker-compose.shadow.yml (deleted), docs/active/operations/{DEPLOYMENT_ARCHITECTURE,VPS_RUNBOOK,ROLLBACK_PROCEDURE}.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: deploy job remote script (deploy-vps.yml), rollback() closure, merge-base ancestry gate, schedule cron (rust-ci.yml:15), job if-guards
+CURRENT_BEHAVIOR (before): deploy-vps shipped `git reset --hard origin/main` — deployed whatever main pointed at at run time (race with concurrent merge), no health gate, no rollback; docker-compose.shadow.yml byte-identical to docker-compose.yml; third-party actions tag-pinned only; advisories only re-checked on pushes.
+ROOT_CAUSE: DEP-F-2026-11-23-N1 (P1): deploy SHA-race; DEP-F-2026-11-23-N2 (P1): no post-deploy health/rollback; DEP-F-2026-11-23-N3 (P3): duplicate compose; DEP-F-2026-11-23-N4 (P2): mutable action tags; DEP-F-2026-11-23-N5 (P2): no periodic advisory re-scan.
+REQUIRED_CHANGE: pinned github.sha deploy with ancestry verification; rollback() closure invoked on build/restart/health failure; `environment: production` approval hook; SHA pins for dtolnay/rust-toolchain, Swatinem/rust-cache, EmbarkStudios/cargo-deny-action, gitleaks/gitleaks-action, actions/checkout, actions/setup-node; weekly cron security-only re-scan (heavy jobs if-guarded); duplicate compose removed; 3 ops docs written.
+TEST_PLAN: YAML parse of both workflows; local yaml safety check; (live deploy runs are operator-dispatch only by mission §4.5).
+ACCEPTANCE_CRITERIA: Deploy can never build an unintended commit; failure auto-rolls back; all action refs immutable SHAs; advisories re-scanned weekly without pushes; no duplicate compose files; ops docs present.
+ACTUAL_RESULT: 2026-11-23 — both workflows YAML-valid; pins resolved from GitHub API and annotated; OK.
+PR: (this PR)
+REMAINING_RISKS: `production` GitHub Environment must be created by operator to activate the approval gate; SBOM artifact not yet generated (P3); StrictHostKeyChecking=accept-new is TOFU (documented, P3); live rollback path untested on the actual VPS (requires operator dispatch).
+NEXT_TASK: Mission §19 Phase 14 — Performance & reliability testing.
+
+TASK_ID: TASK-M14-001
+PHASE: Mission §19 — Performance & reliability testing (Phase 14)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Reproducible benchmark baseline (criterion + dual-ingest + live pre-flight) and reliability evidence report; no optimization claimed without comparable numbers.
+FILES: docs/active/performance/PERFORMANCE_REPORT.md, docs/active/performance/RELIABILITY_REPORT.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: cpmm_out (arb-math benches 16.97 ns), optimal_two_pool (194.15 ns criterion / 236 ns on live reserves), latency-bench movements 1–5, DualIngestShadow bench
+CURRENT_BEHAVIOR: local deterministic work (decode→quote→size→build→sign) ≈ 15 µs; network dominates (Helius 39 ms RTT; Jito Amsterdam 51.9 ms best vs Tokyo 719 ms).
+ROOT_CAUSE: N/A (measurement task). Perf/flamegraph not permitted in sandbox — recorded.
+REQUIRED_CHANGE: docs only; perf baseline recorded pre-optimization per mission §19.
+TEST_PLAN: cargo bench -p arb-math; cargo bench -p arb-ingest --bench dual_ingest_bench --features extra-ingest; 10 reliability suites executed (--release) 41/41 pass.
+ACCEPTANCE_CRITERIA: baseline recorded with exact commands; every pass claim backed by a fresh run; live RTL math parity via latency-bench (read-only, no broadcast).
+ACTUAL_RESULT: 2026-11-23 — bench + assertions listed in RELIABILITY_REPORT all pass; slot-budget conclusion: Frankfurt/Amsterdam colocation is the top latency lever.
+PR: (this PR)
+REMAINING_RISKS: live chaos testing + 24 h shadow soak remain operator actions; perf_event unavailable in sandbox.
+NEXT_TASK: Mission §20 Phase 16 — Final documentation rebuild + root README.
+
+TASK_ID: TASK-M16-001
+PHASE: Mission §20/§15–16 — Final documentation rebuild + root README (Phases 15–16)
+PRIORITY: P1
+STATUS: COMPLETED
+OBJECTIVE: Complete the ACTIVE status/operations tree (PROJECT_STATUS, PRODUCTION_READINESS, KNOWN_ISSUES, SHADOW_MODE_RUNBOOK, INCIDENT_RESPONSE) and rebuild the root README to the 30-section mission spec with only verified claims.
+FILES: docs/active/status/{PROJECT_STATUS,PRODUCTION_READINESS,KNOWN_ISSUES}.md, docs/active/operations/{SHADOW_MODE_RUNBOOK,INCIDENT_RESPONSE}.md, README.md, docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS: N/A (documentation + verification-of-links task; every referenced path existence-checked).
+CURRENT_BEHAVIOR (before): status/ contained only INACTIVE_FEATURES; no readiness verdict, no incident response, README predated phases 13–14 evidence and carried 3 broken doc links.
+ROOT_CAUSE: N/A.
+REQUIRED_CHANGE: docs only; verdict SIMULATION READY / SHADOW REQUIRED pending 24h operator soak recorded explicitly; README restructured 1–30 with link-existence validation.
+TEST_PLAN: file-existence check of all referenced docs; content cross-check against register entries and fresh phase-14 measurements.
+ACCEPTANCE_CRITERIA: no empty placeholder docs; ACTIVE/INACTIVE/ARCHIVE intact; every claim labeled to evidence; README distinguishes Quote vs Execution / Shadow vs Live / simulated vs mainnet-verified.
+ACTUAL_RESULT: 2026-11-23 — all 5 new docs written from register evidence; README rebuilt (30 sections), 3 stale links corrected to real files after existence check.
+PR: (this PR)
+REMAINING_RISKS: 24h live shadow soak + production-environment approval gate remain operator actions (recorded in PRODUCTION_READINESS.md).
+NEXT_TASK: Mission §22 Phase 17 — shadow soak authorization request (operator).
+```

@@ -347,7 +347,12 @@ pub struct DlmmFeeParams {
     pub max_volatility_accumulator: u32,
     pub protocol_share: u16,
     pub base_fee_power_factor: u8,
-    /// `ConcreteFunctionType` at StaticParameters.function_type (0 = Spot).
+    /// On-chain `StaticParameters.function_type` per the official `FunctionType`
+    /// enum (dlmm-sdk commons/src/conversions/function_type.rs):
+    /// 0 = Undetermined, 1 = LiquidityMining, 2 = LimitOrder. Values > 2 are
+    /// undocumented and fail closed at the quote gate. Do not confuse with the
+    /// creation-time `ConcreteFunctionType` argument (0 = LO, 1 = LM), which is
+    /// a different encoding.
     #[serde(default)]
     pub function_type: u8,
     /// `CollectFeeMode`: 0 = InputOnly, 1 = OnlyY. Determines the mint in
