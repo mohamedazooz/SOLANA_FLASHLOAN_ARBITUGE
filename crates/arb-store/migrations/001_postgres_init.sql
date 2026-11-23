@@ -8,7 +8,15 @@ CREATE TABLE IF NOT EXISTS attempts (
     expected_net BIGINT NOT NULL,
     tip_lamports BIGINT,
     decision VARCHAR(32) NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- Economic reconstruction fields (base-mint raw atomic units unless the
+    -- column name states lamports). NULL = unknown; financial aggregation
+    -- must tolerate NULLs and never assume zero costs.
+    borrow_amount BIGINT,
+    flash_fee_raw BIGINT,
+    priority_fee_lamports BIGINT,
+    expected_output_raw BIGINT,
+    pool_ids TEXT
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -17,7 +25,11 @@ CREATE TABLE IF NOT EXISTS outcomes (
     status VARCHAR(32) NOT NULL,
     realized_net BIGINT,
     provenance VARCHAR(16),
-    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    -- Post-execution reconstruction: actual route output (base-mint raw) and
+    -- the machine-readable failure reason for errored outcomes.
+    actual_output_raw BIGINT,
+    failure_reason TEXT
 );
 -- Databases created before provenance existed evolve in place (idempotent).
 ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS provenance VARCHAR(16);
@@ -60,6 +72,20 @@ CREATE TABLE IF NOT EXISTS dispatch_intents (
     status TEXT NOT NULL DEFAULT 'pending',
     resolved_status TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP
+    resolved_at TIMESTAMP,
+    -- Jito bundle id (or SWQoS acceptance id) returned by the provider after
+    -- acceptance; NULL until the transport confirms acceptance.
+    bundle_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pg_dispatch_intents_status ON dispatch_intents(status);
+
+-- Databases created before the economic-reconstruction columns existed evolve
+-- in place (idempotent). New deployments get them from CREATE TABLE above.
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS borrow_amount BIGINT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS flash_fee_raw BIGINT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS priority_fee_lamports BIGINT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS expected_output_raw BIGINT;
+ALTER TABLE attempts ADD COLUMN IF NOT EXISTS pool_ids TEXT;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS actual_output_raw BIGINT;
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+ALTER TABLE dispatch_intents ADD COLUMN IF NOT EXISTS bundle_id TEXT;
