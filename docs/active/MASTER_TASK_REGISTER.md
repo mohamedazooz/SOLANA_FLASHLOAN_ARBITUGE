@@ -532,7 +532,6 @@ NEXT_TASK: Mission §18 Phase 13 — CI/CD, Docker & VPS.
 ```
 
 ```markdown
-<<<<<<< HEAD
 TASK_ID: TASK-M14-001
 PHASE: Mission §19 — Performance & reliability testing (Phase 14)
 PRIORITY: P1
