@@ -236,8 +236,8 @@ pub fn quote_dlmm_exact_out(
         }
 
         if remaining_out > 0 {
+            bins_crossed = bins_crossed.checked_add(1).ok_or(DlmmError::MathOverflow)?;
             current_bin_id = advance_active_id(current_bin_id, swap_for_y)?;
-            bins_crossed = bins_crossed.saturating_add(1);
         }
     }
 

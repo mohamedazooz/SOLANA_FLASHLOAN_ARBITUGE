@@ -130,8 +130,8 @@ impl Supervisor {
         opp: &ExecutionOpportunity,
         payer: Pubkey,
     ) -> usize {
-        if !live {
-            debug!("settlement skipped: mode is not Live (no broadcast, plan only)");
+        if !live || !crate::live_execution_enabled() {
+            debug!("settlement skipped: live execution is not armed (no broadcast, plan only)");
             return 0;
         }
         let probes = {

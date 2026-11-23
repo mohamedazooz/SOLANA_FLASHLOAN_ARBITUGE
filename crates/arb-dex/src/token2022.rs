@@ -169,60 +169,57 @@ impl TokenSemantics {
 
         let offset = TLV_START;
         let mut detected_extensions = Vec::new();
-        while offset < data.len() {
+        if offset < data.len() {
             let remaining = &data[offset..];
-            if remaining.iter().all(|byte| *byte == 0) {
-                break;
-            }
-            let Some(header_end) = offset.checked_add(4) else {
-                return rejected(
-                    true,
-                    detected_extensions,
-                    "Token-2022 TLV offset overflow".into(),
-                );
-            };
-            if header_end > data.len() {
-                return rejected(
-                    true,
-                    detected_extensions,
-                    "Truncated Token-2022 TLV header".into(),
-                );
-            }
+            if !remaining.iter().all(|byte| *byte == 0) {
+                let Some(header_end) = offset.checked_add(4) else {
+                    return rejected(
+                        true,
+                        detected_extensions,
+                        "Token-2022 TLV offset overflow".into(),
+                    );
+                };
+                if header_end > data.len() {
+                    return rejected(
+                        true,
+                        detected_extensions,
+                        "Truncated Token-2022 TLV header".into(),
+                    );
+                }
 
-            let ext_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
-            let ext_len = usize::from(u16::from_le_bytes([data[offset + 2], data[offset + 3]]));
-            if ext_type == EXTENSION_UNINITIALIZED && ext_len == 0 {
-                break;
-            }
-            let Some(payload_end) = header_end.checked_add(ext_len) else {
-                return rejected(
-                    true,
-                    detected_extensions,
-                    "Token-2022 TLV length overflow".into(),
-                );
-            };
-            if payload_end > data.len() {
-                return rejected(
-                    true,
-                    detected_extensions,
-                    format!("Token-2022 extension {ext_type} is truncated"),
-                );
-            }
+                let ext_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
+                let ext_len = usize::from(u16::from_le_bytes([data[offset + 2], data[offset + 3]]));
+                if !(ext_type == EXTENSION_UNINITIALIZED && ext_len == 0) {
+                    let Some(payload_end) = header_end.checked_add(ext_len) else {
+                        return rejected(
+                            true,
+                            detected_extensions,
+                            "Token-2022 TLV length overflow".into(),
+                        );
+                    };
+                    if payload_end > data.len() {
+                        return rejected(
+                            true,
+                            detected_extensions,
+                            format!("Token-2022 extension {ext_type} is truncated"),
+                        );
+                    }
 
-            detected_extensions.push(ext_type);
-            // Until current-epoch TransferFeeConfig and TransferHook extra
-            // account resolution are wired into BOTH quote and execution paths,
-            // every extension stays ineligible. Unknown extensions also fail
-            // closed; a permissive allow-list would become stale as SPL evolves.
-            return rejected(
-                true,
-                detected_extensions,
-                format!(
-                    "Token-2022 extension {ext_type} is not enabled for execution; verified epoch-aware fees and transfer-hook account resolution are required"
-                ),
-            );
+                    detected_extensions.push(ext_type);
+                    // Until current-epoch TransferFeeConfig and TransferHook extra
+                    // account resolution are wired into BOTH quote and execution paths,
+                    // every extension stays ineligible. Unknown extensions also fail
+                    // closed; a permissive allow-list would become stale as SPL evolves.
+                    return rejected(
+                        true,
+                        detected_extensions,
+                        format!(
+                            "Token-2022 extension {ext_type} is not enabled for execution; verified epoch-aware fees and transfer-hook account resolution are required"
+                        ),
+                    );
+                }
+            }
         }
-
         Self {
             mint,
             is_token_2022: true,

@@ -30,6 +30,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
     }
 
     fn quote_exact_in(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
+        request.validate(state)?;
         let start_time = Instant::now();
 
         if !state.is_active {
@@ -167,6 +168,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
     }
 
     fn quote_exact_out(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
+        request.validate(state)?;
         // Explicitly validate the output mint against the pool's two mints; reject
         // unsupported mints instead of silently treating them as the base side.
         if request.output_mint != state.base_mint && request.output_mint != state.quote_mint {

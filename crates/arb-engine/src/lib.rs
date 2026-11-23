@@ -234,7 +234,9 @@ pub fn quote_pool(
                 && let Ok(amount) = u64::try_from(dx)
             {
                 let a_to_b = e.pool_base == e.from_mint;
-                if let Ok(q) = quote_dlmm_view(&pool, &bins, amount, a_to_b, None) {
+                if let Ok(q) = quote_dlmm_view(&pool, &bins, amount, a_to_b, None)
+                    && arb_math::dlmm::validate_swap_depth(q.bins_crossed).is_ok()
+                {
                     return q.amount_out as u128;
                 }
             }

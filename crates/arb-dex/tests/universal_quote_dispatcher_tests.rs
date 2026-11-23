@@ -1,17 +1,14 @@
-//! Tests for Universal Quote Dispatcher Full Protocol Coverage (Feature 15, Tier 1).
+//! UniversalQuoteDispatcher contract tests.
 //!
-//! Validates:
-//! 1. UniversalQuoteDispatcher covers all 11 supported DEX protocol variants without panic or unhandled error.
-//! 2. Meteora DAMM v2 dispatch derives exact quotation and preserves protocol identity.
-//! 3. Meteora DBC dispatch derives exact quotation and preserves protocol identity.
-//! 4. Meteora DLMM Pro dispatch derives exact quotation and preserves protocol identity.
-//! 5. Raydium LaunchLab dispatch derives exact quotation and preserves protocol identity.
-//! 6. Graduated Pump.fun curves (`complete == true`) automatically route to `DexProtocol::PumpSwap`.
-//! 7. Exact-out quotation functions correctly for all newly dispatched protocols.
+//! The dispatcher must emit a quote only when the snapshot contains the exact
+//! curve/fee state consumed by that protocol implementation. Incomplete protocol
+//! models fail closed instead of borrowing a generic constant-product formula.
 
 use arb_dex::engines::UniversalQuoteDispatcher;
 use arb_dex::quote_engine::QuoteRequest;
-use arb_types::{DexProtocol, MintId, PoolId, PoolState, PumpFunState, Slot, TokenProgramKind};
+use arb_types::{
+    ArbError, DexProtocol, MintId, PoolId, PoolState, PumpFunState, Slot, TokenProgramKind,
+};
 use solana_pubkey::Pubkey;
 
 fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintId, MintId) {
@@ -26,8 +23,8 @@ fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintI
         quote_mint,
         decimals_a: 6,
         decimals_b: 9,
-        reserve_in: 2_000_000_000,   // 2,000 base
-        reserve_out: 40_000_000_000, // 40 quote
+        reserve_in: 2_000_000_000,
+        reserve_out: 40_000_000_000,
         fee_numerator: 25,
         fee_denominator: 10_000,
         is_active,
@@ -45,103 +42,35 @@ fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintI
     (pool_state, base_mint, quote_mint)
 }
 
-#[test]
-fn test_universal_dispatcher_meteora_damm_v2_dispatch() {
-    let dispatcher = UniversalQuoteDispatcher::new();
-    let (pool, base_mint, quote_mint) = create_test_pool(DexProtocol::MeteoraDammV2, true);
-
-    let request = QuoteRequest {
-        input_mint: base_mint,
-        output_mint: quote_mint,
-        amount: 50_000_000,
+fn request(input_mint: MintId, output_mint: MintId, amount: u64) -> QuoteRequest {
+    QuoteRequest {
+        input_mint,
+        output_mint,
+        amount,
         slippage_bps: 50,
         input_transfer_fee_config: None,
         output_transfer_fee_config: None,
-    };
-
-    let result = dispatcher
-        .quote_exact_in(&pool, &request)
-        .expect("MeteoraDammV2 quote succeeds");
-    assert_eq!(result.protocol, DexProtocol::MeteoraDammV2);
-    assert!(result.amount_out_raw > 0);
-    assert!(result.quote_validity);
-    assert!(result.fees_breakdown.total_fee > 0);
+    }
 }
 
 #[test]
-fn test_universal_dispatcher_meteora_dbc_dispatch() {
+fn raydium_cpmm_and_v4_dispatch_with_reserve_state() {
     let dispatcher = UniversalQuoteDispatcher::new();
-    let (pool, base_mint, quote_mint) = create_test_pool(DexProtocol::MeteoraDbc, true);
-
-    let request = QuoteRequest {
-        input_mint: base_mint,
-        output_mint: quote_mint,
-        amount: 25_000_000,
-        slippage_bps: 50,
-        input_transfer_fee_config: None,
-        output_transfer_fee_config: None,
-    };
-
-    let result = dispatcher
-        .quote_exact_in(&pool, &request)
-        .expect("MeteoraDbc quote succeeds");
-    assert_eq!(result.protocol, DexProtocol::MeteoraDbc);
-    assert!(result.amount_out_raw > 0);
-    assert!(result.quote_validity);
-    assert!(result.fees_breakdown.total_fee > 0);
+    for protocol in [DexProtocol::RaydiumCpmm, DexProtocol::RaydiumV4] {
+        let (pool, base, quote) = create_test_pool(protocol, true);
+        let result = dispatcher
+            .quote_exact_in(&pool, &request(base, quote, 10_000_000))
+            .expect("reserve-backed CPMM quote succeeds");
+        assert_eq!(result.protocol, protocol);
+        assert!(result.amount_out_raw > 0);
+        assert!(result.quote_validity);
+    }
 }
 
 #[test]
-fn test_universal_dispatcher_meteora_dlmm_pro_dispatch() {
+fn graduated_pump_fun_routes_to_pumpswap() {
     let dispatcher = UniversalQuoteDispatcher::new();
-    let (pool, base_mint, quote_mint) = create_test_pool(DexProtocol::MeteoraDlmmPro, true);
-
-    let request = QuoteRequest {
-        input_mint: base_mint,
-        output_mint: quote_mint,
-        amount: 15_000_000,
-        slippage_bps: 50,
-        input_transfer_fee_config: None,
-        output_transfer_fee_config: None,
-    };
-
-    let result = dispatcher
-        .quote_exact_in(&pool, &request)
-        .expect("MeteoraDlmmPro quote succeeds");
-    assert_eq!(result.protocol, DexProtocol::MeteoraDlmmPro);
-    assert!(result.amount_out_raw > 0);
-    assert!(result.quote_validity);
-    assert!(result.fees_breakdown.total_fee > 0);
-}
-
-#[test]
-fn test_universal_dispatcher_raydium_launchlab_dispatch() {
-    let dispatcher = UniversalQuoteDispatcher::new();
-    let (pool, base_mint, quote_mint) = create_test_pool(DexProtocol::RaydiumLaunchLab, true);
-
-    let request = QuoteRequest {
-        input_mint: base_mint,
-        output_mint: quote_mint,
-        amount: 30_000_000,
-        slippage_bps: 50,
-        input_transfer_fee_config: None,
-        output_transfer_fee_config: None,
-    };
-
-    let result = dispatcher
-        .quote_exact_in(&pool, &request)
-        .expect("RaydiumLaunchLab quote succeeds");
-    assert_eq!(result.protocol, DexProtocol::RaydiumLaunchLab);
-    assert!(result.amount_out_raw > 0);
-    assert!(result.quote_validity);
-    assert!(result.fees_breakdown.total_fee > 0);
-}
-
-#[test]
-fn test_universal_dispatcher_pump_fun_completed_routes_to_pumpswap() {
-    let dispatcher = UniversalQuoteDispatcher::new();
-    let (mut pool, base_mint, quote_mint) = create_test_pool(DexProtocol::PumpFun, true);
-    // Mark Pump.fun pool as graduated (complete: true)
+    let (mut pool, base, quote) = create_test_pool(DexProtocol::PumpFun, true);
     pool.pump_fun = Some(PumpFunState {
         virtual_token_reserves: 1_000_000_000_000,
         virtual_sol_reserves: 30_000_000_000,
@@ -151,90 +80,84 @@ fn test_universal_dispatcher_pump_fun_completed_routes_to_pumpswap() {
         complete: true,
         ..Default::default()
     });
-
-    let request = QuoteRequest {
-        input_mint: base_mint,
-        output_mint: quote_mint,
-        amount: 10_000_000,
-        slippage_bps: 50,
-        input_transfer_fee_config: None,
-        output_transfer_fee_config: None,
-    };
-
     let result = dispatcher
-        .quote_exact_in(&pool, &request)
-        .expect("Graduated pump_fun routes cleanly to pumpswap");
+        .quote_exact_in(&pool, &request(base, quote, 10_000_000))
+        .expect("graduated curve routes to PumpSwap");
     assert_eq!(result.protocol, DexProtocol::PumpSwap);
     assert!(result.amount_out_raw > 0);
 }
 
 #[test]
-fn test_universal_dispatcher_routes_all_supported_protocols() {
+fn incomplete_protocol_specific_states_fail_closed_instead_of_using_cpmm_fallbacks() {
     let dispatcher = UniversalQuoteDispatcher::new();
     let protocols = [
-        DexProtocol::RaydiumCpmm,
-        DexProtocol::RaydiumV4,
-        DexProtocol::PumpSwap,
         DexProtocol::MeteoraDammV2,
         DexProtocol::MeteoraDbc,
         DexProtocol::MeteoraDlmmPro,
         DexProtocol::RaydiumLaunchLab,
     ];
-
-    for proto in protocols {
-        let (pool, base_mint, quote_mint) = create_test_pool(proto, true);
-        let request = QuoteRequest {
-            input_mint: base_mint,
-            output_mint: quote_mint,
-            amount: 10_000_000,
-            slippage_bps: 50,
-            input_transfer_fee_config: None,
-            output_transfer_fee_config: None,
-        };
-        let res = dispatcher.quote_exact_in(&pool, &request);
+    for protocol in protocols {
+        let (pool, base, quote) = create_test_pool(protocol, true);
+        let result = dispatcher.quote_exact_in(&pool, &request(base, quote, 10_000_000));
         assert!(
-            res.is_ok(),
-            "Protocol {:?} failed quote_exact_in: {:?}",
-            proto,
-            res.err()
+            matches!(result, Err(ArbError::UnsupportedOperation(_))),
+            "{protocol:?} must refuse an incomplete protocol-specific state: {result:?}"
         );
-        let q = res.unwrap();
-        assert_eq!(q.protocol, proto);
     }
 }
 
 #[test]
-fn test_universal_dispatcher_exact_out_coverage() {
+fn exact_out_is_only_enabled_for_models_with_verified_reverse_math() {
+    let dispatcher = UniversalQuoteDispatcher::new();
+    for protocol in [DexProtocol::RaydiumCpmm, DexProtocol::RaydiumV4] {
+        let (pool, base, quote) = create_test_pool(protocol, true);
+        let result = dispatcher
+            .quote_exact_out(&pool, &request(base, quote, 5_000_000))
+            .expect("implemented CPMM exact-out model succeeds");
+        assert_eq!(result.protocol, protocol);
+        assert_eq!(result.amount_out_raw, 5_000_000);
+        assert!(result.amount_in_raw > 0);
+    }
+}
+
+#[test]
+fn exact_out_missing_protocol_math_is_explicitly_unsupported() {
     let dispatcher = UniversalQuoteDispatcher::new();
     let protocols = [
-        DexProtocol::RaydiumCpmm,
-        DexProtocol::RaydiumV4,
+        DexProtocol::RaydiumClmm,
+        DexProtocol::OrcaWhirlpool,
+        DexProtocol::MeteoraDlmm,
         DexProtocol::MeteoraDammV2,
         DexProtocol::MeteoraDbc,
         DexProtocol::MeteoraDlmmPro,
         DexProtocol::RaydiumLaunchLab,
+        DexProtocol::PumpFun,
+        DexProtocol::PumpSwap,
     ];
-
-    for proto in protocols {
-        let (pool, base_mint, quote_mint) = create_test_pool(proto, true);
-        let request = QuoteRequest {
-            input_mint: base_mint,
-            output_mint: quote_mint,
-            amount: 5_000_000, // target output
-            slippage_bps: 50,
-            input_transfer_fee_config: None,
-            output_transfer_fee_config: None,
-        };
-        let res = dispatcher.quote_exact_out(&pool, &request);
+    for protocol in protocols {
+        let (pool, base, quote) = create_test_pool(protocol, true);
+        let result = dispatcher.quote_exact_out(&pool, &request(base, quote, 5_000_000));
         assert!(
-            res.is_ok(),
-            "Protocol {:?} failed quote_exact_out: {:?}",
-            proto,
-            res.err()
+            matches!(result, Err(ArbError::UnsupportedOperation(_))),
+            "{protocol:?} exact-out must not use a guessed reverse formula: {result:?}"
         );
-        let q = res.unwrap();
-        assert_eq!(q.protocol, proto);
-        assert_eq!(q.amount_out_raw, 5_000_000);
-        assert!(q.amount_in_raw > 0);
     }
+}
+
+#[test]
+fn request_validation_rejects_invalid_slippage_and_foreign_output_mint() {
+    let dispatcher = UniversalQuoteDispatcher::new();
+    let (pool, base, quote) = create_test_pool(DexProtocol::RaydiumCpmm, true);
+    let mut invalid_slippage = request(base, quote, 1_000_000);
+    invalid_slippage.slippage_bps = 10_001;
+    assert!(matches!(
+        dispatcher.quote_exact_in(&pool, &invalid_slippage),
+        Err(ArbError::InvalidInput(_))
+    ));
+
+    let foreign = MintId(Pubkey::new_unique());
+    assert!(matches!(
+        dispatcher.quote_exact_in(&pool, &request(base, foreign, 1_000_000)),
+        Err(ArbError::InvalidToken(_))
+    ));
 }

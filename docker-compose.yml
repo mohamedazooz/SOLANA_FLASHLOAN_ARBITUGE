@@ -4,10 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile
     image: solana-arbitrage:shadow-only
-    command: ["--config", "/app/config/config.toml", "--mode", "shadow"]
+    command: ["--config", "/app/config/config.toml"]
     env_file:
       - .env.shadow.local
     environment:
+      ARB_MODE: simulate
       DATABASE_URL: sqlite:///app/data/shadow.db
     ports:
       - "127.0.0.1:9100:9100"

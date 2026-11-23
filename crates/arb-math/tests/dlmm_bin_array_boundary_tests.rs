@@ -14,8 +14,8 @@
 //! 5. Proper bin array index arithmetic and Bitmap Extension PDA derivation.
 
 use arb_math::dlmm::{
-    DlmmBin as MathDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
-    bin_array_index_for_bin, quote_dlmm_multi_bin,
+    DlmmBin as MathDlmmBin, DlmmError, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
+    bin_array_index_for_bin, quote_dlmm_exact_out, quote_dlmm_multi_bin, validate_swap_depth,
 };
 
 fn test_parameters(bin_step: u16) -> DlmmParameters {
@@ -414,12 +414,10 @@ fn test_large_exact_out_crossing_more_than_three_bin_arrays() {
 
 #[test]
 fn test_positive_traversal_crossing_five_bin_arrays_y_to_x() {
-    // Traverse upwards from Array 0 through Array 4:
-    // Bin 0 (Array 0) -> Bin 70 (Array 1) -> Bin 140 (Array 2) -> Bin 210 (Array 3) -> Bin 285 (Array 4)
-    // 5 Bin Arrays touched in upward direction!
+    // Exactly 260 advances from Array -4 through Array 0 touches five arrays.
     let bin_step = 10u16;
     let pool = DlmmPoolState {
-        active_id: 0,
+        active_id: -240,
         bin_step,
         status: 0,
         parameters: test_parameters(bin_step),
@@ -427,49 +425,55 @@ fn test_positive_traversal_crossing_five_bin_arrays_y_to_x() {
         ..Default::default()
     };
 
-    let mut continuous_bins = Vec::with_capacity(300);
-    for id in 0..=290 {
-        let amount_x = if id == 290 { 50_000_000 } else { 50_000 };
-        continuous_bins.push(MathDlmmBin {
+    let continuous_bins: Vec<MathDlmmBin> = (-240..=400)
+        .map(|id| MathDlmmBin {
             id,
-            amount_x,
+            amount_x: 50_000,
             amount_y: 0,
             price_q64: 0,
             ..Default::default()
-        });
-    }
+        })
+        .collect();
 
-    // Input Y to buy X (swap_for_y = false): price increases, active ID advances from 0 up to 285+
-    let large_input_y = 25_000_000u64;
-    let quote = quote_dlmm_multi_bin(&pool, &mut continuous_bins, large_input_y, false, None)
-        .expect("Upward 5-array quote must succeed");
+    let exact_out = quote_dlmm_exact_out(&pool, &continuous_bins, 13_050_000, false, None)
+        .expect("260 advances across five arrays must be permitted");
+    assert_eq!(exact_out.bins_crossed, 260);
+    assert_eq!(exact_out.end_active_id, 20);
+    assert_eq!(bin_array_index_for_bin(pool.active_id), -4);
+    assert_eq!(bin_array_index_for_bin(exact_out.end_active_id), 0);
+    assert_eq!(validate_swap_depth(exact_out.bins_crossed), Ok(()));
 
-    assert!(
-        quote.bins_crossed > 280,
-        "Must cross > 280 bins, crossed {}",
-        quote.bins_crossed
+    let quote_forward = quote_dlmm_multi_bin(
+        &pool,
+        &mut continuous_bins.clone(),
+        exact_out.amount_in,
+        false,
+        None,
+    )
+    .expect("forward exact-in at the 260-advance ceiling must execute");
+    assert_eq!(quote_forward.bins_crossed, 260);
+    assert!(quote_forward.amount_out >= exact_out.amount_out);
+    assert_eq!(validate_swap_depth(quote_forward.bins_crossed), Ok(()));
+
+    let deep_quote =
+        quote_dlmm_multi_bin(&pool, &mut continuous_bins.clone(), 25_000_000, false, None)
+            .expect("deep theoretical quote remains available for math comparison");
+    assert!(deep_quote.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP);
+    assert_eq!(
+        validate_swap_depth(deep_quote.bins_crossed),
+        Err(DlmmError::TooManyBins {
+            attempted: deep_quote.bins_crossed,
+            limit: arb_constants::METEORA_MAX_BINS_PER_SWAP,
+        })
     );
-    assert!(
-        quote.end_active_id >= 280,
-        "Must reach Array 4 (bin >= 280), got {}",
-        quote.end_active_id
-    );
-
-    let end_array = bin_array_index_for_bin(quote.end_active_id);
-    assert_eq!(end_array, 4, "Must reach Array 4");
-    // Array 0, 1, 2, 3, 4 = 5 distinct bin arrays traversed!
-    let total_arrays = end_array + 1;
-    assert_eq!(total_arrays, 5, "Must traverse exactly 5 bin arrays");
 }
 
 #[test]
 fn test_negative_traversal_crossing_five_bin_arrays_x_to_y() {
-    // Traverse downwards from Array 0 through Array -4:
-    // Bin 0 (Array 0) -> Bin -70 (Array -1) -> Bin -140 (Array -2) -> Bin -210 (Array -3) -> Bin -285 (Array -4)
-    // 5 Bin Arrays touched in downward direction!
+    // Exactly 260 advances from Array 0 through Array -4 touches five arrays.
     let bin_step = 10u16;
     let pool = DlmmPoolState {
-        active_id: 0,
+        active_id: 20,
         bin_step,
         status: 0,
         parameters: test_parameters(bin_step),
@@ -477,39 +481,48 @@ fn test_negative_traversal_crossing_five_bin_arrays_x_to_y() {
         ..Default::default()
     };
 
-    let mut continuous_bins = Vec::with_capacity(300);
-    for id in (-280..=0).rev() {
-        let amount_y = if id == -280 { 50_000_000 } else { 50_000 };
-        continuous_bins.push(MathDlmmBin {
+    let continuous_bins: Vec<MathDlmmBin> = (-600..=20)
+        .rev()
+        .map(|id| MathDlmmBin {
             id,
             amount_x: 0,
-            amount_y,
+            amount_y: 50_000,
             price_q64: 0,
             ..Default::default()
-        });
-    }
+        })
+        .collect();
 
-    // Input X to buy Y (swap_for_y = true): price decreases, active ID advances downwards
-    let large_input_x = 25_000_000u64;
-    let quote = quote_dlmm_multi_bin(&pool, &mut continuous_bins, large_input_x, true, None)
-        .expect("Downward 5-array quote must succeed");
+    let exact_out = quote_dlmm_exact_out(&pool, &continuous_bins, 13_050_000, true, None)
+        .expect("260 advances across five arrays must be permitted");
+    assert_eq!(exact_out.bins_crossed, 260);
+    assert_eq!(exact_out.end_active_id, -240);
+    assert_eq!(bin_array_index_for_bin(pool.active_id), 0);
+    assert_eq!(bin_array_index_for_bin(exact_out.end_active_id), -4);
+    assert_eq!(validate_swap_depth(exact_out.bins_crossed), Ok(()));
 
-    assert!(
-        quote.bins_crossed > 270,
-        "Must cross > 270 bins, crossed {}",
-        quote.bins_crossed
+    let quote_forward = quote_dlmm_multi_bin(
+        &pool,
+        &mut continuous_bins.clone(),
+        exact_out.amount_in,
+        true,
+        None,
+    )
+    .expect("forward exact-in at the 260-advance ceiling must execute");
+    assert_eq!(quote_forward.bins_crossed, 260);
+    assert!(quote_forward.amount_out >= exact_out.amount_out);
+    assert_eq!(validate_swap_depth(quote_forward.bins_crossed), Ok(()));
+
+    let deep_quote =
+        quote_dlmm_multi_bin(&pool, &mut continuous_bins.clone(), 25_000_000, true, None)
+            .expect("deep theoretical quote remains available for math comparison");
+    assert!(deep_quote.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP);
+    assert_eq!(
+        validate_swap_depth(deep_quote.bins_crossed),
+        Err(DlmmError::TooManyBins {
+            attempted: deep_quote.bins_crossed,
+            limit: arb_constants::METEORA_MAX_BINS_PER_SWAP,
+        })
     );
-    assert!(
-        quote.end_active_id <= -270,
-        "Must reach Array -4 (bin <= -270), got {}",
-        quote.end_active_id
-    );
-
-    let end_array = bin_array_index_for_bin(quote.end_active_id);
-    assert_eq!(end_array, -4, "Must reach Array -4");
-    // Array 0, -1, -2, -3, -4 = 5 distinct bin arrays traversed!
-    let total_arrays = (0 - end_array) + 1;
-    assert_eq!(total_arrays, 5, "Must traverse exactly 5 bin arrays");
 }
 
 #[test]

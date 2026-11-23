@@ -51,10 +51,10 @@ fn test_cpmm_quote_engine_extreme_fee_tiers_zero_and_max() {
     let engine = RaydiumCpmmQuoteEngine::new();
 
     // 0 ppm fee tier
-    let (pool_zero_fee, base, _) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 0);
+    let (pool_zero_fee, base, quote_zero) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 0);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_zero,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -69,10 +69,11 @@ fn test_cpmm_quote_engine_extreme_fee_tiers_zero_and_max() {
     assert_eq!(quote_zero.amount_out_raw, 999_900);
 
     // 100,000 ppm fee tier (10%)
-    let (pool_max_fee, base_max, _) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 100_000);
+    let (pool_max_fee, base_max, quote_max) =
+        make_cpmm_pool(10_000_000_000, 10_000_000_000, 100_000);
     let req_max = QuoteRequest {
         input_mint: base_max,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_max,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -91,11 +92,11 @@ fn test_cpmm_quote_engine_extreme_fee_tiers_zero_and_max() {
 #[test]
 fn test_cpmm_quote_engine_zero_input_and_exhaustion() {
     let engine = RaydiumCpmmQuoteEngine::new();
-    let (pool, base, _) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 2500);
+    let (pool, base, quote) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 2500);
 
     let req_zero = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 0,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -116,10 +117,10 @@ fn test_cpmm_quote_engine_extreme_reserve_ratios() {
     let engine = RaydiumCpmmQuoteEngine::new();
 
     // Sub-case A: r_in = 1, r_out = 10^18 (massive reserve out)
-    let (pool_deep, base_deep, _) = make_cpmm_pool(1, 1_000_000_000_000_000_000, 0);
+    let (pool_deep, base_deep, quote_deep) = make_cpmm_pool(1, 1_000_000_000_000_000_000, 0);
     let req = QuoteRequest {
         input_mint: base_deep,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_deep,
         amount: 1,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -130,10 +131,11 @@ fn test_cpmm_quote_engine_extreme_reserve_ratios() {
     assert_eq!(quote.amount_out_raw, 500_000_000_000_000_000);
 
     // Sub-case B: r_in = 10^18, r_out = 1 (output is 0, must fail closed)
-    let (pool_shallow, base_shallow, _) = make_cpmm_pool(1_000_000_000_000_000_000, 1, 0);
+    let (pool_shallow, base_shallow, quote_shallow) =
+        make_cpmm_pool(1_000_000_000_000_000_000, 1, 0);
     let req_shallow = QuoteRequest {
         input_mint: base_shallow,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_shallow,
         amount: 1_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -147,10 +149,10 @@ fn test_cpmm_quote_engine_extreme_reserve_ratios() {
     }
 
     // Sub-case C: r_in = 0, r_out = 10^10
-    let (pool_zero_res, base_zero_res, _) = make_cpmm_pool(0, 10_000_000_000, 2500);
+    let (pool_zero_res, base_zero_res, quote_zero_res) = make_cpmm_pool(0, 10_000_000_000, 2500);
     let req_zero_res = QuoteRequest {
         input_mint: base_zero_res,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_zero_res,
         amount: 100_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -207,12 +209,12 @@ fn test_cpmm_quote_engine_exact_out_boundary_exceeds_reserve() {
 #[test]
 fn test_cpmm_quote_engine_disabled_pool_fails_closed() {
     let engine = RaydiumCpmmQuoteEngine::new();
-    let (mut pool, base, _) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 2500);
+    let (mut pool, base, quote) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 2500);
     pool.is_active = false;
 
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,

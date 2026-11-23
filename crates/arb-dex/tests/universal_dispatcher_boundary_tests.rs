@@ -152,10 +152,10 @@ fn test_universal_dispatcher_boundary_disabled_pool_all_11_protocols() {
     let dispatcher = UniversalQuoteDispatcher::new();
 
     for protocol in ALL_11_PROTOCOLS {
-        let (pool, base, _) = create_protocol_test_pool(protocol, false);
+        let (pool, base, quote) = create_protocol_test_pool(protocol, false);
         let req = QuoteRequest {
             input_mint: base,
-            output_mint: MintId(Pubkey::default()),
+            output_mint: quote,
             amount: 1_000_000,
             slippage_bps: 50,
             input_transfer_fee_config: None,
@@ -208,14 +208,7 @@ fn test_universal_dispatcher_boundary_zero_amount_all_11_protocols() {
 #[test]
 fn test_universal_dispatcher_boundary_exact_out_exceeding_reserve() {
     let dispatcher = UniversalQuoteDispatcher::new();
-    let exact_out_protocols = [
-        DexProtocol::RaydiumV4,
-        DexProtocol::RaydiumCpmm,
-        DexProtocol::MeteoraDammV2,
-        DexProtocol::MeteoraDbc,
-        DexProtocol::MeteoraDlmmPro,
-        DexProtocol::RaydiumLaunchLab,
-    ];
+    let exact_out_protocols = [DexProtocol::RaydiumV4, DexProtocol::RaydiumCpmm];
 
     for protocol in exact_out_protocols {
         let (pool, base, quote) = create_protocol_test_pool(protocol, true);
@@ -254,6 +247,11 @@ fn test_universal_dispatcher_boundary_exact_out_unsupported_protocols() {
         DexProtocol::PumpFun,
         DexProtocol::PumpSwap,
         DexProtocol::OrcaWhirlpool,
+        DexProtocol::MeteoraDlmm,
+        DexProtocol::MeteoraDammV2,
+        DexProtocol::MeteoraDbc,
+        DexProtocol::MeteoraDlmmPro,
+        DexProtocol::RaydiumLaunchLab,
     ];
 
     for protocol in unsupported {
@@ -270,7 +268,9 @@ fn test_universal_dispatcher_boundary_exact_out_unsupported_protocols() {
         match res {
             Err(ArbError::UnsupportedOperation(msg)) => {
                 assert!(
-                    msg.contains("not yet supported"),
+                    msg.contains("not yet supported")
+                        || msg.contains("lacks")
+                        || msg.contains("not backed"),
                     "protocol {:?} msg: {}",
                     protocol,
                     msg

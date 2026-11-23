@@ -588,3 +588,100 @@ fn test_v1_capable_profile_never_downgrades_small_payload() {
     assert_eq!(tx.wire_bytes[0], V1_VERSION_DISCRIMINATOR);
     assert_eq!(tx.max_supported_transaction_version(), Some(1));
 }
+
+#[test]
+fn test_v1_only_counts_inline_addresses_after_compute_budget_removal() {
+    let signer = test_signer();
+    let program_id = Pubkey::new_from_array([0xF0; 32]);
+    // Final V1 address count: payer (1) + DEX program (1) + 62 accounts = 64.
+    // ComputeBudget is a V1 no-op and must not consume an inline address slot.
+    let accounts = (0..62u8)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[0] = i.wrapping_add(1);
+            AccountMeta {
+                pubkey: Pubkey::new_from_array(bytes),
+                is_signer: false,
+                is_writable: false,
+            }
+        })
+        .collect();
+    let dex_ix = CompiledInstruction {
+        program_id,
+        accounts,
+        data: vec![1, 2, 3],
+    };
+    let compute_budget_ix = arb_tx::build_compute_unit_limit(200_000);
+    let compiled = AdaptiveTxCompiler::compile_v1_only(
+        &signer,
+        &[dex_ix, compute_budget_ix],
+        [0x5Au8; 32],
+        valid_v1_config(),
+    )
+    .expect("V1 must count addresses retained after stripping ComputeBudget");
+    assert_eq!(compiled.wire_bytes[0], V1_VERSION_DISCRIMINATOR);
+    assert_eq!(compiled.wire_bytes[41] as usize, 64);
+    assert!(compiled.wire_size() <= SOLANA_PACKET_V1_MTU);
+}
+
+#[test]
+fn test_v1_message_enforces_simd_0385_twelve_signature_limit() {
+    let payer = Pubkey::new_unique();
+    let make_instruction = |additional_signers: usize| CompiledInstruction {
+        program_id: Pubkey::new_unique(),
+        accounts: (0..additional_signers)
+            .map(|_| AccountMeta {
+                pubkey: Pubkey::new_unique(),
+                is_signer: true,
+                is_writable: true,
+            })
+            .collect(),
+        data: vec![1],
+    };
+
+    let at_limit = AdaptiveTxCompiler::compile_v1_message(
+        payer,
+        &[make_instruction(11)],
+        [0x33; 32],
+        V1ConfigParams::default(),
+    )
+    .expect("twelve required signatures are permitted");
+    assert_eq!(at_limit[1], 12);
+
+    let over_limit = AdaptiveTxCompiler::compile_v1_message(
+        payer,
+        &[make_instruction(12)],
+        [0x33; 32],
+        V1ConfigParams::default(),
+    );
+    assert!(
+        matches!(over_limit, Err(TxError::SanitizationError(ref msg)) if msg.contains("signature limit exceeded")),
+        "V1 must reject more than 12 signatures, got {over_limit:?}"
+    );
+}
+
+#[test]
+fn test_v1_unsigned_shadow_builder_rejects_invalid_heap_size() {
+    let payer = Pubkey::new_unique();
+    let ix = CompiledInstruction {
+        program_id: Pubkey::new_unique(),
+        accounts: vec![],
+        data: vec![1],
+    };
+    let invalid_heap = V1ConfigParams {
+        compute_unit_limit: Some(200_000),
+        loaded_accounts_data_size_limit: Some(1_048_576),
+        heap_size: Some(31_744),
+        ..Default::default()
+    };
+    let result = AdaptiveTxCompiler::build_unsigned_v1_simulation_transaction(
+        payer,
+        &[ix],
+        [0x44; 32],
+        invalid_heap,
+    );
+    assert!(
+        matches!(result, Err(TxError::SanitizationError(ref msg)) if msg.contains("heap request")),
+        "unsigned V1 simulation must reject an invalid heap request"
+    );
+}

@@ -445,3 +445,63 @@ fn test_scale_dlmm_three_hop_input() {
     // Scaled profit = 23,000 * 920,000 / 10,000 = 2,116,000 lamports!
     assert_eq!(scaled_profit, 2_116_000);
 }
+
+#[test]
+fn exact_in_quote_math_remains_unbounded_but_execution_gate_rejects_deep_swap() {
+    let pool = create_test_pool(0);
+    let bins: Vec<DlmmBin> = (-601..=0)
+        .rev()
+        .map(|id| DlmmBin {
+            id,
+            amount_x: 0,
+            amount_y: 1_000_000,
+            price_q64: 0,
+            ..Default::default()
+        })
+        .collect();
+
+    let quote = quote_dlmm_multi_bin(&pool, &mut bins.clone(), 1_000_000_000, true, None)
+        .expect("deep theoretical quote should remain available to SDK differential tests");
+    assert!(quote.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP);
+    assert_eq!(
+        validate_swap_depth(quote.bins_crossed),
+        Err(DlmmError::TooManyBins {
+            attempted: quote.bins_crossed,
+            limit: arb_constants::METEORA_MAX_BINS_PER_SWAP,
+        })
+    );
+}
+#[test]
+fn exact_out_quote_math_can_cross_protocol_limit_but_execution_gate_rejects_it() {
+    let pool = create_test_pool(0);
+    let bins: Vec<DlmmBin> = (-601..=0)
+        .rev()
+        .map(|id| DlmmBin {
+            id,
+            amount_x: 0,
+            amount_y: 1_000_000,
+            price_q64: 0,
+            ..Default::default()
+        })
+        .collect();
+
+    let at_limit = quote_dlmm_exact_out(&pool, &bins, 261_000_000, true, None)
+        .expect("exactly 260 advances must be quotable");
+    assert_eq!(
+        at_limit.bins_crossed,
+        arb_constants::METEORA_MAX_BINS_PER_SWAP
+    );
+    assert_eq!(at_limit.end_active_id, -260);
+    assert_eq!(validate_swap_depth(at_limit.bins_crossed), Ok(()));
+
+    let above_limit = quote_dlmm_exact_out(&pool, &bins, 262_000_000, true, None)
+        .expect("deep exact-out quote remains available to differential math tests");
+    assert!(above_limit.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP);
+    assert_eq!(
+        validate_swap_depth(above_limit.bins_crossed),
+        Err(DlmmError::TooManyBins {
+            attempted: above_limit.bins_crossed,
+            limit: arb_constants::METEORA_MAX_BINS_PER_SWAP,
+        })
+    );
+}

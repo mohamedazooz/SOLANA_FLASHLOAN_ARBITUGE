@@ -53,11 +53,11 @@ fn test_pumpswap_boundary_reserve_out_exceeding_u64_max_overflow_check() {
     let engine = PumpSwapQuoteEngine::new();
     // reserve_out is 10^24 (well above u64::MAX ~ 1.84 * 10^19)
     let massive_reserve_out = 1_000_000_000_000_000_000_000_000u128;
-    let (pool, base, _) = make_pumpswap_pool(1_000_000_000, massive_reserve_out, true);
+    let (pool, base, quote) = make_pumpswap_pool(1_000_000_000, massive_reserve_out, true);
 
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000_000, // dx' ~ 10^9, output would be ~ massive_reserve_out / 2 >> u64::MAX
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -78,10 +78,10 @@ fn test_pumpswap_boundary_zero_reserves_fails_closed() {
     let engine = PumpSwapQuoteEngine::new();
 
     // Sub-case A: reserve_in = 0
-    let (pool_zero_in, base_in, _) = make_pumpswap_pool(0, 10_000_000_000, true);
+    let (pool_zero_in, base_in, quote_in) = make_pumpswap_pool(0, 10_000_000_000, true);
     let req = QuoteRequest {
         input_mint: base_in,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_in,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -95,10 +95,10 @@ fn test_pumpswap_boundary_zero_reserves_fails_closed() {
     }
 
     // Sub-case B: reserve_out = 0
-    let (pool_zero_out, base_out, _) = make_pumpswap_pool(10_000_000_000, 0, true);
+    let (pool_zero_out, base_out, quote_out) = make_pumpswap_pool(10_000_000_000, 0, true);
     let req2 = QuoteRequest {
         input_mint: base_out,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_out,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -116,7 +116,7 @@ fn test_pumpswap_boundary_zero_reserves_fails_closed() {
 #[test]
 fn test_pumpswap_boundary_token_2022_100_percent_transfer_fee() {
     let engine = PumpSwapQuoteEngine::new();
-    let (pool, base, _) = make_pumpswap_pool(10_000_000_000, 10_000_000_000, true);
+    let (pool, base, quote) = make_pumpswap_pool(10_000_000_000, 10_000_000_000, true);
 
     let fee_config_100_percent = TransferFeeConfig {
         transfer_fee_basis_points: 10_000, // 100% fee
@@ -125,7 +125,7 @@ fn test_pumpswap_boundary_token_2022_100_percent_transfer_fee() {
 
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: Some(fee_config_100_percent),
@@ -168,12 +168,12 @@ fn test_pumpswap_boundary_exact_out_unsupported_operation() {
 #[test]
 fn test_pumpswap_boundary_max_u64_input_amount() {
     let engine = PumpSwapQuoteEngine::new();
-    let (pool, base, _) = make_pumpswap_pool(100_000_000_000, 100_000_000_000, true);
+    let (pool, base, quote) = make_pumpswap_pool(100_000_000_000, 100_000_000_000, true);
 
     // Large amount near u64::MAX - 1000
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: u64::MAX - 1000,
         slippage_bps: 50,
         input_transfer_fee_config: None,

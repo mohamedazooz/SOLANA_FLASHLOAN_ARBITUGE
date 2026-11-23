@@ -60,10 +60,10 @@ fn make_whirlpool_pool(
 #[test]
 fn test_orca_whirlpool_empty_or_uninitialized_tick_arrays() {
     let engine = OrcaWhirlpoolQuoteEngine::new();
-    let (pool, base, _) = make_whirlpool_pool(10_000_000, 1u128 << 64, 2500, true);
+    let (pool, base, quote) = make_whirlpool_pool(10_000_000, 1u128 << 64, 2500, true);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -86,10 +86,10 @@ fn test_orca_whirlpool_zero_liquidity_and_price_fails_closed() {
     let engine = OrcaWhirlpoolQuoteEngine::new();
 
     // Sub-case A: liquidity = 0
-    let (pool_zero_liq, base_liq, _) = make_whirlpool_pool(0, 1u128 << 64, 2500, true);
+    let (pool_zero_liq, base_liq, quote_liq) = make_whirlpool_pool(0, 1u128 << 64, 2500, true);
     let req = QuoteRequest {
         input_mint: base_liq,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_liq,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -103,10 +103,10 @@ fn test_orca_whirlpool_zero_liquidity_and_price_fails_closed() {
     }
 
     // Sub-case B: sqrt_price = 0
-    let (pool_zero_price, base_price, _) = make_whirlpool_pool(10_000_000, 0, 2500, true);
+    let (pool_zero_price, base_price, quote_price) = make_whirlpool_pool(10_000_000, 0, 2500, true);
     let req2 = QuoteRequest {
         input_mint: base_price,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_price,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -124,13 +124,13 @@ fn test_orca_whirlpool_zero_liquidity_and_price_fails_closed() {
 #[test]
 fn test_orca_whirlpool_fee_rate_boundary_limits() {
     let engine = OrcaWhirlpoolQuoteEngine::new();
-    let (mut pool, base, _) = make_whirlpool_pool(10_000_000, 1u128 << 64, 0, true);
+    let (mut pool, base, quote) = make_whirlpool_pool(10_000_000, 1u128 << 64, 0, true);
     pool.fee_numerator = 0; // ensure no fallback
     pool.fee_denominator = 0;
 
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -177,10 +177,11 @@ fn test_orca_whirlpool_disabled_pool_and_zero_input() {
     let engine = OrcaWhirlpoolQuoteEngine::new();
 
     // Sub-case A: is_active = false
-    let (pool_inactive, base, _) = make_whirlpool_pool(10_000_000, 1u128 << 64, 2500, false);
+    let (pool_inactive, base, quote_inactive) =
+        make_whirlpool_pool(10_000_000, 1u128 << 64, 2500, false);
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_inactive,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -194,10 +195,11 @@ fn test_orca_whirlpool_disabled_pool_and_zero_input() {
     }
 
     // Sub-case B: amount = 0
-    let (pool_active, base_active, _) = make_whirlpool_pool(10_000_000, 1u128 << 64, 2500, true);
+    let (pool_active, base_active, quote_active) =
+        make_whirlpool_pool(10_000_000, 1u128 << 64, 2500, true);
     let req_zero = QuoteRequest {
         input_mint: base_active,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_active,
         amount: 0,
         slippage_bps: 50,
         input_transfer_fee_config: None,

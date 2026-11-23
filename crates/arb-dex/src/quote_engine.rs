@@ -7,7 +7,7 @@
 //! - Required account resolution for transaction packing.
 
 use crate::token2022::{HopTransferFeeBreakdown, TransferFeeConfig};
-use arb_types::{Bps, DexProtocol, MintId, PoolId, PoolState, Result};
+use arb_types::{ArbError, Bps, DexProtocol, MintId, PoolId, PoolState, Result};
 use solana_pubkey::Pubkey;
 
 /// Inbound quote request parameters.
@@ -52,6 +52,65 @@ pub struct QuoteResult {
     pub computation_time_us: u64,
 }
 
+impl QuoteRequest {
+    /// Validate the common invariants shared by every protocol-specific quote engine.
+    ///
+    /// Amounts are raw units of input_mint; output is always the other mint in
+    /// the pool. A request with a foreign output mint or more than 100% slippage
+    /// must not reach protocol math, because it can otherwise produce a
+    /// plausible-looking quote with no meaningful on-chain minimum-out protection.
+    pub fn validate(&self, state: &PoolState) -> Result<()> {
+        if !state.is_active {
+            return Err(ArbError::PoolDisabled(format!(
+                "pool {} is disabled",
+                state.pool_id.0
+            )));
+        }
+        if self.amount == 0 {
+            return Err(ArbError::ZeroAmount);
+        }
+        if !arb_constants::is_valid_slippage_bps(u64::from(self.slippage_bps)) {
+            return Err(ArbError::InvalidInput(format!(
+                "slippage_bps {} exceeds 10000",
+                self.slippage_bps
+            )));
+        }
+        if self.input_mint == self.output_mint {
+            return Err(ArbError::InvalidToken(
+                "quote input and output mints must be different".into(),
+            ));
+        }
+        let valid_direction = (self.input_mint == state.base_mint
+            && self.output_mint == state.quote_mint)
+            || (self.input_mint == state.quote_mint && self.output_mint == state.base_mint);
+        if !valid_direction {
+            return Err(ArbError::InvalidToken(format!(
+                "quote direction {} -> {} does not match pool mints {} / {}",
+                self.input_mint.0, self.output_mint.0, state.base_mint.0, state.quote_mint.0
+            )));
+        }
+        if state.kind != state.protocol.family() {
+            return Err(ArbError::InvalidInput(format!(
+                "pool {} protocol {:?} conflicts with pricing family {:?}",
+                state.pool_id.0, state.protocol, state.kind
+            )));
+        }
+        for (name, config) in [
+            ("input", self.input_transfer_fee_config),
+            ("output", self.output_transfer_fee_config),
+        ] {
+            if let Some(config) = config {
+                if config.transfer_fee_basis_points > 10_000 {
+                    return Err(ArbError::InvalidInput(format!(
+                        "{name} Token-2022 transfer fee {} bps exceeds 10000",
+                        config.transfer_fee_basis_points
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
 /// Authoritative Quote Engine trait implemented independently by each protocol.
 pub trait QuoteEngine: Send + Sync {
     /// Associated DEX protocol identifier.

@@ -30,24 +30,8 @@ use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn get_funded_signer() -> KeypairSigner {
-    if let Ok(key_str) = std::env::var("SOLANA_PRIVATE_KEY") {
-        if let Ok(signer) = KeypairSigner::from_base58(&key_str) {
-            return signer;
-        }
-    }
-    for path in &[".env", "../../.env", "../.env"] {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                if let Some(val) = line.strip_prefix("SOLANA_PRIVATE_KEY=") {
-                    let clean = val.trim().trim_matches('"').trim_matches('\'');
-                    if let Ok(signer) = KeypairSigner::from_base58(clean) {
-                        return signer;
-                    }
-                }
-            }
-        }
-    }
+fn get_test_signer() -> KeypairSigner {
+    // Deterministic test-only seed. Never read SOLANA_PRIVATE_KEY, .env, or wallet credentials.
     KeypairSigner::from_seed(&[55u8; 32])
 }
 
@@ -190,8 +174,10 @@ fn mint_reconciliation(deltas: &[Value]) -> (Vec<Value>, bool) {
 }
 
 #[tokio::test]
+#[ignore = "manual opt-in Mainnet RPC simulation; deterministic test signer only; no broadcast"]
 async fn test_live_mainnet_meteora_dlmm_cross_pool_simulation() {
-    dotenvy::dotenv().ok();
+    // Do not load .env or wallet credentials. Supply RPC endpoint variables explicitly when
+    // running this ignored integration test; the signer below is a deterministic test key.
     let rpc = RpcPool::from_env();
     if rpc.endpoints_count() == 0 {
         eprintln!("Skipping live simulation: no RPC endpoints configured");
@@ -246,8 +232,9 @@ async fn test_live_mainnet_meteora_dlmm_cross_pool_simulation() {
     let opt_res = MeteoraDlmmTradeSizeOptimizer::find_best_opportunity(pair, &opt_cfg);
     println!("Size optimizer best opportunity: {:?}", opt_res);
 
-    // Build atomic two-swap transaction with funded signer for live simulation
-    let signer = get_funded_signer();
+    // Build with the deterministic test-only signer; no wallet credential is loaded.
+    // The harness uses simulateTransaction with sigVerify=false and never broadcasts.
+    let signer = get_test_signer();
     let blockhash_str = rpc
         .get_latest_blockhash()
         .await

@@ -64,7 +64,7 @@ fn make_pump_fun_pool(
 #[test]
 fn test_pump_fun_graduated_migration_boundary() {
     let engine = PumpBondingCurveQuoteEngine::new();
-    let (pool_migrated, base, _) = make_pump_fun_pool(
+    let (pool_migrated, base, quote) = make_pump_fun_pool(
         1_073_000_000_000_000,
         30_000_000_000,
         793_100_000_000_000,
@@ -73,7 +73,7 @@ fn test_pump_fun_graduated_migration_boundary() {
     );
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -93,7 +93,7 @@ fn test_pump_fun_zero_virtual_reserves_fails_closed() {
     let engine = PumpBondingCurveQuoteEngine::new();
 
     // Sub-case A: v_sol = 0
-    let (pool_zero_sol, base_sol, _) = make_pump_fun_pool(
+    let (pool_zero_sol, base_sol, quote_sol) = make_pump_fun_pool(
         1_073_000_000_000_000,
         0, // v_sol = 0
         793_100_000_000_000,
@@ -102,7 +102,7 @@ fn test_pump_fun_zero_virtual_reserves_fails_closed() {
     );
     let req = QuoteRequest {
         input_mint: base_sol,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_sol,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -116,7 +116,7 @@ fn test_pump_fun_zero_virtual_reserves_fails_closed() {
     }
 
     // Sub-case B: v_token = 0
-    let (pool_zero_token, base_token, _) = make_pump_fun_pool(
+    let (pool_zero_token, base_token, quote_token) = make_pump_fun_pool(
         0, // v_token = 0
         30_000_000_000,
         793_100_000_000_000,
@@ -125,7 +125,7 @@ fn test_pump_fun_zero_virtual_reserves_fails_closed() {
     );
     let req2 = QuoteRequest {
         input_mint: base_token,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote_token,
         amount: 1_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -144,13 +144,13 @@ fn test_pump_fun_zero_virtual_reserves_fails_closed() {
 fn test_pump_fun_100_percent_token_supply_purchase_ceiling() {
     let engine = PumpBondingCurveQuoteEngine::new();
     let r_token = 500_000_000_000u64;
-    let (pool, base, _) =
+    let (pool, base, quote) =
         make_pump_fun_pool(1_073_000_000_000_000, 30_000_000_000, r_token, false, true);
 
     // Massive buy of 1,000,000 SOL
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 1_000_000_000_000_000,
         slippage_bps: 50,
         input_transfer_fee_config: None,
@@ -173,7 +173,7 @@ fn test_pump_fun_100_percent_token_supply_purchase_ceiling() {
 #[test]
 fn test_pump_fun_zero_input_and_fee_exhaustion() {
     let engine = PumpBondingCurveQuoteEngine::new();
-    let (pool, base, _) = make_pump_fun_pool(
+    let (pool, base, quote) = make_pump_fun_pool(
         1_073_000_000_000_000,
         30_000_000_000,
         793_100_000_000_000,
@@ -183,7 +183,7 @@ fn test_pump_fun_zero_input_and_fee_exhaustion() {
 
     let req = QuoteRequest {
         input_mint: base,
-        output_mint: MintId(Pubkey::default()),
+        output_mint: quote,
         amount: 0,
         slippage_bps: 50,
         input_transfer_fee_config: None,

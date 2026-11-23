@@ -17,6 +17,7 @@ use arb_math::dlmm::{
 };
 use arb_types::{ArbError, DexProtocol, PoolState, Result};
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -57,6 +58,7 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
     }
 
     fn quote_exact_in(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
+        request.validate(state)?;
         let start_time = Instant::now();
 
         if !state.is_active {
@@ -91,76 +93,112 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
             return Err(ArbError::ZeroAmount);
         }
 
-        // 2. Prepare DLMM parameters
-        let params = if let Some(p) = &dlmm_state.params {
-            DlmmParameters {
-                bin_step: dlmm_state.bin_step_bps,
-                base_factor: p.base_factor,
-                filter_period: p.filter_period,
-                decay_period: p.decay_period,
-                reduction_factor: p.reduction_factor,
-                variable_fee_control: p.variable_fee_control,
-                max_volatility_accumulator: p.max_volatility_accumulator,
-                protocol_share: p.protocol_share,
-                base_fee_power_factor: p.base_fee_power_factor,
-                collect_fee_mode: 0,
-            }
-        } else {
-            DlmmParameters {
-                bin_step: dlmm_state.bin_step_bps,
-                base_factor: 100,
-                filter_period: 30,
-                decay_period: 600,
-                reduction_factor: 5000,
-                variable_fee_control: 40_000,
-                max_volatility_accumulator: 350_000,
-                protocol_share: 1000, // 10%
-                base_fee_power_factor: 0,
-                collect_fee_mode: 0,
-            }
+        // 2. Require verified LbPair static and variable parameters. Guessing
+        // fee or volatility fields can overstate output and create phantom arbitrage.
+        if dlmm_state.status != 0 {
+            return Err(ArbError::PoolDisabled(format!(
+                "Meteora DLMM pool {} has non-enabled on-chain status {}",
+                state.pool_id.0, dlmm_state.status
+            )));
+        }
+        if dlmm_state.bin_step_bps == 0 || dlmm_state.bin_step_bps > 10_000 {
+            return Err(ArbError::InvalidInput(format!(
+                "Meteora DLMM pool {} has invalid bin_step {}",
+                state.pool_id.0, dlmm_state.bin_step_bps
+            )));
+        }
+        let fee_params = dlmm_state.params.as_ref().ok_or_else(|| {
+            ArbError::IncompleteState(format!(
+                "Meteora DLMM pool {} is missing verified LbPair fee parameters",
+                state.pool_id.0
+            ))
+        })?;
+        if fee_params.function_type > 1 || fee_params.collect_fee_mode > 1 {
+            return Err(ArbError::UnsupportedOperation(format!(
+                "Meteora DLMM function_type {} / collect_fee_mode {} is not modeled",
+                fee_params.function_type, fee_params.collect_fee_mode
+            )));
+        }
+        if fee_params.protocol_share > 10_000 || fee_params.reduction_factor > 10_000 {
+            return Err(ArbError::InvalidInput(
+                "Meteora DLMM protocol_share or reduction_factor exceeds 10000 bps".into(),
+            ));
+        }
+        let params = DlmmParameters {
+            bin_step: dlmm_state.bin_step_bps,
+            base_factor: fee_params.base_factor,
+            filter_period: fee_params.filter_period,
+            decay_period: fee_params.decay_period,
+            reduction_factor: fee_params.reduction_factor,
+            variable_fee_control: fee_params.variable_fee_control,
+            max_volatility_accumulator: fee_params.max_volatility_accumulator,
+            protocol_share: fee_params.protocol_share,
+            base_fee_power_factor: fee_params.base_fee_power_factor,
+            collect_fee_mode: fee_params.collect_fee_mode,
         };
-
         let v_params = DlmmVariableParameters {
             volatility_accumulator: dlmm_state.volatility_accumulator,
-            volatility_reference: 0,
-            index_reference: dlmm_state.active_bin_id,
-            last_update_timestamp: 0,
+            volatility_reference: dlmm_state.volatility_reference,
+            index_reference: dlmm_state.index_reference,
+            last_update_timestamp: dlmm_state.last_update_timestamp,
         };
+
+        // `last_update_ms` records local snapshot receipt time, not the on-chain Clock sysvar.
+        // Do not use it to decay the variable fee: a local clock ahead of the bank
+        // clock could understate fees. Without a trusted bank timestamp, retain the
+        // on-chain volatility reference and intentionally quote conservatively.
 
         let pool_math_state = DlmmPoolState {
             active_id: dlmm_state.active_bin_id,
             bin_step: dlmm_state.bin_step_bps,
-            status: 0,
+            status: dlmm_state.status,
             parameters: params,
             v_parameters: v_params,
-            support_limit_order: false,
+            support_limit_order: dlmm_state.support_limit_order,
         };
 
+        let mut seen_bin_ids = HashSet::with_capacity(dlmm_state.bins.len());
         let bins: Vec<DlmmBin> = dlmm_state
             .bins
             .iter()
-            .map(|b| DlmmBin {
-                id: b.bin_id,
-                amount_x: b.amount_x as u64,
-                amount_y: b.amount_y as u64,
-                price_q64: 0,
-                limit_order_ask_side: false,
-                open_order_amount: 0,
-                processed_order_remaining_amount: 0,
+            .map(|b| {
+                if !seen_bin_ids.insert(b.bin_id) {
+                    return Err(ArbError::IncompleteState(format!(
+                        "duplicate Meteora DLMM bin id {} in pool {}",
+                        b.bin_id, state.pool_id.0
+                    )));
+                }
+                Ok(DlmmBin {
+                    id: b.bin_id,
+                    amount_x: u64::try_from(b.amount_x).map_err(|_| ArbError::Overflow)?,
+                    amount_y: u64::try_from(b.amount_y).map_err(|_| ArbError::Overflow)?,
+                    price_q64: 0,
+                    limit_order_ask_side: b.limit_order_ask_side,
+                    open_order_amount: b.open_order_amount,
+                    processed_order_remaining_amount: b.processed_order_remaining_amount,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
-        if bins.is_empty() {
+        if bins.is_empty() || !seen_bin_ids.contains(&dlmm_state.active_bin_id) {
             return Err(ArbError::IncompleteState(format!(
-                "No liquidity bins cached for Meteora DLMM pool {}",
+                "Meteora DLMM pool {} has no active bin snapshot",
                 state.pool_id.0
             )));
         }
-
         // 3. Exact multi-bin discrete quoting
         let quote = quote_dlmm_view(&pool_math_state, &bins, input_net_into_pool, a_to_b, None)
             .map_err(|e| ArbError::CalculationError(format!("Meteora DLMM math error: {e:?}")))?;
 
+        if quote.amount_in != input_net_into_pool {
+            return Err(ArbError::InsufficientLiquidity(format!(
+                "Meteora DLMM consumed {} of {} input raw units",
+                quote.amount_in, input_net_into_pool
+            )));
+        }
+        arb_math::dlmm::validate_swap_depth(quote.bins_crossed).map_err(|e| {
+            ArbError::InsufficientLiquidity(format!("Meteora DLMM swap is not executable: {e}"))
+        })?;
         let gross_out = quote.amount_out;
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
@@ -172,31 +210,37 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
         let (output_net_to_next_hop, output_transfer_fee) =
             if let Some(config) = request.output_transfer_fee_config {
                 let fee = config.calculate_fee(gross_out);
-                (gross_out.saturating_sub(fee), fee)
+                (gross_out.checked_sub(fee).ok_or(ArbError::Overflow)?, fee)
             } else {
                 (gross_out, 0)
             };
 
         // 5. Slippage calculation
-        let min_amount_out = output_net_to_next_hop.saturating_sub(
-            (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
+        let min_amount_out = arb_constants::slippage_floor_bps(
+            output_net_to_next_hop,
+            u64::from(request.slippage_bps),
         );
 
-        // 6. Required Accounts resolution (including BinArray PDAs)
+        // 6. Include every BinArray traversed by the exact quote, in swap order.
         let lb_pair = state.pool_id.0;
-        let start_bin_idx = Self::bin_id_to_bin_array_index(dlmm_state.active_bin_id);
-        let end_bin_idx = Self::bin_id_to_bin_array_index(quote.end_active_id);
-        let mut required_accounts = Vec::with_capacity(8);
+        let start_array = Self::bin_id_to_bin_array_index(dlmm_state.active_bin_id);
+        let end_array = Self::bin_id_to_bin_array_index(quote.end_active_id);
+        let direction: i64 = if end_array >= start_array { 1 } else { -1 };
+        let mut array_index = start_array;
+        let mut required_accounts = Vec::with_capacity(6);
         required_accounts.push(lb_pair);
-
-        // Include current, start, and end bin array PDAs
-        let (ta_curr, _) = Self::derive_bin_array_pda(&lb_pair, start_bin_idx);
-        required_accounts.push(ta_curr);
-        if start_bin_idx != end_bin_idx {
-            let (ta_end, _) = Self::derive_bin_array_pda(&lb_pair, end_bin_idx);
-            required_accounts.push(ta_end);
+        loop {
+            let (bin_array, _) = Self::derive_bin_array_pda(&lb_pair, array_index);
+            if !required_accounts.contains(&bin_array) {
+                required_accounts.push(bin_array);
+            }
+            if array_index == end_array {
+                break;
+            }
+            array_index = array_index
+                .checked_add(direction)
+                .ok_or(ArbError::Overflow)?;
         }
-
         let elapsed = start_time.elapsed().as_micros() as u64;
 
         Ok(QuoteResult {
@@ -206,7 +250,10 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
             fees_breakdown: FeesBreakdown {
-                lp_fee: quote.fee_amount.saturating_sub(quote.protocol_fee),
+                lp_fee: quote
+                    .fee_amount
+                    .checked_sub(quote.protocol_fee)
+                    .ok_or(ArbError::Overflow)?,
                 protocol_fee: quote.protocol_fee,
                 fund_fee: 0,
                 creator_fee: 0,
@@ -222,7 +269,7 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
                 output_net_to_next_hop,
             },
             price_impact: quote.price_impact_bps,
-            unfilled_input_raw: input_net_into_pool.saturating_sub(quote.amount_in),
+            unfilled_input_raw: 0,
             required_accounts,
             state_slot: state.slot.0,
             state_hash: format!("{}_{}", state.slot.0, state.write_version),

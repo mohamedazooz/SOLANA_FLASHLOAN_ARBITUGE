@@ -858,6 +858,10 @@ fn quote_dlmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<
     let q = dlmm::quote_dlmm_multi_bin(&pool_state, &mut bins, amount_in, swap_for_y, None)
         .map_err(|e| ArbError::InvalidInput(format!("DLMM quote failed: {e}")))?;
 
+    arb_math::dlmm::validate_swap_depth(q.bins_crossed).map_err(|e| {
+        ArbError::InsufficientLiquidity(format!("DLMM swap is not executable: {e}"))
+    })?;
+
     if let Some(d) = pool.dlmm.as_mut() {
         d.active_bin_id = q.end_active_id;
         d.volatility_accumulator = q.end_volatility_accumulator;
