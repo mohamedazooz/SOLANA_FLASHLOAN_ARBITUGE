@@ -963,12 +963,17 @@ impl TelegramNotifier {
 
     /// Periodic 1-minute performance and rejections digest.
     pub async fn alert_minute_digest(&self, stats: &DigestStats) {
+        let window = if stats.interval_secs > 0 {
+            stats.interval_secs
+        } else {
+            300
+        };
         let landed_len = stats.landed_trades.len();
         let dropped_len = stats.dropped_trades.len();
         let rejected_len = stats.rejected_trades.len();
 
         let landed_section = if landed_len == 0 {
-            "• لا توجد صفقات منفذة في آخر 60 ثانية".to_string()
+            format!("• لا توجد صفقات منفذة في آخر {window} ثانية")
         } else {
             stats
                 .landed_trades
@@ -1063,7 +1068,7 @@ impl TelegramNotifier {
         };
 
         let msg = format!(
-            "⏱️ <b>تقرير أداء البوت — ملخص دقيقة (1-Minute Performance Digest)</b>\n\n\
+            "⏱️ <b>تقرير أداء البوت — ملخص كل خمس دقائق (5-Minute Performance Digest)</b>\n\n\
              🧊 <b>السلوت الحالي:</b> <code>{}</code> | <b>سعر SOL:</b> ${:.2}\n\
              🏊 <b>الأحواض النشطة:</b> <code>{}</code> (Orca: {}, Ray: {}, DLMM: {}, Pump: {})\n\
              🔍 <b>إجمالي الفرص المفحوصة:</b> <code>{}</code>\n\n\
@@ -1154,6 +1159,9 @@ pub struct RejectedTradeSummary {
 #[derive(Clone, Debug, Default)]
 pub struct DigestStats {
     pub slot: u64,
+    /// Window this digest covers (seconds); drives the header label and the
+    /// "in the last N seconds" text. Default 300 = 5-minute digest.
+    pub interval_secs: u64,
     pub sol_price: f64,
     pub total_pools: usize,
     pub orca_count: usize,
@@ -1179,6 +1187,66 @@ mod tests {
         // Must not panic and must report itself disabled when env is absent.
         let n = TelegramNotifier::from_env();
         let _ = n.is_enabled();
+    }
+
+    #[tokio::test]
+    async fn five_minute_digest_header_reflects_window_and_fields() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(10);
+        let notifier = TelegramNotifier {
+            bot_token: Some("fake_token".to_string()),
+            chat_id: Some("123456789".to_string()),
+            client: reqwest::Client::new(),
+            sol_price: std::sync::Arc::new(parking_lot::RwLock::new(215.5)),
+            wif_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            popcat_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            fartcoin_price: std::sync::Arc::new(parking_lot::RwLock::new(0.0)),
+            sol_price_live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            min_rejected_alert_sol: 0.0,
+            min_rejected_alert_pct: 0.0,
+            tx: Some(tx),
+            rejected_cooldown: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+        };
+        let rejected = RejectedTradeSummary {
+            route: "WSOL => USDC => WSOL".to_string(),
+            gross_sol: 0.5,
+            stage: "risk_gate".to_string(),
+            reason: "net_below_min".to_string(),
+            slot: 312_456_789,
+            pools_count: 2,
+            loan_size_sol: 12.5,
+            net_sol: Some(-0.001),
+        };
+        let stats = DigestStats {
+            slot: 312_456_789,
+            interval_secs: 300,
+            sol_price: 215.5,
+            total_pools: 42,
+            orca_count: 5,
+            raydium_count: 10,
+            meteora_count: 20,
+            pump_count: 7,
+            cycles_evaluated: 1_234,
+            rpc_status: "2 Active".to_string(),
+            ws_status: "Connected".to_string(),
+            ingest_status: "WS + RPC".to_string(),
+            jito_status: "Online".to_string(),
+            landed_trades: vec![],
+            dropped_trades: vec![],
+            rejected_trades: vec![rejected],
+        };
+        notifier.alert_five_minute_digest(&stats).await;
+        let msg = rx.recv().await.expect("digest captured");
+        assert!(msg.contains("5-Minute Performance Digest"), "{msg}");
+        assert!(msg.contains("آخر 300 ثانية"), "window text missing: {msg}");
+        assert!(msg.contains("42"), "pool total missing: {msg}");
+
+        assert!(msg.contains("Orca: 5, Ray: 10, DLMM: 20, Pump: 7"));
+        assert!(msg.contains("WSOL =&gt; USDC =&gt; WSOL"));
+        assert!(msg.contains("net_below_min"));
+        assert!(msg.contains("12.50 SOL"));
+        assert!(msg.contains("Connected"));
     }
 
     #[test]

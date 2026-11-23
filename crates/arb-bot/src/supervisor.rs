@@ -1275,6 +1275,11 @@ impl Supervisor {
     /// Periodic 5-minute digest with detailed lists of successful, dropped, and rejected trades,
     /// along with infrastructure and RPC rate-limit status.
     pub async fn emit_five_minute_digest(&self, current_slot: u64) {
+        let digest_interval_secs = std::env::var("TELEGRAM_DIGEST_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|s| *s >= 5)
+            .unwrap_or(300);
         let pools = self.ingest.snapshot().snapshot_pools();
         let total_pools = pools.len();
         let mut orca_count = 0;
@@ -1336,6 +1341,7 @@ impl Supervisor {
 
         let stats = crate::telegram::DigestStats {
             slot: current_slot,
+            interval_secs: digest_interval_secs,
             sol_price,
             total_pools,
             orca_count,
