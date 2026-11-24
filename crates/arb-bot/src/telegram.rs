@@ -55,6 +55,7 @@ impl Default for TelegramNotifier {
 
 impl TelegramNotifier {
     pub fn from_env() -> Self {
+        #[cfg(not(feature = "shadow-only"))]
         dotenvy::dotenv().ok();
         let bot_token = std::env::var("TELEGRAM_BOT_TOKEN")
             .ok()

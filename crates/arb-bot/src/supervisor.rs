@@ -194,6 +194,56 @@ fn sqlite_path_from_url(url: &str) -> String {
     }
 }
 
+/// Wallet material is intentionally unavailable in compile-time shadow builds.
+/// This branch does not inspect environment variables or keypair files.
+#[cfg(feature = "shadow-only")]
+fn load_wallet_signer(_config: &Config) -> Option<KeypairSigner> {
+    None
+}
+
+#[cfg(not(feature = "shadow-only"))]
+fn load_wallet_signer(config: &Config) -> Option<KeypairSigner> {
+    std::env::var("SOLANA_PRIVATE_KEY")
+        .ok()
+        .and_then(|pk| match KeypairSigner::from_base58(&pk) {
+            Ok(signer) => {
+                info!(
+                    "In-memory keypair loaded from SOLANA_PRIVATE_KEY: {}",
+                    signer.pubkey()
+                );
+                Some(signer)
+            }
+            Err(e) => {
+                warn!("Failed to parse SOLANA_PRIVATE_KEY: {e}");
+                None
+            }
+        })
+        .or_else(|| {
+            let kp_path = if !config.wallet.keypair_path.is_empty() {
+                config.wallet.keypair_path.as_str()
+            } else {
+                "solana_keypair.json"
+            };
+            if std::path::Path::new(kp_path).exists() {
+                match KeypairSigner::from_file(kp_path) {
+                    Ok(signer) => {
+                        info!(
+                            "In-memory keypair loaded from {kp_path}: {}",
+                            signer.pubkey()
+                        );
+                        Some(signer)
+                    }
+                    Err(e) => {
+                        warn!("Failed to load {kp_path}: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        })
+}
+
 impl Supervisor {
     pub fn new(mode: BotMode, config: Config) -> Self {
         Self::with_mode_atomic(
@@ -206,6 +256,7 @@ impl Supervisor {
     /// control service writes to the same atomic to switch modes at runtime.
     pub fn with_mode_atomic(mode: Arc<std::sync::atomic::AtomicU8>, config: Config) -> Self {
         info!("TRACE SUP 1: start");
+        #[cfg(not(feature = "shadow-only"))]
         dotenvy::dotenv().ok();
         let limits = RiskLimits {
             max_trade_size_usd: config.risk.max_trade_size_usd,
@@ -289,45 +340,7 @@ impl Supervisor {
         info!("TRACE SUP 3: after store");
 
         let telegram = TelegramNotifier::from_env();
-        let keypair = std::env::var("SOLANA_PRIVATE_KEY")
-            .ok()
-            .and_then(|pk| match KeypairSigner::from_base58(&pk) {
-                Ok(signer) => {
-                    info!(
-                        "In-memory keypair loaded from SOLANA_PRIVATE_KEY: {}",
-                        signer.pubkey()
-                    );
-                    Some(signer)
-                }
-                Err(e) => {
-                    warn!("Failed to parse SOLANA_PRIVATE_KEY: {e}");
-                    None
-                }
-            })
-            .or_else(|| {
-                let kp_path = if !config.wallet.keypair_path.is_empty() {
-                    config.wallet.keypair_path.as_str()
-                } else {
-                    "solana_keypair.json"
-                };
-                if std::path::Path::new(kp_path).exists() {
-                    match KeypairSigner::from_file(kp_path) {
-                        Ok(signer) => {
-                            info!(
-                                "In-memory keypair loaded from {kp_path}: {}",
-                                signer.pubkey()
-                            );
-                            Some(signer)
-                        }
-                        Err(e) => {
-                            warn!("Failed to load {kp_path}: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            });
+        let keypair = load_wallet_signer(&config);
 
         // Legacy JSON-RPC pool is disabled in runtime configuration; retained only for
         // unmigrated APIs and isolated tests. Market state comes from the WebSocket + RPC ingestion path. gRPC transport removed.
@@ -1564,5 +1577,18 @@ mod tests {
             max_state_age_slots(&[hop_for(3)], &[pool_at(3, 0)], Slot(100)),
             100
         );
+    }
+}
+
+#[cfg(all(test, feature = "shadow-only"))]
+mod shadow_only_signer_tests {
+    use super::load_wallet_signer;
+
+    #[test]
+    fn shadow_only_build_never_loads_wallet_signer() {
+        let config: crate::config::Config =
+            toml::from_str(include_str!("../../../config/config.example.toml"))
+                .expect("valid example config");
+        assert!(load_wallet_signer(&config).is_none());
     }
 }

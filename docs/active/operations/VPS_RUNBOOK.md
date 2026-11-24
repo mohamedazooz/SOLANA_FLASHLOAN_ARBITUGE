@@ -28,8 +28,12 @@ cd ~/SOLANA_FLASHLOAN_ARBITUGE
 git fetch origin main
 git rev-parse --short origin/main            # confirm the SHA you intend
 git reset --hard origin/main                 # deploy box: discard local detritus only
-cargo build --release --locked -p arb-bot --bin arb-bot
+cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only
+sudo install -d -m 0755 /etc/systemd/system/arb-bot.service.d
+printf '%s\n' '[Service]' 'UnsetEnvironment=ARB_MODE ARB_CANARY ARB_LIVE LIVE_TRADING LIVE EXECUTE_LIVE SOLANA_PRIVATE_KEY SOLANA_TX_V1_DIRECT_ENABLED SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED SOLANA_TX_V1_JITO_ENABLED SOLANA_TX_V1_JITO_INGRESS_VERIFIED' | sudo tee /etc/systemd/system/arb-bot.service.d/50-shadow-safety.conf >/dev/null
+sudo systemctl daemon-reload
 sudo systemctl restart arb-bot && sleep 5 && systemctl is-active arb-bot
+journalctl -u arb-bot -n 40 --no-pager | grep -F 'shadow-only build: live/canary arming is disabled; forcing simulate'
 ```
 
 ## 3. Rotate provider keys
@@ -56,7 +60,7 @@ cd SOLANA_FLASHLOAN_ARBITUGE
 bash scripts/deploy_vps.sh main
 ```
 
-The script **hard-forces `ARB_LIVE=0` and `DRY_RUN=true`** and will refuse to enable live mode. Live is enabled only by an explicit operator edit of `.env` on the box, after `docs/active/operations/RISK_CONTROL_POLICY.md` gates are satisfied (see also `SHADOW_MODE_RUNBOOK.md` and the production-readiness checklist in `docs/active/status/PRODUCTION_READINESS.md`).
+The script forces `ARB_MODE=simulate`, `ARB_LIVE=0`, `LIVE=false`, `LIVE_TRADING=false`, `EXECUTE_LIVE=false`, and `DRY_RUN=true`, removes `ARB_CANARY`, and builds with `--features shadow-only`. It installs a systemd `UnsetEnvironment` drop-in for arming flags and wallet material (the nohup path explicitly unsets the same values). This deployment path cannot be converted to live by editing `.env`: live requires a separately reviewed non-shadow build, removal of the shadow service guard, and the explicit operator authorization gates in `docs/active/operations/RISK_CONTROL_POLICY.md` and `docs/active/status/PRODUCTION_READINESS.md` (see also `SHADOW_MODE_RUNBOOK.md`).
 
 ## 6. Failure modes → actions
 

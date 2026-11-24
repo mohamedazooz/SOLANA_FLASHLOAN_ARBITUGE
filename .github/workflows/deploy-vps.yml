@@ -1,4 +1,4 @@
-name: Deploy to VPS
+name: Deploy shadow-only bot to VPS
 
 # Deployments are ALWAYS manual (workflow_dispatch) and ALWAYS pinned to the
 # exact commit being reviewed. Nothing deploys automatically on merge.
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: "🚀 Build & Deploy arb-bot on VPS (pinned commit)"
+    name: "🚀 Build & Deploy shadow-only arb-bot on VPS (pinned commit)"
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Approval separation: create the `production` GitHub Environment with
@@ -56,6 +56,17 @@ jobs:
           REPO_DIR="$HOME/SOLANA_FLASHLOAN_ARBITUGE"
           cd "$REPO_DIR"
 
+          # Enforce a safe service environment before restart. UnsetEnvironment
+          # is applied by systemd after EnvironmentFile values, so .env cannot
+          # re-arm live/canary dispatch through this shadow deployment workflow.
+          if systemctl list-unit-files arb-bot.service &>/dev/null; then
+            sudo install -d -m 0755 /etc/systemd/system/arb-bot.service.d
+            printf '%s\n' '[Service]' 'UnsetEnvironment=ARB_MODE ARB_CANARY ARB_LIVE LIVE_TRADING LIVE EXECUTE_LIVE SOLANA_PRIVATE_KEY SOLANA_TX_V1_DIRECT_ENABLED SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED SOLANA_TX_V1_JITO_ENABLED SOLANA_TX_V1_JITO_INGRESS_VERIFIED' \
+              | sudo tee /etc/systemd/system/arb-bot.service.d/50-shadow-safety.conf >/dev/null
+            sudo systemctl daemon-reload
+          fi
+          DEPLOY_STARTED_UTC="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+
           echo "==> [1/6] Fetching and pinning commit $PIN_SHA"
           git stash push --include-untracked --quiet . 2>/dev/null || true
           git fetch origin main
@@ -73,7 +84,23 @@ jobs:
           rollback() {
             echo "::error::Health check failed — rolling back to ${PREV_SHA}"
             git checkout --detach "${PREV_SHA}"
-            cargo build --release --locked -p arb-bot --bin arb-bot
+            if git show "$PREV_SHA:crates/arb-bot/Cargo.toml" 2>/dev/null \
+              | grep -Eq '^[[:space:]]*shadow-only[[:space:]]*=' \
+              && git show "$PREV_SHA:crates/arb-bot/src/supervisor.rs" 2>/dev/null \
+                | grep -Fq 'fn load_wallet_signer(_config: &Config) -> Option<KeypairSigner>'; then
+              if ! cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only; then
+                echo "::error::Shadow-only rollback build failed; refusing to restart an unverified binary"
+                return 1
+              fi
+            else
+              echo "::error::Previous revision predates shadow-only protection; refusing automatic rollback to a live-capable binary"
+              if systemctl list-unit-files arb-bot.service &>/dev/null; then
+                sudo systemctl stop arb-bot || true
+              else
+                pkill -f 'target/release/arb-bot' 2>/dev/null || true
+              fi
+              return 1
+            fi
             if systemctl list-unit-files arb-bot.service &>/dev/null; then
               sudo systemctl restart arb-bot
             else
@@ -81,14 +108,15 @@ jobs:
               sleep 2
               mkdir -p logs data/warm
               set -a; . ./.env; set +a
-              nohup ./target/release/arb-bot >> logs/arb_live.log 2>&1 &
+              unset ARB_MODE ARB_CANARY ARB_LIVE LIVE_TRADING LIVE EXECUTE_LIVE SOLANA_PRIVATE_KEY
+              nohup ./target/release/arb-bot >> logs/arb_shadow.log 2>&1 &
             fi
             sleep 5
             echo "==> Rollback attempted on previous commit ${PREV_SHA} — investigate before next deploy"
           }
 
           echo "==> [3/6] Release build (--locked, reproducible against Cargo.lock)"
-          if ! cargo build --release --locked -p arb-bot --bin arb-bot; then
+          if ! cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only; then
             rollback
             exit 1
           fi
@@ -101,7 +129,8 @@ jobs:
             sleep 2
             mkdir -p logs data/warm
             set -a; . ./.env; set +a
-            nohup ./target/release/arb-bot >> logs/arb_live.log 2>&1 &
+            unset ARB_MODE ARB_CANARY ARB_LIVE LIVE_TRADING LIVE EXECUTE_LIVE SOLANA_PRIVATE_KEY
+            nohup ./target/release/arb-bot >> logs/arb_shadow.log 2>&1 &
             BOT_PID=$!
           fi
           sleep 5
@@ -114,13 +143,24 @@ jobs:
               exit 1
             fi
             systemctl is-active arb-bot && echo '==> arb-bot service: ACTIVE'
-          else
-            if ! kill -0 "${BOT_PID}" 2>/dev/null; then
-              tail -20 logs/arb_live.log || true
+            if ! journalctl -u arb-bot --since "$DEPLOY_STARTED_UTC" --no-pager 2>/dev/null \
+              | grep -Fq 'shadow-only build: live/canary arming is disabled; forcing simulate'; then
+              journalctl -u arb-bot -n 40 --no-pager || true
               rollback
               exit 1
             fi
-            echo "==> arb-bot running (PID: ${BOT_PID})"
+          else
+            if ! kill -0 "${BOT_PID}" 2>/dev/null; then
+              tail -20 logs/arb_shadow.log || true
+              rollback
+              exit 1
+            fi
+            echo "==> arb-bot running (PID: $BOT_PID)"
+            if ! grep -Fq 'shadow-only build: live/canary arming is disabled; forcing simulate' logs/arb_shadow.log; then
+              tail -40 logs/arb_shadow.log || true
+              rollback
+              exit 1
+            fi
           fi
 
           echo "==> [6/6] Deploy complete. Commit: $(git rev-parse --short HEAD)"
