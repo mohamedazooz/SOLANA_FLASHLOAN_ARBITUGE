@@ -224,6 +224,7 @@ async fn test_live_mainnet_meteora_dlmm_cross_pool_simulation() {
         coarse_samples: 8,
         max_candidate_basins: 4,
         refine_steps_per_basin: 6,
+        slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
         estimated_network_cost_lamports: 15_000,
         sol_usd_price: 180,
         quote_decimals: 6,

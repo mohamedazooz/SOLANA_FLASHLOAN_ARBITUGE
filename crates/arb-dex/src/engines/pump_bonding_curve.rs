@@ -179,6 +179,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
             calculation_version: PUMP_BONDING_CURVE_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 

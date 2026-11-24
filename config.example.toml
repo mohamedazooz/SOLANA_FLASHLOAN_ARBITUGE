@@ -8,14 +8,6 @@ mode = "shadow"
 canary = false
 live_enabled = false
 
-[grpc]
-primary_url = "https://grpc.example.com"
-primary_token_env = "HELIUS_API_KEY"
-failover_url = ""
-failover_token_env = "SHYFT_API_KEY"
-commitment = "processed"
-ping_reply = true
-
 [rpc]
 url = "https://rpc.example.com"
 commitment = "processed"
@@ -86,11 +78,6 @@ listen = "127.0.0.1:9100"
 [admin]
 listen = "127.0.0.1:9101"
 token_env = "SENTINEL_ADMIN_KEY"
-
-[security]
-cors_allow_origins = []
-max_request_body_bytes = 1048576
-webhook_signature_required = true
 
 [chronos]
 enabled = true

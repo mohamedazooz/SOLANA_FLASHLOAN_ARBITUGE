@@ -14,9 +14,9 @@ use arb_dex::token2022::TransferFeeConfig;
 use arb_types::{ArbError, DexProtocol, MintId, PoolState, Result};
 
 /// Minimum net profit in lamports required to justify execution risk.
-pub const DEFAULT_MIN_NET_PROFIT_LAMPORTS: u64 = 30_000;
+pub const DEFAULT_MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 /// Base Solana network signature fee.
-pub const BASE_NETWORK_FEE_LAMPORTS: u64 = 5_000;
+pub const BASE_NETWORK_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS;
 /// Solana packet MTU size constraint (SIMD-0296 4096 bytes for v1 transactions).
 pub const SOLANA_PACKET_MTU_BYTES: usize = arb_constants::SOLANA_V1_PACKET_MTU_LIMIT;
 
@@ -28,6 +28,17 @@ pub struct RouteHopSpec {
     pub output_mint: MintId,
     pub input_transfer_fee: Option<TransferFeeConfig>,
     pub output_transfer_fee: Option<TransferFeeConfig>,
+}
+
+/// Token-2022 fees are denominated in the mint charged on each hop. They must
+/// never be summed across hops with different mints without a verified oracle conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HopTransferFeeSummary {
+    pub hop_index: usize,
+    pub input_mint: MintId,
+    pub output_mint: MintId,
+    pub input_transfer_fee_raw: u64,
+    pub output_transfer_fee_raw: u64,
 }
 
 /// Complete quotation and fee accounting for a 3-pool (or 2-pool) route.
@@ -43,7 +54,8 @@ pub struct ThreePoolRouteQuote {
     pub network_fee: u64,
     pub priority_fee: u64,
     pub jito_tip: u64,
-    pub token_transfer_fees: u64,
+    /// Per-hop fee records, each kept in its own token denomination.
+    pub transfer_fees_by_hop: Vec<HopTransferFeeSummary>,
     pub total_costs: u64,
     pub net_profit_lamports: i64,
     pub is_profitable: bool,
@@ -80,6 +92,18 @@ impl ThreePoolRouteEngine {
         }
 
         let borrow_mint = hops[0].input_mint;
+        // This legacy quote reports network/priority/Jito costs in lamports.
+        // It is only dimensionally valid when the cycle's base mint is WSOL.
+        if borrow_mint.0 != arb_constants::wsol_mint() {
+            return Err(ArbError::InvalidInput(
+                "three-pool lamport accounting requires WSOL as the borrow mint".into(),
+            ));
+        }
+        if flash_fee_bps > 10_000 || tip_share_bps > 10_000 {
+            return Err(ArbError::InvalidInput(
+                "flash fee and tip share must be within 0..=10000 bps".into(),
+            ));
+        }
         // Verify cyclical continuity: final hop output must equal initial borrow mint
         let final_hop = &hops[hops.len() - 1];
         if final_hop.output_mint != borrow_mint {
@@ -90,8 +114,8 @@ impl ThreePoolRouteEngine {
 
         let mut current_amount = borrow_amount;
         let mut hop_results = Vec::with_capacity(hops.len());
-        let mut total_token_transfer_fees = 0u64;
-        let mut total_cu = 450u32 + 28_000u32; // Base tx overhead + Kamino borrow/repay overhead
+        let mut transfer_fees_by_hop = Vec::with_capacity(hops.len());
+        let mut total_cu = 450u32 + 28_000u32; // Estimate only; final message/CU are builder-verified.
 
         for (i, hop) in hops.iter().enumerate() {
             // Continuity check between hops
@@ -109,18 +133,22 @@ impl ThreePoolRouteEngine {
                 input_mint: hop.input_mint,
                 output_mint: hop.output_mint,
                 amount: current_amount,
-                slippage_bps: 10,
+                slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
                 input_transfer_fee_config: hop.input_transfer_fee,
                 output_transfer_fee_config: hop.output_transfer_fee,
             };
 
             let res = self.dispatcher.quote_exact_in(&hop.pool_state, &req)?;
 
-            total_token_transfer_fees = total_token_transfer_fees
-                .saturating_add(res.transfer_fee_breakdown.input_transfer_fee)
-                .saturating_add(res.transfer_fee_breakdown.output_transfer_fee);
+            transfer_fees_by_hop.push(HopTransferFeeSummary {
+                hop_index: i,
+                input_mint: hop.input_mint,
+                output_mint: hop.output_mint,
+                input_transfer_fee_raw: res.transfer_fee_breakdown.input_transfer_fee,
+                output_transfer_fee_raw: res.transfer_fee_breakdown.output_transfer_fee,
+            });
 
-            // Accumulate CU per DEX type
+            // Accumulate estimated CU per DEX type
             let hop_cu = match hop.pool_state.protocol {
                 DexProtocol::RaydiumV4
                 | DexProtocol::RaydiumCpmm
@@ -132,7 +160,7 @@ impl ThreePoolRouteEngine {
                 | DexProtocol::MeteoraDbc
                 | DexProtocol::RaydiumLaunchLab => 60_000,
             };
-            total_cu = total_cu.saturating_add(hop_cu);
+            total_cu = total_cu.checked_add(hop_cu).ok_or(ArbError::Overflow)?;
 
             current_amount = res.amount_out_raw;
             hop_results.push(res);
@@ -145,31 +173,55 @@ impl ThreePoolRouteEngine {
             // u128 product cannot overflow (u64 * u16), but the quotient can
             // exceed u64 for absurd borrow sizes: refuse instead of truncating
             // a cost downward.
-            let fee = (u128::from(borrow_amount) * u128::from(flash_fee_bps)).div_ceil(10_000);
+            let fee = u128::from(borrow_amount)
+                .checked_mul(u128::from(flash_fee_bps))
+                .ok_or(ArbError::Overflow)?
+                .div_ceil(10_000);
             u64::try_from(fee).map_err(|_| ArbError::Overflow)?
         } else {
             0u64
         };
-        let total_repay_required = borrow_amount.saturating_add(flash_loan_fee);
+        let total_repay_required = borrow_amount
+            .checked_add(flash_loan_fee)
+            .ok_or(ArbError::Overflow)?;
 
-        let gross_profit = (gross_output as i64) - (total_repay_required as i64);
+        // Flash-loan fee is already reflected in repay principal here. Do not
+        // subtract it again in total execution costs (double-count prevention).
+        let gross_profit =
+            i64::try_from(i128::from(gross_output) - i128::from(total_repay_required))
+                .map_err(|_| ArbError::Overflow)?;
 
-        // Dynamic Jito tip calculation: e.g. 70% of gross profit if profitable
-        let jito_tip = if gross_profit > 0 {
-            let tip = (gross_profit as u64 * tip_share_bps as u64) / 10_000;
-            tip.clamp(10_000, 50_000_000) // bounded between 0.00001 SOL and 0.05 SOL
+        // Tip is a share of the remaining edge, capped at that edge. A minimum
+        // tip is applied only when the edge can actually afford it.
+        let jito_tip = if gross_profit > 0 && tip_share_bps > 0 {
+            let gross_edge = u64::try_from(gross_profit).map_err(|_| ArbError::Overflow)?;
+            let share = u128::from(gross_edge)
+                .checked_mul(u128::from(tip_share_bps))
+                .ok_or(ArbError::Overflow)?
+                / 10_000;
+            let bounded = share.min(u128::from(gross_edge));
+            let bounded = if bounded >= u128::from(arb_constants::MIN_JITO_TIP_LAMPORTS) {
+                bounded
+            } else if gross_edge >= arb_constants::MIN_JITO_TIP_LAMPORTS {
+                u128::from(arb_constants::MIN_JITO_TIP_LAMPORTS)
+            } else {
+                0
+            };
+            u64::try_from(bounded).map_err(|_| ArbError::Overflow)?
         } else {
             0
         };
 
         let network_fee = BASE_NETWORK_FEE_LAMPORTS;
         let priority_fee = priority_fee_lamports;
+        // All three costs are denominated in lamports; flash fee was deducted above.
         let total_costs = network_fee
-            .saturating_add(priority_fee)
-            .saturating_add(jito_tip)
-            .saturating_add(flash_loan_fee);
-
-        let net_profit_lamports = gross_profit - (total_costs as i64);
+            .checked_add(priority_fee)
+            .and_then(|v| v.checked_add(jito_tip))
+            .ok_or(ArbError::Overflow)?;
+        let net_profit_lamports = gross_profit
+            .checked_sub(i64::try_from(total_costs).map_err(|_| ArbError::Overflow)?)
+            .ok_or(ArbError::Overflow)?;
         let is_profitable = net_profit_lamports >= (DEFAULT_MIN_NET_PROFIT_LAMPORTS as i64);
 
         // Estimate transaction size: Base header (64 bytes) + Kamino borrow/repay (2 * 150) + Hops (hops.len * 200)
@@ -186,7 +238,7 @@ impl ThreePoolRouteEngine {
             network_fee,
             priority_fee,
             jito_tip,
-            token_transfer_fees: total_token_transfer_fees,
+            transfer_fees_by_hop,
             total_costs,
             net_profit_lamports,
             is_profitable,
@@ -234,21 +286,36 @@ impl KaminoBorrowOptimizer {
         }
 
         // 1. Determine search bounds [min_borrow, max_borrow]
-        let min_borrow = 10_000_000u64; // 0.01 SOL floor
+        let min_borrow = arb_constants::MIN_KAMINO_FLASH_BORROW_LAMPORTS;
         if kamino_available_liquidity <= min_borrow {
             return None;
         }
 
-        // Restrict max borrow to at most 15% of the initial pool reserve or Kamino limit
-        let hop1_reserve = hops[0].pool_state.reserve_in as u64;
-        let pool_cap = if hop1_reserve > 0 {
-            (hop1_reserve / 6).max(min_borrow)
+        // Restrict max borrow to 15% of the reserve on the actual borrow side.
+        // `reserve_in` is the base-mint reserve; `reserve_out` is the quote-mint reserve.
+        let first_pool = &hops[0].pool_state;
+        let borrow_side_reserve = if first_pool.base_mint == hops[0].input_mint {
+            first_pool.reserve_in
+        } else if first_pool.quote_mint == hops[0].input_mint {
+            first_pool.reserve_out
         } else {
-            kamino_available_liquidity
+            return None;
         };
+        // Unknown/zero borrow-side reserve is not permission to borrow the full
+        // flash-loan market. The reserve cap is a strict upper bound.
+        if borrow_side_reserve == 0 {
+            return None;
+        }
+        let borrow_side_reserve = u64::try_from(borrow_side_reserve).unwrap_or(u64::MAX);
+        let reserve_share = u128::from(borrow_side_reserve).checked_mul(u128::from(
+            arb_constants::MAX_FLASH_BORROW_POOL_RESERVE_SHARE_BPS,
+        ))? / 10_000;
+        let pool_cap = u64::try_from(reserve_share).ok()?;
 
-        let max_borrow = kamino_available_liquidity.min(pool_cap).min(50_000_000_000); // 50 SOL ceiling
-        if max_borrow <= min_borrow {
+        let max_borrow = kamino_available_liquidity
+            .min(pool_cap)
+            .min(arb_constants::MAX_KAMINO_FLASH_BORROW_LAMPORTS);
+        if max_borrow < min_borrow {
             return None;
         }
 
@@ -269,12 +336,9 @@ impl KaminoBorrowOptimizer {
                 tip_share_bps,
             ) {
                 Ok(q) => {
-                    // Check physical MTU limit
-                    if q.estimated_tx_size_bytes > SOLANA_PACKET_MTU_BYTES {
-                        i64::MIN
-                    } else {
-                        q.net_profit_lamports
-                    }
+                    // This is a route-level estimate, not a serialized message.
+                    // Exact packet/MTU validation belongs to the transaction builder.
+                    q.net_profit_lamports
                 }
                 Err(_) => i64::MIN,
             }

@@ -103,8 +103,20 @@ pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
     "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
 ];
 
+/// Solana base fee per transaction signature, in lamports.
+pub const SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS: u64 = 5_000;
 /// Default minimum net profit (retained edge) that justifies execution, in lamports.
 pub const DEFAULT_MIN_PROFIT_LAMPORTS: u64 = 50_000;
+/// Minimum borrow size used by the legacy Kamino route-size optimizer (0.01 SOL).
+pub const MIN_KAMINO_FLASH_BORROW_LAMPORTS: u64 = 10_000_000;
+/// Maximum borrow size used by the legacy Kamino route-size optimizer (50 SOL).
+pub const MAX_KAMINO_FLASH_BORROW_LAMPORTS: u64 = 5_000_000_000;
+/// Maximum fraction of the first pool reserve the optimizer may borrow (15%).
+pub const MAX_FLASH_BORROW_POOL_RESERVE_SHARE_BPS: u64 = 1_500;
+/// Default maximum number of consecutive DLMM bins to traverse per route leg.
+pub const DEFAULT_MAX_BINS_PER_LEG: u32 = 3;
+/// Minimum Jito bundle tip accepted by the block engine, in lamports.
+pub const MIN_JITO_TIP_LAMPORTS: u64 = 1_000;
 /// Conservative default Jito tip floor in lamports. The block-engine-enforced
 /// minimum is 1,000 lamports (docs.jito.wtf); this runtime floor is 10x that to
 /// avoid submitting bundles that can never clear a quiet auction.

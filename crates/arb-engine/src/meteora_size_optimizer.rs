@@ -16,6 +16,7 @@
 
 use crate::meteora_pair_discovery::MeteoraDlmmEligiblePair;
 use crate::meteora_quote_engine::{MeteoraDlmmCrossPoolQuoteEngine, TwoHopDlmmQuote};
+use arb_types::MintId;
 use serde::{Deserialize, Serialize};
 
 /// Arbitrage direction across the two pools.
@@ -35,8 +36,9 @@ pub struct TestedSizeEvaluation {
     pub hop1_out: u64,
     pub hop2_out: u64,
     pub fees_hop1_raw: u64,
+    pub fees_hop1_mint: MintId,
     pub fees_hop2_raw: u64,
-    pub total_fees_raw: u64,
+    pub fees_hop2_mint: MintId,
     pub network_costs_quote_raw: u64,
     pub net_profit_quote_raw: i64,
     pub net_profit_bps: i64,
@@ -94,6 +96,7 @@ pub struct MeteoraOptimalSizeResult {
 pub struct DlmmOptimizerConfig {
     pub min_input: u64,
     pub max_input: u64,
+    pub slippage_bps: u16,
     pub coarse_samples: usize,
     pub max_candidate_basins: usize,
     pub refine_steps_per_basin: usize,
@@ -106,13 +109,14 @@ pub struct DlmmOptimizerConfig {
 impl Default for DlmmOptimizerConfig {
     fn default() -> Self {
         Self {
-            min_input: 10_000,     // 0.01 USDC (6 dec)
+            min_input: 100_000,    // 0.10 USDC (6 dec)
             max_input: 10_000_000, // 10.0 USDC (6 dec)
-            coarse_samples: 24,
+            slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
+            coarse_samples: 8,
             max_candidate_basins: 4,
-            refine_steps_per_basin: 10,
-            estimated_network_cost_lamports: 9_000, // 5k base + 4k priority
-            sol_usd_price: 180,                     // Conservative default
+            refine_steps_per_basin: 6,
+            estimated_network_cost_lamports: arb_constants::SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS,
+            sol_usd_price: 0, // Must be supplied for non-SOL quote currencies.
             quote_decimals: 6,
             is_quote_sol: false,
         }
@@ -127,7 +131,7 @@ impl MeteoraDlmmTradeSizeOptimizer {
         if cfg.estimated_network_cost_lamports > 0 {
             cfg.estimated_network_cost_lamports
         } else {
-            9_000
+            arb_constants::SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS
         }
     }
 
@@ -150,10 +154,14 @@ impl MeteoraDlmmTradeSizeOptimizer {
         if is_quote_sol {
             lamports
         } else {
-            let num = (lamports as u128)
-                .saturating_mul(sol_usd_price as u128)
-                .saturating_mul(10u128.pow(quote_decimals as u32));
-            (num / 1_000_000_000) as u64
+            if sol_usd_price == 0 || quote_decimals > 18 {
+                return u64::MAX;
+            }
+            let num = u128::from(lamports)
+                .checked_mul(u128::from(sol_usd_price))
+                .and_then(|value| value.checked_mul(10u128.pow(u32::from(quote_decimals))));
+            num.and_then(|value| u64::try_from(value / 1_000_000_000).ok())
+                .unwrap_or(u64::MAX)
         }
     }
 
@@ -183,13 +191,16 @@ impl MeteoraDlmmTradeSizeOptimizer {
         let net_cost_quote = Self::network_cost_in_quote_raw(
             lamports,
             cfg.is_quote_sol,
-            cfg.sol_usd_price.max(1),
+            cfg.sol_usd_price,
             cfg.quote_decimals,
         );
 
-        let net_profit = quote.gross_profit - (net_cost_quote as i64);
+        let net_profit = quote
+            .minimum_gross_profit
+            .saturating_sub(i64::try_from(net_cost_quote).unwrap_or(i64::MAX));
         let net_bps = if size > 0 {
-            (net_profit * 10_000) / (size as i64)
+            i64::try_from(i128::from(net_profit) * 10_000 / i128::from(size))
+                .unwrap_or(if net_profit >= 0 { i64::MAX } else { i64::MIN })
         } else {
             0
         };
@@ -200,8 +211,9 @@ impl MeteoraDlmmTradeSizeOptimizer {
             hop1_out: quote.hop1_amount_out,
             hop2_out: quote.hop2_final_amount_out,
             fees_hop1_raw: quote.hop1_fee,
+            fees_hop1_mint: quote.hop1_fee_mint,
             fees_hop2_raw: quote.hop2_fee,
-            total_fees_raw: quote.hop1_fee.saturating_add(quote.hop2_fee),
+            fees_hop2_mint: quote.hop2_fee_mint,
             network_costs_quote_raw: net_cost_quote,
             net_profit_quote_raw: net_profit,
             net_profit_bps: net_bps,
@@ -220,17 +232,32 @@ impl MeteoraDlmmTradeSizeOptimizer {
     ) -> Option<MeteoraOptimalSizeResult> {
         let lo = cfg.min_input;
         let hi = cfg.max_input;
-        if lo == 0 || hi < lo {
+        if lo == 0
+            || hi < lo
+            || cfg.coarse_samples < 2
+            || cfg.max_candidate_basins == 0
+            || cfg.refine_steps_per_basin == 0
+            || cfg.quote_decimals > 18
+            || (!cfg.is_quote_sol && cfg.sol_usd_price == 0)
+        {
             return None;
         }
 
         let quote_fn = |amt: u64| -> Option<TwoHopDlmmQuote> {
             match direction {
                 DlmmArbitrageDirection::DirectionA => {
-                    MeteoraDlmmCrossPoolQuoteEngine::quote_direction_a(pair, amt)
+                    MeteoraDlmmCrossPoolQuoteEngine::quote_direction_a_with_slippage(
+                        pair,
+                        amt,
+                        cfg.slippage_bps,
+                    )
                 }
                 DlmmArbitrageDirection::DirectionB => {
-                    MeteoraDlmmCrossPoolQuoteEngine::quote_direction_b(pair, amt)
+                    MeteoraDlmmCrossPoolQuoteEngine::quote_direction_b_with_slippage(
+                        pair,
+                        amt,
+                        cfg.slippage_bps,
+                    )
                 }
             }
         };
@@ -338,7 +365,7 @@ impl MeteoraDlmmTradeSizeOptimizer {
             expected_final_out: best_eval.hop2_out,
             expected_gross_profit: best_quote.gross_profit,
             expected_net_profit: best_eval.net_profit_quote_raw,
-            spread_bps: best_quote.spread_bps,
+            spread_bps: best_quote.minimum_spread_bps,
             net_profit_bps: best_eval.net_profit_bps,
             hop1_bins_traversed: best_quote.hop1_bins_traversed,
             hop2_bins_traversed: best_quote.hop2_bins_traversed,
@@ -435,6 +462,8 @@ fn select_candidate_basins(
 mod tests {
     use super::{TestedSizeEvaluation, select_candidate_basins};
     use crate::meteora_size_optimizer::DlmmArbitrageDirection;
+    use arb_types::MintId;
+    use solana_pubkey::Pubkey;
 
     fn evaluation(size: u64, profit: i64) -> TestedSizeEvaluation {
         TestedSizeEvaluation {
@@ -443,8 +472,9 @@ mod tests {
             hop1_out: 0,
             hop2_out: 0,
             fees_hop1_raw: 0,
+            fees_hop1_mint: MintId(Pubkey::default()),
             fees_hop2_raw: 0,
-            total_fees_raw: 0,
+            fees_hop2_mint: MintId(Pubkey::default()),
             network_costs_quote_raw: 0,
             net_profit_quote_raw: profit,
             net_profit_bps: 0,

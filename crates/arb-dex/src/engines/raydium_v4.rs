@@ -156,6 +156,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
             calculation_version: RAYDIUM_V4_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 
@@ -211,6 +212,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
             calculation_version: RAYDIUM_V4_VERSION,
             quote_validity: true,
             computation_time_us: 1,
+            dlmm_bins_crossed: None,
         })
     }
 }

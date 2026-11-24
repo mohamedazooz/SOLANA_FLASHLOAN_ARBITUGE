@@ -7,12 +7,14 @@
 //! 3. When `actual_hop1_out > min_hop1_out`, residual tokens remain in the wallet.
 //! 4. Any failure in Hop 2 aborts the entire transaction atomically, preventing stranded inventory.
 
+use arb_tx::protocols::meteora_dlmm::{active_bin_array_index, derive_bin_array_pda};
 use arb_tx::{KeypairSigner, MeteoraDlmmAtomicArbitrageBuilder};
 use arb_types::{
     DexProtocol, DlmmBin, DlmmFeeParams, DlmmState, MintId, PoolExecutionAccounts, PoolId,
     PoolKind, PoolState, Slot, TokenProgramKind,
 };
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 
 fn make_test_dlmm_pool(
     pool_bytes_id: u8,
@@ -51,7 +53,7 @@ fn make_test_dlmm_pool(
         active_bin_id,
         status: 0,
         bin_step_bps: bin_step,
-        bins,
+        bins: bins.clone(),
         params: Some(fee_params),
         volatility_accumulator: 0,
         volatility_reference: 0,
@@ -60,11 +62,17 @@ fn make_test_dlmm_pool(
         support_limit_order: false,
     };
 
+    let bin_array_pdas: Vec<Pubkey> = bins
+        .iter()
+        .map(|bin| derive_bin_array_pda(&pool_pk, active_bin_array_index(bin.bin_id)))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     let exec = PoolExecutionAccounts::MeteoraDlmm {
         reserve_x,
         reserve_y,
         oracle: pool_pk,
-        bin_array_pdas: vec![Pubkey::new_from_array([30 + pool_bytes_id; 32])],
+        bin_array_pdas,
         bitmap_extension: None,
         pool_token_x: mint_x.0,
         pool_token_y: mint_y.0,

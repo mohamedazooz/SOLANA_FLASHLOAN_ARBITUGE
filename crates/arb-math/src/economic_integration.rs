@@ -135,8 +135,13 @@ pub struct UnifiedEconomicResult {
     pub net_profit_raw: u64,
     /// Net profit as signed i128.
     pub net_profit_signed: i128,
+    /// Conservative net profit based on minimum final output.
+    pub minimum_net_profit_signed: i128,
+    pub minimum_net_profit_raw: u64,
     /// Net ROI in basis points (net_profit / borrow_principal × 10_000).
     pub net_roi_bps: u16,
+    /// Minimum-output ROI used by the execution gate.
+    pub minimum_net_roi_bps: u16,
     /// Break-even execution cost: the maximum costs that still yield
     /// non-negative net profit.
     pub break_even_cost_raw: u128,
@@ -159,6 +164,15 @@ pub struct UnifiedEconomicResult {
     pub source_slot: Slot,
     /// Economic calculation version.
     pub calculation_version: u32,
+}
+
+fn signed_difference(lhs: U256, rhs: U256) -> Result<i128> {
+    if lhs >= rhs {
+        i128::try_from(lhs - rhs).map_err(|_| ArbError::Overflow)
+    } else {
+        let magnitude = i128::try_from(rhs - lhs).map_err(|_| ArbError::Overflow)?;
+        magnitude.checked_neg().ok_or(ArbError::Overflow)
+    }
 }
 
 /// Configuration for unified economic evaluation.
@@ -243,10 +257,26 @@ impl UnifiedEconomicCalculator {
         if borrow_amount_raw == 0 {
             return Err(ArbError::InvalidInput("zero borrow amount".into()));
         }
+        if base_decimals > 18 {
+            return Err(ArbError::InvalidInput(
+                "base mint decimals exceed supported range".into(),
+            ));
+        }
+        if self.config.lamports_to_base_rate_den == 0
+            || self.config.risk_reserve_bps > 10_000
+            || self.config.max_tip_share_bps > 10_000
+            || self.config.max_priority_fee_share_bps > 10_000
+            || self.config.max_slippage_share_bps > 10_000
+        {
+            return Err(ArbError::InvalidInput(
+                "economic rate denominator must be non-zero and all BPS limits must be <= 10000"
+                    .into(),
+            ));
+        }
 
         let borrow = U256::from(borrow_amount_raw);
         let expected = U256::from(expected_final_output_raw);
-        let _minimum_out = U256::from(minimum_final_output_raw);
+        let minimum = U256::from(minimum_final_output_raw);
         let total_costs = U256::from(costs.total_non_rent_base(
             self.config.lamports_to_base_rate_num,
             self.config.lamports_to_base_rate_den,
@@ -282,6 +312,21 @@ impl UnifiedEconomicCalculator {
 
         let net_profit_raw = if net_signed > 0 { net_signed as u64 } else { 0 };
 
+        // Minimum-out economics are the authoritative execution safety floor.
+        let minimum_gross_signed = signed_difference(minimum, borrow)?;
+        let minimum_net_signed = if minimum_gross_signed >= 0 {
+            signed_difference(U256::from(minimum_gross_signed as u128), total_costs)?
+        } else {
+            let loss = U256::from(minimum_gross_signed.unsigned_abs());
+            let total_loss = loss.checked_add(total_costs).ok_or(ArbError::Overflow)?;
+            -i128::try_from(total_loss).map_err(|_| ArbError::Overflow)?
+        };
+        let minimum_net_profit_raw = if minimum_net_signed > 0 {
+            u64::try_from(minimum_net_signed).map_err(|_| ArbError::Overflow)?
+        } else {
+            0
+        };
+
         // Net ROI = net_profit / borrow_principal × 10_000 bps.
         let net_roi_bps = if borrow_amount_raw > 0 && net_signed > 0 {
             let roi = U256::from(net_signed as u128)
@@ -293,9 +338,19 @@ impl UnifiedEconomicCalculator {
             0
         };
 
+        let minimum_net_roi_bps = if minimum_net_signed > 0 {
+            let roi = U256::from(minimum_net_signed as u128)
+                .checked_mul(U256::from(10_000u128))
+                .and_then(|v| v.checked_div(borrow))
+                .ok_or(ArbError::Overflow)?;
+            u16::try_from(roi).unwrap_or(u16::MAX)
+        } else {
+            0
+        };
+
         // Break-even cost = gross profit (max costs that still yield net ≥ 0).
-        let break_even_cost_raw = if gross_signed > 0 {
-            gross_signed as u128
+        let break_even_cost_raw = if minimum_gross_signed > 0 {
+            u128::try_from(minimum_gross_signed).map_err(|_| ArbError::Overflow)?
         } else {
             0
         };
@@ -307,8 +362,8 @@ impl UnifiedEconomicCalculator {
             self.config.lamports_to_base_rate_num,
             self.config.lamports_to_base_rate_den,
         )?;
-        // Profit before tip = net_signed + jito tip in base units.
-        let profit_before_tip = net_signed
+        // Profit before tip uses the conservative minimum-out result.
+        let profit_before_tip = minimum_net_signed
             .checked_add(i128::try_from(tip_base).map_err(|_| ArbError::Overflow)?)
             .ok_or(ArbError::Overflow)?;
 
@@ -324,35 +379,50 @@ impl UnifiedEconomicCalculator {
             .ok_or(ArbError::Overflow)?)
         .min(U256::from(profit_for_tip));
 
-        // Maximum acceptable priority fee: bounded by share of profit before tip.
-        let max_priority_raw = (U256::from(profit_for_tip)
+        // Priority fee cap adds the currently paid priority fee back to the
+        // minimum-out net; the Jito tip remains deducted for this independent cap.
+        let priority_base = crate::economic::lamports_to_base_raw(
+            Lamports(costs.priority_fee_lamports),
+            self.config.lamports_to_base_rate_num,
+            self.config.lamports_to_base_rate_den,
+        )?;
+        let profit_before_priority = minimum_net_signed
+            .checked_add(i128::try_from(priority_base).map_err(|_| ArbError::Overflow)?)
+            .ok_or(ArbError::Overflow)?;
+        let profit_for_priority = if profit_before_priority > 0 {
+            profit_before_priority as u128
+        } else {
+            0
+        };
+        let max_priority_raw = (U256::from(profit_for_priority)
             .checked_mul(U256::from(self.config.max_priority_fee_share_bps as u128))
             .and_then(|v| v.checked_div(U256::from(10_000u128)))
             .ok_or(ArbError::Overflow)?)
-        .min(U256::from(profit_for_tip));
+        .min(U256::from(profit_for_priority));
 
-        // Maximum acceptable slippage: bounded by share of expected output.
-        let max_slippage_raw = (U256::from(expected_final_output_raw)
+        // Maximum acceptable slippage is measured against the conservative
+        // minimum-out amount, not the optimistic expected output.
+        let max_slippage_raw = (U256::from(minimum_final_output_raw)
             .checked_mul(U256::from(self.config.max_slippage_share_bps as u128))
             .and_then(|v| v.checked_div(U256::from(10_000u128)))
             .ok_or(ArbError::Overflow)?)
-        .min(U256::from(expected_final_output_raw));
+        .min(U256::from(minimum_final_output_raw));
 
-        // Execution risk reserve: fraction of net profit held back.
-        let risk_reserve_raw = if net_signed > 0 {
-            let reserve = U256::from(net_signed as u128)
+        // Reserve against the conservative minimum-out net, not expected net.
+        let risk_reserve_raw = if minimum_net_signed > 0 {
+            let reserve = U256::from(minimum_net_signed as u128)
                 .checked_mul(U256::from(self.config.risk_reserve_bps as u128))
                 .and_then(|v| v.checked_div(U256::from(10_000u128)))
                 .ok_or(ArbError::Overflow)?;
-            u128::try_from(reserve).unwrap_or(u128::MAX)
+            u128::try_from(reserve).map_err(|_| ArbError::Overflow)?
         } else {
             0
         };
 
-        // Conservative net profit = net profit − risk reserve.
-        let conservative_net = net_signed
+        let conservative_net = minimum_net_signed
             .checked_sub(i128::try_from(risk_reserve_raw).map_err(|_| ArbError::Overflow)?)
-            .unwrap_or(0);
+            .ok_or(ArbError::Overflow)?;
+
         let conservative_net_profit_raw = if conservative_net > 0 {
             conservative_net as u64
         } else {
@@ -361,7 +431,7 @@ impl UnifiedEconomicCalculator {
 
         let min_profit_i128 = i128::from(self.config.min_profit_raw);
         let meets_minimum_profit = conservative_net >= min_profit_i128;
-        let meets_minimum_roi = net_roi_bps >= self.config.min_roi_bps;
+        let meets_minimum_roi = minimum_net_roi_bps >= self.config.min_roi_bps;
 
         Ok(UnifiedEconomicResult {
             base_mint,
@@ -377,7 +447,10 @@ impl UnifiedEconomicCalculator {
             )?,
             net_profit_raw,
             net_profit_signed: net_signed,
+            minimum_net_profit_signed: minimum_net_signed,
+            minimum_net_profit_raw,
             net_roi_bps,
+            minimum_net_roi_bps,
             break_even_cost_raw,
             max_acceptable_jito_tip_raw: u128::try_from(max_tip_raw).unwrap_or(u128::MAX),
             max_acceptable_priority_fee_raw: u128::try_from(max_priority_raw).unwrap_or(u128::MAX),
@@ -539,6 +612,8 @@ mod tests {
         assert_eq!(result.gross_profit_raw, 50_000_000);
         assert_eq!(result.total_costs_raw, 47_500);
         assert_eq!(result.net_profit_raw, 49_952_500);
+        assert_eq!(result.minimum_net_profit_signed, 39_952_500);
+        assert_eq!(result.minimum_net_profit_raw, 39_952_500);
         assert!(result.meets_minimum_profit);
         assert!(result.meets_minimum_roi);
     }
@@ -567,6 +642,72 @@ mod tests {
     }
 
     #[test]
+    fn expected_profit_cannot_override_unprofitable_minimum_output() {
+        let mut config = test_config();
+        config.min_profit_raw = 40_000_000;
+        let calc = UnifiedEconomicCalculator::new(config);
+        let costs = test_costs();
+        let result = calc
+            .evaluate(
+                test_mint(),
+                9,
+                1_000_000_000,
+                1_050_000_000,
+                1_039_000_000,
+                &costs,
+                Slot(100),
+            )
+            .unwrap();
+        assert!(result.net_profit_signed > 0);
+        assert!(result.minimum_net_profit_signed < 40_000_000);
+        assert!(!result.meets_minimum_profit);
+        assert!(result.conservative_net_profit_raw < 40_000_000);
+    }
+
+    #[test]
+    fn expected_roi_cannot_override_minimum_output_roi() {
+        let mut config = test_config();
+        config.min_roi_bps = 500;
+        let calc = UnifiedEconomicCalculator::new(config);
+        let costs = test_costs();
+        let result = calc
+            .evaluate(
+                test_mint(),
+                9,
+                1_000_000_000,
+                1_100_000_000,
+                1_010_000_000,
+                &costs,
+                Slot(100),
+            )
+            .unwrap();
+
+        assert!(result.net_roi_bps >= 500);
+        assert!(result.minimum_net_roi_bps < 500);
+        assert!(!result.meets_minimum_roi);
+    }
+
+    #[test]
+    fn invalid_bps_configuration_is_rejected() {
+        let mut config = test_config();
+        config.max_tip_share_bps = 10_001;
+        let calc = UnifiedEconomicCalculator::new(config);
+        let costs = test_costs();
+        assert!(
+            calc.evaluate(
+                test_mint(),
+                9,
+                1_000_000,
+                1_100_000,
+                1_050_000,
+                &costs,
+                Slot(100),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn test_break_even_cost() {
         let calc = UnifiedEconomicCalculator::new(test_config());
         let costs = test_costs();
@@ -583,7 +724,7 @@ mod tests {
             .unwrap();
 
         // Break-even = gross profit = 50M
-        assert_eq!(result.break_even_cost_raw, 50_000_000);
+        assert_eq!(result.break_even_cost_raw, 40_000_000);
     }
 
     #[test]
@@ -691,9 +832,8 @@ mod tests {
             other_execution_costs_raw: 0,
             rent_deposit_lamports: 0,
         };
-        // Borrow 1M, output 1.1M, gross = 100k, costs = 17.5k, net = 82.5k
-        // Risk reserve = 1% of 82.5k = 825
-        // Conservative net = 82.5k - 825 = 81,675
+        // Borrow 1M, expected output 1.1M, minimum output 1.09M.
+        // Minimum net = 90k - 17.5k = 72.5k; reserve = 725.
         let result = calc
             .evaluate(
                 test_mint(),
@@ -705,8 +845,9 @@ mod tests {
                 Slot(100),
             )
             .unwrap();
-        assert_eq!(result.execution_risk_reserve_raw, 825);
-        assert_eq!(result.conservative_net_profit_raw, 81_675);
+        assert_eq!(result.minimum_net_profit_signed, 72_500);
+        assert_eq!(result.execution_risk_reserve_raw, 725);
+        assert_eq!(result.conservative_net_profit_raw, 71_775);
     }
 
     #[test]

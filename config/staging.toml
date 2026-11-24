@@ -5,14 +5,6 @@
 mode = "simulate"
 live_enabled = false
 
-[grpc]
-primary_url = ""
-primary_token_env = "HELIUS_API_KEY"
-failover_url = ""
-failover_token_env = "SHYFT_API_KEY"
-commitment = "confirmed"
-ping_reply = true
-
 [rpc]
 url = ""
 commitment = "confirmed"
@@ -77,11 +69,6 @@ listen = "127.0.0.1:9100"
 [admin]
 listen = "127.0.0.1:9101"
 token_env = "SENTINEL_ADMIN_KEY"
-
-[security]
-cors_allow_origins = ["https://staging.example.com"]
-max_request_body_bytes = 1048576
-webhook_signature_required = true
 
 [chronos]
 enabled = true

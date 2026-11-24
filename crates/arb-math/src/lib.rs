@@ -16,7 +16,6 @@ pub mod cpmm;
 pub mod damm_v2;
 pub mod dbc;
 pub mod dlmm;
-pub mod dlmm_pro;
 pub mod economic;
 pub mod economic_integration;
 pub mod latency;
@@ -74,7 +73,6 @@ pub use dlmm::{
     compute_base_fee, compute_total_fee_rate, compute_variable_fee, consume_bin_liquidity,
     get_price_from_id, pow_q64, quote_dlmm_multi_bin, quote_dlmm_view,
 };
-pub use dlmm_pro::*;
 pub use launchlab::{quote_launchlab_buy_exact_in, quote_launchlab_sell_exact_in};
 pub use raydium_dynamic_fee::{
     raydium_clmm_dynamic_fee_rate_upper_bound, raydium_clmm_total_fee_rate_upper_bound,

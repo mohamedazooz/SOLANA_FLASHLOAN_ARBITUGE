@@ -147,6 +147,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
             calculation_version: PUMP_SWAP_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 

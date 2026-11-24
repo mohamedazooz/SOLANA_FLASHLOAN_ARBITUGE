@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::fs;
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub bot: BotConfig,
     pub rpc: RpcConfig,
@@ -371,10 +372,10 @@ fn three_leg_default_max_input() -> u64 {
     2_000_000_000
 }
 fn default_hop_slippage_bps() -> u64 {
-    15
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
 }
 fn three_leg_default_slippage() -> u64 {
-    15
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
 }
 fn three_leg_default_min_profit() -> u64 {
     arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS
@@ -584,14 +585,22 @@ fn validate_slippage_policies(config: &Config) -> anyhow::Result<()> {
 }
 
 pub fn load(path: &str) -> anyhow::Result<Config> {
-    if let Ok(arb) = arb_config::loader::load(path) {
+    use anyhow::Context;
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
+    let root: toml::Value = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
+
+    // Select the schema explicitly. Never swallow AppConfig validation errors
+    // and silently fall back to the legacy BotConfig parser.
+    let is_app_config = root.get("mode").is_some() || root.get("provider").is_some();
+    if is_app_config {
+        let arb = arb_config::loader::load(path)
+            .with_context(|| format!("Invalid AppConfig schema in '{path}'"))?;
         let config = from_arb_config(arb);
         validate_live_freshness(&config, crate::live_execution_enabled())?;
         return Ok(config);
     }
-    use anyhow::Context;
-    let contents =
-        fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
+
     let mut config: Config = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
 
     // Profit wallet override from environment
@@ -642,6 +651,10 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
             config.strategy.min_net_profit_abs = value;
         }
     }
+    // Apply the same optional USD floor in both AppConfig and legacy BotConfig
+    // paths; it only takes effect when SOL_USD_PRICE is explicitly supplied.
+    config.strategy.min_net_profit_abs =
+        min_net_profit_floor_lamports(config.strategy.min_net_profit_abs);
 
     // Slippage BPS override
     if let Ok(raw) = std::env::var("MAX_SLIPPAGE_BPS") {
@@ -764,6 +777,18 @@ mod config_file_tests {
     /// failed to parse and the bot aborted at startup (deploy run
     /// 43741572901). Every tracked config file must deserialize.
     #[test]
+    fn default_slippage_uses_the_shared_protocol_constant() {
+        assert_eq!(
+            super::default_hop_slippage_bps(),
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+        );
+        assert_eq!(
+            super::three_leg_default_slippage(),
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+        );
+    }
+
+    #[test]
     fn tracked_config_files_deserialize() {
         for path in ["../../config.toml", "../../config/config.example.toml"] {
             let full = concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + path;
@@ -823,6 +848,14 @@ mod min_profit_floor_tests {
         unsafe { std::env::set_var("MIN_NET_PROFIT_USD", "abc") };
         assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
 
+        unsafe { std::env::remove_var("MIN_NET_PROFIT_USD") };
+        unsafe { std::env::remove_var("SOL_USD_PRICE") };
+
+        unsafe { std::env::set_var("MIN_NET_PROFIT_USD", "0.05") };
+        unsafe { std::env::set_var("SOL_USD_PRICE", "200") };
+        let base_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/base.toml");
+        let loaded = super::load(base_path).expect("legacy config should load");
+        assert_eq!(loaded.strategy.min_net_profit_abs, 250_000);
         unsafe { std::env::remove_var("MIN_NET_PROFIT_USD") };
         unsafe { std::env::remove_var("SOL_USD_PRICE") };
         assert_eq!(min_net_profit_floor_lamports(baseline), baseline);

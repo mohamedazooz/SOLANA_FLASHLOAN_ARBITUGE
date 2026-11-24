@@ -120,9 +120,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     MintId(to),
                 );
                 match q {
-                    Some((out, quote, sfy)) => println!(
-                        "quote {label} {dir} amt={amount}: out={out} fee={} bins={} sfy={sfy}",
-                        quote.fee_amount, quote.bins_crossed
+                    Some((quote, sfy)) => println!(
+                        "quote {label} {dir} amt={amount}: out={} fee={} bins={:?} sfy={sfy}",
+                        quote.amount_out_raw,
+                        quote.fees_breakdown.total_fee,
+                        quote.dlmm_bins_crossed
                     ),
                     None => println!("quote {label} {dir} amt={amount}: None (rejected)"),
                 }

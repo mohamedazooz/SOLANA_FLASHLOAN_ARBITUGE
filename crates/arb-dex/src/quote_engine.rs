@@ -50,6 +50,8 @@ pub struct QuoteResult {
     pub calculation_version: &'static str,
     pub quote_validity: bool,
     pub computation_time_us: u64,
+    /// Exact DLMM bin traversal count; `None` for non-DLMM protocols.
+    pub dlmm_bins_crossed: Option<u32>,
 }
 
 impl QuoteRequest {
