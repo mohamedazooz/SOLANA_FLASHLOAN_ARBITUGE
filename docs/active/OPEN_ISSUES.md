@@ -123,12 +123,13 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Required Fix**: when the two-pool engine is wired into supervision, raise `leg_b.min_amount_out` to `max(repay, borrow+fee+tip+min_profit)` and include the tip; then add the FL-15-style regression test to this assembler.
 - **Status**: OPEN (P3); wire-up must not proceed without this.
 
-### DEX-F-2026-11-22-N1: DAMM v2 / DBC / DLMM Pro / LaunchLab Quote via CP Approximation (P3)
+### DEX-F-2026-11-22-N1: Protocol-Specific State and Quote Engines for DAMM v2 / DBC / DLMM Pro / LaunchLab (P1)
 
-- **File**: `crates/arb-dex/src/engines/mod.rs:94–118`.
-- **Observed Behavior**: those four protocols quote through a generic constant-product fallback with hard-coded fees (25/25/10/25 bps) — not official protocol math. They are fail-closed for discovery (`crates/arb-ingest/src/decoders.rs:274` returns `None`), so no live edge can reference them today; instruction builders and hydration accounts exist but are unreachable in the live loop.
-- **Required Fix Before ANY Enablement**: exact per-protocol math (DAMM v2 configurable-fee CP + position ranges; DBC 16-point piecewise curve; DLMM Pro continuous ticks; LaunchLab curve) + dynamic fee model + discovery + mainnet snapshot differential tests.
-- **Status**: OPEN (P3). See `docs/active/audit/DEX_SUPPORT_MATRIX.md`.
+- **Files**: `crates/arb-engine/src/adapters.rs`; `crates/arb-dex/src/meteora_damm_v2.rs`; `meteora_dbc.rs`; `meteora_dlmm_pro.rs`; `raydium_launchlab.rs`; `crates/arb-ingest/` discovery and hydration paths.
+- **Observed Behavior**: the `UniversalQuoteDispatcher` rejects incomplete snapshots, but the separate legacy route-graph adapters previously allowed DAMM v2 and DBC to enter generic CPMM math and DLMM Pro to enter generic CLMM math. The direct DBC and DLMM Pro `AmmPool` adapters also quoted partial state. A DAMM v2 parser field read from official Pool offset 296..328 was named `config`, although the official Pool field at that offset is `whitelisted_vault`; it must not be passed to the swap builder as a config account.
+- **Safety correction (this branch)**: remove family-level fallbacks; register DAMM v2 / DBC / DLMM Pro as explicit quote-only adapters; make direct DAMM v2 / DBC / DLMM Pro quote methods refuse incomplete state; withhold their execution accounts; rename the DAMM field to `whitelisted_vault`; require LaunchLab's fee-config gate for execution readiness and reject Token-2022 until exact epoch-aware fee/hook context is available. Regression tests cover both the legacy route graph and direct `AmmPool` adapters.
+- **Required before ANY enablement**: authoritative protocol-native state decoders and coherent pool/config/vault/tick/bitmap/oracle/mint snapshots; protocol-specific exact-in math and exact-out only where the official model supports it; dynamic/scheduled fees, migration/partial-fill semantics, epoch-aware Token-2022 transfer fees and transfer-hook accounts; sizing boundaries; exact instruction account/discriminator validation; official SDK differential vectors and non-broadcast mainnet simulation.
+- **Status**: SAFETY GATE APPLIED; ALL FOUR VENUES REMAIN NOT ENABLED. This issue stays open until the full integration gates pass. See `docs/active/audit/DEX_SUPPORT_MATRIX.md` and `docs/active/research/DEX_PROTOCOL_ADAPTER_PLAN_2026-11-24.md`.
 
 ### DEX-F-2026-11-22-N2: Raydium CLMM Discovery Fallback Fee Is a Structural Constant (P3, telemetry)
 

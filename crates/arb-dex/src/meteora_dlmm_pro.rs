@@ -5,7 +5,7 @@
 
 use crate::traits::AmmPool;
 use arb_constants::METEORA_DLMM_PRO_PROGRAM_ID;
-use arb_math::dlmm_pro::{DlmmProPoolState, quote_dlmm_pro_exact_in};
+use arb_math::dlmm_pro::DlmmProPoolState;
 use arb_types::{
     ArbError, DexProtocol, MintId, PoolExecutionAccounts, PoolId, Result, TokenProgramKind,
 };
@@ -88,16 +88,16 @@ impl AmmPool for MeteoraDlmmProPool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
-        Some(self.state.fee_bps)
+        // Tick-level dynamic/scheduled fees and transfer fees cannot be
+        // represented by the simplified state fee scalar.
+        None
     }
 
-    fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
-        if amount_in == 0 {
-            return Ok(0);
-        }
-        quote_dlmm_pro_exact_in(&self.state, amount_in, a_to_b)
-            .map(|(out, _fee, _resting)| out)
-            .map_err(|e| ArbError::InvalidInput(e.to_string()))
+    fn quote(&self, _amount_in: u64, _a_to_b: bool) -> Result<u64> {
+        Err(ArbError::UnsupportedOperation(
+            "Meteora DLMM Pro adapter is quote-only until the official pool, tick-array, bitmap-extension, oracle, limit-order, and mint snapshot is decoded"
+                .into(),
+        ))
     }
 
     fn has_risky_token(&self) -> bool {
@@ -105,17 +105,9 @@ impl AmmPool for MeteoraDlmmProPool {
     }
 
     fn execution_accounts(&self) -> Option<PoolExecutionAccounts> {
-        if self.token_x_vault == Pubkey::default() || self.token_y_vault == Pubkey::default() {
-            return None;
-        }
-        Some(PoolExecutionAccounts::MeteoraDlmmPro {
-            pool_authority: self.pool_authority,
-            vault_x: self.token_x_vault,
-            vault_y: self.token_y_vault,
-            tick_arrays: self.tick_arrays.clone(),
-            oracle: self.oracle,
-            event_authority: self.event_authority,
-        })
+        // Non-empty tick-array keys alone do not prove the complete official
+        // dynamic tick/bitmap/oracle/limit-order account graph.
+        None
     }
 
     fn required_dependency_pubkeys(&self) -> Vec<Pubkey> {
@@ -127,6 +119,7 @@ impl AmmPool for MeteoraDlmmProPool {
             self.oracle,
         ];
         deps.extend_from_slice(&self.tick_arrays);
+        deps.retain(|key| *key != Pubkey::default());
         deps
     }
 
@@ -186,8 +179,12 @@ mod tests {
             vec![],
         );
 
-        let out = pool.quote(1_000_000, true).expect("quote works");
-        assert!(out > 0);
+        assert!(matches!(
+            pool.quote(1_000_000, true),
+            Err(ArbError::UnsupportedOperation(_))
+        ));
+        assert!(pool.fee_bps().is_none());
+        assert!(pool.execution_accounts().is_none());
         assert_eq!(pool.protocol(), DexProtocol::MeteoraDlmmPro);
     }
 }

@@ -120,7 +120,15 @@ impl AmmPool for RaydiumLaunchLabPool {
     }
 
     fn execution_accounts(&self) -> Option<PoolExecutionAccounts> {
-        if self.base_vault == Pubkey::default() || self.quote_vault == Pubkey::default() {
+        if self.has_risky
+            || !self.fee_config_verified
+            || self.token_base_program == TokenProgramKind::Token2022
+            || self.token_quote_program == TokenProgramKind::Token2022
+            || self.global_config == Pubkey::default()
+            || self.platform_config == Pubkey::default()
+            || self.base_vault == Pubkey::default()
+            || self.quote_vault == Pubkey::default()
+        {
             return None;
         }
         Some(PoolExecutionAccounts::RaydiumLaunchLab {
@@ -134,12 +142,16 @@ impl AmmPool for RaydiumLaunchLabPool {
     }
 
     fn required_dependency_pubkeys(&self) -> Vec<Pubkey> {
-        vec![
+        let mut deps = vec![
             self.global_config,
             self.platform_config,
             self.base_mint.0,
             self.quote_mint.0,
-        ]
+            self.base_vault,
+            self.quote_vault,
+        ];
+        deps.retain(|key| *key != Pubkey::default());
+        deps
     }
 
     fn update_from_account(&mut self, data: &[u8]) -> Result<()> {
@@ -214,9 +226,13 @@ impl AmmPool for RaydiumLaunchLabPool {
                 "LaunchLab PlatformConfig fee has not been verified".into(),
             ));
         }
-        if self.transfer_fee_base_bps != 0 || self.transfer_fee_quote_bps != 0 {
+        if self.token_base_program == TokenProgramKind::Token2022
+            || self.token_quote_program == TokenProgramKind::Token2022
+            || self.transfer_fee_base_bps != 0
+            || self.transfer_fee_quote_bps != 0
+        {
             return Err(ArbError::InvalidInput(
-                "LaunchLab Token-2022 transfer fees require epoch/max-fee-aware mint context"
+                "LaunchLab Token-2022 pools require verified epoch/max-fee-aware mint and transfer-hook context"
                     .into(),
             ));
         }
