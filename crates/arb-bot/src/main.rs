@@ -377,13 +377,74 @@ fn admin_authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {
     provided.is_some_and(|p| constant_time_eq(p.as_bytes(), expected.as_bytes()))
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     install_panic_hook();
-    if dotenvy::dotenv().is_ok() {
-        // .env loaded
+    load_process_environment()?;
+
+    // Load .env before creating the Tokio runtime. Shadow builds use a filtered
+    // loader so wallet secrets and live/canary arming values never enter env.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create Tokio runtime")?
+        .block_on(run())
+}
+
+#[cfg(feature = "shadow-only")]
+const SHADOW_EXCLUDED_ENV_KEYS: &[&str] = &[
+    "SOLANA_PRIVATE_KEY",
+    "ARB_MODE",
+    "ARB_CANARY",
+    "ARB_LIVE",
+    "LIVE_TRADING",
+    "LIVE",
+    "EXECUTE_LIVE",
+    "SOLANA_TX_V1_DIRECT_ENABLED",
+    "SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED",
+    "SOLANA_TX_V1_JITO_ENABLED",
+    "SOLANA_TX_V1_JITO_INGRESS_VERIFIED",
+];
+
+#[cfg(feature = "shadow-only")]
+fn is_shadow_excluded_environment_key(key: &str) -> bool {
+    SHADOW_EXCLUDED_ENV_KEYS.contains(&key)
+}
+
+#[cfg(feature = "shadow-only")]
+fn load_process_environment() -> Result<()> {
+    // Remove inherited wallet and live-arming values before reading .env.
+    // This runs synchronously before Tokio runtime creation or other threads.
+    for key in SHADOW_EXCLUDED_ENV_KEYS {
+        // SAFETY: no application threads exist during this synchronous bootstrap.
+        unsafe { std::env::remove_var(key) };
     }
 
+    match dotenvy::dotenv_iter() {
+        Ok(entries) => {
+            for entry in entries {
+                let (key, value) = entry?;
+                if is_shadow_excluded_environment_key(&key) || std::env::var_os(&key).is_some() {
+                    continue;
+                }
+                // SAFETY: no application threads exist during this synchronous bootstrap.
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+        Err(error) if error.not_found() => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    Ok(())
+}
+
+#[cfg(not(feature = "shadow-only"))]
+fn load_process_environment() -> Result<()> {
+    // Preserve existing non-shadow behaviour: inherited variables win over .env.
+    let _ = dotenvy::dotenv();
+    Ok(())
+}
+
+async fn run() -> Result<()> {
     let args = parse_args()?;
 
     init_event_logger();
@@ -580,6 +641,8 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod flag_tests {
+    #[cfg(feature = "shadow-only")]
+    use super::is_shadow_excluded_environment_key;
     use super::{admin_authorized, constant_time_eq, is_placeholder_secret, is_truthy_flag};
 
     #[test]
@@ -592,6 +655,41 @@ mod flag_tests {
         assert!(!is_truthy_flag(Some("false")));
         assert!(!is_truthy_flag(Some("")));
         assert!(!is_truthy_flag(None));
+    }
+
+    #[cfg(feature = "shadow-only")]
+    #[test]
+    fn shadow_dotenv_loader_excludes_wallet_and_live_arming_keys() {
+        for key in [
+            "SOLANA_PRIVATE_KEY",
+            "ARB_MODE",
+            "ARB_CANARY",
+            "ARB_LIVE",
+            "LIVE_TRADING",
+            "LIVE",
+            "EXECUTE_LIVE",
+            "SOLANA_TX_V1_DIRECT_ENABLED",
+            "SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED",
+            "SOLANA_TX_V1_JITO_ENABLED",
+            "SOLANA_TX_V1_JITO_INGRESS_VERIFIED",
+        ] {
+            assert!(
+                is_shadow_excluded_environment_key(key),
+                "expected {key} to be excluded from shadow .env loading"
+            );
+        }
+
+        for key in [
+            "HELIUS_RPC_URL",
+            "SOLANA_RPC_URL",
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID",
+        ] {
+            assert!(
+                !is_shadow_excluded_environment_key(key),
+                "expected {key} to remain available in shadow mode"
+            );
+        }
     }
 
     #[test]

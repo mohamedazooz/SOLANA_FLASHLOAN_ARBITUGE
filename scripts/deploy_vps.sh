@@ -12,9 +12,10 @@
 #   7. Verifies: RPC health, Telegram getMe, service status.
 #
 # Safety invariants enforced here:
-#   - ARB_LIVE=0 and DRY_RUN=true are written unless ALREADY set to those values
-#     in an existing .env; the script never enables live mode.
-#   - Secrets live only in the VPS .env (git-ignored); nothing is echoed back.
+#   - ARB_MODE is forced to simulate; live/canary arming flags are removed or set false.
+#   - The binary is built with `shadow-only`, which cannot load wallet material.
+#   - The systemd and nohup launch paths remove inherited arming flags and wallet keys.
+#   - Secrets stay in the VPS .env (git-ignored); nothing is echoed back.
 set -euo pipefail
 
 REPO_URL="https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE.git"
@@ -66,34 +67,71 @@ grep -q '^TELEGRAM_CHAT_ID=' .env || prompt_secret "TELEGRAM_CHAT_ID" "Telegram 
 grep -q '^HELIUS_RPC_URL=' .env || printf 'HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=%s\n' "$(grep '^HELIUS_API_KEY=' .env | cut -d= -f2-)" >> .env
 grep -q '^HELIUS_WSS_URL=' .env || printf 'HELIUS_WSS_URL=wss://mainnet.helius-rpc.com/?api-key=%s\n' "$(grep '^HELIUS_API_KEY=' .env | cut -d= -f2-)" >> .env
 # Fail-closed shadow invariants (never enable live from this script).
-grep -q '^ARB_LIVE=' .env && sed -i 's/^ARB_LIVE=.*/ARB_LIVE=0/' .env || echo 'ARB_LIVE=0' >> .env
-grep -q '^DRY_RUN=' .env && sed -i 's/^DRY_RUN=.*/DRY_RUN=true/' .env || echo 'DRY_RUN=true' >> .env
+# The binary is also compiled with shadow-only, which ignores arming values and
+# refuses to load wallet material. Keep the on-disk operator config explicit too.
+set_env_value() {
+    local key="$1" value="$2"
+    if grep -q "^${key}=" .env; then
+        sed -i "s|^${key}=.*|${key}=${value}|" .env
+    else
+        printf '%s=%s\n' "$key" "$value" >> .env
+    fi
+}
+set_env_value ARB_MODE simulate
+set_env_value ARB_LIVE 0
+set_env_value LIVE false
+set_env_value LIVE_TRADING false
+set_env_value EXECUTE_LIVE false
+set_env_value DRY_RUN true
+# ARB_CANARY is presence-armed; remove it entirely rather than writing a falsy value.
+sed -i '/^ARB_CANARY=/d' .env
 chmod 600 .env
 
-echo "==> [5/7] Release build (first build takes several minutes)"
-cargo build --release -p arb-bot --bin arb-bot
+echo "==> [5/7] Shadow-only release build (first build takes several minutes)"
+cargo build --release --locked -p arb-bot --bin arb-bot --features shadow-only
 
 echo "==> [6/7] Service"
 if command -v systemctl >/dev/null 2>&1 && systemctl --user >/dev/null 2>&1 || [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
     sed -e "s|__HOME__|${HOME}|g" -e "s|__USER__|${USER}|g" scripts/arb-bot.service > /tmp/arb-bot.service
     sudo cp /tmp/arb-bot.service /etc/systemd/system/arb-bot.service
+    # EnvironmentFile is loaded before UnsetEnvironment; this drop-in removes
+    # runtime arming flags and the wallet key from the service environment.
+    sudo install -d -m 0755 /etc/systemd/system/arb-bot.service.d
+    printf '%s\n' '[Service]' 'UnsetEnvironment=ARB_MODE ARB_CANARY ARB_LIVE LIVE_TRADING LIVE EXECUTE_LIVE SOLANA_PRIVATE_KEY SOLANA_TX_V1_DIRECT_ENABLED SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED SOLANA_TX_V1_JITO_ENABLED SOLANA_TX_V1_JITO_INGRESS_VERIFIED' | sudo tee /etc/systemd/system/arb-bot.service.d/50-shadow-safety.conf >/dev/null
     sed -e "s|__HOME__|${HOME}|g" -e "s|__USER__|${USER}|g" scripts/arb-bot-watchdog.service > /tmp/arb-bot-watchdog.service
     sudo cp /tmp/arb-bot-watchdog.service /etc/systemd/system/arb-bot-watchdog.service
     sudo cp scripts/arb-bot-watchdog.timer /etc/systemd/system/arb-bot-watchdog.timer
     sudo chmod +x "${HOME}/SOLANA_FLASHLOAN_ARBITUGE/scripts/arb_bot_watchdog.sh" \
                    "${HOME}/SOLANA_FLASHLOAN_ARBITUGE/scripts/arb_bot_failure_alert.sh"
     sudo cp scripts/arb-bot.logrotate /etc/logrotate.d/arb-bot
+    DEPLOY_STARTED_UTC="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
     sudo systemctl daemon-reload
-    sudo systemctl enable --now arb-bot
+    sudo systemctl enable arb-bot
+    sudo systemctl restart arb-bot
     sudo systemctl enable --now arb-bot-watchdog.timer
     sleep 5
     sudo systemctl status arb-bot --no-pager | head -12 || true
+    if ! sudo journalctl -u arb-bot --since "$DEPLOY_STARTED_UTC" --no-pager 2>/dev/null | grep -Fq "shadow-only build: live/canary arming is disabled; forcing simulate"; then
+        echo "ERROR: arb-bot did not confirm shadow-only mode in its startup log"
+        sudo journalctl -u arb-bot -n 40 --no-pager || true
+        exit 1
+    fi
     sudo systemctl list-timers arb-bot-watchdog.timer --no-pager | head -5 || true
 else
     echo "    systemd unavailable — starting under nohup"
+    pkill -f 'target/release/arb-bot' 2>/dev/null || true
+    sleep 2
     set -a; . ./.env; set +a
+    unset ARB_MODE ARB_CANARY ARB_LIVE LIVE_TRADING LIVE EXECUTE_LIVE SOLANA_PRIVATE_KEY SOLANA_TX_V1_DIRECT_ENABLED SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED SOLANA_TX_V1_JITO_ENABLED SOLANA_TX_V1_JITO_INGRESS_VERIFIED
     nohup ./target/release/arb-bot >> shadow_soak.log 2>&1 &
-    echo "    PID $! — logs: $(pwd)/shadow_soak.log"
+    BOT_PID=$!
+    sleep 5
+    if ! kill -0 "$BOT_PID" 2>/dev/null || ! grep -Fq "shadow-only build: live/canary arming is disabled; forcing simulate" shadow_soak.log; then
+        tail -40 shadow_soak.log || true
+        echo "ERROR: shadow-only process failed startup verification"
+        exit 1
+    fi
+    echo "    PID $BOT_PID — logs: $(pwd)/shadow_soak.log"
 fi
 
 echo "==> [7/7] Verification"
@@ -105,4 +143,4 @@ TG_OK="$(curl -s -m 15 "https://api.telegram.org/bot${TG_TOKEN}/getMe" | jq -r '
 echo "Telegram getMe ok: ${TG_OK}"
 echo
 echo "Done. Dashboard: http://127.0.0.1:8000 (login: WEB_ADMIN_PASSWORD from .env)"
-echo "Soak checklist: docs/production/SHADOW_MODE_RUNBOOK.md (>=24h + daily reports)"
+echo "Soak checklist: docs/active/operations/SHADOW_MODE_RUNBOOK.md (>=24h + daily reports)"
