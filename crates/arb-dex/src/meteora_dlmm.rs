@@ -106,7 +106,10 @@ impl MeteoraDlmmPool {
 
     pub fn bin_array_pdas_around_active(&self) -> Vec<Pubkey> {
         let idx = Self::bin_id_to_array_index(self.active_id);
-        let step = u32::from(self.bin_step.max(1));
+        if self.bin_step == 0 || self.bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+            return Vec::new();
+        }
+        let step = u32::from(self.bin_step);
         let bins_traversed = 500i64 / i64::from(step) + 1;
         // Canonical span derivation (matches `arb_tx::plan_bin_arrays`): cover
         // every array index that contains a bin in the worst-case traversal
@@ -292,23 +295,12 @@ impl AmmPool for MeteoraDlmmPool {
     }
 
     fn execution_accounts(&self) -> Option<PoolExecutionAccounts> {
-        if self.reserve_x == Pubkey::default() || self.reserve_y == Pubkey::default() {
-            return None;
-        }
-        let pdas = if self.bin_array_pdas.is_empty() {
-            self.bin_array_pdas_around_active()
-        } else {
-            self.bin_array_pdas.clone()
-        };
-        Some(PoolExecutionAccounts::MeteoraDlmm {
-            reserve_x: self.reserve_x,
-            reserve_y: self.reserve_y,
-            oracle: self.oracle,
-            bin_array_pdas: pdas,
-            bitmap_extension: Some(self.derive_bin_array_bitmap_extension_pda()),
-            pool_token_x: self.token_x_mint.0,
-            pool_token_y: self.token_y_mint.0,
-        })
+        // This legacy decoder does not retain the owner-verified LbPair bitmap,
+        // initialized-array set, or validated Bitmap Extension provenance. Its
+        // geometric prefetch PDAs are not proof that writable accounts exist.
+        // The production ingestion path constructs PoolExecutionAccounts only
+        // after bitmap selection and same-slot owner validation.
+        None
     }
 
     fn required_dependency_pubkeys(&self) -> Vec<Pubkey> {
@@ -423,7 +415,7 @@ impl AmmPool for MeteoraDlmmPool {
         self.last_update_timestamp = i64::from_le_bytes(data[56..64].try_into().unwrap());
 
         self.active_id = i32::from_le_bytes(data[76..80].try_into().unwrap());
-        self.bin_step = u16::from_le_bytes(data[80..82].try_into().unwrap()).max(1);
+        self.bin_step = u16::from_le_bytes(data[80..82].try_into().unwrap());
         self.status = data[82];
         self.function_type = function_type;
         self.collect_fee_mode = collect_fee_mode;
@@ -535,5 +527,22 @@ impl AmmPool for MeteoraDlmmPool {
             ArbError::InsufficientLiquidity(format!("DLMM swap is not executable: {e}"))
         })?;
         Ok(q.amount_out)
+    }
+}
+
+#[cfg(test)]
+mod bin_step_validation_tests {
+    use super::*;
+
+    #[test]
+    fn raw_zero_bin_step_is_not_coerced_to_one() {
+        let mut data = vec![0u8; 720];
+        data[80..82].copy_from_slice(&0u16.to_le_bytes());
+        let pool = MeteoraDlmmPool::from_account(PoolId(Pubkey::new_unique()), &data)
+            .expect("synthetic pool layout decodes");
+        assert_eq!(pool.bin_step, 0);
+        assert!(pool.bin_array_pdas_around_active().is_empty());
+        use crate::traits::AmmPool;
+        assert!(pool.execution_accounts().is_none());
     }
 }

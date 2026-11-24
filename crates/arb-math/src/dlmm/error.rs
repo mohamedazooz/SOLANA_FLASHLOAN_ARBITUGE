@@ -13,6 +13,9 @@ pub enum DlmmError {
     #[error("bin ID out of range: {0} not in [{MIN_BIN_ID}, {MAX_BIN_ID}]")]
     BinIdOutOfRange(i32),
 
+    #[error("invalid Meteora bin step: {0} (expected 1..=400)")]
+    InvalidBinStep(u16),
+
     #[error("pool is disabled or not activated")]
     PoolDisabled,
 

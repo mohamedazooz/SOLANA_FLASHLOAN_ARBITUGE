@@ -7,6 +7,9 @@ use ruint::aliases::U256;
 ///
 /// Formula: $\text{Base Fee} = \text{base\_factor} \times \text{bin\_step} \times 10 \times 10^{\text{power\_factor}}$
 pub fn compute_base_fee(parameters: &DlmmParameters, bin_step: u16) -> Result<u128, DlmmError> {
+    if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+        return Err(DlmmError::InvalidBinStep(bin_step));
+    }
     let bf = u128::from(parameters.base_factor);
     let bs = u128::from(bin_step);
     let base = bf
@@ -34,6 +37,9 @@ pub fn compute_variable_fee(
     bin_step: u16,
     volatility_accumulator: u32,
 ) -> Result<u128, DlmmError> {
+    if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+        return Err(DlmmError::InvalidBinStep(bin_step));
+    }
     if parameters.variable_fee_control == 0 || volatility_accumulator == 0 {
         return Ok(0);
     }

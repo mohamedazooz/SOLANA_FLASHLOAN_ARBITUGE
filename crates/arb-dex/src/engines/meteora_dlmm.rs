@@ -11,17 +11,46 @@
 
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
-use arb_constants::{METEORA_BINS_PER_BIN_ARRAY, METEORA_DLMM_PROGRAM_ID};
+use arb_constants::{
+    METEORA_BINS_PER_BIN_ARRAY, METEORA_DLMM_PROGRAM_ID,
+    meteora_bin_array_index_requires_bitmap_extension,
+};
 use arb_math::dlmm::{
     DlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters, quote_dlmm_view,
 };
-use arb_types::{ArbError, DexProtocol, PoolState, Result};
+use arb_types::{ArbError, DexProtocol, PoolExecutionAccounts, PoolState, Result};
 use solana_pubkey::Pubkey;
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::time::Instant;
 
 pub const METEORA_DLMM_VERSION: &str = "meteora-dlmm-v1.4";
+
+/// Require the existence-proven bitmap extension when a swap crosses outside
+/// the LbPair default bitmap range. A derived PDA alone is not sufficient:
+/// hydration must have fetched the account and attached it to execution state.
+fn verified_bitmap_extension(
+    execution_accounts: Option<&PoolExecutionAccounts>,
+    array_indices: &[i64],
+) -> Result<Option<Pubkey>> {
+    if !array_indices
+        .iter()
+        .any(|index| meteora_bin_array_index_requires_bitmap_extension(*index))
+    {
+        return Ok(None);
+    }
+
+    match execution_accounts {
+        Some(PoolExecutionAccounts::MeteoraDlmm {
+            bitmap_extension: Some(extension),
+            ..
+        }) => Ok(Some(*extension)),
+        _ => Err(ArbError::IncompleteState(
+            "Meteora DLMM traversal requires BinArrayBitmapExtension, but no existence-proven account is hydrated"
+                .into(),
+        )),
+    }
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct MeteoraDlmmQuoteEngine;
@@ -227,11 +256,28 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
         let end_array = Self::bin_id_to_bin_array_index(quote.end_active_id);
         let direction: i64 = if end_array >= start_array { 1 } else { -1 };
         let mut array_index = start_array;
-        let mut required_accounts = Vec::with_capacity(6);
+        let mut required_accounts = Vec::with_capacity(8);
+        let mut array_indices = Vec::with_capacity(
+            usize::try_from((end_array - start_array).unsigned_abs())
+                .unwrap_or(0)
+                .saturating_add(1),
+        );
         required_accounts.push(lb_pair);
         loop {
+            array_indices.push(array_index);
             let (bin_array, _) = Self::derive_bin_array_pda(&lb_pair, array_index);
-            if !required_accounts.contains(&bin_array) {
+            let initialized_arrays = match state.execution_accounts.as_ref() {
+                Some(PoolExecutionAccounts::MeteoraDlmm { bin_array_pdas, .. }) => bin_array_pdas,
+                _ => {
+                    return Err(ArbError::IncompleteState(
+                        "Meteora DLMM quote has no bitmap-selected BinArray account set".into(),
+                    ));
+                }
+            };
+            // Only pass accounts proven initialized by the LbPair bitmap and,
+            // when needed, the validated Bitmap Extension. Empty gaps are
+            // represented in the local quote view, never as fake writable PDAs.
+            if initialized_arrays.contains(&bin_array) && !required_accounts.contains(&bin_array) {
                 required_accounts.push(bin_array);
             }
             if array_index == end_array {
@@ -240,6 +286,12 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
             array_index = array_index
                 .checked_add(direction)
                 .ok_or(ArbError::Overflow)?;
+        }
+
+        if let Some(bitmap_extension) =
+            verified_bitmap_extension(state.execution_accounts.as_ref(), &array_indices)?
+        {
+            required_accounts.push(bitmap_extension);
         }
         let elapsed = start_time.elapsed().as_micros() as u64;
 
@@ -284,5 +336,52 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
         Err(ArbError::UnsupportedOperation(
             "Meteora DLMM quote_exact_out not yet supported".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod bitmap_extension_tests {
+    use super::*;
+
+    fn execution_accounts(bitmap_extension: Option<Pubkey>) -> PoolExecutionAccounts {
+        PoolExecutionAccounts::MeteoraDlmm {
+            reserve_x: Pubkey::new_unique(),
+            reserve_y: Pubkey::new_unique(),
+            oracle: Pubkey::new_unique(),
+            bin_array_pdas: vec![Pubkey::new_unique()],
+            bitmap_extension,
+            pool_token_x: Pubkey::new_unique(),
+            pool_token_y: Pubkey::new_unique(),
+        }
+    }
+
+    #[test]
+    fn default_bitmap_range_does_not_require_extension() {
+        assert_eq!(
+            verified_bitmap_extension(None, &[-512, 0, 511]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn overflow_range_requires_existence_proven_extension() {
+        assert!(verified_bitmap_extension(None, &[511, 512]).is_err());
+        assert!(verified_bitmap_extension(None, &[-513, -512]).is_err());
+    }
+
+    #[test]
+    fn overflow_range_returns_only_hydrated_extension() {
+        let extension = Pubkey::new_unique();
+        let accounts = execution_accounts(Some(extension));
+        assert_eq!(
+            verified_bitmap_extension(Some(&accounts), &[511, 512]).unwrap(),
+            Some(extension)
+        );
+    }
+
+    #[test]
+    fn missing_extension_is_not_replaced_by_derived_placeholder() {
+        let accounts = execution_accounts(None);
+        assert!(verified_bitmap_extension(Some(&accounts), &[-513]).is_err());
     }
 }

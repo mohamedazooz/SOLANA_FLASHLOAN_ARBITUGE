@@ -272,6 +272,19 @@ pub struct ValidatedDlmmPool {
     pub bin_array_bitmap: [u64; 16],
 }
 
+/// Check the LbPair's internal 1024-bit bitmap. Meteora offsets array
+/// indices by 512 so that the signed range [-512, 511] maps to [0, 1023].
+/// Out-of-range indices belong to the separate bitmap-extension account.
+fn internal_bin_array_bitmap_contains(bitmap: &[u64; 16], index: i64) -> bool {
+    if !(-512..=511).contains(&index) {
+        return false;
+    }
+    let offset = (index + 512) as usize;
+    let word = offset / 64;
+    let bit = offset % 64;
+    (bitmap[word] >> bit) & 1 == 1
+}
+
 impl ValidatedDlmmPool {
     /// True when the on-chain token X is `mint`.
     #[inline]
@@ -298,21 +311,13 @@ impl ValidatedDlmmPool {
         }
     }
 
-    /// True when the pool's on-chain bitmap marks `index` as an existing bin array.
+    /// True when the pool's internal bitmap marks `index` as an existing bin array.
     ///
-    /// The bitmap is `u64[16]` where bit `i` of word `w` covers array index
-    /// `w * 64 + i` (the DLMM `BitmapExtension` layout).
+    /// The 1024-bit internal bitmap covers indices [-512, 511]. Its bit offset
+    /// is `index + 512`; indices outside this range are represented by the
+    /// separate BinArrayBitmapExtension account and are not answered here.
     pub fn bin_array_exists(&self, index: i64) -> bool {
-        if index < 0 {
-            return false;
-        }
-        let idx = index as usize;
-        let word = idx / 64;
-        if word >= self.bin_array_bitmap.len() {
-            return false;
-        }
-        let bit = idx % 64;
-        (self.bin_array_bitmap[word] >> bit) & 1 == 1
+        internal_bin_array_bitmap_contains(&self.bin_array_bitmap, index)
     }
 }
 
@@ -390,7 +395,7 @@ pub fn validate_lb_pair_account(
             collect_fee_mode: decoded.collect_fee_mode,
         });
     }
-    if decoded.bin_step == 0 || decoded.bin_step > 500 {
+    if decoded.bin_step == 0 || decoded.bin_step > arb_constants::METEORA_MAX_BIN_STEP {
         return Err(DlmmValidationError::InvalidBinStep {
             pool: *pool_id,
             bin_step: decoded.bin_step,
@@ -518,7 +523,11 @@ pub fn validate_bin_array_account(
     })
 }
 
-/// Validate a `BinArrayBitmapExtension` account payload.
+/// Validate a raw `BinArrayBitmapExtension` account payload.
+///
+/// Anchor layout (Meteora DLMM IDL):
+/// discriminator[8] + lb_pair[32] + positive_bitmap[[u64; 8]; 12]
+/// + negative_bitmap[[u64; 8]; 12].
 pub fn validate_bitmap_extension_account(
     lb_pair: &Pubkey,
     owner: &Pubkey,
@@ -526,20 +535,150 @@ pub fn validate_bitmap_extension_account(
 ) -> DlmmValidationResult<()> {
     if *owner != METEORA_DLMM_PROGRAM {
         return Err(DlmmValidationError::WrongOwner {
-            account: *lb_pair,
+            account: derive_bitmap_extension_pda(lb_pair),
             expected: METEORA_DLMM_PROGRAM,
             actual: *owner,
         });
     }
-    if data.len() < 8 {
+    const BITMAP_EXTENSION_DISCRIMINATOR: [u8; 8] =
+        [0x50, 0x6f, 0x7c, 0x71, 0x37, 0xed, 0x12, 0x05];
+    const BITMAP_WORDS_PER_PAGE: usize = 8;
+    const BITMAP_PAGES: usize = 12;
+    const PUBKEY_LEN: usize = 32;
+    const EXPECTED_LEN: usize = 8 + PUBKEY_LEN + (2 * BITMAP_PAGES * BITMAP_WORDS_PER_PAGE * 8);
+
+    if data.len() < EXPECTED_LEN {
         return Err(DlmmValidationError::TooShort {
-            expected: 8,
+            expected: EXPECTED_LEN,
             actual: data.len(),
+        });
+    }
+    if data.len() != EXPECTED_LEN {
+        return Err(DlmmValidationError::Decode {
+            reason: format!(
+                "invalid BinArrayBitmapExtension length: expected {EXPECTED_LEN}, got {}",
+                data.len()
+            ),
+        });
+    }
+    if data[..8] != BITMAP_EXTENSION_DISCRIMINATOR {
+        return Err(DlmmValidationError::Decode {
+            reason: "invalid BinArrayBitmapExtension Anchor discriminator".to_string(),
+        });
+    }
+    let stored_lb_pair = Pubkey::new_from_array(
+        data[8..8 + PUBKEY_LEN]
+            .try_into()
+            .unwrap_or([0u8; PUBKEY_LEN]),
+    );
+    if stored_lb_pair != *lb_pair {
+        return Err(DlmmValidationError::PdaMismatch {
+            label: "bitmap extension lb_pair",
+            expected: *lb_pair,
+            actual: stored_lb_pair,
         });
     }
     Ok(())
 }
 
+/// Decoded on-chain Meteora bitmap extension (IDL v0.12.0 layout).
+/// Positive pages cover [512, 6655], negative pages cover [-6656, -513].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedBitmapExtension {
+    pub positive: [[u64; 8]; 12],
+    pub negative: [[u64; 8]; 12],
+}
+
+/// Validate and decode the complete extension account using the official IDL
+/// field order: lb_pair, positive_bin_array_bitmap, negative_bin_array_bitmap.
+pub fn decode_bitmap_extension_account(
+    lb_pair: &Pubkey,
+    owner: &Pubkey,
+    data: &[u8],
+) -> DlmmValidationResult<DecodedBitmapExtension> {
+    validate_bitmap_extension_account(lb_pair, owner, data)?;
+    let mut positive = [[0u64; 8]; 12];
+    let mut negative = [[0u64; 8]; 12];
+    let positive_start = 40usize;
+    let negative_start = positive_start + 12 * 8 * 8;
+    for page in 0..12 {
+        for word in 0..8 {
+            let offset = (page * 8 + word) * 8;
+            positive[page][word] = u64::from_le_bytes(
+                data[positive_start + offset..positive_start + offset + 8]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            );
+            negative[page][word] = u64::from_le_bytes(
+                data[negative_start + offset..negative_start + offset + 8]
+                    .try_into()
+                    .unwrap_or([0; 8]),
+            );
+        }
+    }
+    Ok(DecodedBitmapExtension { positive, negative })
+}
+
+impl DecodedBitmapExtension {
+    /// Return the nearest initialized extension bin-array index, inclusive,
+    /// in the requested swap direction. swap_for_y walks toward lower IDs.
+    pub fn next_initialized_index(&self, start_index: i32, swap_for_y: bool) -> Option<i32> {
+        const PAGE_BITS: i32 = 512;
+        const PAGE_COUNT: i32 = 12;
+        const MIN_INDEX: i32 = -PAGE_BITS * (PAGE_COUNT + 1);
+        const MAX_INDEX: i32 = PAGE_BITS * (PAGE_COUNT + 1) - 1;
+        if !(-PAGE_BITS..PAGE_BITS).contains(&start_index) {
+            // Match Meteora's SDK traversal boundaries exactly. The extension
+            // bitmap must stop at the edge nearest the inline bitmap when the
+            // swap direction points back into the default range; the caller
+            // then resumes the search in LbPair::bin_array_bitmap. Scanning
+            // through the inline range here can skip initialized internal
+            // arrays and return a farther extension array out of order.
+            let (mut index, end) = match (start_index < 0, swap_for_y) {
+                (true, true) => (start_index, MIN_INDEX),
+                (true, false) => (start_index, -PAGE_BITS - 1),
+                (false, true) => (start_index, PAGE_BITS),
+                (false, false) => (start_index, MAX_INDEX),
+            };
+            while if swap_for_y {
+                index >= end
+            } else {
+                index <= end
+            } {
+                let (page, bit, is_negative) = if index < 0 {
+                    let magnitude = index.checked_add(1)?.checked_neg()?;
+                    (
+                        (magnitude / PAGE_BITS - 1) as usize,
+                        (magnitude % PAGE_BITS) as usize,
+                        true,
+                    )
+                } else {
+                    (
+                        (index / PAGE_BITS - 1) as usize,
+                        (index % PAGE_BITS) as usize,
+                        false,
+                    )
+                };
+                if page < PAGE_COUNT as usize {
+                    let words = if is_negative {
+                        &self.negative[page]
+                    } else {
+                        &self.positive[page]
+                    };
+                    if ((words[bit / 64] >> (bit % 64)) & 1) == 1 {
+                        return Some(index);
+                    }
+                }
+                index = if swap_for_y {
+                    index.checked_sub(1)?
+                } else {
+                    index.checked_add(1)?
+                };
+            }
+        }
+        None
+    }
+}
 // ============================================================================
 // Cross-pool compatibility
 // ============================================================================
@@ -648,6 +787,24 @@ mod tests {
     }
 
     #[test]
+    fn internal_bitmap_uses_signed_index_offset_and_boundaries() {
+        let mut bitmap = [0u64; 16];
+
+        // [-512, -1, 0, 511] map to offsets [0, 511, 512, 1023].
+        for offset in [0usize, 511, 512, 1023] {
+            bitmap[offset / 64] |= 1u64 << (offset % 64);
+        }
+
+        assert!(internal_bin_array_bitmap_contains(&bitmap, -512));
+        assert!(internal_bin_array_bitmap_contains(&bitmap, -1));
+        assert!(internal_bin_array_bitmap_contains(&bitmap, 0));
+        assert!(internal_bin_array_bitmap_contains(&bitmap, 511));
+        assert!(!internal_bin_array_bitmap_contains(&bitmap, -513));
+        assert!(!internal_bin_array_bitmap_contains(&bitmap, 512));
+        assert!(!internal_bin_array_bitmap_contains(&bitmap, 1));
+    }
+
+    #[test]
     fn wrong_owner_is_rejected() {
         let data = vec![0u8; LB_PAIR_MIN_SIZE];
         let err = validate_lb_pair_account(&pool_a(), &Pubkey::new_unique(), &data).unwrap_err();
@@ -739,6 +896,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bitmap_extension_validates_anchor_layout_and_pool_link() {
+        const DISCRIMINATOR: [u8; 8] = [0x50, 0x6f, 0x7c, 0x71, 0x37, 0xed, 0x12, 0x05];
+        const ACCOUNT_LEN: usize = 8 + 32 + (2 * 12 * 8 * 8);
+        let pool = pool_a();
+        let mut data = vec![0u8; ACCOUNT_LEN];
+        data[..8].copy_from_slice(&DISCRIMINATOR);
+        data[8..40].copy_from_slice(pool.as_ref());
+
+        validate_bitmap_extension_account(&pool, &METEORA_DLMM_PROGRAM, &data)
+            .expect("valid bitmap extension");
+
+        let mut bad_discriminator = data.clone();
+        bad_discriminator[0] ^= 0xff;
+        assert!(matches!(
+            validate_bitmap_extension_account(&pool, &METEORA_DLMM_PROGRAM, &bad_discriminator),
+            Err(DlmmValidationError::Decode { .. })
+        ));
+
+        let other_pool = Pubkey::new_unique();
+        assert!(matches!(
+            validate_bitmap_extension_account(&other_pool, &METEORA_DLMM_PROGRAM, &data),
+            Err(DlmmValidationError::PdaMismatch { .. })
+        ));
+
+        assert!(matches!(
+            validate_bitmap_extension_account(
+                &pool,
+                &METEORA_DLMM_PROGRAM,
+                &data[..ACCOUNT_LEN - 1]
+            ),
+            Err(DlmmValidationError::TooShort { .. })
+        ));
+
+        let mut oversized = data.clone();
+        oversized.push(0);
+        assert!(matches!(
+            validate_bitmap_extension_account(&pool, &METEORA_DLMM_PROGRAM, &oversized),
+            Err(DlmmValidationError::Decode { .. })
+        ));
+
+        assert!(matches!(
+            validate_bitmap_extension_account(&pool, &Pubkey::new_unique(), &data),
+            Err(DlmmValidationError::WrongOwner { .. })
+        ));
+    }
+
+    #[test]
+    fn bitmap_extension_decodes_and_walks_both_signed_directions() {
+        const DISCRIMINATOR: [u8; 8] = [0x50, 0x6f, 0x7c, 0x71, 0x37, 0xed, 0x12, 0x05];
+        const ACCOUNT_LEN: usize = 8 + 32 + (2 * 12 * 8 * 8);
+        let pool = pool_a();
+        let mut data = vec![0u8; ACCOUNT_LEN];
+        data[..8].copy_from_slice(&DISCRIMINATOR);
+        data[8..40].copy_from_slice(pool.as_ref());
+        // Positive index 513 => positive page 0, bit 1.
+        let positive_word = 40;
+        data[positive_word..positive_word + 8].copy_from_slice(&2u64.to_le_bytes());
+        // Negative index -514 => negative page 0, bit 1.
+        let negative_word = 40 + (12 * 8 * 8);
+        data[negative_word..negative_word + 8].copy_from_slice(&2u64.to_le_bytes());
+        let decoded = decode_bitmap_extension_account(&pool, &METEORA_DLMM_PROGRAM, &data)
+            .expect("valid decoded extension");
+        assert_eq!(decoded.next_initialized_index(512, false), Some(513));
+        assert_eq!(decoded.next_initialized_index(-513, true), Some(-514));
+        assert_eq!(decoded.next_initialized_index(514, false), None);
+        assert_eq!(decoded.next_initialized_index(-515, true), None);
+    }
     #[test]
     fn canonical_pair_is_order_independent() {
         assert_eq!(

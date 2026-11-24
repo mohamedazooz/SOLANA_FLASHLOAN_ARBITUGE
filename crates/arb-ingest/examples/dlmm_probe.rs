@@ -49,7 +49,14 @@ async fn main() {
     // Mirror dlmm_bin_array_pdas: arrays_needed = (500/step + 1)/70 + 1, indices
     // index-i..index+i for i in 0..arrays_needed (deduped).
     let index = arb_ingest::registry::bin_id_to_bin_array_index(d.active_bin_id);
-    let step = u32::from(d.bin_step_bps.max(1));
+    if d.bin_step_bps == 0 || d.bin_step_bps > arb_constants::METEORA_MAX_BIN_STEP {
+        eprintln!(
+            "pool {} has invalid bin_step {}; skipping",
+            pool, d.bin_step_bps
+        );
+        return;
+    }
+    let step = u32::from(d.bin_step_bps);
     let bins_traversed = 500u32 / step + 1;
     let arrays_needed = (bins_traversed as i64).div_euclid(70) + 1;
     let mut pdas: Vec<Pubkey> = Vec::new();

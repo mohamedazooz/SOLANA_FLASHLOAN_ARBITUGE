@@ -93,6 +93,28 @@ fn test_bin_price_negative_exponent() {
 }
 
 #[test]
+fn bin_step_bounds_are_enforced_by_price_and_fee_math() {
+    let params = create_test_parameters();
+    assert!(matches!(
+        get_price_from_id(0, 0),
+        Err(DlmmError::InvalidBinStep(0))
+    ));
+    assert!(matches!(
+        get_price_from_id(0, arb_constants::METEORA_MAX_BIN_STEP + 1),
+        Err(DlmmError::InvalidBinStep(_))
+    ));
+    assert!(get_price_from_id(0, arb_constants::METEORA_MAX_BIN_STEP).is_ok());
+    assert!(matches!(
+        compute_base_fee(&params, arb_constants::METEORA_MAX_BIN_STEP + 1),
+        Err(DlmmError::InvalidBinStep(_))
+    ));
+    assert!(matches!(
+        compute_variable_fee(&params, 0, 0),
+        Err(DlmmError::InvalidBinStep(0))
+    ));
+}
+
+#[test]
 fn test_fee_calculation() {
     let params = create_test_parameters();
     // base_fee = 1000 * 25 * 10 = 250_000 (0.025% = 2.5 bps)

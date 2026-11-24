@@ -69,7 +69,12 @@ fn make_test_dlmm_pool(
         reserve_x,
         reserve_y,
         oracle: pool_pk,
-        bin_array_pdas: vec![Pubkey::new_from_array([30 + pool_bytes_id; 32])],
+        bin_array_pdas: {
+            let active_array = i64::from(active_bin_id).div_euclid(70);
+            (active_array - 5..=active_array + 5)
+                .map(|index| arb_tx::derive_meteora_bin_array_pda(&pool_pk, index))
+                .collect()
+        },
         bitmap_extension: None,
         pool_token_x: mint_x.0,
         pool_token_y: mint_y.0,
@@ -176,6 +181,55 @@ fn test_intermediate_balance_isolation_min_hop1() {
 }
 
 #[test]
+fn test_atomic_builder_requires_and_passes_bitmap_extension_for_overflow_arrays() {
+    let mut pool1 = make_test_dlmm_pool(1, 512 * 70, 10, 1, 2);
+    let mut pool2 = make_test_dlmm_pool(2, 512 * 70 + 50, 10, 1, 2);
+    let signer = KeypairSigner::from_seed(&[88u8; 32]);
+    let blockhash = [99u8; 32];
+
+    let missing = MeteoraDlmmAtomicArbitrageBuilder::build_atomic_two_swap(
+        &signer, &pool1, &pool2, true, 20_000_000, 21_000_000, 20_500_000, 25, 300_000, 100_000,
+        blockhash,
+    );
+    assert!(
+        matches!(
+            missing,
+            Err(arb_tx::TxError::MissingExecutionAccounts { .. })
+        ),
+        "overflow traversal without a validated extension must fail closed: {missing:?}"
+    );
+
+    let extension1 = arb_tx::derive_meteora_bin_array_bitmap_extension_pda(&pool1.pool_id.0);
+    let extension2 = arb_tx::derive_meteora_bin_array_bitmap_extension_pda(&pool2.pool_id.0);
+    if let Some(PoolExecutionAccounts::MeteoraDlmm {
+        bitmap_extension, ..
+    }) = pool1.execution_accounts.as_mut()
+    {
+        *bitmap_extension = Some(extension1);
+    }
+    if let Some(PoolExecutionAccounts::MeteoraDlmm {
+        bitmap_extension, ..
+    }) = pool2.execution_accounts.as_mut()
+    {
+        *bitmap_extension = Some(extension2);
+    }
+
+    let tx = MeteoraDlmmAtomicArbitrageBuilder::build_atomic_two_swap(
+        &signer, &pool1, &pool2, true, 20_000_000, 21_000_000, 20_500_000, 25, 300_000, 100_000,
+        blockhash,
+    )
+    .expect("validated extension must be forwarded to both swaps");
+    let swap_instructions: Vec<_> = tx
+        .instructions
+        .iter()
+        .filter(|ix| ix.program_id.to_string() == arb_constants::METEORA_DLMM_PROGRAM_ID)
+        .collect();
+    assert_eq!(swap_instructions.len(), 2);
+    assert_eq!(swap_instructions[0].accounts[1].pubkey, extension1);
+    assert_eq!(swap_instructions[1].accounts[1].pubkey, extension2);
+}
+
+#[test]
 fn test_atomic_builder_rejects_zero_amounts() {
     let pool1 = make_test_dlmm_pool(1, 0, 10, 1, 2);
     let pool2 = make_test_dlmm_pool(2, 50, 10, 1, 2);
@@ -189,9 +243,8 @@ fn test_atomic_builder_rejects_zero_amounts() {
     assert!(tx_res.is_err(), "Must reject zero amount_in");
 }
 
-/// P2 evidence: the executable instruction must carry exactly the bin arrays the
-/// quote says the swap traverses. A shallow swap gets one array; a deep swap gets
-/// several. There is no 3-array execution ceiling.
+/// The executable instruction must carry exactly the bitmap-proven arrays in the
+/// quote span, and must reject traversal beyond the on-chain 260-bin limit.
 ///
 /// The expected array counts are derived from `meteora_bin_array_indices`, the same
 /// helper the builder uses, so a boundary fix in the helper can never leave this test
@@ -234,7 +287,7 @@ fn test_atomic_builder_bin_arrays_scale_with_quote_traversal() {
         "a 1-bin traversal must carry exactly the active array per hop"
     );
 
-    // Deep traversal: the array count must follow the helper, never a fixed cap.
+    // Deep traversal: the array count follows the quote span, bounded by protocol depth.
     let deep = build(210, 140);
     let expected_deep = expected_arrays(210, 140);
     assert_eq!(
@@ -242,11 +295,9 @@ fn test_atomic_builder_bin_arrays_scale_with_quote_traversal() {
         expected_deep,
         "deep swap must carry every array the traversal touches"
     );
-    // Prove the instruction is not capped at three arrays anywhere.
     assert!(
-        count_arrays(&deep) > 3,
-        "deep traversal must exceed the old 3-array ceiling: {}",
-        count_arrays(&deep)
+        count_arrays(&deep) <= 2 * arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP,
+        "the two hops must stay within bitmap-selected protocol array coverage"
     );
     assert!(
         deep.tx_size <= SOLANA_PACKET_MTU_LIMIT,
@@ -423,7 +474,7 @@ fn test_v1_route_rejects_identical_pools() {
 }
 
 #[test]
-fn test_v1_route_stays_inside_the_64_address_budget() {
+fn test_v1_route_stays_inside_the_64_address_budget_and_rejects_excess_depth() {
     let pool1 = make_test_dlmm_pool(1, 0, 10, 1, 2);
     let pool2 = make_test_dlmm_pool(2, 50, 10, 1, 2);
     let signer = KeypairSigner::from_seed(&[88u8; 32]);
@@ -447,14 +498,20 @@ fn test_v1_route_stays_inside_the_64_address_budget() {
         addrs.len()
     );
 
-    // Beyond the budget the builder must name the route, not emit a broken tx.
-    match build_v1(&pool1, &pool2, 2_100, 2_100) {
+    // The current on-chain program rejects traversal beyond 260 bins; the
+    // builder must stop before compiling a transaction that is guaranteed to fail.
+    match build_v1(
+        &pool1,
+        &pool2,
+        arb_constants::METEORA_MAX_BINS_PER_SWAP + 1,
+        1,
+    ) {
         Err(arb_tx::TxError::InvalidInput(msg)) => {
             assert!(
-                msg.contains("distinct addresses"),
+                msg.contains("exceeds protocol limit"),
                 "unexpected error: {msg}"
             );
         }
-        other => panic!("expected a fail-closed address-budget error, got {other:?}"),
+        other => panic!("expected a fail-closed protocol-depth error, got {other:?}"),
     }
 }
