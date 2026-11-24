@@ -248,26 +248,6 @@ impl Default for RpcPool {
 }
 
 impl RpcPool {
-    fn key_suffix_hint(url: &str) -> Option<String> {
-        let clean = url.trim_end_matches('/');
-        if let Some((_, q)) = clean.split_once("api_key=") {
-            let k = q.split('&').next().unwrap_or("");
-            if k.len() >= 4 {
-                return Some(k[k.len() - 4..].to_string());
-            }
-        } else if let Some((_, q)) = clean.split_once("api-key=") {
-            let k = q.split('&').next().unwrap_or("");
-            if k.len() >= 4 {
-                return Some(k[k.len() - 4..].to_string());
-            }
-        } else if let Some((_, k)) = clean.rsplit_once("/v2/") {
-            if k.len() >= 4 {
-                return Some(k[k.len() - 4..].to_string());
-            }
-        }
-        None
-    }
-
     /// Classify provider capacity based on live measured benchmarks:
     /// - Alchemy: 20 req/s sustained, burst 25, max batch 100
     /// - RPCFast: 25 req/s sustained, burst 30, max batch 5 (hard RPC cap `-32602 max 5`)
@@ -277,48 +257,47 @@ impl RpcPool {
     /// - Helius: 12 req/s sustained, burst 15, max batch 100
     pub fn classify_provider(idx: usize, url: &str) -> ProviderConfig {
         let lc = url.to_ascii_lowercase();
-        let hint = Self::key_suffix_hint(url)
-            .map(|h| format!("..{h}"))
-            .unwrap_or_else(|| format!("#{}", idx + 1));
+        // Never include API-key fragments in telemetry labels or logs.
+        let instance = format!("#{}", idx + 1);
 
         if lc.contains("alchemy.com") {
             ProviderConfig {
-                label: format!("Alchemy({hint})"),
+                label: format!("Alchemy({instance})"),
                 rps_limit: 20.0,
                 burst_capacity: 25.0,
                 max_batch_size: 100,
             }
         } else if lc.contains("rpcfast.com") {
             ProviderConfig {
-                label: format!("RPCFast({hint})"),
+                label: format!("RPCFast({instance})"),
                 rps_limit: 25.0,
                 burst_capacity: 30.0,
                 max_batch_size: 5,
             }
         } else if lc.contains("shyft.to") {
             ProviderConfig {
-                label: format!("Shyft({hint})"),
+                label: format!("Shyft({instance})"),
                 rps_limit: 8.0,
                 burst_capacity: 10.0,
                 max_batch_size: 100,
             }
         } else if lc.contains("solami.dev/solana") {
             ProviderConfig {
-                label: format!("Solami-Solana({hint})"),
+                label: format!("Solami-Solana({instance})"),
                 rps_limit: 2.0,
                 burst_capacity: 3.0,
                 max_batch_size: 100,
             }
         } else if lc.contains("solami.dev") {
             ProviderConfig {
-                label: format!("Solami-sol({hint})"),
+                label: format!("Solami-sol({instance})"),
                 rps_limit: 3.0,
                 burst_capacity: 4.0,
                 max_batch_size: 100,
             }
         } else if lc.contains("helius-rpc.com") {
             ProviderConfig {
-                label: format!("Helius({hint})"),
+                label: format!("Helius({instance})"),
                 rps_limit: 12.0,
                 burst_capacity: 15.0,
                 max_batch_size: 100,
@@ -965,18 +944,24 @@ impl RpcPool {
                             }
                         };
                         if let Some(error) = val.get("error") {
-                            let err_str = error.to_string();
-                            let err_lc = err_str.to_ascii_lowercase();
-                            let is_rl = err_lc.contains("rate")
-                                || err_lc.contains("limit")
-                                || err_lc.contains("-32005")
-                                || err_lc.contains("429");
+                            let code = error.get("code").and_then(|value| value.as_i64());
+                            let message_lc = error
+                                .get("message")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_ascii_lowercase();
+                            let is_rl = code == Some(-32005)
+                                || message_lc.contains("rate")
+                                || message_lc.contains("limit")
+                                || message_lc.contains("429");
                             let backoff_secs = if is_rl {
                                 retry_after_secs.unwrap_or(5)
                             } else {
                                 0
                             };
-                            let msg = format!("RPC error ({label}): {err_str}");
+                            // Provider-controlled error text is not trusted for logs:
+                            // retain the numeric code, but never echo arbitrary text.
+                            let msg = format!("RPC error ({label}, code={code:?})");
                             if is_rl {
                                 self.record_error(
                                     idx,
@@ -1023,7 +1008,16 @@ impl RpcPool {
                     }
                     Err(error) => {
                         let elapsed_ms = start_req.elapsed().as_millis() as u32;
-                        let msg = format!("network error ({label}): {error}");
+                        // reqwest::Error may include the full request URL (and API key).
+                        // Keep only a coarse category in telemetry and returned errors.
+                        let category = if error.is_timeout() {
+                            "timeout"
+                        } else if error.is_connect() {
+                            "connect"
+                        } else {
+                            "request"
+                        };
+                        let msg = format!("network {category} error ({label})");
                         self.record_error(
                             idx,
                             method,
@@ -1486,6 +1480,63 @@ impl RpcPool {
         Ok((last_status, last_slot, last_err))
     }
 
+    fn is_v1_endpoint_allowed(endpoint: &str, allowlist: &[String]) -> bool {
+        allowlist.iter().any(|approved| approved == endpoint)
+    }
+
+    /// True only when at least one exact HTTP(S) endpoint is configured for V1 ingress.
+    pub fn has_v1_rpc_allowlist(&self) -> bool {
+        std::env::var("SOLANA_TX_V1_RPC_ALLOWLIST")
+            .ok()
+            .is_some_and(|raw| {
+                raw.split(';').map(str::trim).any(|url| {
+                    !url.is_empty()
+                        && (url.starts_with("https://") || url.starts_with("http://"))
+                        && self.endpoints.iter().any(|endpoint| endpoint == url)
+                })
+            })
+    }
+
+    /// Broadcast a V1 transaction only through endpoints explicitly verified for V1 ingress.
+    /// Unlike the generic sender, this path never uses Helius Sender and never falls back
+    /// to an unverified RPC endpoint. Configure exact endpoint URLs in
+    /// SOLANA_TX_V1_RPC_ALLOWLIST, separated by semicolons. Keep secrets in the environment.
+    pub async fn send_raw_transaction_v1(&self, b64_tx: &str) -> Result<String> {
+        let allowlist = std::env::var("SOLANA_TX_V1_RPC_ALLOWLIST")
+            .unwrap_or_default()
+            .split(';')
+            .map(str::trim)
+            .filter(|url| {
+                !url.is_empty() && (url.starts_with("https://") || url.starts_with("http://"))
+            })
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if allowlist.is_empty() {
+            bail!(
+                "V1 RPC allowlist is empty; refusing to broadcast through an unverified endpoint"
+            );
+        }
+
+        let res = self
+            .call_filtered_idx(
+                "sendTransaction",
+                json!([
+                    b64_tx,
+                    {
+                        "encoding": "base64",
+                        "skipPreflight": true,
+                        "preflightCommitment": "processed",
+                        "maxRetries": 0
+                    }
+                ]),
+                |_, endpoint| Self::is_v1_endpoint_allowed(endpoint, &allowlist),
+            )
+            .await?;
+        res.as_str()
+            .map(str::to_owned)
+            .context("V1 RPC response missing transaction signature string")
+    }
+
     /// Broadcast signed transaction directly via RPC with processed commitment (SWQoS path).
     /// When Helius Sender endpoint is configured (HELIUS_SENDER_REGIONAL / HELIUS_SENDER_URL),
     /// submits through Helius Sender for simultaneous validator + Jito dual routing with 0 API credits.
@@ -1586,30 +1637,64 @@ mod tests {
     }
 
     #[test]
+    fn v1_allowlist_matches_only_exact_verified_endpoints() {
+        let allowlist = vec![
+            "https://verified.example/rpc?token=secret".to_string(),
+            "https://backup.example/rpc".to_string(),
+        ];
+
+        assert!(RpcPool::is_v1_endpoint_allowed(
+            "https://verified.example/rpc?token=secret",
+            &allowlist
+        ));
+        assert!(RpcPool::is_v1_endpoint_allowed(
+            "https://backup.example/rpc",
+            &allowlist
+        ));
+        assert!(!RpcPool::is_v1_endpoint_allowed(
+            "https://unverified.example/rpc",
+            &allowlist
+        ));
+        assert!(!RpcPool::is_v1_endpoint_allowed(
+            "https://verified.example/rpc?token=other",
+            &allowlist
+        ));
+        assert!(!RpcPool::is_v1_endpoint_allowed(
+            "https://verified.example/rpc?token=secret/extra",
+            &allowlist
+        ));
+    }
+
+    #[test]
     fn test_provider_classification_enforces_measured_limits() {
         let alchemy =
             RpcPool::classify_provider(0, "https://solana-mainnet.g.alchemy.com/v2/key1234");
         assert_eq!(alchemy.max_batch_size, 100);
         assert_eq!(alchemy.rps_limit, 20.0);
+        assert_eq!(alchemy.label, "Alchemy(#1)");
 
         let rpcfast =
             RpcPool::classify_provider(1, "https://solana-rpc.rpcfast.com/?api_key=abcd1234");
         assert_eq!(rpcfast.max_batch_size, 5);
         assert_eq!(rpcfast.rps_limit, 25.0);
+        assert_eq!(rpcfast.label, "RPCFast(#2)");
 
         let shyft = RpcPool::classify_provider(2, "https://rpc.fra.shyft.to?api_key=efgh5678");
         assert_eq!(shyft.max_batch_size, 100);
         assert_eq!(shyft.rps_limit, 8.0);
+        assert_eq!(shyft.label, "Shyft(#3)");
 
         let solami_upper =
             RpcPool::classify_provider(3, "https://rpc.solami.dev/Solana?api_key=sk_1234");
         assert_eq!(solami_upper.rps_limit, 2.0);
         assert_eq!(solami_upper.max_batch_size, 100);
+        assert_eq!(solami_upper.label, "Solami-Solana(#4)");
 
         let solami_lower =
             RpcPool::classify_provider(4, "https://rpc.solami.dev/sol?api_key=q88_5678");
         assert_eq!(solami_lower.rps_limit, 3.0);
         assert_eq!(solami_lower.max_batch_size, 100);
+        assert_eq!(solami_lower.label, "Solami-sol(#5)");
     }
 
     #[test]
@@ -1731,6 +1816,53 @@ mod tests {
                 "solana-mainnet.g.alchemy.com".to_string(),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn network_errors_never_echo_rpc_url_credentials() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let secret = "rpc-key-must-not-leak";
+        let pool = RpcPool::new(vec![format!("http://{addr}/?api_key={secret}")]);
+        let err = pool
+            .call("getSlot", serde_json::json!([]))
+            .await
+            .expect_err("closed local port must fail");
+
+        assert!(!err.to_string().contains(secret));
+        let last_error = pool.health_snapshot().providers[0]
+            .last_error
+            .clone()
+            .unwrap_or_default();
+        assert!(!last_error.contains(secret));
+        assert!(last_error.contains("network"));
+    }
+
+    #[tokio::test]
+    async fn rpc_error_text_is_not_echoed_into_telemetry() {
+        let secret = "provider-reflected-secret-token";
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32000, "message": format!("upstream rejected api_key={secret}") }
+        })
+        .to_string();
+        let (addr, server) = priority_estimate_server(vec![body]);
+        let pool = RpcPool::new(vec![format!("http://{addr}")]);
+        let err = pool
+            .call("getSlot", serde_json::json!([]))
+            .await
+            .expect_err("RPC error response must fail");
+        assert!(!err.to_string().contains(secret));
+        let last_error = pool.health_snapshot().providers[0]
+            .last_error
+            .clone()
+            .unwrap_or_default();
+        assert!(!last_error.contains(secret));
+        assert!(last_error.contains("code=Some(-32000)"));
+        server.join().unwrap();
     }
 
     /// Every provider failing (HTTP 429 from the only endpoint) must fail closed:

@@ -432,7 +432,8 @@ impl Supervisor {
                                     "1" | "true" | "yes" | "on"
                                 )
                             })
-                            .unwrap_or(false));
+                            .unwrap_or(false)
+                        && self.rpc_pool.has_v1_rpc_allowlist());
                 let jito_v1_enabled = matches!(self.mode(), BotMode::Simulate)
                     || (std::env::var("SOLANA_TX_V1_JITO_ENABLED")
                         .map(|v| {
@@ -790,7 +791,7 @@ impl Supervisor {
                     let b64 = BASE64_STANDARD.encode(tx_bytes.as_slice());
                     let r = self
                         .rpc_pool
-                        .send_raw_transaction(&b64)
+                        .send_raw_transaction_v1(&b64)
                         .await
                         .map_err(|e| e.to_string());
                     (r, true)
