@@ -85,28 +85,16 @@ impl AmmPool for MeteoraDbcPool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
-        Some(self.fee_bps)
+        // A scalar fee field cannot represent the complete DBC PoolConfig,
+        // fee schedule, current epoch, or Token-2022 transfer-fee context.
+        None
     }
 
-    fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
-        if amount_in == 0 {
-            return Ok(0);
-        }
-        if self.curve.migrated {
-            return Err(ArbError::InvalidInput(
-                "DBC pool has already migrated to DAMM v2".into(),
-            ));
-        }
-        // a_to_b = true means base -> quote (selling base token for quote token)
-        // In DbcCurve::quote_exact_in:
-        //   a_to_b = true is spending quote to buy base (is_buy)
-        //   a_to_b = false is spending base to sell for quote
-        let is_buy = !a_to_b;
-        let (amount_out, _) = self
-            .curve
-            .quote_exact_in(amount_in, is_buy)
-            .ok_or(ArbError::Overflow)?;
-        Ok(amount_out)
+    fn quote(&self, _amount_in: u64, _a_to_b: bool) -> Result<u64> {
+        Err(ArbError::UnsupportedOperation(
+            "Meteora DBC adapter is quote-only until the official VirtualPool/PoolConfig, complete curve segments, migration state, epoch, and transfer-fee snapshot are joined"
+                .into(),
+        ))
     }
 
     fn has_risky_token(&self) -> bool {
@@ -114,25 +102,22 @@ impl AmmPool for MeteoraDbcPool {
     }
 
     fn execution_accounts(&self) -> Option<PoolExecutionAccounts> {
-        if self.base_vault == Pubkey::default() || self.quote_vault == Pubkey::default() {
-            return None;
-        }
-        Some(PoolExecutionAccounts::MeteoraDbc {
-            config: self.config,
-            authority: self.authority,
-            vault_base: self.base_vault,
-            vault_quote: self.quote_vault,
-            event_authority: self.event_authority,
-        })
+        // Swap account readiness is not equivalent to quote readiness. Keep
+        // the adapter non-executable until the official DBC account graph and
+        // complete VirtualPool/PoolConfig state are joined and validated.
+        None
     }
 
     fn required_dependency_pubkeys(&self) -> Vec<Pubkey> {
-        vec![
+        let mut deps = vec![
+            self.config,
             self.base_vault,
             self.quote_vault,
             self.base_mint.0,
             self.quote_mint.0,
-        ]
+        ];
+        deps.retain(|key| *key != Pubkey::default());
+        deps
     }
 
     fn update_from_account(&mut self, data: &[u8]) -> Result<()> {
@@ -202,8 +187,11 @@ mod tests {
         );
 
         // a_to_b = false is buying base with quote
-        let out = pool.quote(10_000_000, false).expect("quote works");
-        assert!(out > 0);
+        assert!(matches!(
+            pool.quote(10_000_000, false),
+            Err(ArbError::UnsupportedOperation(_))
+        ));
+        assert!(pool.fee_bps().is_none());
         assert_eq!(pool.protocol(), DexProtocol::MeteoraDbc);
     }
 }

@@ -11,12 +11,15 @@ use arb_types::{
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
-pub const METEORA_DAMM_V2_POOL_MIN_SIZE: usize = 485;
+// Anchor discriminator (8) + official Pool::INIT_SPACE (1,104).
+pub const METEORA_DAMM_V2_POOL_MIN_SIZE: usize = 8 + 1_104;
 
 #[derive(Debug, Clone)]
 pub struct MeteoraDammV2Pool {
     pub pool_id: PoolId,
-    pub config: Pubkey,
+    /// On-chain Pool::whitelisted_vault (offset 296..328), not a pool config.
+    /// Kept named explicitly so it cannot be mistaken for the swap's config account.
+    pub whitelisted_vault: Pubkey,
     pub authority: Pubkey,
     pub event_authority: Pubkey,
     pub token_a_mint: MintId,
@@ -52,7 +55,7 @@ impl MeteoraDammV2Pool {
         let (event_authority, _) = Pubkey::find_program_address(&[b"__event_authority"], &prog);
         let mut pool = Self {
             pool_id,
-            config: Pubkey::default(),
+            whitelisted_vault: Pubkey::default(),
             authority,
             event_authority,
             token_a_mint: MintId::default(),
@@ -109,10 +112,9 @@ impl AmmPool for MeteoraDammV2Pool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
-        self.fee_context_verified.then(|| {
-            self.fee_params
-                .fee_bps(self.current_point, self.activation_point)
-        })
+        // The current adapter does not yet join the full official dynamic-fee
+        // state and current-point context. A boolean flag is not a fee snapshot.
+        None
     }
 
     fn decimals(&self) -> (u8, u8) {
@@ -132,25 +134,23 @@ impl AmmPool for MeteoraDammV2Pool {
     }
 
     fn execution_accounts(&self) -> Option<PoolExecutionAccounts> {
-        if self.token_a_vault == Pubkey::default() || self.token_b_vault == Pubkey::default() {
-            return None;
-        }
-        Some(PoolExecutionAccounts::MeteoraDammV2 {
-            config: self.config,
-            authority: self.authority,
-            vault_a: self.token_a_vault,
-            vault_b: self.token_b_vault,
-            event_authority: self.event_authority,
-        })
+        // The current account parser has only verified whitelisted_vault at
+        // offset 296..328. It has not resolved the complete official swap
+        // account graph, so do not expose this value as the PoolExecutionAccounts
+        // config field or advertise the pool as executable.
+        None
     }
 
     fn required_dependency_pubkeys(&self) -> Vec<Pubkey> {
-        vec![
+        let mut deps = vec![
             self.token_a_vault,
             self.token_b_vault,
             self.token_a_mint.0,
             self.token_b_mint.0,
-        ]
+            self.whitelisted_vault,
+        ];
+        deps.retain(|key| *key != Pubkey::default());
+        deps
     }
 
     fn update_from_account(&mut self, data: &[u8]) -> Result<()> {
@@ -200,7 +200,7 @@ impl AmmPool for MeteoraDammV2Pool {
         self.token_b_mint = MintId(read_pk(200)?);
         self.token_a_vault = read_pk(232)?;
         self.token_b_vault = read_pk(264)?;
-        self.config = read_pk(296)?;
+        self.whitelisted_vault = read_pk(296)?;
 
         self.liquidity = u128::from_le_bytes(data[360..376].try_into().unwrap());
         self.sqrt_min_price_x64 = u128::from_le_bytes(data[424..440].try_into().unwrap());
@@ -236,66 +236,10 @@ impl AmmPool for MeteoraDammV2Pool {
         Ok(())
     }
 
-    fn quote(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
-        if self.has_risky {
-            return Err(ArbError::InvalidInput("risky Token-2022 extension".into()));
-        }
-        // Official cp_amm permissionless `can_swap`: swaps require
-        // `pool_status == PoolStatus::Enable` and, for non-whitelisted
-        // senders, `current_point >= activation_point`. Fail-closed on both.
-        if self.pool_status != 0 {
-            return Err(ArbError::PoolDisabled(format!(
-                "Meteora DAMM v2 pool {} disabled (pool_status {})",
-                self.pool_id, self.pool_status
-            )));
-        }
-        if self.fee_context_verified && self.current_point < self.activation_point {
-            return Err(ArbError::PoolDisabled(format!(
-                "Meteora DAMM v2 pool {} not active (current_point {} < activation_point {})",
-                self.pool_id, self.current_point, self.activation_point
-            )));
-        }
-        if !self.fee_context_verified {
-            return Err(ArbError::InvalidInput(
-                "Meteora DAMM v2 fee config/current point has not been coherently joined".into(),
-            ));
-        }
-        if self.fee_params.collect_fee_mode > 2 {
-            return Err(ArbError::InvalidInput(
-                "unknown Meteora DAMM v2 collect fee mode".into(),
-            ));
-        }
-        if self.sqrt_price_x64 == 0 || self.liquidity == 0 {
-            return Err(ArbError::InvalidInput(
-                "Meteora DAMM v2 zero sqrt_price or liquidity".into(),
-            ));
-        }
-        if self.transfer_fee_a_bps != 0 || self.transfer_fee_b_bps != 0 {
-            return Err(ArbError::InvalidInput(
-                "Meteora DAMM v2 Token-2022 transfer fees require epoch/max-fee-aware mint context"
-                    .into(),
-            ));
-        }
-        let net_in = amount_in;
-        let fee_num = self
-            .fee_params
-            .effective_fee_numerator(self.current_point, self.activation_point);
-        let fees_on_input = match self.fee_params.collect_fee_mode {
-            1 => !a_to_b, // OnlyB: fees on input only when selling B (B -> A)
-            2 => !a_to_b, // Compounding: B -> A fee on input
-            _ => false,   // BothToken (0): fee on output
-        };
-        let gross_out = arb_math::damm_v2::quote_damm_v2_exact_in_with_fee_mode(
-            net_in,
-            a_to_b,
-            self.sqrt_price_x64,
-            self.liquidity,
-            self.sqrt_min_price_x64,
-            self.sqrt_max_price_x64,
-            fee_num,
-            fees_on_input,
-        )
-        .ok_or(ArbError::Overflow)?;
-        Ok(gross_out)
+    fn quote(&self, _amount_in: u64, _a_to_b: bool) -> Result<u64> {
+        Err(ArbError::UnsupportedOperation(
+            "Meteora DAMM v2 adapter is quote-only until the full official PoolFeesStruct/dynamic-fee state, activation point, collect-fee mode, layout-version reserves, and epoch-aware mint context are joined"
+                .into(),
+        ))
     }
 }

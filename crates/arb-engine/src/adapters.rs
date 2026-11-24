@@ -133,30 +133,18 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Raydium CPMM missing on-chain fee or reserves")
             }
         }
-        DexProtocol::MeteoraDammV2 => {
-            if pool.is_fee_valid() && pool.reserve_in > 0 && pool.reserve_out > 0 {
-                Ok(())
-            } else {
-                Err("Meteora DAMM v2 missing on-chain fee or reserves")
-            }
-        }
-        DexProtocol::MeteoraDbc => {
-            if pool.is_fee_valid() && pool.reserve_in > 0 && pool.reserve_out > 0 {
-                Ok(())
-            } else {
-                Err("Meteora DBC missing on-chain fee or reserves")
-            }
-        }
-        DexProtocol::MeteoraDlmmPro => {
-            if pool.clmm.is_some() {
-                Ok(())
-            } else {
-                Err("Meteora DLMM Pro missing decoded tick array state")
-            }
-        }
-        DexProtocol::RaydiumLaunchLab => {
-            Err("Raydium LaunchLab remains quote-only until its dedicated fee adapter is accepted")
-        }
+        DexProtocol::MeteoraDammV2 => Err(
+            "Meteora DAMM v2 is quote-only until its complete pool, activation, dynamic-fee, collect-fee, and mint snapshot is verified against the official quote model",
+        ),
+        DexProtocol::MeteoraDbc => Err(
+            "Meteora DBC is quote-only until VirtualPool/PoolConfig, complete curve segments, migration state, epoch, and transfer-fee context are verified",
+        ),
+        DexProtocol::MeteoraDlmmPro => Err(
+            "Meteora DLMM Pro is quote-only until its official dynamic pool, tick arrays, bitmap extension, oracle, limit-order, and mint state are joined",
+        ),
+        DexProtocol::RaydiumLaunchLab => Err(
+            "Raydium LaunchLab is quote-only until PoolState, GlobalConfig, PlatformConfig, fee shares, vaults, and token state are verified",
+        ),
         DexProtocol::PumpFun => {
             if let Some(ref pf) = pool.pump_fun {
                 if pf.is_tradeable() {
@@ -255,11 +243,8 @@ macro_rules! clmm_adapter {
 
 cpmm_adapter!(RaydiumV4QuoteAdapter, DexProtocol::RaydiumV4);
 cpmm_adapter!(RaydiumCpmmQuoteAdapter, DexProtocol::RaydiumCpmm);
-cpmm_adapter!(MeteoraDammQuoteAdapter, DexProtocol::MeteoraDammV2);
-cpmm_adapter!(MeteoraDbcQuoteAdapter, DexProtocol::MeteoraDbc);
 clmm_adapter!(RaydiumClmmQuoteAdapter, DexProtocol::RaydiumClmm);
 clmm_adapter!(OrcaWhirlpoolQuoteAdapter, DexProtocol::OrcaWhirlpool);
-clmm_adapter!(MeteoraDlmmProQuoteAdapter, DexProtocol::MeteoraDlmmPro);
 
 pub struct MeteoraDlmmQuoteAdapter;
 impl ProtocolQuoteAdapter for MeteoraDlmmQuoteAdapter {
@@ -321,9 +306,18 @@ static RAYDIUM_CPMM_ADAPTER: RaydiumCpmmQuoteAdapter = RaydiumCpmmQuoteAdapter;
 static RAYDIUM_CLMM_ADAPTER: RaydiumClmmQuoteAdapter = RaydiumClmmQuoteAdapter;
 static ORCA_ADAPTER: OrcaWhirlpoolQuoteAdapter = OrcaWhirlpoolQuoteAdapter;
 static METEORA_DLMM_ADAPTER: MeteoraDlmmQuoteAdapter = MeteoraDlmmQuoteAdapter;
-static METEORA_DAMM_ADAPTER: MeteoraDammQuoteAdapter = MeteoraDammQuoteAdapter;
-static METEORA_DBC_ADAPTER: MeteoraDbcQuoteAdapter = MeteoraDbcQuoteAdapter;
-static METEORA_DLMM_PRO_ADAPTER: MeteoraDlmmProQuoteAdapter = MeteoraDlmmProQuoteAdapter;
+static METEORA_DAMM_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
+    venue: DexProtocol::MeteoraDammV2,
+    reason: "Meteora DAMM v2 requires the complete official pool/fee/activation snapshot; a CPMM reserve fallback is not valid",
+};
+static METEORA_DBC_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
+    venue: DexProtocol::MeteoraDbc,
+    reason: "Meteora DBC requires the official VirtualPool/PoolConfig and complete piecewise curve snapshot",
+};
+static METEORA_DLMM_PRO_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
+    venue: DexProtocol::MeteoraDlmmPro,
+    reason: "Meteora DLMM Pro requires official tick-array/bitmap/oracle/limit-order state; active-liquidity CLMM fallback is not valid",
+};
 static PUMP_FUN_ADAPTER: PumpFunQuoteAdapter = PumpFunQuoteAdapter;
 static RAYDIUM_LAUNCHLAB_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::RaydiumLaunchLab,
