@@ -12,7 +12,7 @@
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_constants::{
-    METEORA_BINS_PER_BIN_ARRAY, METEORA_DLMM_PROGRAM_ID,
+    METEORA_BINS_PER_BIN_ARRAY, METEORA_DLMM_PROGRAM_ID, METEORA_MAX_BIN_STEP,
     meteora_bin_array_index_requires_bitmap_extension,
 };
 use arb_math::dlmm::{
@@ -130,7 +130,7 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
                 state.pool_id.0, dlmm_state.status
             )));
         }
-        if dlmm_state.bin_step_bps == 0 || dlmm_state.bin_step_bps > 10_000 {
+        if !(1..=METEORA_MAX_BIN_STEP).contains(&dlmm_state.bin_step_bps) {
             return Err(ArbError::InvalidInput(format!(
                 "Meteora DLMM pool {} has invalid bin_step {}",
                 state.pool_id.0, dlmm_state.bin_step_bps

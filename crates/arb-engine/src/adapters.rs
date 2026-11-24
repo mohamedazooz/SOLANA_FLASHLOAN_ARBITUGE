@@ -1250,10 +1250,10 @@ mod tests {
     /// `collect_fee_mode` (LbPair byte @36) into the quote engine instead of
     /// hardcoding `0` (InputOnly).
     ///
-    /// Discriminator: single bin priced 4x (bin_step=10000 bps, active_id=2),
-    /// 1% base fee (base_factor=100, power=0), input 10^9 X-raw:
-    /// - InputOnly  -> fee charged on input  ~ 10^7 (X raw)
-    /// - OnlyY      -> fee charged on output ~ 4x10^7 (Y raw, = gross_out * 1%)
+    /// Discriminator: single bin with protocol-valid bin_step=400 and active_id=35.
+    /// With base_factor=100 and power=0, the protocol fee rate is 0.04%:
+    /// - InputOnly -> fee charged on input (X raw)
+    /// - OnlyY     -> fee charged on output (Y raw) for X-to-Y swaps.
     ///
     /// `amount_out` is algebraically identical in both modes (fee deduction
     /// commutes with the per-bin price multiplication); only the fee
@@ -1278,11 +1278,11 @@ mod tests {
             kind: PoolKind::Dlmm,
             clmm: None,
             dlmm: Some(arb_types::DlmmState {
-                active_bin_id: 2,
+                active_bin_id: 35,
                 status: 0,
-                bin_step_bps: 10_000,
+                bin_step_bps: 400,
                 bins: vec![arb_types::DlmmBin {
-                    bin_id: 2,
+                    bin_id: 35,
                     amount_x: 10u128.pow(12),
                     amount_y: 4 * 10u128.pow(12),
                     ..Default::default()
@@ -1301,7 +1301,7 @@ mod tests {
                 }),
                 volatility_accumulator: 0,
                 volatility_reference: 0,
-                index_reference: 2,
+                index_reference: 35,
                 last_update_timestamp: 0,
                 ..Default::default()
             }),
@@ -1329,15 +1329,15 @@ mod tests {
             (q.amount_out, q.fee_paid)
         };
 
-        // Fee denomination: OnlyY charges 1% on the gross OUTPUT (4x price)
-        // => ~4x10^7; InputOnly charges 1% on the input => ~10^7.
+        // Fee denomination: OnlyY charges about 0.04% on the gross OUTPUT (~3.95e9 Y raw)
+        // => ~1.58e6; InputOnly charges about 0.04% on 1e9 input => ~4e5.
         assert!(
-            fee_only_y >= 35_000_000,
-            "OnlyY fee must be output-denominated (~4x10^7), got {fee_only_y}"
+            (1_500_000..=1_700_000).contains(&fee_only_y),
+            "OnlyY fee must be output-denominated (~1.58e6), got {fee_only_y}"
         );
         assert!(
-            fee_input_only < 20_000_000,
-            "InputOnly fee must be input-denominated (~10^7), got {fee_input_only}"
+            (300_000..=500_000).contains(&fee_input_only),
+            "InputOnly fee must be input-denominated (~4e5), got {fee_input_only}"
         );
 
         // Net output is identical in both modes up to rounding dust.
