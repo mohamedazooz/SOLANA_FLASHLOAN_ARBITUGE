@@ -17,6 +17,7 @@ const EXAMPLE: &str = include_str!("../../../config/config.example.toml");
 const DEVELOPMENT: &str = include_str!("../../../config/development.toml");
 const PRODUCTION: &str = include_str!("../../../config/production.toml");
 const STAGING: &str = include_str!("../../../config/staging.toml");
+const ENV_EXAMPLE: &str = include_str!("../../../.env.example");
 
 const EXPECTED: [(&str, i64); 6] = [
     ("min_net_profit_abs", 50_000),
@@ -124,5 +125,83 @@ fn code_defaults_match_base_toml() {
             in_base, code_value,
             "code default for strategy.{key} must stay in sync with base.toml"
         );
+    }
+}
+
+#[test]
+fn env_example_has_unique_keys_and_parseable_numeric_overrides() {
+    use std::collections::HashMap;
+
+    let mut values = HashMap::<String, String>::new();
+    for (line_no, line) in ENV_EXAMPLE.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_owned();
+        assert!(
+            values
+                .insert(key.clone(), value.trim().to_owned())
+                .is_none(),
+            ".env.example contains duplicate active key {key} at line {}",
+            line_no + 1
+        );
+    }
+
+    let base: Value = BASE.parse().expect("valid base TOML");
+    let risk = base
+        .get("risk")
+        .and_then(Value::as_table)
+        .expect("risk table");
+    let chronos = base
+        .get("chronos")
+        .and_then(Value::as_table)
+        .expect("chronos table");
+
+    let max_trade: f64 = values["MAX_TRADE_SIZE_USD"]
+        .parse()
+        .expect("MAX_TRADE_SIZE_USD must be numeric");
+    assert_eq!(
+        max_trade,
+        risk["max_trade_size_usd"]
+            .as_float()
+            .expect("base risk max trade")
+    );
+
+    let lambda: f64 = values["CHRONOS_DECAY_LAMBDA_PER_SEC"]
+        .parse()
+        .expect("CHRONOS_DECAY_LAMBDA_PER_SEC must be numeric");
+    assert_eq!(
+        lambda,
+        chronos["decay_lambda_per_sec"]
+            .as_float()
+            .expect("base lambda")
+    );
+
+    let max_age: i64 = values["CHRONOS_MAX_AGE_MS"]
+        .parse()
+        .expect("CHRONOS_MAX_AGE_MS must be an integer");
+    assert_eq!(
+        max_age,
+        chronos["max_age_ms"].as_integer().expect("base max age")
+    );
+
+    let min_ev: f64 = values["CHRONOS_MIN_EV_USD"]
+        .parse()
+        .expect("CHRONOS_MIN_EV_USD must be numeric");
+    assert_eq!(
+        min_ev,
+        chronos["min_ev_usd"].as_float().expect("base min EV")
+    );
+
+    for key in [
+        "SOLANA_RPC_PRIMARY",
+        "SOLANA_RPC_SECONDARY",
+        "SOLAMI_WS_API_KEY",
+    ] {
+        assert!(values.contains_key(key), ".env.example must document {key}");
     }
 }

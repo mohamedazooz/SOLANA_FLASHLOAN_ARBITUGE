@@ -2,6 +2,8 @@
 //! Pure compute crate: Zero I/O, zero async networking.
 //! Implements Base-Asset Anchoring (SOL / USDC) with epsilon threshold and optimal sizing.
 
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
+
 pub mod route_worker;
 pub use route_worker::{
     PoolDepth, RouteArchitectWorker, SplitAllocation, SplitLeg, SplitOpportunity,
@@ -43,7 +45,7 @@ pub mod meteora_fresh_state;
 pub mod meteora_size_optimizer;
 pub mod three_leg_meme_pipeline;
 pub use flash_loan_sizing::{
-    FlashLoanSizingConfig, FlashLoanSizingResult, KAMINO_FRACTION_FRAC_BITS,
+    FeeAmountByMint, FlashLoanSizingConfig, FlashLoanSizingResult, KAMINO_FRACTION_FRAC_BITS,
     KAMINO_FRACTION_ONE_BITS, calculate_kamino_flash_fee, calculate_optimal_flash_loan,
     net_profit_lamports,
 };
@@ -66,7 +68,7 @@ pub mod units;
 pub use units::{net_lamports_equiv, wsol_mint_pubkey};
 
 use arb_math::{
-    DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
+    DlmmBin as ArbDlmmBin, DlmmPoolState,
     clmm::ClmmTickMath,
     cpmm_out, cpmm_price_impact_bps,
     economic::{
@@ -96,51 +98,20 @@ pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPO
 /// quote domain). Capacity estimation (`edge_max_input_capacity`) keeps its
 /// own saturating clamp by design and must not switch to this helper.
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<(DlmmPoolState, Vec<ArbDlmmBin>)> {
-    let d = edge.dlmm.as_ref()?;
-    let params = d.params.as_ref()?;
-    if d.status != 0 || params.function_type > 1 || params.collect_fee_mode > 1 {
+    if edge.protocol != DexProtocol::MeteoraDlmm
+        || edge.transfer_fee_bps != 0
+        || edge.token_programs.contains(&TokenProgramKind::Token2022)
+    {
         return None;
     }
-    let pool = DlmmPoolState {
-        active_id: d.active_bin_id,
-        bin_step: d.bin_step_bps,
-        status: d.status,
-        parameters: DlmmParameters {
-            bin_step: d.bin_step_bps,
-            base_factor: params.base_factor,
-            filter_period: params.filter_period,
-            decay_period: params.decay_period,
-            reduction_factor: params.reduction_factor,
-            variable_fee_control: params.variable_fee_control,
-            max_volatility_accumulator: params.max_volatility_accumulator,
-            protocol_share: params.protocol_share,
-            base_fee_power_factor: params.base_fee_power_factor,
-            collect_fee_mode: params.collect_fee_mode,
-        },
-        v_parameters: DlmmVariableParameters {
-            volatility_accumulator: d.volatility_accumulator,
-            volatility_reference: d.volatility_reference,
-            index_reference: d.index_reference,
-            last_update_timestamp: d.last_update_timestamp,
-        },
-        support_limit_order: d.support_limit_order,
-    };
-    let bins: Vec<ArbDlmmBin> = d
-        .bins
-        .iter()
-        .map(|b| {
-            Some(ArbDlmmBin {
-                id: b.bin_id,
-                amount_x: u64::try_from(b.amount_x).ok()?,
-                amount_y: u64::try_from(b.amount_y).ok()?,
-                price_q64: 0,
-                open_order_amount: b.open_order_amount,
-                processed_order_remaining_amount: b.processed_order_remaining_amount,
-                limit_order_ask_side: b.limit_order_ask_side,
-            })
-        })
-        .collect::<Option<Vec<ArbDlmmBin>>>()?;
-    Some((pool, bins))
+    let dlmm = edge.dlmm.as_ref()?;
+    MeteoraDlmmQuoteEngine::validate_bin_array_snapshot(
+        edge.pool_id,
+        dlmm,
+        edge.execution_accounts.as_ref(),
+    )
+    .ok()?;
+    MeteoraDlmmQuoteEngine::build_dlmm_math_state_from_parts(dlmm, edge.pool_id).ok()
 }
 
 /// Profit (output - input) for a cycle at a given input size d (P1 #11: golden-section target).

@@ -74,11 +74,15 @@ fn make_test_dlmm_pool(pool_byte: u8, mint_x_byte: u8, mint_y_byte: u8) -> PoolS
         support_limit_order: false,
     };
 
+    let bin_array_index =
+        arb_dex::engines::MeteoraDlmmQuoteEngine::bin_id_to_bin_array_index(active_bin_id);
+    let bin_array_pda =
+        arb_dex::engines::MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pool_pk, bin_array_index).0;
     let exec = PoolExecutionAccounts::MeteoraDlmm {
         reserve_x,
         reserve_y,
         oracle: pool_pk,
-        bin_array_pdas: vec![Pubkey::new_from_array([30 + pool_byte; 32])],
+        bin_array_pdas: vec![bin_array_pda],
         bitmap_extension: None,
         pool_token_x: mint_x.0,
         pool_token_y: mint_y.0,
@@ -233,6 +237,26 @@ fn unknown_collect_fee_mode_is_rejected() {
             "collect_fee_mode {mode} must be rejected in pool conversion"
         );
     }
+}
+
+#[test]
+fn missing_bin_array_snapshot_is_rejected() {
+    let mut pool = make_test_dlmm_pool(9, 1, 2);
+    if let Some(PoolExecutionAccounts::MeteoraDlmm { bin_array_pdas, .. }) =
+        pool.execution_accounts.as_mut()
+    {
+        bin_array_pdas.clear();
+    }
+    assert!(
+        MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(
+            &pool,
+            1_000_000,
+            pool.base_mint,
+            pool.quote_mint
+        )
+        .is_none(),
+        "a local bin snapshot without its existence-proven BinArray account must not quote"
+    );
 }
 
 #[test]

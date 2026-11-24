@@ -3,6 +3,7 @@
 //! and complete accounting of Hop 1 output, Hop 2 output, fees, network costs, net profit, CUs,
 //! and required Bin Arrays.
 
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
 use arb_engine::{
     DlmmArbitrageDirection, DlmmOptimizerConfig, MeteoraDlmmPoolPairDiscovery,
     MeteoraDlmmTradeSizeOptimizer,
@@ -12,6 +13,7 @@ use arb_types::{
     PoolKind, PoolState, Slot, TokenProgramKind,
 };
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 
 fn make_test_pool(
     pool_bytes_id: u8,
@@ -55,7 +57,7 @@ fn make_test_pool(
         active_bin_id,
         status: 0,
         bin_step_bps: bin_step,
-        bins,
+        bins: bins.clone(),
         params: Some(fee_params),
         volatility_accumulator: 0,
         volatility_reference: 0,
@@ -64,11 +66,20 @@ fn make_test_pool(
         support_limit_order: false,
     };
 
+    let bin_array_pdas: Vec<Pubkey> = bins
+        .iter()
+        .map(|bin| {
+            let index = MeteoraDlmmQuoteEngine::bin_id_to_bin_array_index(bin.bin_id);
+            MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pool_pk, index).0
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     let exec = PoolExecutionAccounts::MeteoraDlmm {
         reserve_x,
         reserve_y,
         oracle: pool_pk,
-        bin_array_pdas: vec![Pubkey::new_from_array([30 + pool_bytes_id; 32])],
+        bin_array_pdas,
         bitmap_extension: None,
         pool_token_x: mint_x.0,
         pool_token_y: mint_y.0,
@@ -119,6 +130,7 @@ fn test_trade_size_optimization_both_directions_and_recording() {
         coarse_samples: 16,
         max_candidate_basins: 4,
         refine_steps_per_basin: 8,
+        slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
         estimated_network_cost_lamports: 9_000, // 9,000 lamports = 1,620 raw USDC @ $180/SOL
         sol_usd_price: 180,
         quote_decimals: 6,
@@ -149,11 +161,14 @@ fn test_trade_size_optimization_both_directions_and_recording() {
     for (i, eval) in res_a.tested_evaluations.iter().enumerate() {
         if i % 3 == 0 || eval.trade_size == res_a.optimal_amount_in {
             println!(
-                "  Size={:>8} | Hop1={:>8} | Hop2={:>8} | Fees={:>5} | NetCost={:>5} | NetProfit={:>8} ({:>4} bps) | CU={:>6} | BinArrays={}",
+                "  Size={:>8} | Hop1={:>8} | Hop2={:>8} | Fee1={:>5}@{:?} | Fee2={:>5}@{:?} | NetCost={:>5} | NetProfit={:>8} ({:>4} bps) | CU={:>6} | BinArrays={}",
                 eval.trade_size,
                 eval.hop1_out,
                 eval.hop2_out,
-                eval.total_fees_raw,
+                eval.fees_hop1_raw,
+                eval.fees_hop1_mint,
+                eval.fees_hop2_raw,
+                eval.fees_hop2_mint,
                 eval.network_costs_quote_raw,
                 eval.net_profit_quote_raw,
                 eval.net_profit_bps,
@@ -190,11 +205,14 @@ fn test_trade_size_optimization_both_directions_and_recording() {
     for (i, eval) in res_b.tested_evaluations.iter().enumerate() {
         if i % 3 == 0 || eval.trade_size == res_b.optimal_amount_in {
             println!(
-                "  Size={:>8} | Hop1={:>8} | Hop2={:>8} | Fees={:>5} | NetCost={:>5} | NetProfit={:>8} ({:>4} bps) | CU={:>6} | BinArrays={}",
+                "  Size={:>8} | Hop1={:>8} | Hop2={:>8} | Fee1={:>5}@{:?} | Fee2={:>5}@{:?} | NetCost={:>5} | NetProfit={:>8} ({:>4} bps) | CU={:>6} | BinArrays={}",
                 eval.trade_size,
                 eval.hop1_out,
                 eval.hop2_out,
-                eval.total_fees_raw,
+                eval.fees_hop1_raw,
+                eval.fees_hop1_mint,
+                eval.fees_hop2_raw,
+                eval.fees_hop2_mint,
                 eval.network_costs_quote_raw,
                 eval.net_profit_quote_raw,
                 eval.net_profit_bps,
@@ -255,6 +273,7 @@ fn test_export_phase15_2_optimizer_statistics() {
         coarse_samples: 16,
         max_candidate_basins: 4,
         refine_steps_per_basin: 8,
+        slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
         estimated_network_cost_lamports: 9_000,
         sol_usd_price: 180,
         quote_decimals: 6,

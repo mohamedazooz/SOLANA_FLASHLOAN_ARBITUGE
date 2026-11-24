@@ -131,8 +131,7 @@ async fn test_fresh_state_meteora_cross_pool_cycle() {
         report.dex_fees_hop2_raw, report.dex_fees_hop2_currency
     );
     println!(
-        "Total DEX Fees:               {} raw units (embedded)",
-        report.total_dex_fees_raw
+        "DEX fees are already embedded in each hop's quoted output; raw fee units remain per-hop and per-mint."
     );
     println!(
         "Base Tx Fee:                  {} lamports (SOL)",

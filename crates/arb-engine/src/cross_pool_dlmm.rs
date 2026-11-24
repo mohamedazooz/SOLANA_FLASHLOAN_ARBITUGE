@@ -702,6 +702,7 @@ pub fn cross_pool_intermediate_mints(opp: &ExecutionOpportunity) -> Vec<MintId> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arb_dex::engines::MeteoraDlmmQuoteEngine;
     use arb_math::dlmm::{DlmmParameters, DlmmPoolState, DlmmVariableParameters, quote_dlmm_view};
     use arb_types::{DexProtocol, MintId, PoolId, TokenProgramKind};
     use solana_pubkey::Pubkey;
@@ -746,7 +747,7 @@ mod tests {
             (quote, base)
         };
         let step = if base_to_quote { -1_i32 } else { 1_i32 };
-        let bins = (0..depth)
+        let bins: Vec<arb_types::DlmmBin> = (0..depth)
             .map(|d| arb_types::DlmmBin {
                 bin_id: active_id + d * step,
                 amount_x: if base_to_quote { 0 } else { per_bin as u128 },
@@ -754,8 +755,28 @@ mod tests {
                 ..Default::default()
             })
             .collect();
+        let pool_id = PoolId(Pubkey::new_from_array([tag as u8; 32]));
+        let bin_array_pdas: Vec<Pubkey> = bins
+            .iter()
+            .filter(|bin| bin.amount_x != 0 || bin.amount_y != 0)
+            .map(|bin| {
+                let index = MeteoraDlmmQuoteEngine::bin_id_to_bin_array_index(bin.bin_id);
+                MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pool_id.0, index).0
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let execution_accounts = arb_types::PoolExecutionAccounts::MeteoraDlmm {
+            reserve_x: Pubkey::new_unique(),
+            reserve_y: Pubkey::new_unique(),
+            oracle: Pubkey::new_unique(),
+            bin_array_pdas,
+            bitmap_extension: None,
+            pool_token_x: base.0,
+            pool_token_y: quote.0,
+        };
         MarketEdge {
-            pool_id: PoolId(Pubkey::new_from_array([tag as u8; 32])),
+            pool_id,
             protocol: DexProtocol::MeteoraDlmm,
             kind: PoolKind::Dlmm,
             from_mint,
@@ -781,7 +802,7 @@ mod tests {
             pump_fun: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
-            execution_accounts: None,
+            execution_accounts: Some(execution_accounts),
             active_bin_id: Some(active_id),
         }
     }

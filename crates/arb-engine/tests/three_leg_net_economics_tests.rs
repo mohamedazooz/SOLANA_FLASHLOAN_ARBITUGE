@@ -29,10 +29,15 @@ fn net_profit_deducts_flash_fee_and_network_cost() {
     p.network_cost_lamports = 25_000;
 
     let result = build_three_leg_meme_pipeline(&pools, &p).unwrap();
-    let gross = result.gross_profit_lamports;
     let fee = result.flash_fee_lamports;
+    // Net economics must use the conservative sequential min-out, not the
+    // optimistic expected output exposed separately for telemetry.
+    let conservative_gross = result
+        .expected_min_final_output
+        .saturating_sub(result.size_search.best_input);
+    assert!(result.gross_profit_lamports >= conservative_gross as i64);
     let capped_price = arb_tx::cap_cu_price_by_profit(
-        gross.max(0) as u64,
+        conservative_gross,
         p.cu_limit,
         p.priority_fee_micro_lamports,
         p.priority_fee_max_share_bps,
@@ -42,8 +47,8 @@ fn net_profit_deducts_flash_fee_and_network_cost() {
         p.network_cost_lamports + arb_constants::SOLANA_BASE_FEE_LAMPORTS + priority_fee;
     assert_eq!(
         result.net_profit_lamports,
-        gross - fee as i64 - total_network_cost as i64,
-        "net must deduct flash fee, Jito tip, base fee and capped priority fee exactly once"
+        conservative_gross as i64 - fee as i64 - total_network_cost as i64,
+        "net must use conservative min-out and deduct flash fee, Jito tip, base fee and capped priority fee exactly once"
     );
     assert_eq!(
         fee,

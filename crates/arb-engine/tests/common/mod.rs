@@ -1,11 +1,13 @@
 //! Shared synthetic fixtures for the 3-leg Meteora DLMM pipeline tests.
 #![allow(dead_code)]
 
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
 use arb_types::{
     DexProtocol, DlmmBin, DlmmFeeParams, DlmmState, MintId, PoolExecutionAccounts, PoolId,
     PoolKind, PoolState, Slot, TokenProgramKind,
 };
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 use std::str::FromStr;
 
 pub fn wsol_mint() -> MintId {
@@ -73,7 +75,7 @@ pub fn make_dlmm_pool(
         active_bin_id,
         status: 0,
         bin_step_bps: bin_step,
-        bins,
+        bins: bins.clone(),
         params: Some(fee_params),
         volatility_accumulator: 0,
         volatility_reference: 0,
@@ -82,11 +84,20 @@ pub fn make_dlmm_pool(
         support_limit_order: false,
     };
 
+    let bin_array_pdas: Vec<Pubkey> = bins
+        .iter()
+        .map(|bin| {
+            let index = MeteoraDlmmQuoteEngine::bin_id_to_bin_array_index(bin.bin_id);
+            MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pool_pk, index).0
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     let exec = PoolExecutionAccounts::MeteoraDlmm {
         reserve_x,
         reserve_y,
         oracle,
-        bin_array_pdas: vec![Pubkey::new_from_array([pool_bytes_id.wrapping_add(50); 32])],
+        bin_array_pdas,
         bitmap_extension: None,
         pool_token_x: base_mint.0,
         pool_token_y: quote_mint.0,

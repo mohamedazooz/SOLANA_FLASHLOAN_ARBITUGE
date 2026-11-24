@@ -5,6 +5,7 @@
 //! 2. `MeteoraDlmmCrossPoolQuoteEngine`
 //! 3. `MeteoraDlmmTradeSizeOptimizer`
 
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
 use arb_engine::{
     DlmmOptimizerConfig, MeteoraDlmmCrossPoolQuoteEngine, MeteoraDlmmPoolPairDiscovery,
     MeteoraDlmmTradeSizeOptimizer,
@@ -14,6 +15,7 @@ use arb_types::{
     PoolKind, PoolState, Slot, TokenProgramKind,
 };
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 
 fn make_test_dlmm_pool(
     pool_bytes_id: u8,
@@ -69,7 +71,7 @@ fn make_test_dlmm_pool(
         active_bin_id,
         status: 0,
         bin_step_bps: bin_step,
-        bins,
+        bins: bins.clone(),
         params: Some(fee_params),
         volatility_accumulator: 0,
         volatility_reference: 0,
@@ -78,11 +80,20 @@ fn make_test_dlmm_pool(
         support_limit_order: false,
     };
 
+    let bin_array_pdas: Vec<Pubkey> = bins
+        .iter()
+        .map(|bin| {
+            let index = MeteoraDlmmQuoteEngine::bin_id_to_bin_array_index(bin.bin_id);
+            MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pool_pk, index).0
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     let exec = PoolExecutionAccounts::MeteoraDlmm {
         reserve_x,
         reserve_y,
         oracle: pool_pk,
-        bin_array_pdas: vec![Pubkey::new_from_array([30 + pool_bytes_id; 32])],
+        bin_array_pdas,
         bitmap_extension: None,
         pool_token_x: mint_x.0,
         pool_token_y: mint_y.0,
@@ -193,6 +204,7 @@ fn test_meteora_trade_size_optimizer_finds_positive_net_profit() {
         coarse_samples: 10,
         max_candidate_basins: 4,
         refine_steps_per_basin: 8,
+        slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
         estimated_network_cost_lamports: 15_000,
         sol_usd_price: 180,
         quote_decimals: 6,

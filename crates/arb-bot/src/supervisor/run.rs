@@ -444,6 +444,72 @@ impl Supervisor {
         opportunities
     }
 
+    async fn start_wallet_balance_monitor(&self) -> Result<()> {
+        if self.min_sol_reserve_lamports == 0 {
+            info!("Wallet SOL reserve guard disabled by MIN_SOL_RESERVE_LAMPORTS=0");
+            return Ok(());
+        }
+        let Some(payer) = self.keypair.as_ref().map(|keypair| keypair.pubkey()) else {
+            if matches!(self.mode(), BotMode::Live) {
+                anyhow::bail!("wallet reserve guard requires a loaded signer in live mode");
+            }
+            warn!("Wallet reserve monitor not started: no signer loaded (non-live mode)");
+            return Ok(());
+        };
+        if !self.tx_rpc.is_configured() {
+            if matches!(self.mode(), BotMode::Live) {
+                anyhow::bail!(
+                    "wallet reserve guard requires configured Transaction RPC in live mode"
+                );
+            }
+            warn!("Wallet reserve monitor not started: Transaction RPC is not configured");
+            return Ok(());
+        }
+
+        let initial_balance =
+            tokio::time::timeout(Duration::from_secs(5), self.tx_rpc.get_balance(&payer))
+                .await
+                .map_err(|_| anyhow::anyhow!("initial wallet balance check timed out"))??;
+        self.wallet_balance_cache.update(initial_balance);
+        if matches!(self.mode(), BotMode::Live) && initial_balance < self.min_sol_reserve_lamports {
+            anyhow::bail!(
+                "wallet balance {} lamports is below configured reserve {} lamports",
+                initial_balance,
+                self.min_sol_reserve_lamports,
+            );
+        }
+        info!(
+            "Wallet reserve monitor initialized: balance={} lamports reserve={} lamports",
+            initial_balance, self.min_sol_reserve_lamports,
+        );
+
+        let cache = Arc::clone(&self.wallet_balance_cache);
+        let rpc = Arc::clone(&self.tx_rpc);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                match tokio::time::timeout(Duration::from_secs(3), rpc.get_balance(&payer)).await {
+                    Ok(Ok(balance)) => cache.update(balance),
+                    Ok(Err(error)) => {
+                        cache.invalidate();
+                        warn!(
+                            "Background wallet balance refresh failed; reserve guard is closed: {error}"
+                        );
+                    }
+                    Err(_) => {
+                        cache.invalidate();
+                        warn!(
+                            "Background wallet balance refresh timed out; reserve guard is closed"
+                        );
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
     pub async fn run(&self) -> Result<()> {
         info!("Starting Supervisor — Mode: {}", self.mode());
 
@@ -456,6 +522,8 @@ impl Supervisor {
 
         // R12: reconcile dispatch intents left pending by a previous run
         // before dispatching anything new.
+        self.start_wallet_balance_monitor().await?;
+
         self.reconcile_pending_dispatches().await;
 
         // PIPE-04: verify the hardcoded tip constants against the live

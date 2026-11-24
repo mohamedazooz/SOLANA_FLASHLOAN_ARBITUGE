@@ -20,7 +20,7 @@ use crate::ledger::LandingLedger;
 use arb_types::{Lamports, Percentile, RefuseReason, TipDecision, TipFloor, TipPlan};
 
 /// Protocol minimum tip enforced by the Jito block engine, in lamports.
-pub const MIN_JITO_TIP_LAMPORTS: u64 = 1_000;
+pub const MIN_JITO_TIP_LAMPORTS: u64 = arb_constants::MIN_JITO_TIP_LAMPORTS;
 
 /// Pricing policy.
 #[derive(Debug, Clone, Copy, PartialEq)]

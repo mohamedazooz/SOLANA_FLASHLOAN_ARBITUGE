@@ -14,14 +14,6 @@ mode = "shadow"            # shadow | simulate | canary | live
 # live is additionally gated behind ARB_LIVE=1 and live_enabled = true.
 live_enabled = false
 
-[grpc]
-primary_url = ""
-primary_token_env = "HELIUS_API_KEY"
-failover_url = ""
-failover_token_env = "SHYFT_API_KEY"
-commitment = "processed"
-ping_reply = true
-
 [rpc]
 # Endpoint URL must be supplied by the operator (no default).
 url = ""
@@ -54,7 +46,7 @@ timeout_ms = 400
 [wallet]
 keypair_path = "solana_keypair.json"
 # cold_wallet_pubkey = null
-min_sol_balance_lamports = 0
+min_sol_balance_lamports = 50000000
 
 [strategy]
 base_tokens = [
@@ -63,6 +55,7 @@ base_tokens = [
 ]
 min_net_profit_abs = 50000          # lamports (>0)
 min_net_profit_bps = 5              # bps (0..=10000)
+hop_slippage_bps = 10               # per-hop min-out floor (bps), shared default
 max_price_impact_bps = 40           # bps (0..=10000)
 max_state_age_slots = 2             # slots (>0)
 graph_max_age_slots = 8             # slots, >= max_state_age_slots
@@ -101,11 +94,6 @@ listen = "127.0.0.1:9100"
 [admin]
 listen = "127.0.0.1:9101"
 token_env = "SENTINEL_ADMIN_KEY"
-
-[security]
-cors_allow_origins = []             # production: explicit allowlist (never permissive)
-max_request_body_bytes = 1048576    # 1 MiB
-webhook_signature_required = true
 
 [chronos]
 enabled = true
