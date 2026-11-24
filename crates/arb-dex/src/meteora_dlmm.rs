@@ -197,13 +197,10 @@ impl MeteoraDlmmPool {
             let processed_order_remaining_amount =
                 u64::from_le_bytes(data[base + 128..base + 136].try_into().unwrap());
             let ask_side = data[base + 140] != 0;
-            if curve_x == 0
-                && curve_y == 0
-                && open_order_amount == 0
-                && processed_order_remaining_amount == 0
-            {
-                continue;
-            }
+            // Keep every bin slot, including empty ones. The canonical
+            // `quote_dlmm_multi_bin` walker advances by one bin ID at a time;
+            // dropping empty slots makes valid multi-bin paths fail with
+            // `BinNotFound` before they reach the next populated bin.
             out.push(DlmmBin {
                 bin_id: start_bin_id.saturating_add(i as i32),
                 amount_x: u128::from(curve_x),
@@ -544,5 +541,28 @@ mod bin_step_validation_tests {
         assert!(pool.bin_array_pdas_around_active().is_empty());
         use crate::traits::AmmPool;
         assert!(pool.execution_accounts().is_none());
+    }
+
+    #[test]
+    fn bin_array_decoder_preserves_empty_slots_for_contiguous_bin_walk() {
+        let mut data = vec![
+            0u8;
+            METEORA_BIN_ARRAY_HEADER_SIZE
+                + METEORA_BINS_PER_BIN_ARRAY as usize * METEORA_BIN_SIZE
+        ];
+        data[8..16].copy_from_slice(&(-1i64).to_le_bytes());
+
+        let bins = MeteoraDlmmPool::parse_bin_array_account(&data)
+            .expect("valid all-empty BinArray must decode");
+
+        assert_eq!(bins.len(), METEORA_BINS_PER_BIN_ARRAY as usize);
+        assert_eq!(bins.first().expect("first bin").bin_id, -70);
+        assert_eq!(bins.last().expect("last bin").bin_id, -1);
+        assert!(bins.iter().all(|bin| {
+            bin.amount_x == 0
+                && bin.amount_y == 0
+                && bin.open_order_amount == 0
+                && bin.processed_order_remaining_amount == 0
+        }));
     }
 }

@@ -1199,8 +1199,9 @@ pub fn bin_id_to_bin_array_index(bin_id: i32) -> i64 {
     bin_id.div_euclid(METEORA_BINS_PER_ARRAY as i32) as i64
 }
 
-/// Decode the bins of one `BinArray` account. Bins with zero liquidity are
-/// dropped; `bin_id = index * 70 + i`.
+/// Decode all 70 bins of one `BinArray` account, including zero-liquidity
+/// slots; the canonical multi-bin quote walker requires contiguous bin IDs.
+/// `bin_id = index * 70 + i`.
 pub fn decode_bin_array(data: &[u8]) -> Vec<arb_types::DlmmBin> {
     let need = METEORA_BIN_ARRAY_HEADER + (METEORA_BINS_PER_ARRAY as usize) * METEORA_BIN_SIZE;
     if data.len() < need {
