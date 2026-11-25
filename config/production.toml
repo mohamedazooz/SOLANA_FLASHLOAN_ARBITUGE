@@ -16,11 +16,11 @@ commitment = "confirmed"
 [jito]
 regions = ["frankfurt", "amsterdam", "ny"]
 tip_floor_percentile = "p75"
-tip_share_bps = 5500
-max_tip_lamports = 2000000
-max_tip_share_bps = 7000
-min_keep_lamports = 10000
-keep_share = 0.60
+tip_share_bps = 1000
+max_tip_lamports = 125000
+max_tip_share_bps = 2000
+min_keep_lamports = 100000
+keep_share = 0.80
 ladder_growth = 1.6
 tip_floor_max_age_ms = 5000
 tip_floor_poll_ms = 1000
@@ -30,12 +30,12 @@ leader_refresh_secs = 60
 [jupiter]
 base_url = "https://api.jup.ag/swap/v2"
 api_key_env = "JUPITER_API_KEY"
-timeout_ms = 400
+timeout_ms = 3000
 
 [wallet]
 keypair_path = "solana_keypair.json"
 cold_wallet_pubkey = ""
-min_sol_balance_lamports = 50000000   # 0.05 SOL safety floor reserve
+min_sol_balance_lamports = 10000000
 
 [strategy]
 base_tokens = [
@@ -48,20 +48,21 @@ max_price_impact_bps = 40
 max_state_age_slots = 2
 graph_max_age_slots = 8
 use_flash_loan = true
-max_pools = 1000
-discovery_refresh_secs = 15
+max_pools = 135
+discovery_refresh_secs = 60
 discovery_min_tvl_usd = 25000.0
 
+hop_slippage_bps = 10
 [risk]
-max_trade_size_usd = 10000.0
-max_daily_loss_usd = 5.0
-max_hourly_loss_usd = 2.0
-max_consecutive_failures = 8
+max_trade_size_usd = 1.5
+max_daily_loss_usd = 0.10
+max_hourly_loss_usd = 0.03
+max_consecutive_failures = 3
 min_landing_rate = 0.02
-max_attempts_per_slot = 3
-max_inflight_bundles = 2
-max_tip_spend_ratio = 0.7
-max_orders_per_hour = 120
+max_attempts_per_slot = 1
+max_inflight_bundles = 1
+max_tip_spend_ratio = 0.2
+max_orders_per_hour = 30
 cooldown_slots = 75
 
 [store]
@@ -78,6 +79,6 @@ token_env = "SENTINEL_ADMIN_KEY"
 enabled = true
 decay_lambda_per_sec = 3.0
 max_age_ms = 400
-min_ev_usd = 0.05
+min_ev_usd = 0.01
 failed_attempt_cost_lamports = 10000
 beta_risk_factor = 0.0005

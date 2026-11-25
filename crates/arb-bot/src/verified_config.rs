@@ -64,7 +64,11 @@ impl VerifiedQuoteInputs {
     }
 
     /// Build the authoritative economic config by reference without consuming self.
-    pub fn to_economic_config(&self, min_profit_raw: TokenAmount) -> EconomicConfig {
+    pub fn to_economic_config(
+        &self,
+        min_profit_raw: TokenAmount,
+        hop_slippage_bps: u64,
+    ) -> EconomicConfig {
         EconomicConfig {
             flash_loan_fee_sf: self.flash_loan_fee_sf.value,
             jito_tip_lamports: self.tip_lamports.value,
@@ -72,13 +76,18 @@ impl VerifiedQuoteInputs {
             lamports_to_base_mint_rate: self.lamports_per_base_raw.value,
             lamports_to_base_rate_denom: self.lamports_per_base_denom.value,
             min_profit_raw,
+            hop_slippage_bps,
         }
     }
 
     /// Build the authoritative economic config. `min_profit_raw` is the
     /// denomination-aware floor supplied by the strategy config.
-    pub fn into_economic_config(self, min_profit_raw: TokenAmount) -> EconomicConfig {
-        self.to_economic_config(min_profit_raw)
+    pub fn into_economic_config(
+        self,
+        min_profit_raw: TokenAmount,
+        hop_slippage_bps: u64,
+    ) -> EconomicConfig {
+        self.to_economic_config(min_profit_raw, hop_slippage_bps)
     }
 }
 

@@ -351,6 +351,9 @@ impl<'a> AdapterRouteGraph<'a> {
         }
     }
 
+    /// Legacy candidate-only estimate over `AmmPool` adapters. This path is not
+    /// execution-authoritative; re-price executable routes through `RouteGraph`
+    /// and `UniversalQuoteDispatcher` before sizing or transaction compilation.
     pub fn quote_candidate(
         &self,
         candidate: &AdapterRouteCandidate,

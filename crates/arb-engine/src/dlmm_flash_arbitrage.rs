@@ -26,10 +26,8 @@
 //!   an exceeded compute budget, a quote failure or a profit below the floor all
 //!   reject the candidate; none of them is silently truncated.
 
-use arb_math::dlmm::{
-    DlmmBin as MathDlmmBin, DlmmParameters, DlmmPoolState, DlmmVariableParameters,
-    dlmm_active_bin_max_input, dlmm_multi_bin_max_input, quote_dlmm_view,
-};
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
+use arb_math::dlmm::{DlmmBin as MathDlmmBin, dlmm_active_bin_max_input, dlmm_multi_bin_max_input};
 use arb_tx::dlmm_bin_discovery::{DlmmBinArrayPlan, plan_bin_arrays};
 use arb_tx::dlmm_flash_arb::{
     FlashArbParams, FlashArbPoolLeg, assemble_flash_funded_two_pool, estimate_v0_transaction_size,
@@ -254,14 +252,13 @@ impl DlmmFlashArbPool {
         // (dlmm-sdk commons/src/conversions/function_type.rs TryFrom<u8>):
         // 0 = Undetermined (system decides LO vs LM by reward initialization,
         // which the decoder folds into `support_limit_order`),
-        // 1 = LiquidityMining, 2 = LimitOrder. Limit-order pools are a
-        // first-class pool type whose exact-in fill layers (market-maker ->
-        // processed -> open) are implemented in `arb-math::dlmm::swap` so
-        // them. Only values outside the official `TryFrom` set fail closed.
+        // 1 = LiquidityMining, 2 = LimitOrder. Although the math model has
+        // order-layer fields, non-empty LimitOrder fills are not yet differentially
+        // verified against the official SDK, so keep function_type=2 fail-closed.
         // NOTE: the creation-time `ConcreteFunctionType` argument (0 = LO,
         // 1 = LM per meteora-invent dlmm_config.jsonc) is a DIFFERENT enum
         // from the stored `FunctionType`; do not conflate them here.
-        if fp.function_type > 2 {
+        if fp.function_type > 1 {
             return Err(QuoteGateRejection::UnsupportedFunctionType {
                 function_type: fp.function_type,
             });
@@ -283,65 +280,20 @@ impl DlmmFlashArbPool {
         // Do not approximate Token-2022 with BPS and an unbounded maximum fee.
         // This route accepts legacy SPL mints only until epoch-aware mint configs
         // and transfer-hook account metadata are included in the snapshot.
-        let net_in = amount_in;
-
-        let pool_state = DlmmPoolState {
-            active_id: dlmm.active_bin_id,
-            bin_step: dlmm.bin_step_bps,
-            status: dlmm.status,
-            parameters: DlmmParameters {
-                bin_step: dlmm.bin_step_bps,
-                base_factor: fp.base_factor,
-                filter_period: fp.filter_period,
-                decay_period: fp.decay_period,
-                reduction_factor: fp.reduction_factor,
-                variable_fee_control: fp.variable_fee_control,
-                max_volatility_accumulator: fp.max_volatility_accumulator,
-                protocol_share: fp.protocol_share,
-                base_fee_power_factor: fp.base_fee_power_factor,
-                collect_fee_mode: fp.collect_fee_mode,
-            },
-            v_parameters: DlmmVariableParameters {
-                volatility_accumulator: dlmm.volatility_accumulator,
-                volatility_reference: dlmm.volatility_reference,
-                index_reference: dlmm.index_reference,
-                last_update_timestamp: dlmm.last_update_timestamp,
-            },
-            support_limit_order: dlmm.support_limit_order,
-        };
-
-        let mut bins: Vec<MathDlmmBin> = Vec::with_capacity(dlmm.bins.len());
-        for b in &dlmm.bins {
-            let amount_x =
-                u64::try_from(b.amount_x).map_err(|_| QuoteGateRejection::BinAmountOverflow)?;
-            let amount_y =
-                u64::try_from(b.amount_y).map_err(|_| QuoteGateRejection::BinAmountOverflow)?;
-            bins.push(MathDlmmBin {
-                id: b.bin_id,
-                amount_x,
-                amount_y,
-                price_q64: 0,
-                open_order_amount: b.open_order_amount,
-                processed_order_remaining_amount: b.processed_order_remaining_amount,
-                limit_order_ask_side: b.limit_order_ask_side,
-            });
-        }
-        if bins.is_empty() {
+        if dlmm.bins.is_empty() {
             return Err(QuoteGateRejection::EmptyBinWindow);
         }
 
-        // The volatility decay is intentionally *not* applied: the on-chain
-        // `volatility_reference` is the freshest known value and skipping the
-        // decay keeps the variable fee at its upper bound (conservative).
-        let quote = quote_dlmm_view(&pool_state, &bins, net_in, swap_for_y, None).map_err(|e| {
-            QuoteGateRejection::QuoteEngineError {
-                detail: e.to_string(),
-            }
+        // Use the same exact-in DLMM quote core as the universal dispatcher.
+        let quote = MeteoraDlmmQuoteEngine::quote_exact_in_from_parts(
+            dlmm,
+            self.state.pool_id,
+            amount_in,
+            swap_for_y,
+        )
+        .map_err(|error| QuoteGateRejection::QuoteEngineError {
+            detail: error.to_string(),
         })?;
-        if quote.amount_out == 0 {
-            return Err(QuoteGateRejection::ZeroOutput);
-        }
-
         let amount_out = quote.amount_out;
         if amount_out == 0 {
             return Err(QuoteGateRejection::ZeroOutput);
@@ -368,8 +320,8 @@ impl DlmmFlashArbPool {
 /// values outside the official `FunctionType` set
 /// {0 = Undetermined, 1 = LiquidityMining, 2 = LimitOrder}
 /// (dlmm-sdk commons/src/conversions/function_type.rs). Limit-order pools
-/// (2) are quoted through the exact-in limit-order fill layers in
-/// `arb-math::dlmm::swap`; only undocumented values > 2 fail closed.
+/// (2) remain fail-closed until non-empty order-layer fills have differential
+/// parity against the official SDK; undocumented values are also rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuoteGateRejection {
     ZeroInput,
@@ -1662,13 +1614,10 @@ mod tests {
     }
 
     #[test]
-    fn function_type_2_limit_order_pool_quotes_like_the_official_sdk() {
-        // Source-verified: StaticParameters.function_type == 2 is
-        // FunctionType::LimitOrder (dlmm-sdk commons function_type.rs), a
-        // first-class pool type. With empty limit-order layers the official
-        // exact-in fill reduces to the market-maker-only path, so the quote
-        // must be identical to an Undetermined pool over the same bins.
-        let maker_only = gate_pool();
+    fn function_type_2_limit_order_is_rejected_until_sdk_differential_parity() {
+        // Empty order layers are not sufficient proof for the non-empty
+        // market-maker/processed/open fill cases. Keep the whole production
+        // route fail-closed until those cases match the official SDK.
         let mut lo_pool = gate_pool();
         lo_pool
             .state
@@ -1680,28 +1629,11 @@ mod tests {
             .unwrap()
             .function_type = 2;
         let (from, to) = (pool_x(), pool_y());
-        for amount in [1u64, 5_000_000u64, 9_500_000u64] {
-            assert_eq!(
-                lo_pool.quote_failure_reason(amount, &from, &to),
-                maker_only.quote_failure_reason(amount, &from, &to),
-                "LO pool must gate identically to the maker-only pool"
-            );
-            let (Some(a), Some(b)) = (
-                lo_pool.quote(amount, &from, &to),
-                maker_only.quote(amount, &from, &to),
-            ) else {
-                continue;
-            };
-            assert_eq!(
-                a.amount_out, b.amount_out,
-                "LO layers empty => identical out"
-            );
-            assert_eq!(a.fee_amount, b.fee_amount);
-        }
-        assert!(
-            lo_pool.quote(5_000_000, &from, &to).is_some(),
-            "function_type=2 must quote, not be rejected"
+        assert_eq!(
+            lo_pool.quote_failure_reason(5_000_000, &from, &to),
+            Some(QuoteGateRejection::UnsupportedFunctionType { function_type: 2 })
         );
+        assert!(lo_pool.quote(5_000_000, &from, &to).is_none());
     }
 
     #[test]

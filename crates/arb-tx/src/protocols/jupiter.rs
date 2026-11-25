@@ -1,12 +1,14 @@
-//! Jupiter v6 Swap API Client
-//! Fetches optimized quotes and production-ready compiled swap instructions
-//! with 100% complete account resolution across all Solana DEXes.
+//! Jupiter Swap API v2 quote client.
+//!
+//! Read-only quotes use `GET /order` without a `taker`, which returns
+//! `transaction: null`. Venue-isolated validation uses `GET /build` with an
+//! explicit taker and `dexes`; this builds instructions in the response but
+//! never signs or submits them. No method in this client broadcasts a swap.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::time::Duration;
-use tracing::debug;
 
 pub struct JupiterClient {
     pub api_keys: Vec<String>,
@@ -22,88 +24,79 @@ impl Default for JupiterClient {
 }
 
 impl JupiterClient {
-    /// Default Jupiter Swap API v2 endpoint matching `config/base.toml`.
+    /// Base URL for the current Jupiter Swap API v2.
     pub const DEFAULT_ENDPOINT: &'static str = "https://api.jup.ag/swap/v2";
 
-    /// Create a new JupiterClient using the default endpoint or `JUPITER_BASE_URL` env var.
+    /// Create a client using the canonical variable, with the old quote URL
+    /// retained as a migration alias. The value must be an HTTPS base URL.
     pub fn new() -> Self {
         let endpoint = std::env::var("JUPITER_BASE_URL")
+            .or_else(|_| std::env::var("JUPITER_QUOTE_API_URL"))
             .unwrap_or_else(|_| Self::DEFAULT_ENDPOINT.to_string());
         Self::with_endpoint(endpoint)
     }
 
-    /// Create a new JupiterClient with a custom base URL.
     pub fn with_endpoint(endpoint: impl Into<String>) -> Self {
-        Self::with_endpoint_and_timeout(endpoint, Duration::from_millis(3000))
+        Self::with_endpoint_and_timeout(endpoint, Duration::from_millis(3_000))
     }
 
-    /// Create a new JupiterClient with a custom base URL and request timeout.
     pub fn with_endpoint_and_timeout(endpoint: impl Into<String>, timeout: Duration) -> Self {
         let mut api_keys = Vec::new();
-        if let Ok(key) = std::env::var("JUPITER_API_KEY")
-            && !key.trim().is_empty()
-        {
-            api_keys.push(key.trim().to_string());
-        }
-        if let Ok(key) = std::env::var("JUP_API_KEY")
-            && !key.trim().is_empty()
-        {
-            let k = key.trim().to_string();
-            if !api_keys.contains(&k) {
-                api_keys.push(k);
+        for name in ["JUPITER_API_KEY", "JUP_API_KEY"] {
+            if let Ok(key) = std::env::var(name) {
+                let key = key.trim();
+                if !key.is_empty() && !api_keys.iter().any(|existing| existing == key) {
+                    api_keys.push(key.to_string());
+                }
             }
         }
         Self::with_keys_and_timeout(endpoint, api_keys, timeout)
     }
 
-    /// Create a new JupiterClient with a custom base URL, explicit API keys, and request timeout.
     pub fn with_keys_and_timeout(
         endpoint: impl Into<String>,
         mut api_keys: Vec<String>,
         timeout: Duration,
     ) -> Self {
         if api_keys.is_empty() {
-            if let Ok(key) = std::env::var("JUPITER_API_KEY")
-                && !key.trim().is_empty()
-            {
-                api_keys.push(key.trim().to_string());
-            }
-            if let Ok(key) = std::env::var("JUP_API_KEY")
-                && !key.trim().is_empty()
-            {
-                let k = key.trim().to_string();
-                if !api_keys.contains(&k) {
-                    api_keys.push(k);
+            for name in ["JUPITER_API_KEY", "JUP_API_KEY"] {
+                if let Ok(key) = std::env::var(name) {
+                    let key = key.trim();
+                    if !key.is_empty() && !api_keys.iter().any(|existing| existing == key) {
+                        api_keys.push(key.to_string());
+                    }
                 }
             }
         }
+        api_keys.retain(|key| !key.trim().is_empty());
+        api_keys.dedup();
         if api_keys.is_empty() {
-            tracing::warn!("JUPITER_API_KEY not set — Jupiter API calls will fail");
+            tracing::warn!("Jupiter API key not configured; quote calls will fail closed");
         }
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
         let client = Client::builder()
             .default_headers(headers)
             .timeout(timeout)
             .build()
             .unwrap_or_default();
 
+        let endpoint = endpoint.into().trim_end_matches('/').to_string();
         Self {
             api_keys,
             current_key_idx: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             client,
-            endpoint: endpoint.into().trim_end_matches('/').to_string(),
+            endpoint,
         }
     }
 
-    /// Current base URL endpoint.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
-    /// Fetch quote from Jupiter v6 API with automated multi-key rotation on 429
+    /// Get a quote from the v2 Meta-Aggregator. `taker` is deliberately omitted,
+    /// so Jupiter returns a quote only and does not assemble a transaction.
     pub async fn get_quote(
         &self,
         input_mint: &str,
@@ -111,14 +104,28 @@ impl JupiterClient {
         amount: u64,
         slippage_bps: u16,
     ) -> Result<serde_json::Value> {
-        self.get_quote_dexes(input_mint, output_mint, amount, slippage_bps, None)
-            .await
+        validate_quote_args(input_mint, output_mint, amount)?;
+        let params = vec![
+            ("inputMint", input_mint.to_string()),
+            ("outputMint", output_mint.to_string()),
+            ("amount", amount.to_string()),
+            ("slippageBps", slippage_bps.to_string()),
+        ];
+        let response = self.request_json("order", &params).await?;
+        if !response
+            .get("transaction")
+            .is_none_or(serde_json::Value::is_null)
+        {
+            bail!("Jupiter read-only order unexpectedly returned a transaction");
+        }
+        validate_quote_response(&response, amount)?;
+        Ok(response)
     }
 
-    /// Quote restricted to specific DEX labels (e.g. `["Raydium"]`, `["Whirlpool"]`).
-    /// Used by the validation path to compare on-chain pool pricing against the
-    /// aggregator's own quote for the same venue — isolating price-impact math
-    /// from route-finding and fee-tier selection differences.
+    /// Compare against one Metis venue using the v2 Router `/build` endpoint.
+    /// `/build` requires a taker address; the default method takes it from the
+    /// public operator address env var. The returned instructions are never
+    /// signed or submitted by this client.
     pub async fn get_quote_dexes(
         &self,
         input_mint: &str,
@@ -127,112 +134,210 @@ impl JupiterClient {
         slippage_bps: u16,
         dexes: Option<&[&str]>,
     ) -> Result<serde_json::Value> {
-        let url = if let Some(dexes) = dexes
-            && !dexes.is_empty()
-        {
-            let joined = dexes.join(",");
-            format!(
-                "{}/quote?inputMint={}&outputMint={}&amount={}&slippageBps={}&dexes={}",
-                self.endpoint, input_mint, output_mint, amount, slippage_bps, joined
-            )
-        } else {
-            format!(
-                "{}/quote?inputMint={}&outputMint={}&amount={}&slippageBps={}",
-                self.endpoint, input_mint, output_mint, amount, slippage_bps
-            )
-        };
+        let taker = std::env::var("OPERATOR_PUBLIC_KEY")
+            .or_else(|_| std::env::var("SOLANA_PUBLIC_KEY"))
+            .context("OPERATOR_PUBLIC_KEY is required for venue-specific Jupiter /build quotes")?;
+        self.get_quote_dexes_for_taker(input_mint, output_mint, amount, slippage_bps, dexes, &taker)
+            .await
+    }
 
-        debug!("Querying Jupiter v6 Quote API: {input_mint} -> {output_mint} ({amount} units)...");
-
-        if self.api_keys.is_empty() {
-            anyhow::bail!("JUPITER_API_KEY not set");
+    pub async fn get_quote_dexes_for_taker(
+        &self,
+        input_mint: &str,
+        output_mint: &str,
+        amount: u64,
+        slippage_bps: u16,
+        dexes: Option<&[&str]>,
+        taker: &str,
+    ) -> Result<serde_json::Value> {
+        validate_quote_args(input_mint, output_mint, amount)?;
+        if taker.trim().is_empty() {
+            bail!("taker address must not be empty");
         }
-        let total_keys = self.api_keys.len();
-        let max_attempts = (total_keys * 2).max(2);
+        let mut params = vec![
+            ("inputMint", input_mint.to_string()),
+            ("outputMint", output_mint.to_string()),
+            ("amount", amount.to_string()),
+            ("taker", taker.trim().to_string()),
+            ("slippageBps", slippage_bps.to_string()),
+        ];
+        if let Some(dexes) = dexes.filter(|list| !list.is_empty()) {
+            if dexes.iter().any(|name| name.trim().is_empty()) {
+                bail!("DEX labels must not contain empty values");
+            }
+            params.push(("dexes", dexes.join(",")));
+        }
+        let response = self.request_json("build", &params).await?;
+        validate_quote_response(&response, amount)?;
+        Ok(response)
+    }
 
-        for attempt in 0..max_attempts {
+    async fn request_json(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> Result<serde_json::Value> {
+        if self.api_keys.is_empty() {
+            bail!("Jupiter API key not configured");
+        }
+        if !self.endpoint.starts_with("https://") {
+            bail!("Jupiter endpoint must use HTTPS");
+        }
+        let url = format!("{}/{path}", self.endpoint);
+        let total_keys = self.api_keys.len();
+        let attempts = (total_keys * 2).max(2);
+
+        for attempt in 0..attempts {
             let key_idx = (self
                 .current_key_idx
                 .load(std::sync::atomic::Ordering::Relaxed)
                 + attempt)
                 % total_keys;
-            let current_key = &self.api_keys[key_idx];
-
-            let resp = self
+            let response = match self
                 .client
                 .get(&url)
-                .header("x-api-key", current_key)
+                .query(params)
+                .header("x-api-key", &self.api_keys[key_idx])
                 .send()
                 .await
-                .context("Jupiter Quote API request failed")?;
-
-            if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                tracing::warn!(
-                    "⚠️ Jupiter API 429 on key [{key_idx}] -> rotating key and backing off..."
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    self.current_key_idx.store(
+                        (key_idx + 1) % total_keys,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    if attempt + 1 < attempts {
+                        let delay_ms = 300_u64.saturating_mul((attempt as u64 + 1).min(4));
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        tracing::warn!(
+                            "Jupiter v2 /{path} transport failure; rotating quote key and retrying"
+                        );
+                        continue;
+                    }
+                    return Err(error)
+                        .with_context(|| format!("Jupiter v2 /{path} request failed"));
+                }
+            };
+            let status = response.status();
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+                || status.is_server_error()
+            {
+                self.current_key_idx.store(
+                    (key_idx + 1) % total_keys,
+                    std::sync::atomic::Ordering::Relaxed,
                 );
-                self.current_key_idx
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                continue;
+                if attempt + 1 < attempts {
+                    let delay_ms = 300_u64.saturating_mul((attempt as u64 + 1).min(4));
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
             }
-
-            let val: serde_json::Value = resp
+            if !status.is_success() {
+                bail!("Jupiter v2 /{path} returned HTTP {status}");
+            }
+            let value: serde_json::Value = response
                 .json()
                 .await
-                .context("Failed to parse Jupiter quote JSON")?;
-
-            if let Some(msg) = val.get("message").and_then(|m| m.as_str())
-                && msg.contains("Too many requests")
+                .with_context(|| format!("Jupiter v2 /{path} returned invalid JSON"))?;
+            if let Some(message) = value.get("error").and_then(serde_json::Value::as_str) {
+                bail!("Jupiter v2 /{path} error: {message}");
+            }
+            if let Some(message) = value.get("message").and_then(serde_json::Value::as_str)
+                && (message.contains("Too many requests") || message.contains("rate limit"))
             {
-                tracing::warn!("⚠️ Jupiter API 429 message on key [{key_idx}] -> rotating key...");
-                self.current_key_idx
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tokio::time::sleep(Duration::from_millis(800)).await;
-                continue;
+                if attempt + 1 < attempts {
+                    self.current_key_idx.store(
+                        (key_idx + 1) % total_keys,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    tokio::time::sleep(Duration::from_millis(600)).await;
+                    continue;
+                }
+                bail!("Jupiter v2 /{path} rate limit exhausted");
             }
-
-            if let Some(err) = val.get("error") {
-                anyhow::bail!("Jupiter Quote Error: {err}");
-            }
-
-            return Ok(val);
+            return Ok(value);
         }
-
-        anyhow::bail!("Jupiter Quote timed out or exhausted all API keys")
+        bail!("Jupiter v2 /{path} exhausted all configured API-key attempts")
     }
+}
+
+fn validate_quote_args(input_mint: &str, output_mint: &str, amount: u64) -> Result<()> {
+    if input_mint.trim().is_empty() || output_mint.trim().is_empty() {
+        bail!("Jupiter input/output mint must not be empty");
+    }
+    if input_mint == output_mint {
+        bail!("Jupiter input and output mints must differ");
+    }
+    if amount == 0 {
+        bail!("Jupiter quote amount must be positive");
+    }
+    Ok(())
+}
+
+fn validate_quote_response(value: &serde_json::Value, expected_input: u64) -> Result<()> {
+    let input = value
+        .get("inAmount")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .context("Jupiter quote is missing a valid inAmount")?;
+    let output = value
+        .get("outAmount")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .context("Jupiter quote is missing a valid outAmount")?;
+    if input != expected_input || output == 0 {
+        bail!("Jupiter quote amount mismatch or zero output");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracing::info;
 
     #[test]
-    fn test_jupiter_client_init() {
-        let client = JupiterClient::new();
-        // Keys are read from env, not hardcoded — empty is valid when no env key is set.
-        assert_eq!(client.endpoint(), "https://api.jup.ag/swap/v2");
-        let custom = JupiterClient::with_endpoint("https://custom.jupiter.api/swap/v2/");
-        assert_eq!(custom.endpoint(), "https://custom.jupiter.api/swap/v2");
-        let keyed = JupiterClient::with_keys_and_timeout(
-            "https://custom.jupiter.api/swap/v2///",
-            vec!["test_key_1".to_string(), "test_key_2".to_string()],
+    fn client_uses_v2_base_url_and_normalizes_slashes() {
+        let client = JupiterClient::with_keys_and_timeout(
+            "https://api.jup.ag/swap/v2///",
+            vec!["test-key".to_string()],
             Duration::from_millis(500),
         );
-        assert_eq!(keyed.endpoint(), "https://custom.jupiter.api/swap/v2");
-        assert_eq!(keyed.api_keys.len(), 2);
-        info!(
-            "JupiterClient initialized with {} API key(s)",
-            client.api_keys.len()
-        );
+        assert_eq!(client.endpoint(), "https://api.jup.ag/swap/v2");
     }
 
     #[test]
-    fn test_jupiter_quote_with_dexes() {
-        // This test verifies that the method signature is correct by calling
-        // the get_quote_dexes function with a DEX filter. We'll skip the actual
-        // network call since we can't guarantee keys or network access in tests.
-        let _client = JupiterClient::new();
-        // Just compile-check the method; cannot run without env vars.
+    fn quote_arguments_reject_zero_same_mint_and_empty_mint() {
+        assert!(validate_quote_args("", "out", 1).is_err());
+        assert!(validate_quote_args("same", "same", 1).is_err());
+        assert!(validate_quote_args("in", "out", 0).is_err());
+        assert!(validate_quote_args("in", "out", 1).is_ok());
+    }
+
+    #[test]
+    fn quote_response_must_match_input_and_have_nonzero_output() {
+        let valid = serde_json::json!({"inAmount":"100","outAmount":"99"});
+        assert!(validate_quote_response(&valid, 100).is_ok());
+        assert!(validate_quote_response(&valid, 101).is_err());
+        let zero = serde_json::json!({"inAmount":"100","outAmount":"0"});
+        assert!(validate_quote_response(&zero, 100).is_err());
+    }
+
+    #[test]
+    fn request_payload_names_v2_quote_routes() {
+        // These tests are intentionally pure: they prevent reverting to the
+        // removed /quote route or accidentally exposing a taker on /order.
+        assert_eq!(
+            JupiterClient::DEFAULT_ENDPOINT,
+            "https://api.jup.ag/swap/v2"
+        );
+        let client = JupiterClient::with_keys_and_timeout(
+            JupiterClient::DEFAULT_ENDPOINT,
+            vec!["test-key".to_string()],
+            Duration::from_millis(500),
+        );
+        assert!(client.endpoint().ends_with("/swap/v2"));
     }
 }

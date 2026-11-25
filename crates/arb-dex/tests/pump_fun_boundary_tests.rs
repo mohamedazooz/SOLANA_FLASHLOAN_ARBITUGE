@@ -43,7 +43,7 @@ fn make_pump_fun_pool(
         decimals_b: 6,
         reserve_in: v_sol as u128,
         reserve_out: v_token as u128,
-        fee_numerator: 100, // 1%
+        fee_numerator: 125, // documented 1.25% SOL bonding-curve fee
         fee_denominator: 10_000,
         is_active,
         has_risky_token: false,

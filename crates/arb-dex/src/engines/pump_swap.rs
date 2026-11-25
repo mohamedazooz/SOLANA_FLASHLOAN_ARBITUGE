@@ -59,13 +59,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
         }
 
         // 1. Inbound Token-2022 transfer fee deduction
-        let (input_net_into_pool, input_transfer_fee) =
-            if let Some(config) = request.input_transfer_fee_config {
-                let fee = config.calculate_fee(request.amount);
-                (request.amount.saturating_sub(fee), fee)
-            } else {
-                (request.amount, 0)
-            };
+        let (input_net_into_pool, input_transfer_fee) = request.input_after_transfer_fee()?;
 
         if input_net_into_pool == 0 {
             return Err(ArbError::ZeroAmount);
@@ -143,16 +137,9 @@ impl QuoteEngine for PumpSwapQuoteEngine {
 
         // Outbound Token-2022 transfer fee applies after the PumpSwap trade fee.
         let (output_net_to_next_hop, output_transfer_fee) =
-            if let Some(config) = request.output_transfer_fee_config {
-                let fee = config.calculate_fee(pool_output_after_trade_fee);
-                (pool_output_after_trade_fee.saturating_sub(fee), fee)
-            } else {
-                (pool_output_after_trade_fee, 0)
-            };
+            request.output_after_transfer_fee(pool_output_after_trade_fee)?;
         // 5. Slippage calculation
-        let min_amount_out = output_net_to_next_hop.saturating_sub(
-            (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
-        );
+        let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
         let elapsed = start_time.elapsed().as_micros() as u64;
 

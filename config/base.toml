@@ -17,13 +17,13 @@ commitment = "processed"
 
 [jito]
 regions = ["frankfurt", "amsterdam", "ny"]
-tip_floor_percentile = "p50"           # p50 | p75 | p90 | p99
-tip_share_bps = 5500                   # must not exceed max_tip_share_bps
-max_tip_lamports = 2000000
-max_tip_share_bps = 7000               # <= 10000 (Bps::MAX)
-min_keep_lamports = 10000
+tip_floor_percentile = "p75"
+tip_share_bps = 1000
+max_tip_lamports = 125000
+max_tip_share_bps = 2000
+min_keep_lamports = 100000
 
-keep_share = 0.60                      # [0, 1] — edge surviving all costs incl. tip
+keep_share = 0.80
 ladder_growth = 1.6                    # > 1.0
 tip_floor_max_age_ms = 5000            # staler snapshot = absent
 tip_floor_poll_ms = 1000               # >= 1000 (endpoint 1 rps per IP)
@@ -35,29 +35,29 @@ swqos_fallback_hurdle_lamports = 8000       # lamports: min edge for SWQoS direc
 swqos_fallback_priority_fee_lamports = 2000 # lamports: priority fee for SWQoS direct fallback
 
 [jupiter]
-base_url = "https://api.jup.ag/swap/v2"   # https only
+base_url = "https://api.jup.ag/swap/v2"
 api_key_env = "JUPITER_API_KEY"
-timeout_ms = 400
+timeout_ms = 3000
 
 [wallet]
 keypair_path = "solana_keypair.json"
 # cold_wallet_pubkey = null
-min_sol_balance_lamports = 50000000
+min_sol_balance_lamports = 10000000
 
 [strategy]
 base_tokens = [
     "So11111111111111111111111111111111111111112", # WSOL
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", # USDC
 ]
-min_net_profit_abs = 50000          # lamports (>0)
-min_net_profit_bps = 5              # bps (0..=10000)
-hop_slippage_bps = 10               # per-hop min-out floor (bps), shared default
-max_price_impact_bps = 40           # bps (0..=10000)
-max_state_age_slots = 2             # slots (>0)
-graph_max_age_slots = 8             # slots, >= max_state_age_slots
+min_net_profit_abs = 50000
+min_net_profit_bps = 5
+hop_slippage_bps = 10
+max_price_impact_bps = 40
+max_state_age_slots = 2
+graph_max_age_slots = 8
 use_flash_loan = true
-max_pools = 1000
-discovery_refresh_secs = 15
+max_pools = 135
+discovery_refresh_secs = 60
 discovery_min_tvl_usd = 25000.0
 # Max hops per route. Each extra hop stacks another DEX fee + failure point;
 # >4 hops is economically dominated by cumulative fees. Validated 2..=4.
@@ -69,16 +69,16 @@ priority_fee_base_share_bps = 1000          # bps: baseline 10% share during cal
 priority_fee_max_share_bps = 2000           # bps: maximum 20% ceiling during intense competition
 
 [risk]
-max_trade_size_usd = 10000.0        # USD (>0)
-max_daily_loss_usd = 5.0            # USD (>0)
-max_hourly_loss_usd = 2.0           # USD (>0, <= daily)
-max_consecutive_failures = 8        # count (>0)
+max_trade_size_usd = 1.5
+max_daily_loss_usd = 0.10
+max_hourly_loss_usd = 0.03
+max_consecutive_failures = 3
 min_landing_rate = 0.02             # ratio [0, 1]
-max_attempts_per_slot = 3           # count (>0)
-max_inflight_bundles = 2            # count (>0)
-max_tip_spend_ratio = 0.7           # ratio [0, 1]
-max_orders_per_hour = 120           # count/hr (>0)
-cooldown_slots = 75                 # slots (>0)
+max_attempts_per_slot = 1
+max_inflight_bundles = 1
+max_tip_spend_ratio = 0.2
+max_orders_per_hour = 30
+cooldown_slots = 75
 max_implausible_roi_bps = 1500      # bps: 15% ceiling rejecting phantom stale-quote spikes
 
 [store]
@@ -95,6 +95,6 @@ token_env = "SENTINEL_ADMIN_KEY"
 enabled = true
 decay_lambda_per_sec = 3.0          # >= 0
 max_age_ms = 400                    # 100..=5000
-min_ev_usd = 0.05                   # >= 0
+min_ev_usd = 0.01
 failed_attempt_cost_lamports = 10000
 beta_risk_factor = 0.0005           # >= 0

@@ -7,6 +7,66 @@
 use super::*;
 use std::collections::HashSet;
 
+fn parse_positive_env_limit(name: &str) -> anyhow::Result<Option<f64>> {
+    let Ok(raw) = std::env::var(name) else {
+        return Ok(None);
+    };
+    let value: f64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{name} must be numeric"))?;
+    if !value.is_finite() || value <= 0.0 {
+        anyhow::bail!("{name} must be positive and finite");
+    }
+    Ok(Some(value))
+}
+
+fn apply_borrow_size_caps(
+    max_sizing_lamports: u64,
+    sol_usd: f64,
+    max_trade_sol: Option<f64>,
+    portfolio_capital_sol: Option<f64>,
+    max_flash_borrow_usd: Option<f64>,
+) -> u64 {
+    if !sol_usd.is_finite() || sol_usd <= 0.0 {
+        return 0;
+    }
+    let mut cap = max_sizing_lamports;
+    for sol_cap in [max_trade_sol, portfolio_capital_sol].into_iter().flatten() {
+        if !sol_cap.is_finite() || sol_cap <= 0.0 {
+            return 0;
+        }
+        let lamports = (sol_cap * 1_000_000_000.0).floor();
+        if !lamports.is_finite() || lamports < 1.0 || lamports > u64::MAX as f64 {
+            return 0;
+        }
+        cap = cap.min(lamports as u64);
+    }
+    if let Some(usd_cap) = max_flash_borrow_usd {
+        if !usd_cap.is_finite() || usd_cap <= 0.0 {
+            return 0;
+        }
+        let lamports = (usd_cap / sol_usd * 1_000_000_000.0).floor();
+        if !lamports.is_finite() || lamports < 1.0 || lamports > u64::MAX as f64 {
+            return 0;
+        }
+        cap = cap.min(lamports as u64);
+    }
+    cap
+}
+
+fn apply_environment_borrow_caps(max_sizing_lamports: u64, sol_usd: f64) -> anyhow::Result<u64> {
+    let max_trade_sol = parse_positive_env_limit("MAX_TRADE_SIZE_SOL")?;
+    let portfolio_capital_sol = parse_positive_env_limit("PORTFOLIO_CAPITAL_SOL")?;
+    let max_flash_borrow_usd = parse_positive_env_limit("MAX_FLASH_BORROW_USD")?;
+    Ok(apply_borrow_size_caps(
+        max_sizing_lamports,
+        sol_usd,
+        max_trade_sol,
+        portfolio_capital_sol,
+        max_flash_borrow_usd,
+    ))
+}
 pub(crate) fn extract_pool_mid_price(
     p: &PoolState,
     expected_base_mint: &str,
@@ -157,8 +217,10 @@ impl Supervisor {
                 return Ok(());
             }
         };
-        let economic_config =
-            verified.to_economic_config(TokenAmount(self.config.strategy.min_net_profit_abs));
+        let economic_config = verified.to_economic_config(
+            TokenAmount(self.config.strategy.min_net_profit_abs),
+            self.config.strategy.hop_slippage_bps,
+        );
         {
             let mut graph = self.graph.lock();
             graph.set_economic_config(economic_config);
@@ -186,7 +248,8 @@ impl Supervisor {
         // configured USD notional and a fresh SOL/USD reference. The graph
         // is deliberately WSOL-anchored because Kamino's configured reserve
         // lends WSOL and repayment must close in the exact borrowed mint.
-        let mut max_sizing = match self.live_sol_price() {
+        let live_sol_usd = self.live_sol_price();
+        let mut max_sizing = match live_sol_usd {
             Some(sol_usd)
                 if sol_usd.is_finite()
                     && sol_usd > 0.0
@@ -200,6 +263,18 @@ impl Supervisor {
             _ => 0,
         };
 
+        if max_sizing > 0 {
+            max_sizing = match apply_environment_borrow_caps(
+                max_sizing,
+                live_sol_usd.unwrap_or_default(),
+            ) {
+                Ok(capped) => capped,
+                Err(error) => {
+                    warn!(error = %error, "invalid configured borrow-size cap; sizing disabled");
+                    0
+                }
+            };
+        }
         // When flash funding is enabled, candidate sizing across all engines
         // (find_base_cycles_with_stats, cross_pool_dlmm, bellman_ford, multi_hop)
         // must be strictly clamped by verified live Kamino supply-vault liquidity.
@@ -732,6 +807,41 @@ mod rank_tests {
     /// PIPE-13 regression: a huge raw-unit net on a 6-decimal meme base must
     /// not outrank an exact WSOL-lamport profit (the old direct sort placed
     /// it first by scale alone); same-mint ordering is respected.
+    #[test]
+    fn borrow_size_uses_the_smallest_configured_cap() {
+        let capped =
+            apply_borrow_size_caps(1_000_000_000, 100.0, Some(0.50), Some(0.20), Some(10.0));
+        assert_eq!(
+            capped, 100_000_000,
+            "$10 flash-borrow cap is the tightest at 0.10 SOL"
+        );
+    }
+
+    #[test]
+    fn borrow_size_converts_flash_usd_cap_at_the_live_sol_price() {
+        let capped = apply_borrow_size_caps(1_000_000_000, 100.0, Some(1.0), Some(2.0), Some(25.0));
+        assert_eq!(capped, 250_000_000, "$25 at $100/SOL is 0.25 SOL");
+    }
+
+    #[test]
+    fn invalid_price_or_nonpositive_cap_fails_closed() {
+        assert_eq!(
+            apply_borrow_size_caps(1_000_000_000, 0.0, None, None, None),
+            0
+        );
+        assert_eq!(
+            apply_borrow_size_caps(1_000_000_000, 100.0, Some(0.0), None, None),
+            0
+        );
+        assert_eq!(
+            apply_borrow_size_caps(1_000_000_000, 100.0, None, Some(f64::NAN), None),
+            0
+        );
+        assert_eq!(
+            apply_borrow_size_caps(1_000_000_000, 100.0, None, None, Some(-1.0)),
+            0
+        );
+    }
     #[test]
     fn wsol_anchored_profits_outrank_assumed_cross_mint_conversions() {
         let wsol = MintId(Pubkey::from_str(arb_constants::WSOL_MINT).unwrap());

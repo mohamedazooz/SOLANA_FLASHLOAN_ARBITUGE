@@ -220,6 +220,13 @@ fn validate_strategy(cfg: &StrategyConfig) -> ConfigResult<()> {
             Bps::MAX.0
         )));
     }
+    if u64::from(cfg.hop_slippage_bps.0) > arb_constants::HOP_SLIPPAGE_MAX_BPS {
+        return Err(ConfigError::Validation(format!(
+            "strategy.hop_slippage_bps ({}) exceeds HOP_SLIPPAGE_MAX_BPS ({})",
+            cfg.hop_slippage_bps.0,
+            arb_constants::HOP_SLIPPAGE_MAX_BPS
+        )));
+    }
     if cfg.max_price_impact_bps.0 > Bps::MAX.0 {
         return Err(ConfigError::Validation(format!(
             "strategy.max_price_impact_bps ({}) must not exceed Bps::MAX ({})",
