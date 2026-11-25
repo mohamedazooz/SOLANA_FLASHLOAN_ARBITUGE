@@ -323,53 +323,80 @@ impl Supervisor {
                     );
                     return;
                 }
-                // Safety Floor Check: Enforce minimum reserve only if configured > 0.
-                // When MIN_SOL_RESERVE_LAMPORTS=0 (fast-path flash loan default), skip the blocking RPC getBalance check completely.
-                let min_reserve_lamports = std::env::var("MIN_SOL_RESERVE_LAMPORTS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(self.config.wallet.min_sol_balance_lamports);
-                if min_reserve_lamports > 0
-                    && let Ok(current_balance) = self.tx_rpc.get_balance(&payer).await
-                    && current_balance < min_reserve_lamports
-                {
-                    warn!(
-                        "🚨 Safety Floor Active: Wallet balance ({} lamports / {:.4} SOL) is below {:.4} SOL minimum reserve — skipping execution to protect fees",
-                        current_balance,
-                        current_balance as f64 / 1e9,
-                        min_reserve_lamports as f64 / 1e9
-                    );
-                    self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
-                        route: route_label.to_string(),
-                        gross_sol,
-                        stage: "Safety Floor Reserve".to_string(),
-                        reason: format!(
-                            "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
+                // Cached reserve guard only: the wallet balance is refreshed by a
+                // background task in Supervisor::run. Never perform HTTP RPC in
+                // the dispatch hot path. A missing/stale snapshot fails closed.
+                let min_reserve_lamports = self.min_sol_reserve_lamports;
+                if min_reserve_lamports > 0 {
+                    let current_balance = match self
+                        .wallet_balance_cache
+                        .snapshot(Duration::from_secs(15))
+                    {
+                        Some(balance) => balance,
+                        None => {
+                            let reason = "???? ??????? ??? ???? ?? ?? ??? ????? ????? ?? ??? ??????? ?????????".to_string();
+                            warn!("Wallet reserve snapshot missing/stale; rejecting live dispatch");
+                            self.record_rejected_opportunity(
+                                crate::telegram::RejectedTradeSummary {
+                                    route: route_label.to_string(),
+                                    gross_sol,
+                                    stage: "Safety Floor Snapshot".to_string(),
+                                    reason: reason.clone(),
+                                    slot: current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    net_sol: Some(profit_sol),
+                                },
+                            );
+                            self.telegram
+                                .alert_opportunity_rejected(
+                                    route_label,
+                                    gross_sol,
+                                    "Safety Floor Snapshot",
+                                    &reason,
+                                    current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    Some(profit_sol),
+                                )
+                                .await;
+                            return;
+                        }
+                    };
+                    if current_balance < min_reserve_lamports {
+                        let reason = format!(
+                            "wallet balance ({:.4} SOL) is below the configured safety reserve ({:.4} SOL)",
                             current_balance as f64 / 1e9,
                             min_reserve_lamports as f64 / 1e9
-                        ),
-                        slot: current_slot.0,
-                        pools_count,
-                        loan_size_sol,
-                        net_sol: Some(profit_sol),
-                    });
-                    self.telegram
-                        .alert_opportunity_rejected(
-                            route_label,
+                        );
+                        warn!(
+                            "Safety Floor Active: cached wallet balance {} lamports is below {} lamports; skipping execution",
+                            current_balance, min_reserve_lamports
+                        );
+                        self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
+                            route: route_label.to_string(),
                             gross_sol,
-                            "Safety Floor Reserve",
-                            &format!(
-                                "رصيد المحفظة ({:.4} SOL) أقل من صمام الأمان الأدنى ({:.4} SOL)",
-                                current_balance as f64 / 1e9,
-                                min_reserve_lamports as f64 / 1e9
-                            ),
-                            current_slot.0,
+                            stage: "Safety Floor Reserve".to_string(),
+                            reason: reason.clone(),
+                            slot: current_slot.0,
                             pools_count,
                             loan_size_sol,
-                            Some(profit_sol),
-                        )
-                        .await;
-                    return;
+                            net_sol: Some(profit_sol),
+                        });
+                        self.telegram
+                            .alert_opportunity_rejected(
+                                route_label,
+                                gross_sol,
+                                "Safety Floor Reserve",
+                                &reason,
+                                current_slot.0,
+                                pools_count,
+                                loan_size_sol,
+                                Some(profit_sol),
+                            )
+                            .await;
+                        return;
+                    }
                 }
 
                 // V1-only release policy: never accept Legacy or V0 output.

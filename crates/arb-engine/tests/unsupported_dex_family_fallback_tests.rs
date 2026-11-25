@@ -42,7 +42,6 @@ fn legacy_family_adapters_cannot_quote_the_four_unverified_venues() {
     let protocols = [
         DexProtocol::MeteoraDammV2,
         DexProtocol::MeteoraDbc,
-        DexProtocol::MeteoraDlmmPro,
         DexProtocol::RaydiumLaunchLab,
     ];
 

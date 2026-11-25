@@ -324,17 +324,17 @@ TASK_ID: TASK-M3-001
 PHASE: Mission §8 — DEX and Quote Engine Audit (Phase 3)
 PRIORITY: P1
 STATUS: VERIFIED
-OBJECTIVE: Classify all 11 DexProtocol variants across pillars A–H (discovery, decoding, quote, sizing, building, CPI, simulation, mainnet verification) with verified program IDs and honest unsupported labels.
-FILES: docs/active/audit/DEX_SUPPORT_MATRIX.md, docs/active/audit/QUOTE_PARITY_REPORT.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+OBJECTIVE: Classify all 10 active DexProtocol variants across pillars A–H (discovery, decoding, quote, sizing, building, CPI, simulation, mainnet verification) with verified program IDs and honest unsupported labels.
+FILES: crates/arb-ingest/src/decoders.rs, crates/arb-ingest/src/hydration.rs, crates/arb-types/src/pool.rs, crates/arb-dex/src/quote_engine.rs, crates/arb-engine/src/adapters.rs, docs/active/audit/DEX_SUPPORT_MATRIX.md, docs/active/audit/QUOTE_PARITY_REPORT.md, docs/active/OPEN_ISSUES.md
 FUNCTIONS: decode_pool_info, QuoteEngine dispatch (engines/mod.rs), build_swap_hop_instruction, per-protocol differential test suites
-CURRENT_BEHAVIOR: 7 protocols carry the full loop; DAMM v2 / DBC / DLMM Pro / LaunchLab quote via constant-product approximations but are fail-closed for discovery (unreachable); Token-2022 excluded by policy; Jupiter is transport-only.
+CURRENT_BEHAVIOR: 7 protocols carry the full loop; DAMM v2, DBC and LaunchLab remain fail-closed; Meteora DLMM Pro was removed from the active enum/runtime; Token-2022 excluded by policy; Jupiter is transport-only.
 ROOT_CAUSE: N/A (audit + registration task).
-REQUIRED_CHANGE: Documentation + register entries only; no runtime behavior changed.
-TEST_PLAN: cargo test -p arb-dex; cargo test -p arb-math; program-ID verification against official sources.
-ACCEPTANCE_CRITERIA: Matrix complete for all 11 protocols; parity evidence cited per venue; gaps classified with IDs.
-ACTUAL_RESULT: 2026-11-22 — matrix delivered; program IDs re-verified (Meteora docs / Bitquery / Raydium catalog); arb-dex 127 passed / 0 failed; arb-math 342 passed / 0 failed; findings DEX-F-2026-11-22-N1 (P3, dormant CP approximations) and N2 (P3 telemetry) registered.
+REQUIRED_CHANGE: Keep support matrix accurate, retire incomplete adapters from the active enum, and harden supported quote/accounting paths without enabling unverified venues.
+TEST_PLAN: cargo test --workspace --all-targets; cargo clippy --workspace --all-targets -- -D warnings; official Raydium CP-Swap SDK differential remains an open acceptance gate.
+ACCEPTANCE_CRITERIA: Matrix complete for all 10 active protocols; retired protocols excluded from runtime count; parity evidence cited per venue; gaps classified with IDs.
+ACTUAL_RESULT: 2026-11-25 - 10 active protocols; DLMM Pro retired; Raydium CPMM exact fee ratio, accrued-fee reserves, owner/mint checks and slot-coherent gating added; full official-SDK quote differential remains open.
 PR: (this PR)
-REMAINING_RISKS: Pump.fun/PumpSwap mainnet snapshots not committed (synthetic fixtures only); four dormant approximations must never be enabled without the registered prerequisites.
+REMAINING_RISKS: Pump.fun/PumpSwap mainnet snapshots not committed (synthetic fixtures only); DAMM v2/DBC/LaunchLab remain unsupported; Raydium CPMM creator-fee-enabled pools are skipped until fee-side semantics are implemented.
 NEXT_TASK: Mission §9 Phase 4 — Arbitrage engine & quantitative correctness.
 ```
 
@@ -439,17 +439,17 @@ TASK_ID: TASK-M9-001
 PHASE: Mission §14 — Risk & Configuration Hardening (Phase 9)
 PRIORITY: P1
 STATUS: VERIFIED
-OBJECTIVE: Audit config precedence, profiles, strict validation, risk limits enforcement, kill switch/breakers; refresh online best-practices research (OWASP/NIST/Jito-BAM); document policies without changing behavior.
-FILES: docs/active/security/CONFIGURATION_SECURITY.md, docs/active/operations/RISK_CONTROL_POLICY.md, docs/active/research/SECURITY_BEST_PRACTICES.md, docs/active/OPEN_ISSUES.md, docs/active/README.md
+OBJECTIVE: Audit configuration precedence, canonical path selection, standalone testing config, secret-safe logging, config provenance, validation, risk limits and kill-switch controls.
+FILES: crates/arb-bot/src/main.rs, crates/arb-bot/src/config.rs, config/config.example.toml, config/testing.toml, docs/active/security/CONFIGURATION_SECURITY.md, docs/active/operations/RISK_CONTROL_POLICY.md, docs/active/OPEN_ISSUES.md
 FUNCTIONS: arb_config::validation::validate (validation.rs:19), check_no_placeholder_secret_env_names (validation.rs:414), RiskGate (arb-risk lib.rs:454), KillSwitch (lib.rs:115), apply_env_overrides (loader.rs:48-70), fire-time gate (dispatch.rs:649-665)
-CURRENT_BEHAVIOR: layered precedence (base → profile → whitelisted env → CLI); shadow default + ARB_LIVE double gate; nothing clamped; legacy root config.toml selection-order gap (CFN-N1).
+CURRENT_BEHAVIOR: one standalone TOML selected by --config/ARB_CONFIG/canonical config/config.toml; legacy [bot]/[rpc] schema or alternate [mode]/[provider] AppConfig schema; allow-listed env overrides; no implicit profile merge; runtime live dispatch requires ARB_LIVE; startup path log + append-only SHA-256 provenance; RPC URL credentials redacted.
 ROOT_CAUSE: N/A (audit task).
-REQUIRED_CHANGE: Documentation + research only.
-TEST_PLAN: cargo test -p arb-config -p arb-risk.
-ACCEPTANCE_CRITERIA: Precedence + profiles + validation rules + control matrix documented with file:line evidence; fresh URL-dated research citations; gaps registered.
-ACTUAL_RESULT: 2026-11-22 — findings CFN-F-2026-11-22-N1/N2/N3 + JTO-F-2026-11-22-N4 registered (all P3); research refreshed with OWASP/NIST/solana.com/Jito sources incl. BAM 2025-09-25.
+REQUIRED_CHANGE: Enforce the canonical config path; remove tracked legacy root config; add loopback testing config; append non-secret config provenance; redact provider URLs in logs; align tests/docs with actual loader behavior.
+TEST_PLAN: cargo test -p arb-bot --lib config_file_tests; cargo test -p arb-bot --bin arb-bot canonical_config_path_wins_and_legacy_root_is_never_selected; cargo test -p arb-bot --bin arb-bot config_audit_is_append_only_and_contains_no_config_values; cargo test --workspace --all-targets; cargo clippy --workspace --all-targets -- -D warnings.
+ACCEPTANCE_CRITERIA: only config/config.toml is the implicit default; root config is not tracked/selected; testing config parses and uses loopback resources; audit rows contain hash/path/mode but no secrets; RPC URLs are not logged; docs accurately state no profile merging.
+ACTUAL_RESULT: 2026-11-25 - removed tracked root config.toml; default resolver accepts only config/config.toml; added path regression test, standalone loopback testing.toml, selected-path startup log, append-only SHA-256 provenance log, secret-safe RPC logging, updated config tests and security docs. CFN-F N1/N2 resolved locally; N3 partially addressed (hash/path/mode provenance, semantic diff open).
 PR: (this PR)
-REMAINING_RISKS: legacy config ambiguity needs operator decision; config-audit log hook pending; BAM re-evaluation pending.
+REMAINING_RISKS: legacy bot Config and alternate arb-config AppConfig remain separate schemas; config files are standalone (no automatic base/profile merge); audit log records file provenance, not semantic field-level diffs; BAM re-evaluation pending.
 NEXT_TASK: Mission §15 Phase 10 — Backend, frontend and API.
 ```
 

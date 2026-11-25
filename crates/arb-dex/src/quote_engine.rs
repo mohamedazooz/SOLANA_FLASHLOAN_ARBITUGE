@@ -22,6 +22,9 @@ pub struct QuoteRequest {
 }
 
 /// Detailed protocol fee breakdown for transparency and accounting.
+/// `total_fee` is authoritative. Some venues expose only an aggregate rate in
+/// the quote state; their component fields remain zero rather than inventing
+/// an LP/protocol/fund allocation that was not decoded from the live config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FeesBreakdown {
     pub lp_fee: u64,
@@ -50,6 +53,8 @@ pub struct QuoteResult {
     pub calculation_version: &'static str,
     pub quote_validity: bool,
     pub computation_time_us: u64,
+    /// Exact DLMM bin traversal count; `None` for non-DLMM protocols.
+    pub dlmm_bins_crossed: Option<u32>,
 }
 
 impl QuoteRequest {

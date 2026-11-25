@@ -31,6 +31,11 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
 
     fn quote_exact_in(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
         request.validate(state)?;
+        if !state.is_fee_valid() {
+            return Err(ArbError::InvalidInput(
+                "Raydium CPMM fee snapshot is missing or invalid".into(),
+            ));
+        }
         let start_time = Instant::now();
 
         if !state.is_active {
@@ -65,7 +70,10 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         let (input_net_into_pool, input_transfer_fee) =
             if let Some(config) = request.input_transfer_fee_config {
                 let fee = config.calculate_fee(request.amount);
-                (request.amount.saturating_sub(fee), fee)
+                (
+                    request.amount.checked_sub(fee).ok_or(ArbError::Overflow)?,
+                    fee,
+                )
             } else {
                 (request.amount, 0)
             };
@@ -74,63 +82,55 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             return Err(ArbError::ZeroAmount);
         }
 
-        // 2. CPMM Fee calculation (PPM: Parts Per Million)
-        // Fee numerator in state: e.g. 2500 (0.25% in 1M units)
-        let trade_fee_rate = if state.fee_denominator == 1_000_000 {
-            state.fee_numerator as u128
-        } else if state.fee_denominator > 0 {
-            (state.fee_numerator as u128 * 1_000_000) / state.fee_denominator as u128
-        } else {
-            2500 // 0.25% default Raydium CPMM trade fee
-        };
-
-        // On-chain: trade_fee = ceil(dx * trade_fee_rate / 1_000_000)
-        let num_fee = (input_net_into_pool as u128).saturating_mul(trade_fee_rate);
-        let trade_fee = num_fee.div_ceil(CPMM_FEE_RATE_DENOMINATOR);
-        let trade_fee_u64 = u64::try_from(trade_fee).unwrap_or(input_net_into_pool);
-
-        let input_after_fee = input_net_into_pool.saturating_sub(trade_fee_u64);
-        if input_after_fee == 0 {
-            return Err(ArbError::InsufficientLiquidity(
-                "Input exhausted by CPMM swap fee".into(),
-            ));
-        }
-
-        // 3. Constant product swap formula: dy = floor((y * dx') / (x + dx'))
-        let dx_prime = input_after_fee as u128;
-        let num_out = r_out.saturating_mul(dx_prime);
-        let denom_out = r_in.saturating_add(dx_prime);
-        let gross_out = u64::try_from(num_out / denom_out).map_err(|_| ArbError::Overflow)?;
-
+        // Shared checked CPMM exact-in calculation. Missing fee state is rejected above.
+        let fee_num = u128::from(state.fee_numerator);
+        let fee_den = u128::from(state.fee_denominator);
+        let trade_fee_u64 =
+            arb_math::cpmm::cpmm_fee_ceil(u128::from(input_net_into_pool), fee_num, fee_den)
+                .ok_or_else(|| {
+                    ArbError::InvalidInput("Raydium CPMM fee ratio is invalid".into())
+                })?;
+        let gross_out = arb_math::cpmm::cpmm_out_upfront_fee_ceil(
+            u128::from(input_net_into_pool),
+            r_in,
+            r_out,
+            fee_num,
+            fee_den,
+        )
+        .ok_or(ArbError::Overflow)?;
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
                 "Raydium CPMM returned 0 output tokens".into(),
             ));
         }
 
-        // Sub-allocations (standard 12% protocol fee share on Raydium CPMM)
-        let protocol_fee = (trade_fee * 12_000) / CPMM_PROTOCOL_FEE_DENOMINATOR;
-        let fund_fee = 0u128;
-        let lp_fee = trade_fee
-            .saturating_sub(protocol_fee)
-            .saturating_sub(fund_fee);
-
         // 4. Outbound Token-2022 transfer fee deduction
         let (output_net_to_next_hop, output_transfer_fee) =
             if let Some(config) = request.output_transfer_fee_config {
                 let fee = config.calculate_fee(gross_out);
-                (gross_out.saturating_sub(fee), fee)
+                (gross_out.checked_sub(fee).ok_or(ArbError::Overflow)?, fee)
             } else {
                 (gross_out, 0)
             };
 
         // 5. Slippage calculation
-        let min_amount_out = output_net_to_next_hop.saturating_sub(
-            (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
+        let min_amount_out = arb_constants::slippage_floor_bps(
+            output_net_to_next_hop,
+            u64::from(request.slippage_bps),
         );
 
         // Price impact: impact = dx / (x + dx)
-        let impact_bps = ((dx_prime * 10_000) / denom_out).min(10_000) as u16;
+        let impact_bps = arb_math::cpmm::cpmm_price_impact_bps(
+            u128::from(
+                input_net_into_pool
+                    .checked_sub(trade_fee_u64)
+                    .ok_or(ArbError::Overflow)?,
+            ),
+            r_in,
+            r_out,
+            0,
+        )
+        .0;
 
         let elapsed = start_time.elapsed().as_micros() as u64;
 
@@ -141,9 +141,9 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
             fees_breakdown: FeesBreakdown {
-                lp_fee: lp_fee as u64,
-                protocol_fee: protocol_fee as u64,
-                fund_fee: fund_fee as u64,
+                lp_fee: 0,
+                protocol_fee: 0,
+                fund_fee: 0,
                 creator_fee: 0,
                 dynamic_fee: 0,
                 total_fee: trade_fee_u64,
@@ -164,15 +164,23 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             calculation_version: RAYDIUM_CPMM_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 
     fn quote_exact_out(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
         request.validate(state)?;
-        // Explicitly validate the output mint against the pool's two mints; reject
-        // unsupported mints instead of silently treating them as the base side.
-        if request.output_mint != state.base_mint && request.output_mint != state.quote_mint {
-            return Err(ArbError::InvalidInput("output mint not in pool".into()));
+        if !state.is_fee_valid() {
+            return Err(ArbError::InvalidInput(
+                "Raydium CPMM fee snapshot is missing or invalid".into(),
+            ));
+        }
+        if request.input_transfer_fee_config.is_some()
+            || request.output_transfer_fee_config.is_some()
+        {
+            return Err(ArbError::UnsupportedOperation(
+                "Raydium CPMM exact-out with Token-2022 transfer fees is not implemented".into(),
+            ));
         }
         let a_to_b = request.output_mint == state.quote_mint;
         let (r_in, r_out) = if a_to_b {
@@ -180,35 +188,22 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         } else {
             (state.reserve_out, state.reserve_in)
         };
-
-        let target_dy = request.amount as u128;
-        if target_dy >= r_out {
-            return Err(ArbError::InsufficientLiquidity(
-                "Exact out exceeds pool reserve".into(),
-            ));
-        }
-
-        // dx' = ceil((x * dy) / (y - dy))
-        let num = r_in.saturating_mul(target_dy);
-        let denom = r_out.saturating_sub(target_dy);
-        let dx_prime = num.div_ceil(denom);
-
-        let trade_fee_rate = if state.fee_denominator == 1_000_000 {
-            state.fee_numerator as u128
-        } else {
-            2500
-        };
-
-        // dx = ceil(dx' * 1_000_000 / (1_000_000 - trade_fee_rate))
-        let denom_fee = CPMM_FEE_RATE_DENOMINATOR.saturating_sub(trade_fee_rate);
-        let dx = dx_prime
-            .saturating_mul(CPMM_FEE_RATE_DENOMINATOR)
-            .div_ceil(denom_fee);
-        let req_in = u64::try_from(dx)
-            .map_err(|_| ArbError::CalculationError("Overflow in exact out".into()))?;
-
-        // Fee portion in input terms = dx - dx' (the markup over the fee-free input).
-        let total_fee = u64::try_from(dx.saturating_sub(dx_prime)).unwrap_or(u64::MAX);
+        let fee_num = u128::from(state.fee_numerator);
+        let fee_den = u128::from(state.fee_denominator);
+        let req_in = arb_math::cpmm::cpmm_in_for_exact_out_upfront_fee_ceil(
+            u128::from(request.amount),
+            r_in,
+            r_out,
+            fee_num,
+            fee_den,
+        )
+        .ok_or_else(|| {
+            ArbError::InsufficientLiquidity(
+                "Exact out exceeds pool reserve or has an invalid fee ratio".into(),
+            )
+        })?;
+        let total_fee = arb_math::cpmm::cpmm_fee_ceil(u128::from(req_in), fee_num, fee_den)
+            .ok_or(ArbError::Overflow)?;
 
         Ok(QuoteResult {
             protocol: DexProtocol::RaydiumCpmm,
@@ -217,15 +212,27 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             amount_out_raw: request.amount,
             minimum_amount_out_raw: request.amount,
             fees_breakdown: FeesBreakdown {
-                lp_fee: total_fee,
+                lp_fee: 0,
                 protocol_fee: 0,
                 fund_fee: 0,
                 creator_fee: 0,
                 dynamic_fee: 0,
                 total_fee,
             },
-            transfer_fee_breakdown: HopTransferFeeBreakdown::default(),
-            price_impact: Bps(0),
+            transfer_fee_breakdown: HopTransferFeeBreakdown {
+                input_gross: req_in,
+                input_transfer_fee: 0,
+                input_net_into_pool: req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?,
+                output_gross_from_pool: request.amount,
+                output_transfer_fee: 0,
+                output_net_to_next_hop: request.amount,
+            },
+            price_impact: arb_math::cpmm::cpmm_price_impact_bps(
+                u128::from(req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?),
+                r_in,
+                r_out,
+                0,
+            ),
             unfilled_input_raw: 0,
             required_accounts: vec![state.pool_id.0],
             state_slot: state.slot.0,
@@ -233,6 +240,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             calculation_version: RAYDIUM_CPMM_VERSION,
             quote_validity: true,
             computation_time_us: 1,
+            dlmm_bins_crossed: None,
         })
     }
 }

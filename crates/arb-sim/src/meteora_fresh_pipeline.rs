@@ -29,6 +29,7 @@ use arb_types::{
 };
 use serde::{Deserialize, Serialize};
 use solana_pubkey::Pubkey;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -66,6 +67,7 @@ pub struct MeteoraFreshPipelineConfig {
     pub slippage_bps: u64,
     pub cu_limit: u32,
     pub priority_fee_micro_lamports: u64,
+    /// Raw input bounds in the canonical quote mint's units (not UI decimals).
     pub min_input_amount: u64,
     pub max_input_amount: u64,
     /// Conservative SOL price in USD/Quote units for dimensional fee conversion (e.g. 180 USD/SOL).
@@ -93,7 +95,7 @@ impl Default for MeteoraFreshPipelineConfig {
             priority_fee_micro_lamports: arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS,
             min_input_amount: 100_000,    // 0.10 USDC
             max_input_amount: 10_000_000, // 10.00 USDC
-            sol_usd_price: Some(180),
+            sol_usd_price: None,
             requested_bin_array_depth: 1, // 3-array fast path by default, extensible
             two_pool_v1: false,           // legacy 1,232-byte packet unless opted in
         }
@@ -117,7 +119,6 @@ pub struct MeteoraProfitabilityReport {
     pub dex_fees_hop1_currency: Currency,
     pub dex_fees_hop2_raw: u64,
     pub dex_fees_hop2_currency: Currency,
-    pub total_dex_fees_raw: u64,
     pub transfer_fees_raw: u64,
     pub base_fee_lamports: u64,
     pub priority_fee_lamports: u64,
@@ -352,17 +353,107 @@ impl MeteoraDlmmFreshStatePipeline {
 
             let pair = &report.eligible_pairs[0];
 
-            // 3. Optimize trade size on fresh state
+            // 3. Resolve quote denomination from both verified pool mint snapshots.
+            let quote_mint = pair.canonical_mint_y;
+            let quote_decimals_a = if pair.pool_a_state.base_mint == quote_mint {
+                Some(pair.pool_a_state.decimals_a)
+            } else if pair.pool_a_state.quote_mint == quote_mint {
+                Some(pair.pool_a_state.decimals_b)
+            } else {
+                None
+            };
+            let quote_decimals_b = if pair.pool_b_state.base_mint == quote_mint {
+                Some(pair.pool_b_state.decimals_a)
+            } else if pair.pool_b_state.quote_mint == quote_mint {
+                Some(pair.pool_b_state.decimals_b)
+            } else {
+                None
+            };
+            let (Some(quote_decimals), Some(other_quote_decimals)) =
+                (quote_decimals_a, quote_decimals_b)
+            else {
+                warn!(
+                    "Canonical quote mint is absent from one of the pool snapshots; skipping pair"
+                );
+                continue;
+            };
+            if quote_decimals != other_quote_decimals {
+                warn!(
+                    "Canonical quote mint decimals disagree across pool snapshots; skipping pair"
+                );
+                continue;
+            }
+            let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap_or_default();
+            let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap_or_default();
+            let is_quote_sol = quote_mint.0 == wsol;
+            if !is_quote_sol && quote_mint.0 != usdc {
+                warn!(
+                    "Fresh pipeline only supports WSOL or USDC quote denomination; skipping pair"
+                );
+                continue;
+            }
+            if (is_quote_sol && quote_decimals != 9) || (!is_quote_sol && quote_decimals != 6) {
+                warn!(
+                    "Quote mint decimals do not match the canonical WSOL/USDC mint; skipping pair"
+                );
+                continue;
+            }
+            let sol_usd_price = if is_quote_sol {
+                self.config.sol_usd_price.unwrap_or(0)
+            } else {
+                match self.config.sol_usd_price.filter(|price| *price > 0) {
+                    Some(price) => price,
+                    None => {
+                        warn!(
+                            "SOL_USD_PRICE is required to price network costs in USDC; skipping pair"
+                        );
+                        continue;
+                    }
+                }
+            };
+            if self.config.slippage_bps > 10_000
+                || self.config.min_input_amount == 0
+                || self.config.min_input_amount > self.config.max_input_amount
+            {
+                return Err(ArbError::InvalidInput(
+                    "Meteora fresh-pipeline input bounds/slippage configuration is invalid".into(),
+                ));
+            }
+            let priority_fee_lamports = match arb_tx::adaptive::total_priority_fee_lamports(
+                self.config.priority_fee_micro_lamports,
+                u64::from(self.config.cu_limit),
+            ) {
+                Some(fee) => fee,
+                None => {
+                    warn!("Priority fee overflows lamports; skipping candidate");
+                    continue;
+                }
+            };
+            let estimated_network_cost_lamports =
+                match arb_constants::SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS
+                    .checked_add(priority_fee_lamports)
+                {
+                    Some(cost) => cost,
+                    None => {
+                        warn!("Estimated network cost overflow; skipping candidate");
+                        continue;
+                    }
+                };
+
+            // 4. Optimize trade size on fresh state using the same slippage,
+            // fee and denomination model used by the transaction builder.
+            let slippage_bps = u16::try_from(self.config.slippage_bps).unwrap_or(u16::MAX);
             let opt_cfg = DlmmOptimizerConfig {
                 min_input: self.config.min_input_amount,
                 max_input: self.config.max_input_amount,
+                slippage_bps,
                 coarse_samples: 8,
                 max_candidate_basins: 4,
                 refine_steps_per_basin: 6,
-                estimated_network_cost_lamports: 15_000,
-                sol_usd_price: self.config.sol_usd_price.unwrap_or(180),
-                quote_decimals: 6,
-                is_quote_sol: false,
+                estimated_network_cost_lamports,
+                sol_usd_price,
+                quote_decimals,
+                is_quote_sol,
             };
 
             let opt_res = MeteoraDlmmTradeSizeOptimizer::find_best_opportunity(pair, &opt_cfg);
@@ -376,57 +467,67 @@ impl MeteoraDlmmFreshStatePipeline {
                         opt.expected_final_out,
                         is_a,
                         if is_a { "DirectionA" } else { "DirectionB" },
-                        Some(opt.quote),
+                        opt.quote,
                     )
                 } else {
-                    let q_a = MeteoraDlmmCrossPoolQuoteEngine::quote_direction_a(
+                    // No synthetic quote fallback: try both real directions and
+                    // continue only with a verified, conservative quote.
+                    let q_a = MeteoraDlmmCrossPoolQuoteEngine::quote_direction_a_with_slippage(
                         pair,
                         self.config.min_input_amount,
-                    );
-                    let q = q_a.unwrap_or(arb_engine::TwoHopDlmmQuote {
-                        initial_amount_in: self.config.min_input_amount,
-                        hop1_amount_out: 1_160_000,
-                        hop2_final_amount_out: 99_000,
-                        gross_profit: -1_000,
-                        spread_bps: 0,
-                        hop1_bins_traversed: 0,
-                        hop2_bins_traversed: 0,
-                        hop1_fee: 400,
-                        hop2_fee: 400,
-                        hop1_swap_for_y: false,
-                        hop2_swap_for_y: true,
-                    });
+                        slippage_bps,
+                    )
+                    .map(|quote| (quote, true));
+                    let q_b = MeteoraDlmmCrossPoolQuoteEngine::quote_direction_b_with_slippage(
+                        pair,
+                        self.config.min_input_amount,
+                        slippage_bps,
+                    )
+                    .map(|quote| (quote, false));
+                    let selected = match (q_a, q_b) {
+                        (Some(a), Some(b)) => {
+                            if a.0.minimum_gross_profit >= b.0.minimum_gross_profit {
+                                a
+                            } else {
+                                b
+                            }
+                        }
+                        (Some(a), None) => a,
+                        (None, Some(b)) => b,
+                        (None, None) => {
+                            warn!(
+                                "Both DLMM directions failed verified quoting; skipping candidate"
+                            );
+                            continue;
+                        }
+                    };
+                    let (quote, is_a) = selected;
                     (
                         self.config.min_input_amount,
-                        q.hop1_amount_out,
-                        q.hop2_final_amount_out,
-                        true,
-                        "DirectionA",
-                        Some(q),
+                        quote.hop1_amount_out,
+                        quote.hop2_final_amount_out,
+                        is_a,
+                        if is_a { "DirectionA" } else { "DirectionB" },
+                        quote,
                     )
                 };
 
-            // 4. Build atomic transaction with proportional slippage floor
-            // In a two-hop atomic route where Hop 2's input is constrained to hop1_min_out (hop1_out * (1 - s)),
-            // the expected output from hop1_min_out under Hop 2 slippage tolerance is scaled by (1 - s)^2.
-            let slippage_factor = 10_000u64.saturating_sub(self.config.slippage_bps.min(10_000));
-            let min_final_out = ((final_out as u128 * slippage_factor as u128 / 10_000)
-                * slippage_factor as u128
-                / 10_000) as u64;
+            // The quote engine already propagated each hop's minimum output
+            // sequentially using the configured slippage. Do not apply a second
+            // independent haircut here.
+            let min_final_out = quote_details.hop2_minimum_amount_out;
+            if quote_details.hop1_minimum_amount_out == 0 || min_final_out == 0 {
+                warn!("Conservative intermediate/final output is zero; skipping candidate");
+                continue;
+            }
 
             // In simulation, replaceRecentBlockhash is enabled so any valid 32-byte hash works
             // without paying a blocking RPC get_latest_blockhash roundtrip.
             let dummy_blockhash = [1u8; 32];
 
             let tx = {
-                let hop1_bins = quote_details
-                    .as_ref()
-                    .map(|q| q.hop1_bins_traversed)
-                    .unwrap_or(0);
-                let hop2_bins = quote_details
-                    .as_ref()
-                    .map(|q| q.hop2_bins_traversed)
-                    .unwrap_or(0);
+                let hop1_bins = quote_details.hop1_bins_traversed;
+                let hop2_bins = quote_details.hop2_bins_traversed;
 
                 // Opt-in Transaction v1 path: same route, 4,096-byte packet, compute
                 // budget and priority fee carried in the signed message header. Any v1
@@ -457,7 +558,7 @@ impl MeteoraDlmmFreshStatePipeline {
                                 swap_a_first,
                                 amount_in,
                                 hop1_out,
-                                min_final_out.max(1),
+                                min_final_out,
                                 self.config.slippage_bps,
                                 v1_config,
                                 dummy_blockhash,
@@ -493,7 +594,7 @@ impl MeteoraDlmmFreshStatePipeline {
                         swap_a_first,
                         amount_in,
                         hop1_out,
-                        min_final_out.max(1),
+                        min_final_out,
                         self.config.slippage_bps,
                         self.config.cu_limit,
                         self.config.priority_fee_micro_lamports,
@@ -556,11 +657,6 @@ impl MeteoraDlmmFreshStatePipeline {
             let slot_lag = sim_slot.map(|s| s.saturating_sub(quote_slot));
             let is_fresh = slot_lag.is_some_and(|lag| lag <= self.config.max_allowed_slot_lag);
 
-            let (h1_fee, h2_fee, swap_for_y1, swap_for_y2) = quote_details
-                .as_ref()
-                .map(|q| (q.hop1_fee, q.hop2_fee, q.hop1_swap_for_y, q.hop2_swap_for_y))
-                .unwrap_or((0, 0, true, false));
-
             let now_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -609,47 +705,25 @@ impl MeteoraDlmmFreshStatePipeline {
                 now_ms,
             );
 
-            // Determine fee denomination based on collect_fee_mode and swap direction
-            // Mode 0 = InputOnly (Token X if swap_for_y else Token Y), Mode 1 = OnlyY (always Token Y)
-            let mode_a = pair
-                .pool_a_state
-                .dlmm
-                .as_ref()
-                .and_then(|d| d.params.as_ref())
-                .map(|p| p.collect_fee_mode)
-                .unwrap_or(0);
-            let mode_b = pair
-                .pool_b_state
-                .dlmm
-                .as_ref()
-                .and_then(|d| d.params.as_ref())
-                .map(|p| p.collect_fee_mode)
-                .unwrap_or(0);
-
-            let fee1_currency = if mode_a == 1 {
+            // Fee amounts are denominated in the exact mint selected by the
+            // canonical DLMM fee-mode logic; never infer or add raw units across mints.
+            let h1_fee = quote_details.hop1_fee;
+            let h2_fee = quote_details.hop2_fee;
+            let fee1_currency = if quote_details.hop1_fee_mint == quote_mint {
                 quote_currency
-            } else if swap_for_y1 {
+            } else if quote_details.hop1_fee_mint == pair.canonical_mint_x {
                 hop1_currency
             } else {
-                quote_currency
+                warn!("Hop 1 fee mint is outside the canonical pair; skipping candidate");
+                continue;
             };
-            let fee1_decimals = if fee1_currency == quote_currency {
-                quote_decimals
-            } else {
-                hop1_decimals
-            };
-
-            let fee2_currency = if mode_b == 1 {
+            let fee2_currency = if quote_details.hop2_fee_mint == quote_mint {
                 quote_currency
-            } else if swap_for_y2 {
+            } else if quote_details.hop2_fee_mint == pair.canonical_mint_x {
                 hop1_currency
             } else {
-                quote_currency
-            };
-            let fee2_decimals = if fee2_currency == quote_currency {
-                quote_decimals
-            } else {
-                hop1_decimals
+                warn!("Hop 2 fee mint is outside the canonical pair; skipping candidate");
+                continue;
             };
 
             let mut fee_items = vec![
@@ -663,31 +737,10 @@ impl MeteoraDlmmFreshStatePipeline {
                     now_ms,
                 ));
             }
-            if h1_fee > 0 {
-                fee_items.push(FeeItem::dex_swap_fee(
-                    "Hop 1 DLMM Pool Fee",
-                    h1_fee,
-                    fee1_currency,
-                    fee1_decimals,
-                    quote_slot,
-                    now_ms,
-                ));
-            }
-            if h2_fee > 0 {
-                fee_items.push(FeeItem::dex_swap_fee(
-                    "Hop 2 DLMM Pool Fee",
-                    h2_fee,
-                    fee2_currency,
-                    fee2_decimals,
-                    quote_slot,
-                    now_ms,
-                ));
-            }
-
             let sol_to_quote_rate = if quote_currency.is_sol() {
                 None
             } else if quote_currency.is_usdc() {
-                let sol_price = self.config.sol_usd_price.unwrap_or(180);
+                let sol_price = sol_usd_price;
                 Some(
                     TimestampedRate::sol_to_usdc(
                         sol_price,
@@ -746,7 +799,6 @@ impl MeteoraDlmmFreshStatePipeline {
                 dex_fees_hop1_currency: fee1_currency,
                 dex_fees_hop2_raw: h2_fee,
                 dex_fees_hop2_currency: fee2_currency,
-                total_dex_fees_raw: h1_fee.saturating_add(h2_fee),
                 transfer_fees_raw: 0,
                 base_fee_lamports: costs.base_fee_lamports,
                 priority_fee_lamports: costs.priority_fee_lamports,

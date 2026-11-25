@@ -16,6 +16,7 @@
 
 use std::str::FromStr;
 
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
 use arb_engine::{
     MeteoraDlmmPoolPairDiscovery, ThreeLegMemeContextParams, build_three_leg_meme_pipeline,
     simulate_profitability_gate,
@@ -30,6 +31,7 @@ use arb_types::{
     PoolKind, PoolState, Slot, TokenProgramKind,
 };
 use solana_pubkey::Pubkey;
+use std::collections::HashSet;
 
 fn wsol_mint() -> MintId {
     MintId(Pubkey::from_str(arb_constants::WSOL_MINT).unwrap())
@@ -96,7 +98,7 @@ fn make_dlmm_pool(
         active_bin_id,
         status: 0,
         bin_step_bps: bin_step,
-        bins,
+        bins: bins.clone(),
         params: Some(fee_params),
         volatility_accumulator: 0,
         volatility_reference: 0,
@@ -105,11 +107,20 @@ fn make_dlmm_pool(
         support_limit_order: false,
     };
 
+    let bin_array_pdas: Vec<Pubkey> = bins
+        .iter()
+        .map(|bin| {
+            let index = MeteoraDlmmQuoteEngine::bin_id_to_bin_array_index(bin.bin_id);
+            MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pool_pk, index).0
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
     let exec = PoolExecutionAccounts::MeteoraDlmm {
         reserve_x,
         reserve_y,
         oracle,
-        bin_array_pdas: vec![Pubkey::new_from_array([pool_bytes_id.wrapping_add(50); 32])],
+        bin_array_pdas,
         bitmap_extension: None,
         pool_token_x: base_mint.0,
         pool_token_y: quote_mint.0,
@@ -467,8 +478,16 @@ fn test_pipeline_to_paper_journal_roundtrip() {
         status: "paper".to_string(),
     };
 
-    let log_dir =
-        std::env::temp_dir().join(format!("arb_3leg_paper_journal_{}", std::process::id()));
+    // A process ID can be reused across test runs; isolate this append-only journal
+    // so the round-trip assertion never reads a stale first record.
+    let log_dir = std::env::temp_dir().join(format!(
+        "arb_3leg_paper_journal_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock must be after UNIX epoch")
+            .as_nanos(),
+    ));
     let recorder = OpportunityHistoryRecorder::new(&log_dir);
     recorder
         .record_candidate(&candidate)

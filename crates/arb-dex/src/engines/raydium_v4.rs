@@ -30,6 +30,11 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
 
     fn quote_exact_in(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
         request.validate(state)?;
+        if !state.is_fee_valid() {
+            return Err(ArbError::InvalidInput(
+                "Raydium V4 fee snapshot is missing or invalid".into(),
+            ));
+        }
         let start_time = Instant::now();
 
         if !state.is_active {
@@ -64,7 +69,10 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
         let (input_net_into_pool, input_transfer_fee) =
             if let Some(config) = request.input_transfer_fee_config {
                 let fee = config.calculate_fee(request.amount);
-                (request.amount.saturating_sub(fee), fee)
+                (
+                    request.amount.checked_sub(fee).ok_or(ArbError::Overflow)?,
+                    fee,
+                )
             } else {
                 (request.amount, 0)
             };
@@ -73,36 +81,20 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
             return Err(ArbError::ZeroAmount);
         }
 
-        // 2. Fee calculation
-        let fee_num = if state.fee_numerator > 0 {
-            state.fee_numerator as u128
-        } else {
-            25
-        };
-        let fee_denom = if state.fee_denominator > 0 {
-            state.fee_denominator as u128
-        } else {
-            10_000
-        };
-
-        // Ceiling division for fees: ceil(dx * fee_num / fee_denom)
-        let num_fee = (input_net_into_pool as u128).saturating_mul(fee_num);
-        let fee = num_fee.div_ceil(fee_denom);
-        let fee_u64 = u64::try_from(fee).unwrap_or(input_net_into_pool);
-
-        let input_after_fee = input_net_into_pool.saturating_sub(fee_u64);
-        if input_after_fee == 0 {
-            return Err(ArbError::InsufficientLiquidity(
-                "Input exhausted by swap fee".into(),
-            ));
-        }
-
-        // 3. Swap output: floor((y * dx') / (x + dx'))
-        let dx_prime = input_after_fee as u128;
-        let num_out = r_out.saturating_mul(dx_prime);
-        let denom_out = r_in.saturating_add(dx_prime);
-        let gross_out = (num_out / denom_out) as u64;
-
+        // Shared checked CPMM exact-in calculation. Missing fee state is rejected above.
+        let fee_num = u128::from(state.fee_numerator);
+        let fee_denom = u128::from(state.fee_denominator);
+        let fee_u64 =
+            arb_math::cpmm::cpmm_fee_ceil(u128::from(input_net_into_pool), fee_num, fee_denom)
+                .ok_or_else(|| ArbError::InvalidInput("Raydium V4 fee ratio is invalid".into()))?;
+        let gross_out = arb_math::cpmm::cpmm_out_upfront_fee_ceil(
+            u128::from(input_net_into_pool),
+            r_in,
+            r_out,
+            fee_num,
+            fee_denom,
+        )
+        .ok_or(ArbError::Overflow)?;
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
                 "Raydium v4 returned 0 output tokens".into(),
@@ -113,17 +105,28 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
         let (output_net_to_next_hop, output_transfer_fee) =
             if let Some(config) = request.output_transfer_fee_config {
                 let fee = config.calculate_fee(gross_out);
-                (gross_out.saturating_sub(fee), fee)
+                (gross_out.checked_sub(fee).ok_or(ArbError::Overflow)?, fee)
             } else {
                 (gross_out, 0)
             };
 
         // 5. Slippage calculation
-        let min_amount_out = output_net_to_next_hop.saturating_sub(
-            (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
+        let min_amount_out = arb_constants::slippage_floor_bps(
+            output_net_to_next_hop,
+            u64::from(request.slippage_bps),
         );
 
-        let impact_bps = ((dx_prime * 10_000) / denom_out).min(10_000) as u16;
+        let impact_bps = arb_math::cpmm::cpmm_price_impact_bps(
+            u128::from(
+                input_net_into_pool
+                    .checked_sub(fee_u64)
+                    .ok_or(ArbError::Overflow)?,
+            ),
+            r_in,
+            r_out,
+            0,
+        )
+        .0;
         let elapsed = start_time.elapsed().as_micros() as u64;
 
         Ok(QuoteResult {
@@ -156,44 +159,46 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
             calculation_version: RAYDIUM_V4_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 
     fn quote_exact_out(&self, state: &PoolState, request: &QuoteRequest) -> Result<QuoteResult> {
         request.validate(state)?;
+        if !state.is_fee_valid() {
+            return Err(ArbError::InvalidInput(
+                "Raydium V4 fee snapshot is missing or invalid".into(),
+            ));
+        }
+        if request.input_transfer_fee_config.is_some()
+            || request.output_transfer_fee_config.is_some()
+        {
+            return Err(ArbError::UnsupportedOperation(
+                "Raydium V4 exact-out with Token-2022 transfer fees is not implemented".into(),
+            ));
+        }
         let a_to_b = request.output_mint == state.quote_mint;
         let (r_in, r_out) = if a_to_b {
             (state.reserve_in, state.reserve_out)
         } else {
             (state.reserve_out, state.reserve_in)
         };
-
-        let target_dy = request.amount as u128;
-        if target_dy >= r_out {
-            return Err(ArbError::InsufficientLiquidity(
-                "Exact out exceeds pool reserve".into(),
-            ));
-        }
-
-        let num = r_in.saturating_mul(target_dy);
-        let denom = r_out.saturating_sub(target_dy);
-        let dx_prime = num.div_ceil(denom);
-
-        let fee_num = if state.fee_numerator > 0 {
-            state.fee_numerator as u128
-        } else {
-            25
-        };
-        let fee_denom = if state.fee_denominator > 0 {
-            state.fee_denominator as u128
-        } else {
-            10_000
-        };
-        let denom_fee = fee_denom.saturating_sub(fee_num);
-
-        let dx = dx_prime.saturating_mul(fee_denom).div_ceil(denom_fee);
-        let req_in = u64::try_from(dx)
-            .map_err(|_| ArbError::CalculationError("Overflow in exact out".into()))?;
+        let fee_num = u128::from(state.fee_numerator);
+        let fee_denom = u128::from(state.fee_denominator);
+        let req_in = arb_math::cpmm::cpmm_in_for_exact_out_upfront_fee_ceil(
+            u128::from(request.amount),
+            r_in,
+            r_out,
+            fee_num,
+            fee_denom,
+        )
+        .ok_or_else(|| {
+            ArbError::InsufficientLiquidity(
+                "Exact out exceeds pool reserve or has an invalid fee ratio".into(),
+            )
+        })?;
+        let total_fee = arb_math::cpmm::cpmm_fee_ceil(u128::from(req_in), fee_num, fee_denom)
+            .ok_or(ArbError::Overflow)?;
 
         Ok(QuoteResult {
             protocol: DexProtocol::RaydiumV4,
@@ -201,9 +206,28 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
             amount_in_raw: req_in,
             amount_out_raw: request.amount,
             minimum_amount_out_raw: request.amount,
-            fees_breakdown: FeesBreakdown::default(),
-            transfer_fee_breakdown: HopTransferFeeBreakdown::default(),
-            price_impact: Bps(0),
+            fees_breakdown: FeesBreakdown {
+                lp_fee: 0,
+                protocol_fee: 0,
+                fund_fee: 0,
+                creator_fee: 0,
+                dynamic_fee: 0,
+                total_fee,
+            },
+            transfer_fee_breakdown: HopTransferFeeBreakdown {
+                input_gross: req_in,
+                input_transfer_fee: 0,
+                input_net_into_pool: req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?,
+                output_gross_from_pool: request.amount,
+                output_transfer_fee: 0,
+                output_net_to_next_hop: request.amount,
+            },
+            price_impact: arb_math::cpmm::cpmm_price_impact_bps(
+                u128::from(req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?),
+                r_in,
+                r_out,
+                0,
+            ),
             unfilled_input_raw: 0,
             required_accounts: vec![state.pool_id.0],
             state_slot: state.slot.0,
@@ -211,6 +235,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
             calculation_version: RAYDIUM_V4_VERSION,
             quote_validity: true,
             computation_time_us: 1,
+            dlmm_bins_crossed: None,
         })
     }
 }

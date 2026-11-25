@@ -103,8 +103,20 @@ pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
     "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
 ];
 
+/// Solana base fee per transaction signature, in lamports.
+pub const SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS: u64 = 5_000;
 /// Default minimum net profit (retained edge) that justifies execution, in lamports.
 pub const DEFAULT_MIN_PROFIT_LAMPORTS: u64 = 50_000;
+/// Minimum borrow size used by the legacy Kamino route-size optimizer (0.01 SOL).
+pub const MIN_KAMINO_FLASH_BORROW_LAMPORTS: u64 = 10_000_000;
+/// Maximum borrow size used by the legacy Kamino route-size optimizer (50 SOL).
+pub const MAX_KAMINO_FLASH_BORROW_LAMPORTS: u64 = 5_000_000_000;
+/// Maximum fraction of the first pool reserve the optimizer may borrow (15%).
+pub const MAX_FLASH_BORROW_POOL_RESERVE_SHARE_BPS: u64 = 1_500;
+/// Default maximum number of consecutive DLMM bins to traverse per route leg.
+pub const DEFAULT_MAX_BINS_PER_LEG: u32 = 3;
+/// Minimum Jito bundle tip accepted by the block engine, in lamports.
+pub const MIN_JITO_TIP_LAMPORTS: u64 = 1_000;
 /// Conservative default Jito tip floor in lamports. The block-engine-enforced
 /// minimum is 1,000 lamports (docs.jito.wtf); this runtime floor is 10x that to
 /// avoid submitting bundles that can never clear a quiet auction.
@@ -450,13 +462,6 @@ pub const METEORA_DBC_PROGRAM_ID: &str = "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4Du
 pub const METEORA_DBC_MIGRATION_KEEPER: &str = "9rpVELNUXLoMjAcc19UCVLJ73xjXNoYKENvRMHcci2V2";
 /// Anchor discriminator for `dynamic_bonding_curve::swap2`: sha256("global:swap2")[..8].
 pub const METEORA_DBC_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
-
-/// Meteora DLMM Pro Program ID on Mainnet.
-pub const METEORA_DLMM_PRO_PROGRAM_ID: &str = "dPro1D5wiqnGMH8vMDG23jh35btTHoWdyqXjqkqxe8n";
-/// Anchor discriminator for `dlmm_pro::swap`: sha256("global:swap")[..8].
-pub const METEORA_DLMM_PRO_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
-/// Anchor discriminator for DLMM Pro TickArray account.
-pub const METEORA_DLMM_PRO_TICK_ARRAY_DISCRIMINATOR: [u8; 8] = [69, 97, 189, 190, 110, 7, 66, 187];
 
 // ============================================================================
 // Raydium LaunchLab — Program & Discriminators

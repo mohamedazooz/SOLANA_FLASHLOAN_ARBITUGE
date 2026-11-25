@@ -27,12 +27,9 @@ pub mod validation;
 
 /// Top-level application configuration.
 ///
-/// Loaded via [`loader::load`], which applies the precedence:
-///   1. compiled protocol invariants (arb-constants)
-///   2. base.toml
-///   3. environment-specific TOML (development/staging/production)
-///   4. environment variables
-///   5. CLI overrides
+/// Loaded via [`loader::load`] from one standalone TOML file, followed by
+/// allow-listed environment overrides. This loader does not merge base/profile
+/// files; callers choose the complete file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Deployment mode: shadow | simulate | canary | live.
@@ -437,7 +434,7 @@ impl AppConfig {
             wallet: WalletConfig {
                 keypair_path: "solana_keypair.json".to_string(),
                 cold_wallet_pubkey: None,
-                min_sol_balance_lamports: Lamports(0),
+                min_sol_balance_lamports: Lamports(50_000_000),
             },
             strategy: StrategyConfig {
                 base_tokens: vec![

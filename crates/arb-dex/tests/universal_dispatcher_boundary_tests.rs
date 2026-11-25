@@ -1,9 +1,9 @@
 //! Feature 15: Universal Quote Dispatcher Full Protocol Coverage — Tier 2 Boundary Tests.
 //!
-//! Validates boundary handling across all 11 supported protocols:
-//! 1. Invalid input token mint fails closed across all 11 protocols.
-//! 2. Disabled pool (is_active = false) fails closed across all 11 protocols.
-//! 3. Zero amount input fails closed across all 11 protocols.
+//! Validates boundary handling across all 10 supported protocols:
+//! 1. Invalid input token mint fails closed across all 10 protocols.
+//! 2. Disabled pool (is_active = false) fails closed across all 10 protocols.
+//! 3. Zero amount input fails closed across all 10 protocols.
 //! 4. Exact-out exceeding reserves fails closed on standard protocols.
 //! 5. Exact-out unsupported operation fails closed on Clmm, PumpFun, PumpSwap.
 
@@ -13,7 +13,7 @@ use arb_types::pool::{ClmmState, DlmmState, PumpFunState};
 use arb_types::{ArbError, DexProtocol, MintId, PoolId, PoolState, Slot, TokenProgramKind};
 use solana_pubkey::Pubkey;
 
-const ALL_11_PROTOCOLS: [DexProtocol; 11] = [
+const ALL_10_PROTOCOLS: [DexProtocol; 10] = [
     DexProtocol::RaydiumV4,
     DexProtocol::RaydiumCpmm,
     DexProtocol::RaydiumClmm,
@@ -21,7 +21,6 @@ const ALL_11_PROTOCOLS: [DexProtocol; 11] = [
     DexProtocol::MeteoraDlmm,
     DexProtocol::MeteoraDammV2,
     DexProtocol::MeteoraDbc,
-    DexProtocol::MeteoraDlmmPro,
     DexProtocol::RaydiumLaunchLab,
     DexProtocol::PumpFun,
     DexProtocol::PumpSwap,
@@ -112,13 +111,13 @@ fn create_protocol_test_pool(
     (pool_state, base_mint, quote_mint)
 }
 
-/// Boundary Case 1: Invalid input token mint fails closed across all 11 protocols.
+/// Boundary Case 1: Invalid input token mint fails closed across all 10 protocols.
 #[test]
-fn test_universal_dispatcher_boundary_invalid_token_mint_all_11_protocols() {
+fn test_universal_dispatcher_boundary_invalid_token_mint_all_10_protocols() {
     let dispatcher = UniversalQuoteDispatcher::new();
     let foreign_mint = MintId(Pubkey::new_unique());
 
-    for protocol in ALL_11_PROTOCOLS {
+    for protocol in ALL_10_PROTOCOLS {
         let (pool, _, _) = create_protocol_test_pool(protocol, true);
         let req = QuoteRequest {
             input_mint: foreign_mint,
@@ -146,12 +145,12 @@ fn test_universal_dispatcher_boundary_invalid_token_mint_all_11_protocols() {
     }
 }
 
-/// Boundary Case 2: Disabled pool (is_active = false) fails closed across all 11 protocols.
+/// Boundary Case 2: Disabled pool (is_active = false) fails closed across all 10 protocols.
 #[test]
-fn test_universal_dispatcher_boundary_disabled_pool_all_11_protocols() {
+fn test_universal_dispatcher_boundary_disabled_pool_all_10_protocols() {
     let dispatcher = UniversalQuoteDispatcher::new();
 
-    for protocol in ALL_11_PROTOCOLS {
+    for protocol in ALL_10_PROTOCOLS {
         let (pool, base, quote) = create_protocol_test_pool(protocol, false);
         let req = QuoteRequest {
             input_mint: base,
@@ -179,12 +178,12 @@ fn test_universal_dispatcher_boundary_disabled_pool_all_11_protocols() {
     }
 }
 
-/// Boundary Case 3: Zero input amount fails closed with ZeroAmount across all 11 protocols.
+/// Boundary Case 3: Zero input amount fails closed with ZeroAmount across all 10 protocols.
 #[test]
-fn test_universal_dispatcher_boundary_zero_amount_all_11_protocols() {
+fn test_universal_dispatcher_boundary_zero_amount_all_10_protocols() {
     let dispatcher = UniversalQuoteDispatcher::new();
 
-    for protocol in ALL_11_PROTOCOLS {
+    for protocol in ALL_10_PROTOCOLS {
         let (pool, base, _) = create_protocol_test_pool(protocol, true);
         let req = QuoteRequest {
             input_mint: base,
@@ -250,7 +249,6 @@ fn test_universal_dispatcher_boundary_exact_out_unsupported_protocols() {
         DexProtocol::MeteoraDlmm,
         DexProtocol::MeteoraDammV2,
         DexProtocol::MeteoraDbc,
-        DexProtocol::MeteoraDlmmPro,
         DexProtocol::RaydiumLaunchLab,
     ];
 

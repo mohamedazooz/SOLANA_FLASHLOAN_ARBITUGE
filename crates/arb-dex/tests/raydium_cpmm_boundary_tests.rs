@@ -88,6 +88,24 @@ fn test_cpmm_quote_engine_extreme_fee_tiers_zero_and_max() {
     assert_eq!(quote_max.amount_out_raw, 899_919);
 }
 
+/// Regression: 0.005% is 0.5 bps and must not be rounded down to a free swap.
+#[test]
+fn test_cpmm_quote_preserves_sub_basis_point_fee_precision() {
+    let engine = RaydiumCpmmQuoteEngine::new();
+    let (pool, base, quote) = make_cpmm_pool(10_000_000_000, 10_000_000_000, 50);
+    let request = QuoteRequest {
+        input_mint: base,
+        output_mint: quote,
+        amount: 1_000_000,
+        slippage_bps: 50,
+        input_transfer_fee_config: None,
+        output_transfer_fee_config: None,
+    };
+    let result = engine.quote_exact_in(&pool, &request).unwrap();
+    assert_eq!(result.fees_breakdown.total_fee, 50);
+    assert_eq!(result.amount_out_raw, 999_850);
+}
+
 /// Boundary Case 2: Zero input amount fails closed with ZeroAmount.
 #[test]
 fn test_cpmm_quote_engine_zero_input_and_exhaustion() {

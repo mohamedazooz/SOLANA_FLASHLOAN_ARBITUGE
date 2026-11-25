@@ -175,6 +175,7 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
             calculation_version: RAYDIUM_CLMM_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 

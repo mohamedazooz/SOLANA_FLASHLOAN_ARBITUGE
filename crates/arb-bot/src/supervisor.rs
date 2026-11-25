@@ -23,7 +23,8 @@ use solana_pubkey::Pubkey;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
@@ -44,6 +45,53 @@ use execution::max_state_age_slots;
 pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
 type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
+
+/// Refreshed by a low-frequency background task; dispatch only reads atomics.
+/// This keeps the SOL reserve guard out of the latency-sensitive HTTP-RPC path.
+#[derive(Default)]
+pub struct WalletBalanceCache {
+    balance_lamports: AtomicU64,
+    refreshed_at_ms: AtomicU64,
+    healthy: AtomicBool,
+}
+
+impl WalletBalanceCache {
+    pub fn update(&self, balance_lamports: u64) {
+        self.balance_lamports
+            .store(balance_lamports, Ordering::Release);
+        self.refreshed_at_ms.store(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+                .unwrap_or(0),
+            Ordering::Release,
+        );
+        self.healthy.store(true, Ordering::Release);
+    }
+
+    pub fn invalidate(&self) {
+        self.healthy.store(false, Ordering::Release);
+    }
+
+    pub fn snapshot(&self, max_age: Duration) -> Option<u64> {
+        if !self.healthy.load(Ordering::Acquire) {
+            return None;
+        }
+        let refreshed_at_ms = self.refreshed_at_ms.load(Ordering::Acquire);
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()?
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
+        if refreshed_at_ms == 0
+            || now_ms < refreshed_at_ms
+            || now_ms - refreshed_at_ms > max_age.as_millis().min(u128::from(u64::MAX)) as u64
+        {
+            return None;
+        }
+        Some(self.balance_lamports.load(Ordering::Acquire))
+    }
+}
 
 pub struct Supervisor {
     mode: Arc<std::sync::atomic::AtomicU8>,
@@ -100,6 +148,9 @@ pub struct Supervisor {
     capability_registry: Arc<arb_ingest::ProviderCapabilityRegistry>,
     /// Isolated HTTP Transaction RPC adapter for blockhash, simulate, send, and status.
     tx_rpc: Arc<arb_ingest::TransactionRpcAdapter>,
+    /// Parsed once at startup; dispatch never reads environment or calls RPC for this guard.
+    min_sol_reserve_lamports: u64,
+    wallet_balance_cache: Arc<WalletBalanceCache>,
     pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
     pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
     pub recent_rejected: Arc<parking_lot::Mutex<Vec<crate::telegram::RejectedTradeSummary>>>,
@@ -435,6 +486,10 @@ impl Supervisor {
         );
 
         let tx_rpc = Arc::new(arb_ingest::TransactionRpcAdapter::new(rpc_pool.clone()));
+        let min_sol_reserve_lamports = std::env::var("MIN_SOL_RESERVE_LAMPORTS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(config.wallet.min_sol_balance_lamports);
 
         Self {
             mode,
@@ -475,6 +530,8 @@ impl Supervisor {
                 reg
             }),
             tx_rpc,
+            min_sol_reserve_lamports,
+            wallet_balance_cache: Arc::new(WalletBalanceCache::default()),
             recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_rejected: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -1039,10 +1096,9 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm
-                | DexProtocol::MeteoraDammV2
-                | DexProtocol::MeteoraDbc
-                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
+                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 | DexProtocol::MeteoraDbc => {
+                    meteora_count += 1
+                }
                 DexProtocol::PumpFun => pump_count += 1,
                 DexProtocol::PumpSwap => pumpswap_count += 1,
             }
@@ -1284,10 +1340,9 @@ impl Supervisor {
                 | DexProtocol::RaydiumCpmm
                 | DexProtocol::RaydiumClmm
                 | DexProtocol::RaydiumLaunchLab => raydium_count += 1,
-                DexProtocol::MeteoraDlmm
-                | DexProtocol::MeteoraDammV2
-                | DexProtocol::MeteoraDbc
-                | DexProtocol::MeteoraDlmmPro => meteora_count += 1,
+                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDammV2 | DexProtocol::MeteoraDbc => {
+                    meteora_count += 1
+                }
                 DexProtocol::PumpFun | DexProtocol::PumpSwap => pump_count += 1,
             }
         }
@@ -1590,5 +1645,32 @@ mod shadow_only_signer_tests {
             toml::from_str(include_str!("../../../config/config.example.toml"))
                 .expect("valid example config");
         assert!(load_wallet_signer(&config).is_none());
+    }
+}
+
+#[cfg(test)]
+mod wallet_balance_cache_tests {
+    use super::WalletBalanceCache;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    #[test]
+    fn wallet_balance_cache_returns_only_fresh_healthy_snapshots() {
+        let cache = WalletBalanceCache::default();
+        assert_eq!(cache.snapshot(Duration::from_secs(15)), None);
+
+        cache.update(75_000_000);
+        assert_eq!(cache.snapshot(Duration::from_secs(15)), Some(75_000_000));
+
+        cache.invalidate();
+        assert_eq!(cache.snapshot(Duration::from_secs(15)), None);
+    }
+
+    #[test]
+    fn wallet_balance_cache_rejects_stale_snapshots() {
+        let cache = WalletBalanceCache::default();
+        cache.update(75_000_000);
+        cache.refreshed_at_ms.store(1, Ordering::Release);
+        assert_eq!(cache.snapshot(Duration::from_secs(1)), None);
     }
 }

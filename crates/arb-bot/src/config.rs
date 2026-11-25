@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::fs;
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub bot: BotConfig,
     pub rpc: RpcConfig,
@@ -371,10 +372,10 @@ fn three_leg_default_max_input() -> u64 {
     2_000_000_000
 }
 fn default_hop_slippage_bps() -> u64 {
-    15
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
 }
 fn three_leg_default_slippage() -> u64 {
-    15
+    arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
 }
 fn three_leg_default_min_profit() -> u64 {
     arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS
@@ -584,14 +585,22 @@ fn validate_slippage_policies(config: &Config) -> anyhow::Result<()> {
 }
 
 pub fn load(path: &str) -> anyhow::Result<Config> {
-    if let Ok(arb) = arb_config::loader::load(path) {
+    use anyhow::Context;
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
+    let root: toml::Value = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
+
+    // Select the schema explicitly. Never swallow AppConfig validation errors
+    // and silently fall back to the legacy BotConfig parser.
+    let is_app_config = root.get("mode").is_some() || root.get("provider").is_some();
+    if is_app_config {
+        let arb = arb_config::loader::load(path)
+            .with_context(|| format!("Invalid AppConfig schema in '{path}'"))?;
         let config = from_arb_config(arb);
         validate_live_freshness(&config, crate::live_execution_enabled())?;
         return Ok(config);
     }
-    use anyhow::Context;
-    let contents =
-        fs::read_to_string(path).with_context(|| format!("Failed to read config file '{path}'"))?;
+
     let mut config: Config = toml::from_str(&contents).with_context(|| fmt_parse_error(path))?;
 
     // Profit wallet override from environment
@@ -642,6 +651,10 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
             config.strategy.min_net_profit_abs = value;
         }
     }
+    // Apply the same optional USD floor in both AppConfig and legacy BotConfig
+    // paths; it only takes effect when SOL_USD_PRICE is explicitly supplied.
+    config.strategy.min_net_profit_abs =
+        min_net_profit_floor_lamports(config.strategy.min_net_profit_abs);
 
     // Slippage BPS override
     if let Ok(raw) = std::env::var("MAX_SLIPPAGE_BPS") {
@@ -760,12 +773,29 @@ mod config_file_tests {
     use super::{Config, LIVE_MAX_STATE_AGE_SLOTS, validate_live_freshness};
 
     /// Regression: `min_liquidity_bin_raw` was declared `u128`, which the
-    /// `toml` crate cannot deserialize, so the tracked root `config.toml`
-    /// failed to parse and the bot aborted at startup (deploy run
-    /// 43741572901). Every tracked config file must deserialize.
+    /// `toml` crate cannot deserialize. Every tracked full bot config must
+    /// deserialize before it can be selected at startup.
+    #[test]
+    fn default_slippage_uses_the_shared_protocol_constant() {
+        assert_eq!(
+            super::default_hop_slippage_bps(),
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+        );
+        assert_eq!(
+            super::three_leg_default_slippage(),
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS
+        );
+    }
+
     #[test]
     fn tracked_config_files_deserialize() {
-        for path in ["../../config.toml", "../../config/config.example.toml"] {
+        for path in [
+            "../../config/config.example.toml",
+            "../../config/testing.toml",
+            "../../config/development.toml",
+            "../../config/staging.toml",
+            "../../config/production.toml",
+        ] {
             let full = concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + path;
             let contents = std::fs::read_to_string(&full)
                 .unwrap_or_else(|e| panic!("{full} must exist and be readable: {e}"));
@@ -773,6 +803,17 @@ mod config_file_tests {
                 .unwrap_or_else(|e| panic!("{full} must deserialize into Config: {e}"));
             let _ = parsed;
         }
+    }
+
+    #[test]
+    fn testing_config_is_loopback_and_uses_isolated_resources() {
+        let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/testing.toml");
+        let parsed = super::load(full).expect("testing config loads and validates");
+        assert_eq!(parsed.rpc.url, "http://127.0.0.1:8899");
+        assert_eq!(parsed.store.url, "sqlite://arb_sentinel_test.db");
+        assert_eq!(parsed.metrics.listen, "127.0.0.1:19100");
+        assert_eq!(parsed.admin.listen, "127.0.0.1:19101");
+        assert!(!parsed.bot.canary);
     }
 
     /// PIPE-08: start from the tracked production-shaped example (2 slots),
@@ -825,6 +866,14 @@ mod min_profit_floor_tests {
 
         unsafe { std::env::remove_var("MIN_NET_PROFIT_USD") };
         unsafe { std::env::remove_var("SOL_USD_PRICE") };
+
+        unsafe { std::env::set_var("MIN_NET_PROFIT_USD", "0.05") };
+        unsafe { std::env::set_var("SOL_USD_PRICE", "200") };
+        let base_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/base.toml");
+        let loaded = super::load(base_path).expect("legacy config should load");
+        assert_eq!(loaded.strategy.min_net_profit_abs, 250_000);
+        unsafe { std::env::remove_var("MIN_NET_PROFIT_USD") };
+        unsafe { std::env::remove_var("SOL_USD_PRICE") };
         assert_eq!(min_net_profit_floor_lamports(baseline), baseline);
     }
 }
@@ -834,9 +883,12 @@ mod slippage_policy_tests {
     use super::{Config, validate_slippage_policies};
 
     fn tracked_config() -> Config {
-        let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.toml");
-        let contents = std::fs::read_to_string(full).expect("tracked config.toml readable");
-        toml::from_str(&contents).expect("tracked config.toml deserializes")
+        let full = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config/config.example.toml"
+        );
+        let contents = std::fs::read_to_string(full).expect("tracked config example readable");
+        toml::from_str(&contents).expect("tracked config example deserializes")
     }
 
     /// F-04: the shipped production values (hop 10 bps, 3-leg 15 bps) are both
@@ -870,9 +922,11 @@ mod slippage_policy_tests {
         assert!(validate_slippage_policies(&cfg).is_err());
 
         let mut cfg = tracked_config();
-        if let Some(three) = &mut cfg.strategy.dlmm_three_leg {
-            three.slippage_bps = 5_000;
-        }
+        let three = cfg
+            .strategy
+            .dlmm_three_leg
+            .get_or_insert_with(super::DlmmThreeLegTuning::default);
+        three.slippage_bps = 5_000;
         assert!(validate_slippage_policies(&cfg).is_err());
     }
 

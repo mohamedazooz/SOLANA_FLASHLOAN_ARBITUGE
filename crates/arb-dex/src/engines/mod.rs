@@ -59,7 +59,6 @@ impl UniversalQuoteDispatcher {
             DexProtocol::PumpSwap => self.pump_swap.quote_exact_in(state, request),
             DexProtocol::MeteoraDammV2 => Err(ArbError::UnsupportedOperation("Meteora DAMM v2 needs its dynamic-fee/current-point snapshot; PoolState alone is insufficient".into())),
             DexProtocol::MeteoraDbc => Err(ArbError::UnsupportedOperation("Meteora DBC needs its piecewise bonding-curve segments; PoolState alone is insufficient".into())),
-            DexProtocol::MeteoraDlmmPro => Err(ArbError::UnsupportedOperation("Meteora DLMM Pro needs tick-array and oracle state; PoolState alone is insufficient".into())),
             DexProtocol::RaydiumLaunchLab => Err(ArbError::UnsupportedOperation("Raydium LaunchLab needs virtual/real reserves and a verified PlatformConfig fee; PoolState alone is insufficient".into())),
         }
     }
@@ -81,7 +80,6 @@ impl UniversalQuoteDispatcher {
             DexProtocol::PumpSwap => self.pump_swap.quote_exact_out(state, request),
             DexProtocol::MeteoraDammV2
             | DexProtocol::MeteoraDbc
-            | DexProtocol::MeteoraDlmmPro
             | DexProtocol::RaydiumLaunchLab => Err(ArbError::UnsupportedOperation(format!(
                 "exact-out for {:?} lacks its protocol-specific state model",
                 state.protocol

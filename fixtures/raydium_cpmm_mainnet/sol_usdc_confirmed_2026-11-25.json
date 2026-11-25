@@ -1,0 +1,65 @@
+{
+    "schema_version":  1,
+    "fetched_at_utc":  "2026-11-25T11:34:44.8745966Z",
+    "source":  "Solana mainnet-beta JSON-RPC getMultipleAccounts",
+    "commitment":  "confirmed",
+    "context_slot":  473731445,
+    "pool_address":  "7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny",
+    "cpmm_program_id":  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+    "accounts":  {
+                     "pool":  {
+                                  "address":  "7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny",
+                                  "owner":  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+                                  "lamports":  5324400,
+                                  "executable":  false,
+                                  "rent_epoch":  18446744073709551615,
+                                  "data_base64":  "9+3j9dfD3kazIT+6i/nIf6keR4GWKMOD4AvqfpjHoD4DuhBpz8P28w+jAIjpxrO4hg8wkpeIJkWLpb82ExPdmXlraB+ke2nsYGhngSyj0j/lZ9dFWFbcPxi4TkFhP4pIRMj8kXve4ecqhfVBKxwS12zO10bk8wUk+nNLLqZqFB2i/SowwT4QKtnFe8azvtkU9UqUud+B6Vlg6w/XFjX2D0vNroSmSj/EBpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAHG+nrzvtutOj1l82qryXQxsbvkwtL24OR8pgIDRS9dYQbd9uHXZaGT2cvhRs7reawctIXtX1s3kTqM9YV+/wCpBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkx1rEPw5lFSreBcq1oR8MwsMUbXGFPMBEKVo2jP2jElf0ACQkGhn1UAgAAAAAzFg8AAAAAABKEBAAAAAAApzAKAAAAAAA68AEAAAAAAIs2RGYAAAAASAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+                                  "data_length":  637
+                              },
+                     "amm_config":  {
+                                        "address":  "D4FPEruKEHrG5TenZ2mpDGEfu1iUvTiqBxvpU8HLBvC2",
+                                        "owner":  "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+                                        "lamports":  2584522,
+                                        "executable":  false,
+                                        "rent_epoch":  18446744073709551615,
+                                        "data_base64":  "2vQhaMvLK2//AAAAxAkAAAAAAADA1AEAAAAAAECcAAAAAAAAgNHwCAAAAAAF2xU6D/SH9pzeiQAf7ExGlbbUIV6iRLh71Otyh/hXqNcGSjj20XsRPl9m3PtjuHN//OJkSr8KALmLNDVtY4WD9AEAAAAAAABQwwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                                        "data_length":  236
+                                    },
+                     "vault0":  {
+                                    "address":  "7VLUXrnSSDo9BfCa4NWaQs68g7ddDY1sdXBKW6Xswj9Y",
+                                    "owner":  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                                    "lamports":  528979786,
+                                    "executable":  false,
+                                    "rent_epoch":  18446744073709551615,
+                                    "data_base64":  "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAHrANn1spK0IUrH0De01vBkULlkYA3zcwUrtehPL46aZxLhcB8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEAAAA4thYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                    "data_length":  165
+                                },
+                     "vault1":  {
+                                    "address":  "3rzbbW5Q8MA7sCaowf28hNgACNPecdS2zceWy7Ptzua9",
+                                    "owner":  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                                    "lamports":  2039280,
+                                    "executable":  false,
+                                    "rent_epoch":  18446744073709551615,
+                                    "data_base64":  "xvp6877brTo9ZfNqq8l0MbG75MLS9uDkfKYCA0UvXWHrANn1spK0IUrH0De01vBkULlkYA3zcwUrtehPL46aZ26tJAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                                    "data_length":  165
+                                },
+                     "mint0":  {
+                                   "address":  "So11111111111111111111111111111111111111112",
+                                   "owner":  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                                   "lamports":  1933514274904,
+                                   "executable":  false,
+                                   "rent_epoch":  18446744073709551615,
+                                   "data_base64":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+                                   "data_length":  82
+                               },
+                     "mint1":  {
+                                   "address":  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                                   "owner":  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                                   "lamports":  563101705301,
+                                   "executable":  false,
+                                   "rent_epoch":  18446744073709551615,
+                                   "data_base64":  "AQAAAJj+huiNm+Lqi8HMpIeLKYjCQPUrhCS/tA7Rot3LXhmb5M4dH7NNHwAGAQEAAABicKqKWcWUBbRShshncubNEm6bil06OFNtN/e0FOi2Zw==",
+                                   "data_length":  82
+                               }
+                 }
+}

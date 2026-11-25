@@ -49,15 +49,9 @@ pub fn cpmm_out_upfront_fee_ceil(
         return None;
     }
     let dx_u = U256::from(dx);
-    let num_u = U256::from(fee_num);
-    let den_u = U256::from(fee_den);
     // Checked throughout: untrusted amounts must yield None, never overflow
     // (a silent wrap would overstate the quote).
-    let fee = dx_u
-        .checked_mul(num_u)?
-        .checked_add(den_u)?
-        .checked_sub(U256::from(1u64))?
-        / den_u;
+    let fee = U256::from(cpmm_fee_ceil(dx, fee_num, fee_den)?);
     if fee >= dx_u {
         return Some(0);
     }
@@ -68,6 +62,47 @@ pub fn cpmm_out_upfront_fee_ceil(
         .checked_mul(y_u)?
         .checked_div(x_u.checked_add(net_dx)?)?;
     u64::try_from(out).ok()
+}
+
+/// Calculate an upfront CPMM fee using ceiling division and checked wide arithmetic.
+pub fn cpmm_fee_ceil(amount_in: u128, fee_num: u128, fee_den: u128) -> Option<u64> {
+    if fee_den == 0 || fee_num >= fee_den {
+        return None;
+    }
+    let numerator = U256::from(amount_in).checked_mul(U256::from(fee_num))?;
+    let denominator = U256::from(fee_den);
+    let fee = numerator.checked_add(denominator.checked_sub(U256::from(1u64))?)? / denominator;
+    u64::try_from(fee).ok()
+}
+
+/// Minimum gross input needed to receive an exact CPMM output with an upfront
+/// fee: net_dx = ceil(x * dy / (y - dy)); gross_dx = ceil(net_dx * fee_den / (fee_den - fee_num)).
+pub fn cpmm_in_for_exact_out_upfront_fee_ceil(
+    amount_out: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee_num: u128,
+    fee_den: u128,
+) -> Option<u64> {
+    if amount_out == 0
+        || reserve_in == 0
+        || amount_out >= reserve_out
+        || fee_den == 0
+        || fee_num >= fee_den
+    {
+        return None;
+    }
+    let x = U256::from(reserve_in);
+    let dy = U256::from(amount_out);
+    let y_minus_dy = U256::from(reserve_out).checked_sub(dy)?;
+    let net_num = x.checked_mul(dy)?;
+    let net_in = net_num.checked_add(y_minus_dy.checked_sub(U256::from(1u64))?)? / y_minus_dy;
+    let fee_den_u = U256::from(fee_den);
+    let fee_complement = fee_den_u.checked_sub(U256::from(fee_num))?;
+    let gross_num = net_in.checked_mul(fee_den_u)?;
+    let gross_in =
+        gross_num.checked_add(fee_complement.checked_sub(U256::from(1u64))?)? / fee_complement;
+    u64::try_from(gross_in).ok()
 }
 
 /// Calculate CPMM output with standard 10,000 basis points fee denominator.
@@ -85,7 +120,8 @@ pub fn cpmm_out_fee(
     gamma: u128,
     fee_denominator: u128,
 ) -> Option<u128> {
-    if dx == 0 || x == 0 || y == 0 || fee_denominator == 0 || gamma == 0 {
+    if dx == 0 || x == 0 || y == 0 || fee_denominator == 0 || gamma == 0 || gamma > fee_denominator
+    {
         return None;
     }
     let dx_u = U256::from(dx);
@@ -171,11 +207,26 @@ pub fn cpmm_fee_paid(amount_in: u64, fee_bps: u64) -> u64 {
 /// Standard conventions:
 /// - Raydium V4: fee_denominator = 10_000, fee_rate in basis points (bps).
 /// - Raydium CPMM: fee_denominator = 1_000_000, fee_rate in parts per million (PPM).
-pub fn cpmm_fee_paid_with_denom(amount_in: u64, fee_rate: u64, fee_denominator: u64) -> u64 {
-    if fee_rate == 0 || fee_denominator == 0 {
-        return 0;
+pub fn cpmm_fee_paid_with_denom_checked(
+    amount_in: u64,
+    fee_rate: u64,
+    fee_denominator: u64,
+) -> Option<u64> {
+    if fee_denominator == 0 {
+        return None;
     }
-    (amount_in as u128 * fee_rate as u128).div_ceil(fee_denominator as u128) as u64
+    if amount_in == 0 || fee_rate == 0 {
+        return Some(0);
+    }
+    let numerator = u128::from(amount_in).checked_mul(u128::from(fee_rate))?;
+    let fee = numerator.checked_add(u128::from(fee_denominator).checked_sub(1)?)?
+        / u128::from(fee_denominator);
+    u64::try_from(fee).ok()
+}
+
+/// Compatibility wrapper. Overflow returns u64::MAX so checked subtraction rejects the quote.
+pub fn cpmm_fee_paid_with_denom(amount_in: u64, fee_rate: u64, fee_denominator: u64) -> u64 {
+    cpmm_fee_paid_with_denom_checked(amount_in, fee_rate, fee_denominator).unwrap_or(u64::MAX)
 }
 pub fn isqrt_u384(val: U384) -> U384 {
     if val <= U384::from(1) {
@@ -783,6 +834,52 @@ mod tests {
         let out2_i128 = i128::try_from(out2).unwrap_or(i128::MAX);
         let dx_i128 = i128::from(dx);
         out2_i128 - dx_i128
+    }
+
+    #[test]
+    fn exact_out_cpmm_input_is_minimal_and_round_trips_through_exact_in() {
+        let required = cpmm_in_for_exact_out_upfront_fee_ceil(100, 1_000, 1_000, 25, 10_000)
+            .expect("exact-out input");
+        assert_eq!(required, 113);
+        let received = cpmm_out_upfront_fee_ceil(u128::from(required), 1_000, 1_000, 25, 10_000)
+            .expect("exact-in round trip");
+        assert!(received >= 100);
+        assert_eq!(
+            cpmm_out_upfront_fee_ceil(u128::from(required - 1), 1_000, 1_000, 25, 10_000),
+            Some(99)
+        );
+    }
+
+    #[test]
+    fn exact_out_cpmm_rejects_invalid_fee_and_insufficient_reserves() {
+        assert_eq!(
+            cpmm_in_for_exact_out_upfront_fee_ceil(1, 10, 10, 1, 0),
+            None
+        );
+        assert_eq!(
+            cpmm_in_for_exact_out_upfront_fee_ceil(10, 10, 10, 1, 10),
+            None
+        );
+        assert_eq!(
+            cpmm_in_for_exact_out_upfront_fee_ceil(1, 10, 10, 0, 10),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn cpmm_rejects_fee_complement_above_denominator() {
+        assert_eq!(cpmm_out_fee(1_000, 1_000, 1_000, 10_001, 10_000), None);
+        assert_eq!(cpmm_out_fee(1_000, 1_000, 1_000, 10_000, 10_000), Some(500));
+    }
+
+    #[test]
+    fn checked_cpmm_fee_rejects_zero_denominator_and_u64_overflow() {
+        assert_eq!(cpmm_fee_paid_with_denom_checked(10, 1, 0), None);
+        assert_eq!(
+            cpmm_fee_paid_with_denom_checked(u64::MAX, u64::MAX, 1),
+            None
+        );
+        assert_eq!(cpmm_fee_paid_with_denom_checked(1, 25, 10_000), Some(1));
     }
 
     #[test]

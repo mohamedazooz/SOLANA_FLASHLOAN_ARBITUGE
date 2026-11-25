@@ -24,6 +24,7 @@
 //! basin refinement philosophy as the 2-pool optimizer.
 
 use arb_constants::WSOL_MINT;
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
 use arb_tx::meteora_dlmm::{SwapDirection, SwapMode, derive_directional_bin_arrays};
 use arb_tx::{LegExecutionAccounts, LegSwapParams, ThreeLegMemeArbitrageContext};
 use arb_types::{DexProtocol, MintId, PoolExecutionAccounts, PoolId, PoolState, TokenProgramKind};
@@ -178,7 +179,10 @@ pub struct ThreeLegMemeLegQuote {
     pub swap_for_y: bool,
     pub amount_in: u64,
     pub amount_out: u64,
+    pub min_amount_out: u64,
+    /// Fee amount and its denomination are kept together; raw units are not additive across legs.
     pub fee: u64,
+    pub fee_mint: MintId,
     pub bins_traversed: u32,
 }
 
@@ -186,7 +190,7 @@ pub struct ThreeLegMemeLegQuote {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreeLegMemeSizeSearchResult {
     /// (input size, NET profit in lamports) for every candidate evaluated.
-    /// Net = gross - Kamino flash fee - configured network cost.
+    /// Net uses the conservative final min-out minus Kamino fee and network costs.
     pub tested_sizes: Vec<(u64, i64)>,
     pub best_input: u64,
     pub best_net_profit_lamports: i64,
@@ -208,7 +212,7 @@ pub struct ThreeLegMemePipelineResult {
     pub discovery: crate::meteora_pair_discovery::MeteoraDlmmPairDiscoveryReport,
     /// Final expected output of the chain at the chosen size (before slippage haircut).
     pub expected_final_out: u64,
-    /// Gross profit (quote final out - input) in lamports.
+    /// Expected-output gross profit (telemetry only); net is computed from min-out.
     pub gross_profit_lamports: i64,
     /// Kamino flash fee at the chosen size (lamports, flash mint = WSOL).
     pub flash_fee_lamports: u64,
@@ -329,7 +333,9 @@ struct Chain {
 struct ChainQuote {
     inputs: [u64; 3],
     out: [u64; 3],
+    min_out: [u64; 3],
     fee: [u64; 3],
+    fee_mint: [MintId; 3],
     bins: [u32; 3],
     swap_for_y: [bool; 3],
 }
@@ -358,31 +364,71 @@ fn quote_chain_with_leg1(
     b: MintId,
     input: u64,
     slippage_bps: u64,
-    leg1: (u64, arb_math::dlmm::DlmmSwapQuote, bool),
+    leg1: &(arb_dex::quote_engine::QuoteResult, bool),
 ) -> Option<ChainQuote> {
     let wsol = wsol_mint();
     let (i, j, k) = pool_indexes;
     if i >= pools.len() || j >= pools.len() || k >= pools.len() {
         return None;
     }
-    let slippage_floor = |amount: u64| -> u64 {
-        amount.saturating_mul(10_000u64.saturating_sub(slippage_bps)) / 10_000
-    };
-    let (p2, p3) = (&pools[j], &pools[k]);
-    let (out1, q1, d1) = leg1;
-    let in2 = slippage_floor(out1);
-    let (out2, q2, d2) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p2, in2, a, b)?;
-    let in3 = slippage_floor(out2);
-    let (out3, q3, d3) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(p3, in3, b, wsol)?;
-    if out3 == 0 {
+    if slippage_bps > 10_000 {
         return None;
     }
+    let slippage_bps = u16::try_from(slippage_bps).ok()?;
+    let (p2, p3) = (&pools[j], &pools[k]);
+    let (q1, d1) = leg1;
+    let out1 = q1.amount_out_raw;
+    let min1 = q1.minimum_amount_out_raw;
+    if min1 == 0 {
+        return None;
+    }
+    let in2 = min1;
+    let (q2, d2) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop_with_slippage(
+        p2,
+        in2,
+        a,
+        b,
+        slippage_bps,
+    )?;
+    let out2 = q2.amount_out_raw;
+    let min2 = q2.minimum_amount_out_raw;
+    if min2 == 0 {
+        return None;
+    }
+    let in3 = min2;
+    let (q3, d3) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop_with_slippage(
+        p3,
+        in3,
+        b,
+        wsol,
+        slippage_bps,
+    )?;
+    let out3 = q3.amount_out_raw;
+    let min3 = q3.minimum_amount_out_raw;
+    if min3 == 0 {
+        return None;
+    }
+    let fee_mints = [
+        MeteoraDlmmQuoteEngine::fee_mint_for_quote(&pools[i], wsol).ok()?,
+        MeteoraDlmmQuoteEngine::fee_mint_for_quote(p2, a).ok()?,
+        MeteoraDlmmQuoteEngine::fee_mint_for_quote(p3, b).ok()?,
+    ];
     Some(ChainQuote {
         inputs: [input, in2, in3],
         out: [out1, out2, out3],
-        fee: [q1.fee_amount, q2.fee_amount, q3.fee_amount],
-        bins: [q1.bins_crossed, q2.bins_crossed, q3.bins_crossed],
-        swap_for_y: [d1, d2, d3],
+        min_out: [min1, min2, min3],
+        fee: [
+            q1.fees_breakdown.total_fee,
+            q2.fees_breakdown.total_fee,
+            q3.fees_breakdown.total_fee,
+        ],
+        fee_mint: fee_mints,
+        bins: [
+            q1.dlmm_bins_crossed?,
+            q2.dlmm_bins_crossed?,
+            q3.dlmm_bins_crossed?,
+        ],
+        swap_for_y: [*d1, d2, d3],
     })
 }
 
@@ -475,9 +521,13 @@ fn enumerate_cycles(
         let Some(a) = wsol_side[i] else { continue };
         // Leg 1 depends only on (i, input_size): quote once, reuse across
         // every (j, k) continuation via quote_chain_with_leg1.
-        let Some(leg1) =
-            MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop(&pools[i], input_size, wsol, a)
-        else {
+        let Some(leg1) = MeteoraDlmmCrossPoolQuoteEngine::quote_single_hop_with_slippage(
+            &pools[i],
+            input_size,
+            wsol,
+            a,
+            u16::try_from(slippage_bps).unwrap_or(u16::MAX),
+        ) else {
             continue;
         };
 
@@ -498,9 +548,15 @@ fn enumerate_cycles(
                 if *j == i || k == i || k == *j {
                     continue;
                 }
-                let Some(quote) =
-                    quote_chain_with_leg1(pools, (i, *j, k), a, *b, input_size, slippage_bps, leg1)
-                else {
+                let Some(quote) = quote_chain_with_leg1(
+                    pools,
+                    (i, *j, k),
+                    a,
+                    *b,
+                    input_size,
+                    slippage_bps,
+                    &leg1,
+                ) else {
                     continue;
                 };
                 out.push((
@@ -730,7 +786,11 @@ fn assemble_pipeline_result(
         context,
         discovery: discovery.clone(),
         expected_final_out: final_out,
-        gross_profit_lamports: gross as i64,
+        gross_profit_lamports: i64::try_from(gross).unwrap_or(if gross >= 0 {
+            i64::MAX
+        } else {
+            i64::MIN
+        }),
         flash_fee_lamports,
         net_profit_lamports: net_profit,
         expected_min_final_output,
@@ -763,12 +823,12 @@ fn candidate_network_cost_lamports(
 /// The final dispatch gate re-evaluates the actual planned tip and actual CU
 /// price/limit before the transaction can be sent.
 fn net_profit_of(quote: ChainQuote, input: u64, params: &ThreeLegMemeContextParams) -> i64 {
-    let gross_profit = quote.out[2].saturating_sub(input);
+    let conservative_gross_profit = quote.min_out[2].saturating_sub(input);
     crate::flash_loan_sizing::net_profit_lamports(
-        quote.out[2],
+        quote.min_out[2],
         input,
         params.flash_loan_fee_sf,
-        candidate_network_cost_lamports(gross_profit, params),
+        candidate_network_cost_lamports(conservative_gross_profit, params),
     )
 }
 
@@ -793,7 +853,9 @@ fn build_leg_records(
             swap_for_y: quote.swap_for_y[i],
             amount_in: quote.inputs[i],
             amount_out: quote.out[i],
+            min_amount_out: quote.min_out[i],
             fee: quote.fee[i],
+            fee_mint: quote.fee_mint[i],
             bins_traversed: quote.bins[i],
         });
     }
@@ -1075,7 +1137,9 @@ mod tests {
             swap_for_y: true,
             amount_in: 1_000_000,
             amount_out: 1_100_000,
+            min_amount_out: 1_090_000,
             fee: 1_000,
+            fee_mint: pool.quote_mint,
             // F-02 canonical semantics: this field is the quote engine's
             // `bins_crossed` (bin advances beyond the active bin; >= 0).
             bins_traversed: 2,
@@ -1324,7 +1388,13 @@ mod tests {
         let quote = ChainQuote {
             inputs: [1_000_000, floor(904_873_582), floor(808_080_808)],
             out: [904_873_582, 808_080_808, 700_000_000],
+            min_out: [floor(904_873_582), floor(808_080_808), floor(700_000_000)],
             fee: [1_000; 3],
+            fee_mint: [
+                pools[0].quote_mint,
+                pools[1].quote_mint,
+                pools[2].quote_mint,
+            ],
             bins: [0; 3],
             swap_for_y: [true; 3],
         };
@@ -1482,7 +1552,7 @@ mod tests {
                         continue;
                     };
                     let Some(quote) =
-                        quote_chain_with_leg1(&pools, (i, j, k), ca, cb, input, slippage, leg1)
+                        quote_chain_with_leg1(&pools, (i, j, k), ca, cb, input, slippage, &leg1)
                     else {
                         continue;
                     };

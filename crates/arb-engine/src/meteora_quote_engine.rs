@@ -1,126 +1,98 @@
-//! Meteora DLMM Cross-Pool Quote Engine (`MeteoraDlmmCrossPoolQuoteEngine`).
+//! Meteora DLMM cross-pool routing through the canonical DEX quote engine.
 //!
-//! Evaluates executable quotes across both directions of two distinct Meteora DLMM pools
-//! using exact multi-bin discrete DLMM math (no constant-product approximation).
-//!
-//! Handles:
-//! - Exact multi-bin traversal and discrete active ID pricing
-//! - Base fee, variable fee, and protocol fee accounting
-//! - Token transfer fees (Token-2022 extensions)
-//! - Directional swap logic: SwapForY (X -> Y) vs SwapForX (Y -> X)
-//! - Integer token base units and checked arithmetic
+//! This module performs route composition only. Pool/bin decoding, bitmap
+//! verification, Token-2022 checks and the authoritative quote are delegated
+//! to `arb-dex::MeteoraDlmmQuoteEngine` so cross-pool and single-pool paths
+//! cannot drift into separate DLMM implementations.
 
 use crate::meteora_pair_discovery::MeteoraDlmmEligiblePair;
-use arb_math::dlmm::{
-    DlmmBin as ArbDlmmBin, DlmmParameters, DlmmPoolState, DlmmSwapQuote, DlmmVariableParameters,
-    quote_dlmm_view,
-};
-use arb_types::{MintId, PoolState};
+use arb_dex::engines::MeteoraDlmmQuoteEngine;
+use arb_dex::quote_engine::{QuoteEngine, QuoteRequest, QuoteResult};
+use arb_math::dlmm::{DlmmBin as ArbDlmmBin, DlmmPoolState};
+use arb_types::{MintId, PoolState, TokenProgramKind};
 use serde::{Deserialize, Serialize};
 
 /// Result of evaluating a two-hop cross-pool DLMM swap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TwoHopDlmmQuote {
-    /// Inbound amount to Hop 1 in base units.
     pub initial_amount_in: u64,
-    /// Intermediate amount out from Hop 1 delivered as input to Hop 2.
     pub hop1_amount_out: u64,
-    /// Final amount out from Hop 2 delivered to payer.
+    pub hop1_minimum_amount_out: u64,
     pub hop2_final_amount_out: u64,
-    /// Gross profit in base units: `hop2_final_amount_out - initial_amount_in`.
+    pub hop2_minimum_amount_out: u64,
+    /// Expected gross edge, retained for telemetry.
     pub gross_profit: i64,
-    /// Cycle spread in basis points: `(gross_profit * 10_000) / initial_amount_in`.
     pub spread_bps: u64,
-    /// Total discrete bins traversed in Hop 1.
+    /// Conservative minimum-output edge used for route acceptance and sizing.
+    pub minimum_gross_profit: i64,
+    pub minimum_spread_bps: u64,
     pub hop1_bins_traversed: u32,
-    /// Total discrete bins traversed in Hop 2.
     pub hop2_bins_traversed: u32,
-    /// Fees incurred on Hop 1.
     pub hop1_fee: u64,
-    /// Fees incurred on Hop 2.
+    pub hop1_fee_mint: MintId,
     pub hop2_fee: u64,
-    /// Whether Hop 1 is X -> Y.
+    pub hop2_fee_mint: MintId,
     pub hop1_swap_for_y: bool,
-    /// Whether Hop 2 is X -> Y.
     pub hop2_swap_for_y: bool,
 }
 
-/// Real DLMM cross-pool quoting engine.
+/// Canonical DLMM cross-pool route composer.
 pub struct MeteoraDlmmCrossPoolQuoteEngine;
 
 impl MeteoraDlmmCrossPoolQuoteEngine {
-    /// Convert `PoolState` and its DLMM state to `DlmmPoolState` and `Vec<ArbDlmmBin>`.
+    /// Compatibility view for diagnostics/tests. Canonical pool/bin conversion
+    /// and hydrated-account validation live in arb-dex only.
     pub fn build_dlmm_pool_and_bins(pool: &PoolState) -> Option<(DlmmPoolState, Vec<ArbDlmmBin>)> {
-        let dlmm = pool.dlmm.as_ref()?;
-        let fp = dlmm.params.as_ref()?;
-        // The local math implementation models Spot (0) and the
-        // quote-equivalent LiquidityMining (1); LimitOrder (2) has no
-        // differential-parity evidence and must not be priced with the wrong
-        // curve (fail-closed, matching the LbPair-validation gate in arb-dex).
-        if dlmm.status != 0
-            || fp.function_type > 1
-            || fp.collect_fee_mode > 1
+        if pool.protocol != arb_types::DexProtocol::MeteoraDlmm
             || pool.has_risky_token
             || pool.transfer_fee_bps != 0
+            || pool.token_programs != [TokenProgramKind::SplToken; 2]
         {
             return None;
         }
-
-        let pool_state = DlmmPoolState {
-            active_id: dlmm.active_bin_id,
-            bin_step: dlmm.bin_step_bps,
-            status: dlmm.status,
-            parameters: DlmmParameters {
-                bin_step: dlmm.bin_step_bps,
-                base_factor: fp.base_factor,
-                filter_period: fp.filter_period,
-                decay_period: fp.decay_period,
-                reduction_factor: fp.reduction_factor,
-                variable_fee_control: fp.variable_fee_control,
-                max_volatility_accumulator: fp.max_volatility_accumulator,
-                protocol_share: fp.protocol_share,
-                base_fee_power_factor: fp.base_fee_power_factor,
-                collect_fee_mode: fp.collect_fee_mode,
-            },
-            v_parameters: DlmmVariableParameters {
-                volatility_accumulator: dlmm.volatility_accumulator,
-                volatility_reference: dlmm.volatility_reference,
-                index_reference: dlmm.index_reference,
-                last_update_timestamp: dlmm.last_update_timestamp,
-            },
-            support_limit_order: dlmm.support_limit_order,
-        };
-
-        let bins: Option<Vec<ArbDlmmBin>> = dlmm
-            .bins
-            .iter()
-            .map(|b| {
-                Some(ArbDlmmBin {
-                    id: b.bin_id,
-                    amount_x: u64::try_from(b.amount_x).ok()?,
-                    amount_y: u64::try_from(b.amount_y).ok()?,
-                    price_q64: 0,
-                    open_order_amount: b.open_order_amount,
-                    processed_order_remaining_amount: b.processed_order_remaining_amount,
-                    limit_order_ask_side: b.limit_order_ask_side,
-                })
-            })
-            .collect();
-
-        Some((pool_state, bins?))
+        MeteoraDlmmQuoteEngine::validate_pool_mint_snapshot(pool).ok()?;
+        let dlmm = pool.dlmm.as_ref()?;
+        MeteoraDlmmQuoteEngine::validate_bin_array_snapshot(
+            pool.pool_id,
+            dlmm,
+            pool.execution_accounts.as_ref(),
+        )
+        .ok()?;
+        MeteoraDlmmQuoteEngine::build_dlmm_math_state(pool).ok()
     }
 
-    /// Quote a single DLMM hop from `from_mint` to `to_mint`.
+    /// Compatibility quote using the shared default hop slippage.
     pub fn quote_single_hop(
         pool: &PoolState,
         amount_in: u64,
         from_mint: MintId,
         to_mint: MintId,
-    ) -> Option<(u64, DlmmSwapQuote, bool)> {
-        if amount_in == 0 {
+    ) -> Option<(QuoteResult, bool)> {
+        Self::quote_single_hop_with_slippage(
+            pool,
+            amount_in,
+            from_mint,
+            to_mint,
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
+        )
+    }
+
+    /// Quote one DLMM hop with the exact per-hop slippage policy used by the
+    /// transaction builder. Token-2022 is rejected until complete mint fee
+    /// schedules and hook accounts are carried through this route API.
+    pub fn quote_single_hop_with_slippage(
+        pool: &PoolState,
+        amount_in: u64,
+        from_mint: MintId,
+        to_mint: MintId,
+        slippage_bps: u16,
+    ) -> Option<(QuoteResult, bool)> {
+        if slippage_bps > 10_000
+            || amount_in == 0
+            || pool.protocol != arb_types::DexProtocol::MeteoraDlmm
+        {
             return None;
         }
-
         let swap_for_y = if pool.base_mint == from_mint && pool.quote_mint == to_mint {
             true
         } else if pool.quote_mint == from_mint && pool.base_mint == to_mint {
@@ -128,28 +100,37 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
         } else {
             return None;
         };
+        if pool.has_risky_token
+            || pool.transfer_fee_bps != 0
+            || pool.token_programs != [TokenProgramKind::SplToken; 2]
+        {
+            return None;
+        }
+        MeteoraDlmmQuoteEngine::validate_pool_mint_snapshot(pool).ok()?;
 
-        // The PoolState BPS field is not a complete Token-2022 fee schedule.
-        // Refuse these mints until epoch selection, max-fee cap and transfer-hook
-        // account metadata are all carried by the snapshot.
-        if pool.has_risky_token || pool.transfer_fee_bps != 0 {
+        let request = QuoteRequest {
+            input_mint: from_mint,
+            output_mint: to_mint,
+            amount: amount_in,
+            slippage_bps,
+            input_transfer_fee_config: None,
+            output_transfer_fee_config: None,
+        };
+        let quote = MeteoraDlmmQuoteEngine::new()
+            .quote_exact_in(pool, &request)
+            .ok()?;
+        if !quote.quote_validity
+            || quote.amount_in_raw != amount_in
+            || quote.unfilled_input_raw != 0
+            || quote.amount_out_raw == 0
+            || quote.dlmm_bins_crossed.is_none()
+        {
             return None;
         }
-
-        let (dlmm_pool, bins) = Self::build_dlmm_pool_and_bins(pool)?;
-        let quote = quote_dlmm_view(&dlmm_pool, &bins, amount_in, swap_for_y, None).ok()?;
-        if quote.amount_out == 0 {
-            return None;
-        }
-        // lb_clmm 0.12.0: a swap instruction aborts above 260 traversed bins.
-        // A quote beyond that limit is unexecutable — fail closed.
-        if quote.bins_crossed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
-            return None;
-        }
-        Some((quote.amount_out, quote, swap_for_y))
+        Some((quote, swap_for_y))
     }
 
-    /// Quote two hops: `start_mint -> mid_mint` on `pool_1`, then `mid_mint -> start_mint` on `pool_2`.
+    /// Quote two hops: `start_mint -> mid_mint` on pool 1, then back on pool 2.
     pub fn quote_two_hops(
         pool_1: &PoolState,
         pool_2: &PoolState,
@@ -157,63 +138,141 @@ impl MeteoraDlmmCrossPoolQuoteEngine {
         start_mint: MintId,
         mid_mint: MintId,
     ) -> Option<TwoHopDlmmQuote> {
-        let (hop1_out, q1, swap_for_y1) =
-            Self::quote_single_hop(pool_1, amount_in, start_mint, mid_mint)?;
+        Self::quote_two_hops_with_slippage(
+            pool_1,
+            pool_2,
+            amount_in,
+            start_mint,
+            mid_mint,
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
+        )
+    }
 
-        let (hop2_out, q2, swap_for_y2) =
-            Self::quote_single_hop(pool_2, hop1_out, mid_mint, start_mint)?;
+    pub fn quote_two_hops_with_slippage(
+        pool_1: &PoolState,
+        pool_2: &PoolState,
+        amount_in: u64,
+        start_mint: MintId,
+        mid_mint: MintId,
+        slippage_bps: u16,
+    ) -> Option<TwoHopDlmmQuote> {
+        let (hop1, swap_for_y1) = Self::quote_single_hop_with_slippage(
+            pool_1,
+            amount_in,
+            start_mint,
+            mid_mint,
+            slippage_bps,
+        )?;
+        let (hop2_expected, swap_for_y2) = Self::quote_single_hop_with_slippage(
+            pool_2,
+            hop1.amount_out_raw,
+            mid_mint,
+            start_mint,
+            slippage_bps,
+        )?;
+        let (hop2_conservative, _) = Self::quote_single_hop_with_slippage(
+            pool_2,
+            hop1.minimum_amount_out_raw,
+            mid_mint,
+            start_mint,
+            slippage_bps,
+        )?;
+        let hop1_fee_mint = MeteoraDlmmQuoteEngine::fee_mint_for_quote(pool_1, start_mint).ok()?;
+        let hop2_fee_mint = MeteoraDlmmQuoteEngine::fee_mint_for_quote(pool_2, mid_mint).ok()?;
 
-        let gross_profit = (hop2_out as i64) - (amount_in as i64);
-        let spread_bps = if gross_profit > 0 {
-            ((gross_profit as u64).saturating_mul(10_000)) / amount_in.max(1)
-        } else {
-            0
+        let gross_profit =
+            i64::try_from(i128::from(hop2_expected.amount_out_raw) - i128::from(amount_in)).ok()?;
+        let minimum_gross_profit = i64::try_from(
+            i128::from(hop2_conservative.minimum_amount_out_raw) - i128::from(amount_in),
+        )
+        .ok()?;
+        let spread = |profit: i64| -> Option<u64> {
+            if profit <= 0 {
+                return Some(0);
+            }
+            u64::try_from(
+                u128::try_from(profit)
+                    .ok()?
+                    .checked_mul(10_000)?
+                    .checked_div(u128::from(amount_in.max(1)))?,
+            )
+            .ok()
         };
+        let spread_bps = spread(gross_profit)?;
+        let minimum_spread_bps = spread(minimum_gross_profit)?;
 
         Some(TwoHopDlmmQuote {
             initial_amount_in: amount_in,
-            hop1_amount_out: hop1_out,
-            hop2_final_amount_out: hop2_out,
+            hop1_amount_out: hop1.amount_out_raw,
+            hop1_minimum_amount_out: hop1.minimum_amount_out_raw,
+            hop2_final_amount_out: hop2_expected.amount_out_raw,
+            hop2_minimum_amount_out: hop2_conservative.minimum_amount_out_raw,
             gross_profit,
             spread_bps,
-            hop1_bins_traversed: q1.bins_crossed,
-            hop2_bins_traversed: q2.bins_crossed,
-            hop1_fee: q1.fee_amount,
-            hop2_fee: q2.fee_amount,
+            minimum_gross_profit,
+            minimum_spread_bps,
+            hop1_bins_traversed: hop1.dlmm_bins_crossed?,
+            hop2_bins_traversed: hop2_expected.dlmm_bins_crossed?,
+            hop1_fee: hop1.fees_breakdown.total_fee,
+            hop1_fee_mint,
+            hop2_fee: hop2_expected.fees_breakdown.total_fee,
+            hop2_fee_mint,
             hop1_swap_for_y: swap_for_y1,
             hop2_swap_for_y: swap_for_y2,
         })
     }
 
-    /// Quote Direction A on an eligible pair:
-    /// Pool A: Quote -> Base (`canonical_mint_y -> canonical_mint_x`)
-    /// Pool B: Base -> Quote (`canonical_mint_x -> canonical_mint_y`)
+    /// Direction A: Pool A quote-to-base, then Pool B base-to-quote.
     pub fn quote_direction_a(
         pair: &MeteoraDlmmEligiblePair,
         amount_in: u64,
     ) -> Option<TwoHopDlmmQuote> {
-        Self::quote_two_hops(
+        Self::quote_direction_a_with_slippage(
+            pair,
+            amount_in,
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
+        )
+    }
+
+    pub fn quote_direction_a_with_slippage(
+        pair: &MeteoraDlmmEligiblePair,
+        amount_in: u64,
+        slippage_bps: u16,
+    ) -> Option<TwoHopDlmmQuote> {
+        Self::quote_two_hops_with_slippage(
             &pair.pool_a_state,
             &pair.pool_b_state,
             amount_in,
             pair.canonical_mint_y,
             pair.canonical_mint_x,
+            slippage_bps,
         )
     }
 
-    /// Quote Direction B on an eligible pair:
-    /// Pool B: Quote -> Base (`canonical_mint_y -> canonical_mint_x`)
-    /// Pool A: Base -> Quote (`canonical_mint_x -> canonical_mint_y`)
+    /// Direction B: Pool B quote-to-base, then Pool A base-to-quote.
     pub fn quote_direction_b(
         pair: &MeteoraDlmmEligiblePair,
         amount_in: u64,
     ) -> Option<TwoHopDlmmQuote> {
-        Self::quote_two_hops(
+        Self::quote_direction_b_with_slippage(
+            pair,
+            amount_in,
+            arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
+        )
+    }
+
+    pub fn quote_direction_b_with_slippage(
+        pair: &MeteoraDlmmEligiblePair,
+        amount_in: u64,
+        slippage_bps: u16,
+    ) -> Option<TwoHopDlmmQuote> {
+        Self::quote_two_hops_with_slippage(
             &pair.pool_b_state,
             &pair.pool_a_state,
             amount_in,
             pair.canonical_mint_y,
             pair.canonical_mint_x,
+            slippage_bps,
         )
     }
 }

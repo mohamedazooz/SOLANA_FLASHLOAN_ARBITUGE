@@ -469,7 +469,11 @@ pub struct PoolState {
     pub decimals_b: u8,
     pub reserve_in: u128,
     pub reserve_out: u128,
+    /// Exact protocol fee-rate numerator. Preserve the source denominator;
+    /// converting sub-bps protocols (e.g. Raydium CPMM) to integer bps loses fees.
     pub fee_numerator: u64,
+    /// Exact protocol fee-rate denominator (10_000 for bps venues, 1_000_000
+    /// for Raydium CPMM/CLMM). Quote engines must use this pair, not fee_bps().
     pub fee_denominator: u64,
     pub is_active: bool,
     /// Token-2022 safety: true if either mint has a risky extension
@@ -506,28 +510,45 @@ pub struct PoolState {
     pub last_update_ms: u64,
 }
 
+/// Convert an exact fee ratio to conservative integer BPS metadata. Ceiling
+/// prevents graph-only paths from treating a valid sub-bps fee as zero.
+fn conservative_fee_bps(numerator: u64, denominator: u64) -> Option<u16> {
+    if denominator == 0 {
+        return None;
+    }
+    let scaled = u128::from(numerator).checked_mul(10_000)?;
+    let rounded_up = scaled.checked_add(u128::from(denominator) - 1)? / u128::from(denominator);
+    let fee = u16::try_from(rounded_up).ok()?;
+    (fee <= PoolState::FEE_BPS_MAX).then_some(fee)
+}
+
+#[cfg(test)]
+mod conservative_fee_bps_tests {
+    use super::conservative_fee_bps;
+
+    #[test]
+    fn sub_basis_point_fees_round_up_for_graph_estimates() {
+        assert_eq!(conservative_fee_bps(50, 1_000_000), Some(1));
+        assert_eq!(conservative_fee_bps(2_500, 1_000_000), Some(25));
+        assert_eq!(conservative_fee_bps(2_560, 1_000_000), Some(26));
+        assert_eq!(conservative_fee_bps(0, 10_000), Some(0));
+        assert_eq!(conservative_fee_bps(50, 0), None);
+    }
+}
+
 impl PoolState {
     /// Maximum representable fee rate in basis points (100%). Any computed fee
     /// above this is invalid and must be rejected, never silently capped.
     pub const FEE_BPS_MAX: u16 = 10_000;
 
-    /// Total swap fee in basis points, derived from the stored numerator/denom.
+    /// Conservative, rounded-up basis-point metadata for graph ranking and
+    /// display. This is NOT suitable for exact quote math: valid sub-bps rates
+    /// round up to 1 bps. Pricing must use the exact ratio fields.
     ///
     /// Returns `None` when the fee is invalid: `fee_denominator == 0`, the
-    /// computed value overflows `u16`, or the result exceeds `FEE_BPS_MAX`
-    /// (100%). Invalid fee data is never silently converted to 100% — callers
-    /// MUST handle the `None` case and reject the pool rather than price it
-    /// with a guessed fee.
+    /// computed value overflows `u16`, or the result exceeds `FEE_BPS_MAX`.
     pub fn fee_bps(&self) -> Option<u16> {
-        if self.fee_denominator == 0 {
-            return None;
-        }
-        let value = (self.fee_numerator as u128 * 10_000u128) / self.fee_denominator as u128;
-        let fee = u16::try_from(value).ok()?;
-        if fee > Self::FEE_BPS_MAX {
-            return None;
-        }
-        Some(fee)
+        conservative_fee_bps(self.fee_numerator, self.fee_denominator)
     }
 
     /// True when the pool carries a usable fee numerator/denominator pair.

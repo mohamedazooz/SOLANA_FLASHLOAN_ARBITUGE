@@ -2,21 +2,12 @@
 # Copy to config.toml and fill in values. NEVER commit real credentials.
 # Secret values must come from the secret provider (env for local dev),
 # never from this file.
-# This example parses as both the library Config (unknown keys ignored) and
-# the arb-config AppConfig schema.
+# This is the legacy arb-bot runtime schema ([bot]/[rpc]). Runtime mode is
+# selected by ARB_MODE / ARB_LIVE, not by fields in this file. The alternate
+# arb-config AppConfig schema uses top-level [mode]/[provider].
 
 [bot]
-mode = "shadow"
 canary = false
-live_enabled = false   # arb-config only; required for Mode::Live to be armed
-
-[grpc]
-primary_url = "https://grpc.example.com"
-primary_token_env = "HELIUS_API_KEY"
-failover_url = ""
-failover_token_env = "SHYFT_API_KEY"
-commitment = "processed"
-ping_reply = true
 
 [rpc]
 url = "https://rpc.example.com"
@@ -126,11 +117,6 @@ listen = "127.0.0.1:9100"
 [admin]
 listen = "127.0.0.1:9101"
 token_env = "SENTINEL_ADMIN_KEY"
-
-[security]
-cors_allow_origins = []
-max_request_body_bytes = 1048576
-webhook_signature_required = true
 
 [chronos]
 enabled = true

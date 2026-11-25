@@ -76,11 +76,18 @@ fn dlmm_pool(
     per_bin_side: u128,
 ) -> PoolState {
     let exec = if with_accounts {
+        let first_array = (active_id - 40).div_euclid(70) as i64;
+        let last_array = (active_id + 40).div_euclid(70) as i64;
+        let bin_array_pdas = (first_array..=last_array)
+            .map(|index| {
+                arb_dex::engines::MeteoraDlmmQuoteEngine::derive_bin_array_pda(&pk(tag), index).0
+            })
+            .collect();
         Some(PoolExecutionAccounts::MeteoraDlmm {
             reserve_x: pk(tag * 10 + 1),
             reserve_y: pk(tag * 10 + 2),
             oracle: pk(tag * 10 + 3),
-            bin_array_pdas: vec![],
+            bin_array_pdas,
             bitmap_extension: None,
             pool_token_x: wsol().0,
             pool_token_y: usdc().0,

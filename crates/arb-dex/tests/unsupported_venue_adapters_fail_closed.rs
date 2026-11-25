@@ -1,14 +1,8 @@
 //! Cross-protocol contract tests: incomplete snapshots must never produce
 //! quotes or be advertised as execution-ready.
 
-use arb_dex::{
-    AmmPool, MeteoraDammV2Pool, MeteoraDbcPool, MeteoraDlmmProPool, RaydiumLaunchLabPool,
-};
-use arb_math::{
-    clmm::tick_to_sqrt_price_x64,
-    dbc::{DbcCurve, DbcCurveSegment, ONE_Q64},
-    dlmm_pro::DlmmProPoolState,
-};
+use arb_dex::{AmmPool, MeteoraDammV2Pool, MeteoraDbcPool, RaydiumLaunchLabPool};
+use arb_math::dbc::{DbcCurve, DbcCurveSegment, ONE_Q64};
 use arb_types::{MintId, PoolId, TokenProgramKind};
 use solana_pubkey::Pubkey;
 
@@ -61,29 +55,11 @@ fn all_four_unsupported_venues_fail_closed_in_direct_pool_adapters() {
         25,
     );
 
-    let dlmm_pro_state = DlmmProPoolState::new(
-        0,
-        tick_to_sqrt_price_x64(0).expect("tick zero price"),
-        10_000_000_000,
-        60,
-        25,
-    );
-    let dlmm_pro = MeteoraDlmmProPool::new(
-        PoolId::new([3; 32]),
-        MintId(Pubkey::new_unique()),
-        MintId(Pubkey::new_unique()),
-        Pubkey::new_unique(),
-        Pubkey::new_unique(),
-        Pubkey::new_unique(),
-        dlmm_pro_state,
-        vec![],
-    );
-
     let launchlab_bytes = vec![0u8; arb_dex::raydium_launchlab::RAYDIUM_LAUNCHLAB_POOL_MIN_SIZE];
     let launchlab = RaydiumLaunchLabPool::from_account(PoolId::new([4; 32]), &launchlab_bytes)
         .expect("well-sized LaunchLab pool prefix should decode");
 
-    let pools: [&dyn AmmPool; 4] = [&damm, &dbc, &dlmm_pro, &launchlab];
+    let pools: [&dyn AmmPool; 3] = [&damm, &dbc, &launchlab];
     for pool in pools {
         assert!(
             pool.fee_bps().is_none(),

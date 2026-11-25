@@ -93,7 +93,6 @@ fn incomplete_protocol_specific_states_fail_closed_instead_of_using_cpmm_fallbac
     let protocols = [
         DexProtocol::MeteoraDammV2,
         DexProtocol::MeteoraDbc,
-        DexProtocol::MeteoraDlmmPro,
         DexProtocol::RaydiumLaunchLab,
     ];
     for protocol in protocols {
@@ -129,7 +128,6 @@ fn exact_out_missing_protocol_math_is_explicitly_unsupported() {
         DexProtocol::MeteoraDlmm,
         DexProtocol::MeteoraDammV2,
         DexProtocol::MeteoraDbc,
-        DexProtocol::MeteoraDlmmPro,
         DexProtocol::RaydiumLaunchLab,
         DexProtocol::PumpFun,
         DexProtocol::PumpSwap,

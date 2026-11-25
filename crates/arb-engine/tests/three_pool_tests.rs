@@ -47,7 +47,7 @@ fn make_cpmm_pool(
 fn test_three_pool_route_sequential_chaining() {
     let engine = ThreePoolRouteEngine::new();
 
-    let mint_sol = Pubkey::new_unique();
+    let mint_sol = arb_constants::wsol_mint();
     let mint_usdc = Pubkey::new_unique();
     let mint_bonk = Pubkey::new_unique();
 
@@ -134,6 +134,18 @@ fn test_three_pool_route_sequential_chaining() {
     // Verify Kamino flash loan fee: ceil(1e9 * 5 / 10000) = 500,000 lamports
     assert_eq!(quote.flash_loan_fee, 500_000);
     assert_eq!(quote.total_repay_required, borrow_amount + 500_000);
+    assert_eq!(
+        quote.gross_profit,
+        quote.gross_output as i64 - quote.total_repay_required as i64
+    );
+    assert_eq!(
+        quote.total_costs,
+        quote.network_fee + quote.priority_fee + quote.jito_tip
+    );
+    assert_eq!(
+        quote.net_profit_lamports,
+        quote.gross_profit - quote.total_costs as i64
+    );
 
     // Verify network fee & size constraints
     assert_eq!(quote.network_fee, BASE_NETWORK_FEE_LAMPORTS);
@@ -147,7 +159,7 @@ fn test_three_pool_route_sequential_chaining() {
 fn test_three_pool_route_token2022_transfer_fees() {
     let engine = ThreePoolRouteEngine::new();
 
-    let mint_sol = Pubkey::new_unique();
+    let mint_sol = arb_constants::wsol_mint();
     let mint_token2022 = Pubkey::new_unique();
     let mint_c = Pubkey::new_unique();
 
@@ -213,7 +225,12 @@ fn test_three_pool_route_token2022_transfer_fees() {
         .expect("Quote simulation must succeed");
 
     // Check that transfer fees were accounted for
-    assert!(quote.token_transfer_fees > 0);
+    assert!(
+        quote
+            .transfer_fees_by_hop
+            .iter()
+            .any(|fee| { fee.input_transfer_fee_raw > 0 || fee.output_transfer_fee_raw > 0 })
+    );
     assert!(quote.hops[0].transfer_fee_breakdown.output_transfer_fee > 0);
     assert!(quote.hops[1].transfer_fee_breakdown.input_transfer_fee > 0);
 }
@@ -222,7 +239,7 @@ fn test_three_pool_route_token2022_transfer_fees() {
 fn test_kamino_borrow_optimizer_finds_profitable_size() {
     let optimizer = KaminoBorrowOptimizer::new();
 
-    let mint_sol = Pubkey::new_unique();
+    let mint_sol = arb_constants::wsol_mint();
     let mint_usdc = Pubkey::new_unique();
     let mint_bonk = Pubkey::new_unique();
 

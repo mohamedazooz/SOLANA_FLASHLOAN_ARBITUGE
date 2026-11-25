@@ -225,6 +225,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
             calculation_version: ORCA_WHIRLPOOL_VERSION,
             quote_validity: true,
             computation_time_us: elapsed,
+            dlmm_bins_crossed: None,
         })
     }
 

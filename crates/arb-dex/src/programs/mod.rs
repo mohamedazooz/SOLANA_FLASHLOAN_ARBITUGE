@@ -300,27 +300,6 @@ impl ProgramRegistry {
                 github_url: Some("https://github.com/meteoraAg/dlmm-sdk"),
             },
         );
-
-        // Meteora DLMM Pro
-        // Mainnet: dPro1D5wiqnGMH8vMDG23jh35btTHoWdyqXjqkqxe8n
-        let meteora_dlmm_pro_mainnet = Pubkey::from_str(arb_constants::METEORA_DLMM_PRO_PROGRAM_ID)
-            .expect("Invalid Meteora DLMM Pro Mainnet Program ID");
-
-        self.programs.insert(
-            meteora_dlmm_pro_mainnet,
-            ProgramInfo {
-                name: "Meteora DLMM Pro",
-                protocol: DexProtocol::MeteoraDlmmPro,
-                mainnet_id: meteora_dlmm_pro_mainnet,
-                devnet_id: None,
-                version: "V1",
-                idl_available: true,
-                sdk_available: true,
-                verified: true,
-                docs_url: Some("https://docs.meteora.ag/"),
-                github_url: Some("https://github.com/meteoraAg/dlmm-sdk"),
-            },
-        );
     }
 
     /// Registers Pump.fun program.

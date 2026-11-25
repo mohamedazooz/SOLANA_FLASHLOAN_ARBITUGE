@@ -935,11 +935,23 @@ mod tests {
     }
     #[test]
     fn kill_switch_without_persistence_path_is_explicitly_memory_only() {
+        // This test shares process environment with the live-gated bypass test.
+        // Serialize access and clear bypass flags so parallel execution cannot
+        // make an active in-memory kill switch appear unblocked.
+        let _env_lock = ENV_LOCK.lock();
+        unsafe {
+            std::env::remove_var("KILL_SWITCH_DISABLED");
+            std::env::remove_var("ARB_LIVE");
+        }
         let ks = KillSwitch::new();
         assert!(!ks.activate().unwrap());
         assert!(ks.is_blocked());
         assert!(!ks.is_durably_blocked());
         assert!(ks.persistence_error().is_some());
+        unsafe {
+            std::env::remove_var("KILL_SWITCH_DISABLED");
+            std::env::remove_var("ARB_LIVE");
+        }
     }
 
     #[test]
