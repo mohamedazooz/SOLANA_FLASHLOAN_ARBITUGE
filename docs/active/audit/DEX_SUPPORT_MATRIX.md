@@ -1,7 +1,7 @@
 # DEX Support Matrix — Phase 3 (Mission §8)
 
-- **Date:** 2026-11-24 · **Status:** current support snapshot; code is the source of truth.
-- **Method:** source-of-truth-is-code. Every support claim below is derived from the named source file. Protocol IDs and integration constraints were checked against official Meteora and Raydium SDKs, IDLs, and documentation on 2026-11-24.
+- **Date:** 2026-11-25 · **Status:** current support snapshot; code is the source of truth.
+- **Method:** source-of-truth-is-code. Every support claim below is derived from the named source file. Protocol IDs and integration constraints were checked against official Meteora and Raydium SDKs, IDLs, and documentation on 2026-11-24. Raydium CPMM quote state now preserves its 1,000,000 fee denominator, removes accrued non-LP fee counters from vault reserves, and rejects enabled creator-fee pools until the fee-side model is implemented.
 
 ## Support classification legend
 
@@ -10,12 +10,12 @@ Pillar coverage per protocol:
 
 Full support = **A+B+C+D+E+G+F+H**. Anything less is classified by its actual source path below. Generic family-level CPMM/CLMM fallbacks are prohibited; a venue without a protocol-specific, verified state model is quote-only or unsupported.
 
-## Matrix (11 protocols in `DexProtocol`)
+## Matrix (10 active protocols in `DexProtocol`)
 
 | Protocol | Program ID (mainnet) | A Discovery | B Decode | C Quote | D Sizing | E Build | F CPI/Exec | G Sim | H Mainnet verify | Verdict |
 |---|---|---|---|---|---|---|---|---|---|---|
 | RaydiumV4 (AMM) | `675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8` | ✅ `discovery.rs` | ✅ `decode_pool_info` (offsets 336–464) | ✅ exact CP math + vault reserves | ✅ graph sizing | ✅ `swap_hop.rs:131` | ✅ `raydium_v4_boundary_tests`, `raydium_v4_v2_execution_tests` | ✅ arb-sim | ✅ SDK differential (arb-math + mainnet snapshot tests) | **SUPPORTED (full loop)** |
-| RaydiumCpmm | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` | ✅ `discovery.rs:472/544` + AmmConfig live fetch | ✅ vaults decode; fee from AmmConfig **fail-closed** (`decode_pool_info` returns None for fee) | ✅ `raydium_cpmm.rs` engineer | ✅ | ✅ `swap_hop.rs:412` | ✅ | ✅ | ✅ boundary tests + supervisor execution test | **SUPPORTED** |
+| RaydiumCpmm | `CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C` | live PoolState + AmmConfig | owner/mint checks; subtracts accrued protocol/fund/creator counters from raw vaults | exact 1,000,000 fee ratio; sub-bps preserved; creator-fee-enabled pools fail closed | yes | `swap_hop.rs:412` | yes | real PoolState/AmmConfig fixtures; no complete official-SDK quote differential yet | **SUPPORTED WITH GATES (legacy SPL, creator fee disabled, slot-coherent snapshot)** |
 | RaydiumClmm | `CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK` | ✅ | ✅ (state decode + tick arrays) | ✅ exact tick math (arb-math `clmm_*`) | ✅ tick-boundary sizing | ✅ `swap_hop.rs:465` (+ Memo v2) | ✅ | ✅ | ✅ `raydium_clmm_mainnet_sdk_differential`, `raydium_clmm_swap_math_parity_tests`, tick parity | **SUPPORTED** |
 | OrcaWhirlpool | `whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc` | ✅ | ✅ (245+ offsets, fee bps decode) | ✅ exact tick math | ✅ | ✅ `swap_hop.rs:199` | ✅ | ✅ | ✅ `orca_sdk_parity` (arb-math), `whirlpool_mainnet_sdk_differential` | **SUPPORTED** |
 | MeteoraDlmm | `LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo` | ✅ Meteora data API + gRPC decode | ✅ bins/active_id/params | ✅ exact bin ladder + dynamic fee (`dlmm_*` suites) | ✅ bin-array planning (`plan_bin_arrays`) | ✅ `swap_hop.rs:317` + `protocols/meteora_dlmm.rs` + 3/4-leg builders | ✅ (`meteora_atomic_builder`, editor CPI) | ✅ LiteSVM | ✅ `meteora_mainnet_sdk_differential`, `meteora_sdk_differential_tests`, PDA differential | **SUPPORTED** |
@@ -30,7 +30,7 @@ Program IDs above were re-verified 2026-11-22 against: Meteora official docs (`d
 
 ## Key findings
 
-- **DEX-F-2026-11-22-N1 (P1 — safety gate applied, venues remain unsupported):** the current `UniversalQuoteDispatcher` already rejects these incomplete protocol states, but the separate legacy route-graph path in `crates/arb-engine/src/adapters.rs` previously routed DAMM v2 and DBC through generic CPMM math and DLMM Pro through generic CLMM math. The fallback adapters are now explicit `QuoteOnlyAdapter`s and `execution_capability` rejects all four venues. Direct DAMM v2 / DBC / DLMM Pro adapters also refuse quotes; the DAMM parser now names offset 296..328 as `whitelisted_vault` (the official Pool field), not `config`, and does not expose an execution account until the swap account graph is verified. LaunchLab retains a fee-config verification gate and rejects Token-2022 until epoch-aware transfer-fee / transfer-hook context exists. Re-enable only after protocol-native state hydration, fees, sizing semantics, account graph, differential tests, and simulation are complete.
+- **DEX-F-2026-11-22-N1 (P1 ? safety gate applied, venues remain unsupported):** the current `UniversalQuoteDispatcher` rejects incomplete protocol states; legacy route-graph adapters are explicit `QuoteOnlyAdapter`s and execution capability rejects DAMM v2, DBC, and LaunchLab. Meteora DLMM Pro has been removed from the active enum/runtime. Direct DAMM v2 / DBC adapters refuse quotes; the DAMM parser names offset 296..328 `whitelisted_vault` (not a swap config). LaunchLab retains a fee-config verification gate and rejects Token-2022 until epoch-aware transfer-fee / transfer-hook context exists. Re-enable only after protocol-native state hydration, fees, sizing semantics, account graph, differential tests, and simulation are complete.
 - **DEX-F-2026-11-22-N2 (P3):** RaydiumClmm `decode_pool_info` (discovery fallback) hard-codes `fee_bps: 25` (`decoders.rs:262`). The operative fee is NOT this constant: discovery supplies `feeRate` from the Raydium catalog (`discovery.rs:517`), and `decode_raydium_clmm_state` converts the protocol's millionths-based fee unit with explicit fail-closed exclusion of `fee_on` and `dynamic_fee_info` pools (`decoders.rs:692–701`). The residual risk is only a theoretical path where a CLMM pool reaches the graph without hydration; register as telemetry, not a live correctness defect.
 - **Token-2022 tokens:** fail-closed excluded end-to-end (mint resolution omits Token-2022; transfer-fee rejects) per `EFI`-P1-01 register entry. Unsupported by policy, not by oversight.
 - **Jupiter:** v6 quote/compile client exists (`arb-tx/src/protocols/jupiter.rs`) for envelope/relay paths; **no protocol math or execution beyond assembly** — it is a transport aid, NOT a supported execution venue; no discovery arm.

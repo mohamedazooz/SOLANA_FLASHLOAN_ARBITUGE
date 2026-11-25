@@ -1,41 +1,51 @@
 # RISK CONTROL POLICY — Phase 9 (Mission §14)
 
-**Status:** ACTIVE — source-verified 2026-11-22. Binding policy: any change to a
+**Status:** ACTIVE — source-verified 2026-11-25. Binding policy: any change to a
 threshold below requires a documented economic justification (mission §14) and lands
 via a reviewed PR.
 
 ---
 
-## 1. Risk limits (validated, fail-closed — `crates/arb-config/src/validation.rs`)
+## 1. Risk limits (schema-specific startup validation + runtime RiskGate)
+
+The legacy bot config is validated in `crates/arb-bot/src/config.rs::load` and
+runtime limits are enforced by `crates/arb-risk::RiskGate`. The alternate AppConfig
+schema additionally uses `crates/arb-config/src/validation.rs`; do not assume that
+validator is applied to the legacy `[bot]/[rpc]` config.
 
 | Limit | Key | Enforcement |
 |---|---|---|
-| Max trade size | `risk.max_trade_size_usd > 0` | validation.rs:267; RiskGate pre-trade |
-| Max daily loss | `risk.max_daily_loss_usd > 0` | validation.rs:272; RiskGate |
-| Max hourly loss | `≤ max_daily_loss_usd` | validation.rs:283 (cross-field) |
-| Max consecutive failures | `> 0` | validation.rs:288; RiskGate breaker |
+| Max trade size | `risk.max_trade_size_usd > 0` | legacy config load + RiskGate pre-trade |
+| Max daily loss | `risk.max_daily_loss_usd > 0` | legacy config load + RiskGate |
+| Max hourly loss | `≤ max_daily_loss_usd` | legacy config load (cross-field) |
+| Max consecutive failures | `> 0` | legacy config load + RiskGate breaker |
 | Max slippage | per-hop floor + `HOP_SLIPPAGE_MAX_BPS` builder clamp | opportunity.rs stamp (Phase 4) |
 | Min net profit | `strategy.min_net_profit_abs` + bps | integer CostLedger gate (EI-enforced) |
 | Max borrow amount | ≤ verified Kamino vault liquidity | `kamino_available_flash_liquidity` gate, opportunity.rs:140–168 |
 | Max priority fee | `cap_cu_price_by_profit` share ceiling | opportunity.rs:236–252 |
-| Max Jito tip | `jito.max_tip_lamports` / `max_tip_share_bps` / refuse-above-ceiling bidder | bidder.rs + validation.rs:80–110 |
+| Max Jito tip | `jito.max_tip_lamports` / `max_tip_share_bps` / refuse-above-ceiling bidder | legacy config load + bidder refuse-above-ceiling |
 | Probe TVL floor | `discovery_min_tvl_usd` | arb-risk defaults (lib.rs:455) |
 | Min SOL reserve | wallet validation | arb-risk limits |
 
-Fail-closed rule: missing/invalid critical configuration aborts startup (validation runs
+Fail-closed rule: schema-specific startup validation rejects missing/invalid critical configuration before execution; runtime RiskGate rechecks economic limits before dispatch.
 before any execution; nothing clamped).
 
 ## 2. Mode gates
 
-```
-shadow (default, base.toml) → simulate → canary → live
-live ⇒ ARB_LIVE=1 AND live_enabled=true (double gate)
-```
+Runtime mode is selected by `main.rs` from environment variables, not from the
+legacy `[bot]` TOML section:
 
-Mode is a loaded config value; the supervisor prints the mode at boot
-(`main.rs:386`). Observe mode skips opportunity processing entirely
-(`opportunity.rs:128–138`). No config combination silently selects live: live requires
-both the profile flag and the env gate.
+1. Explicit `ARB_MODE` takes precedence.
+2. Otherwise `ARB_CANARY` selects canary mode when present.
+3. Otherwise a truthy `ARB_LIVE` / `LIVE_TRADING` selects live mode.
+4. Otherwise the default is `observe` (non-live).
+
+Live dispatch requires `BotMode::Live` AND a truthy `ARB_LIVE` (or the documented
+`LIVE_TRADING` alias); `main.rs` refuses live mode without the environment gate.
+The legacy `[bot]/[rpc]` schema does not read `[bot].mode` or `[bot].live_enabled`.
+The alternate AppConfig schema additionally requires `mode.live_enabled=true`.
+No base/profile TOML files are merged automatically; the selected file is logged
+at startup and its SHA-256 provenance is appended to `data/config_load_audit.jsonl`.
 
 ## 3. Breakers & switches (all verified in source)
 
@@ -58,7 +68,7 @@ both the profile flag and the env gate.
 | Read-only endpoints (status, balances, logs) | Admin token (constant-time compare) |
 | Engage/release kill switch via Telegram/Admin | Admin token + event log |
 | Config threshold change (`min_net_profit`, tip/lamport caps, loss limits) | Documented economic justification + reviewed PR (§1 header) |
-| Live mode enable | `ARB_LIVE=1` + `live_enabled=true` + operator approval (separate from code merge) |
+| Live mode enable | `ARB_LIVE=1` + operator approval; alternate AppConfig also requires `mode.live_enabled=true` |
 | On-chain program deploy/upgrade | Explicit operator approval — never automatic |
 | Fund movement / wallet ops | Operator only; the bot never exposes key material through any admin API |
 
@@ -77,10 +87,10 @@ both the profile flag and the env gate.
 
 ## 6. Config-change audit trail
 
-Current: Telegram notification + outcome/event logging for rejections and aborts.
-**Gap (registered):** no append-only file/store for config-threshold changes —
-CFN-F-2026-11-22-N3 (P3). Proposed hook: emit an audit record row per config load with
-the diff of threshold values vs the previously persisted profile.
+Current: every successful config load appends one JSONL provenance row to
+`data/config_load_audit.jsonl` with Unix timestamp, selected config path, SHA-256,
+and runtime mode. No config values or secret material are written. This provides
+append-only file provenance; it does not claim a semantic field-by-field diff.
 
 ## 7. Operator checklist (per deployment)
 

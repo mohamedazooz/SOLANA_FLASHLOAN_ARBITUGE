@@ -123,13 +123,13 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Required Fix**: when the two-pool engine is wired into supervision, raise `leg_b.min_amount_out` to `max(repay, borrow+fee+tip+min_profit)` and include the tip; then add the FL-15-style regression test to this assembler.
 - **Status**: OPEN (P3); wire-up must not proceed without this.
 
-### DEX-F-2026-11-22-N1: Protocol-Specific State and Quote Engines for DAMM v2 / DBC / DLMM Pro / LaunchLab (P1)
+### DEX-F-2026-11-22-N1: Protocol-Specific State and Quote Engines for DAMM v2 / DBC / LaunchLab (P1)
 
-- **Files**: `crates/arb-engine/src/adapters.rs`; `crates/arb-dex/src/meteora_damm_v2.rs`; `meteora_dbc.rs`; `meteora_dlmm_pro.rs`; `raydium_launchlab.rs`; `crates/arb-ingest/` discovery and hydration paths.
-- **Observed Behavior**: the `UniversalQuoteDispatcher` rejects incomplete snapshots, but the separate legacy route-graph adapters previously allowed DAMM v2 and DBC to enter generic CPMM math and DLMM Pro to enter generic CLMM math. The direct DBC and DLMM Pro `AmmPool` adapters also quoted partial state. A DAMM v2 parser field read from official Pool offset 296..328 was named `config`, although the official Pool field at that offset is `whitelisted_vault`; it must not be passed to the swap builder as a config account.
-- **Safety correction (this branch)**: remove family-level fallbacks; register DAMM v2 / DBC / DLMM Pro as explicit quote-only adapters; make direct DAMM v2 / DBC / DLMM Pro quote methods refuse incomplete state; withhold their execution accounts; rename the DAMM field to `whitelisted_vault`; require LaunchLab's fee-config gate for execution readiness and reject Token-2022 until exact epoch-aware fee/hook context is available. Regression tests cover both the legacy route graph and direct `AmmPool` adapters.
+- **Files**: `crates/arb-engine/src/adapters.rs`; `crates/arb-dex/src/meteora_damm_v2.rs`; `meteora_dbc.rs`; `raydium_launchlab.rs`; `crates/arb-ingest/` discovery and hydration paths.
+- **Observed Behavior**: the `UniversalQuoteDispatcher` rejects incomplete snapshots, but the separate legacy route-graph adapters previously allowed DAMM v2 and DBC to enter generic CPMM math and DLMM Pro to enter generic CLMM math. The direct DBC and DLMM Pro `AmmPool` adapters also quoted partial state. DLMM Pro has since been removed from the active `DexProtocol` enum and runtime rather than retained as a candidate integration. A DAMM v2 parser field read from official Pool offset 296..328 was named `config`, although the official Pool field at that offset is `whitelisted_vault`; it must not be passed to the swap builder as a config account.
+- **Safety correction (this branch)**: remove family-level fallbacks; register DAMM v2 / DBC as explicit quote-only adapters; make direct DAMM v2 / DBC quote methods refuse incomplete state; retire DLMM Pro from the active enum, math, decoder, hydration, and transaction paths; withhold their execution accounts; rename the DAMM field to `whitelisted_vault`; require LaunchLab's fee-config gate for execution readiness and reject Token-2022 until exact epoch-aware fee/hook context is available. Regression tests cover both the legacy route graph and direct `AmmPool` adapters.
 - **Required before ANY enablement**: authoritative protocol-native state decoders and coherent pool/config/vault/tick/bitmap/oracle/mint snapshots; protocol-specific exact-in math and exact-out only where the official model supports it; dynamic/scheduled fees, migration/partial-fill semantics, epoch-aware Token-2022 transfer fees and transfer-hook accounts; sizing boundaries; exact instruction account/discriminator validation; official SDK differential vectors and non-broadcast mainnet simulation.
-- **Status**: SAFETY GATE APPLIED; ALL FOUR VENUES REMAIN NOT ENABLED. This issue stays open until the full integration gates pass. See `docs/active/audit/DEX_SUPPORT_MATRIX.md` and `docs/active/research/DEX_PROTOCOL_ADAPTER_PLAN_2026-11-24.md`.
+- **Status**: SAFETY GATE APPLIED; DLMM Pro is retired from the active runtime. DAMM v2, DBC, and LaunchLab remain NOT ENABLED. This issue stays open until the full integration gates pass for those remaining venues. See `docs/active/audit/DEX_SUPPORT_MATRIX.md` and `docs/active/research/DEX_PROTOCOL_ADAPTER_PLAN_2026-11-24.md`.
 
 ### DEX-F-2026-11-22-N2: Raydium CLMM Discovery Fallback Fee Is a Structural Constant (P3, telemetry)
 
@@ -209,31 +209,30 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
-### CFN-F-2026-11-22-N1: Legacy Root config.toml Auto-Selected First With Divergent Values (P3)
+### CFN-F-2026-11-22-N1: Legacy Root config.toml Auto-Selection (P3, RESOLVED)
 
 - **File**: `crates/arb-bot/src/main.rs:42–50`, root `config.toml`
 - **Severity**: P3
-- **Status**: Open.
-- **Evidence**: default config path picks `config.toml` before `config/config.toml`; the root file is annotated "Automatically mapped from .env" and carries values divergent from the layered defaults (e.g. min_keep_lamports=20000, max_tip_lamports=100000).
-- **Risk if ignored**: stale flat-file values can silently override the documented layered scheme.
-- **Required action**: operator decision — delete legacy root config.toml/config.example.toml or invert the probe order; add a startup log line naming the exact effective config paths.
-- **Acceptance criteria**: single canonical entry point + startup log of effective source(s).
+- **Status**: RESOLVED locally.
+- **Evidence**: the default resolver now selects only `config/config.toml`; the tracked root file has been removed. The operator copy remains at the ignored canonical path.
+- **Risk if ignored**: N/A; the resolver is canonical and fails closed when the operator file is absent.
+- **Required action**: none; keep the canonical path and explicit `--config` override.
+- **Acceptance criteria**: met by canonical-path resolver regression test and startup path log.
 
-### CFN-F-2026-11-22-N2: No Testing Profile (P3)
+### CFN-F-2026-11-22-N2: No Testing Configuration (P3, RESOLVED)
 
 - **File**: `config/`
 - **Severity**: P3
-- **Status**: Open.
-- **Evidence**: development/staging/production layer on base.toml; a testing profile is absent (runtime steps down to base defaults).
-- **Required action**: add `config/testing.toml` mirroring staging with test endpoints.
+- **Status**: RESOLVED locally.
+- **Correction**: added standalone `config/testing.toml` with loopback validator RPC and isolated resources; launch with `ARB_MODE=simulate` and keep `ARB_LIVE` unset. The runtime mode is environment-controlled, not read from the TOML file.
 
-### CFN-F-2026-11-22-N3: No Append-Only Config-Change Audit Log (P3)
+### CFN-F-2026-11-22-N3: No Append-Only Config-Change Audit Log (P3, PARTIALLY RESOLVED)
 
-- **File**: `crates/arb-config/src/loader.rs`
+- **File**: `crates/arb-bot/src/main.rs::append_config_audit`
 - **Severity**: P3
-- **Status**: Open.
-- **Evidence**: threshold changes land via reviewed PRs, but runtime loads record no audit row of effective threshold values.
-- **Required action**: emit a config-load audit record (diff vs previous persisted load) on every startup.
+- **Status**: PARTIALLY RESOLVED locally; field-level semantic change auditing remains open.
+- **Correction**: every successful config load appends one JSONL provenance row to `data/config_load_audit.jsonl` with Unix timestamp, selected path, SHA-256 of the selected file, and runtime mode. It deliberately stores no config values or secret material. Audit write failures emit a warning and do not alter execution mode.
+- **Remaining action**: if threshold-level change history is required, add a redacted semantic diff of non-secret fields (or explicitly accept hash-only provenance as the final policy).
 
 ### JTO-F-2026-11-22-N4: BAM / Proposer-Builder Separation Transition Unassessed (P3)
 
@@ -331,3 +330,18 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **File**: `crates/arb-ingest/src/helius_ws.rs`
 - **Current Behavior**: The referenced `helius_ws.rs` no longer contains an unbounded Tokio channel (repository search found no `unbounded_channel` or `UnboundedReceiver` usage under `crates/`). This register entry is stale and does not describe the current implementation.
 - **Status**: Closed as not present in current source. Continue to monitor bounded ingestion queues if a channel-based decoder pipeline is introduced.
+
+
+### DEX-F-2026-11-25-N2: Raydium CPMM Official-SDK Quote Differential and Fee Attribution (P2)
+
+- **Files**: `crates/arb-ingest/src/decoders.rs`, `crates/arb-ingest/src/hydration.rs`, `crates/arb-dex/src/engines/raydium_cpmm.rs`, `crates/arb-engine/src/adapters.rs`
+- **Current behavior**: exact `trade_fee_rate / 1_000_000` is preserved for quote math; accrued protocol/fund/creator counters are removed from raw vault balances; pool, vault and AmmConfig owner/mint checks are enforced; snapshots must share one slot; Token-2022 and creator-fee-enabled pools fail closed. Integer `MarketEdge.fee_bps` uses conservative ceiling for graph prefiltering, so sub-bps opportunities may be under-ranked. Generic fee component fields are not populated when live allocation rates are unavailable.
+- **Status**: Partially addressed; full support remains gated.
+- **Required action**: capture versioned mainnet PoolState/AmmConfig/vault snapshots and compare both swap directions and multiple input sizes against the official Raydium CP-Swap SDK/program, including fee rounding, accrued-fee reserve treatment, slot coherence and creator-fee flags. Carry exact fee ratios into graph edges if sub-bps route recall is required. Do not enable creator-fee pools until input/output-side semantics are implemented.
+
+### CFG-F-2026-11-25-N1: Dual Configuration Schemas and Permissive Legacy Keys (P2)
+
+- **Files**: `crates/arb-bot/src/config.rs`, `crates/arb-config/src/lib.rs`, `crates/arb-config/src/loader.rs`, `config/*.toml`
+- **Current behavior**: the runtime accepts the legacy `[bot]/[rpc]` schema and an alternate top-level `[mode]/[provider]` AppConfig schema. Both load one standalone file; no automatic profile merge exists. The legacy parser remains permissive toward unknown TOML keys.
+- **Status**: Open follow-up; canonical path selection and secret-safe provenance are fixed in this branch, but schema consolidation is not included.
+- **Required action**: migrate runtime to one schema, provide one canonical example/testing template, reject unknown keys at every nested level, and add compatibility/migration tests before removing the legacy parser.

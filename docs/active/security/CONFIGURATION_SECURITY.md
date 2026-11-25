@@ -7,38 +7,51 @@ Keychain signing recommendation — citations in
 
 ---
 
-## 1. Precedence chain (verified)
+## 1. Configuration selection and precedence (source-verified)
 
-Documented in `crates/arb-config/src/loader.rs:1–8` and `config/base.toml:6–8`:
+`crates/arb-bot/src/main.rs::parse_args` selects one path in this order:
+explicit `--config`, `ARB_CONFIG`, then the canonical default
+`config/config.toml`. `crates/arb-bot/src/config.rs::load` parses that single file.
+It selects the legacy bot schema (`[bot]` / `[rpc]`) unless the file has top-level
+`[mode]` or `[provider]`, in which case it uses the alternate `arb-config::AppConfig`
+loader. Both paths load one complete TOML file; neither merges `base.toml`, profile
+files, or `execution.toml`/`risk.toml` overlays.
 
-```
-compiled protocol invariants → config/base.toml → env-specific TOML
-(development | staging | production) → environment variables (whitelisted set,
-loader.rs:48–70) → CLI args
-```
+The legacy bot schema applies its explicit environment overrides in
+`arb-bot/src/config.rs::load`; the alternate AppConfig schema applies its
+allow-listed overrides in `arb-config/src/loader.rs`. CLI `--config` chooses the
+file; it does not merge configuration layers.
+Default selection is fail-closed and canonical:
 
-**Resolved ambiguity this phase**: two legacy single-file entry points still exist —
-`config.toml` (root, auto-mapped from `.env`, values divergent from the layered
-defaults, e.g. `min_keep_lamports = 20000` vs layered risk defaults) and
-`config/config.example.toml`. `arb-bot/src/main.rs:42–50` picks `config.toml` FIRST when
-both exist. This is registered as **CFN-F-2026-11-22-N1 (P3)**: legacy root files are
-duplicates that can silently select stale values; the appended layers (`config/base.toml`
-+ profile) are the canonical scheme. Remediation requires an operator decision
-(delete/redirect legacy files) — not silently done now.
+1. `config/config.toml` is selected when present.
+2. If it is absent, startup fails and instructs the operator to copy
+   `config/config.example.toml`; the legacy root `config.toml` is not selected.
+3. `ARB_CONFIG` or explicit `--config <PATH>` may select another standalone file.
 
-## 2. Explicit profiles (verified on disk)
+The tracked root `config.toml` was removed from the repository because it carried
+stale, divergent values. The local operator copy is preserved only in the ignored
+`config/config.toml`. Startup logs the selected path and appends a JSONL provenance
+record containing timestamp, path, SHA-256, and mode (never config values or secrets)
+to `data/config_load_audit.jsonl`.
 
-| Profile | File | Notes |
-|---|---|---|
-| base | `config/base.toml` | `mode = "shadow"` default; `live_enabled = false`; **secrets are ENV-VAR NAMES, never values** (header, lines 1–8) |
-| development | `config/development.toml` | present |
-| staging | `config/staging.toml` | admin listen pinned `127.0.0.1:9100/9101` |
-| production | `config/production.toml` | listen pinned `127.0.0.1:9100/9101` (lines 82–85) — **loopback-only by default** |
-| sim/execution/risk/protocols/providers/webhook | `config/*.toml` | layered semantics files |
+## 2. Standalone configuration files (not merged automatically)
 
-Live mode requires the **double gate** `ARB_LIVE=1` AND `live_enabled = true`
-(`config/base.toml` header). Default = shadow. Production config can never override
-compiled protocol invariants or mandatory safety limits.
+| File | Purpose |
+|---|---|
+| `config/config.example.toml` | Tracked deployment template; copy to ignored `config/config.toml` |
+| `config/config.toml` | Operator-managed canonical local/deployment file; gitignored |
+| `config/development.toml` | Standalone development configuration; select explicitly with `--config` |
+| `config/staging.toml` | Standalone staging configuration; select explicitly with `--config` |
+| `config/testing.toml` | Standalone local testing config; loopback RPC; launch with `ARB_MODE=simulate` and keep `ARB_LIVE` unset; isolated DB/ports |
+| `config/production.toml` | Standalone production template; select explicitly with `--config` |
+| `config/base.toml`, `execution.toml`, `risk.toml`, `protocols.toml`, `providers.toml`, `webhook.toml` | Reference/configuration source files; not automatically merged by `load()` |
+
+For the legacy bot schema, runtime mode is selected by `ARB_MODE`/`ARB_LIVE`; a
+truthy `ARB_LIVE` (or the documented `LIVE_TRADING` alias) is required before live
+dispatch. The alternate AppConfig schema additionally has a `mode.live_enabled`
+field. Legacy `[bot].mode` / `[bot].live_enabled` keys were removed from templates
+because the legacy parser does not use them. Compiled protocol invariants and
+mandatory safety checks are enforced independently of the selected TOML file.
 
 ## 3. Strict validation (fail-closed)
 
@@ -54,7 +67,7 @@ nothing silently clamped (module doc lines 1–6):
 - Security: `check_no_placeholder_secret_env_names` (line 414) rejects placeholder
   secret env-var names; secret VALUES never live in TOML — only names resolved via env
   at runtime.
-- `reject_unknown_keys` (line 36) for strict key sets.
+- `reject_unknown_keys` (line 36) applies to the alternate AppConfig schema only; the legacy bot parser does not yet reject every unknown key.
 - Admin/metrics listen defaults are `127.0.0.1` (validation.rs:491–496) and profile
   files pin loopback — Web API default bind is `{WEB_BIND:-127.0.0.1:8080}`
   (`arb-bot/src/main.rs:546`).
@@ -86,8 +99,9 @@ nothing silently clamped (module doc lines 1–6):
 
 | Finding | Severity | Summary |
 |---|---|---|
-| CFN-F-2026-11-22-N1 | P3 | Legacy `config.toml` (root) is auto-selected FIRST over layered `config/` when both exist and carries divergent tip/risk values; needs operator decision to delete or redirect. |
-| CFN-F-2026-11-22-N2 | P3 | Profile set lacks a dedicated `testing` profile (dev/staging/prod present, base default shadow). |
+| CFN-F-2026-11-22-N1 | P3 | RESOLVED: root `config.toml` removed from tracking; canonical `config/config.toml` only; startup logs selected path. |
+| CFN-F-2026-11-22-N2 | P3 | RESOLVED: standalone `config/testing.toml` added (loopback RPC, `ARB_MODE=simulate` required, isolated DB/ports); selected explicitly with `--config`. |
+| CFN-F-2026-11-22-N3 | P3 | PARTIALLY RESOLVED: successful loads append timestamp/path/SHA-256/mode provenance; semantic field-level diffs remain open. |
 
 ## 7. Kill switch / breakers status matrix
 
@@ -99,4 +113,4 @@ nothing silently clamped (module doc lines 1–6):
 | RPC breaker | `RpcPool` backoff/token buckets + provider supervisor open-circuit | IMPLEMENTED |
 | Jito breaker | all-engine submit failure = hard error (no silent fallback) | IMPLEMENTED |
 | Consecutive-failure breaker | `RiskGate` limits + `max_consecutive_failures` validation | IMPLEMENTED |
-| Config change audit log | documented operator procedure | GAP — see findings in RISK_CONTROL_POLICY (P3 log hook) |
+| Config load provenance | `data/config_load_audit.jsonl` | IMPLEMENTED (append-only timestamp/path/SHA-256/mode; semantic diffs remain open) |

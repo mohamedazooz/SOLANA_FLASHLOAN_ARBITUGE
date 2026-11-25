@@ -95,7 +95,7 @@ cp config/config.example.toml config/config.toml
 
 ## 17. Configuration
 
-`config/config.example.toml` is the tracked reference (real `config.toml` is deployment-provided, gitignored). Fail-closed on missing critical config. Profiles and precedence: `docs/active/security/CONFIGURATION_SECURITY.md`.
+`config/config.example.toml` is the tracked reference (copy it to the ignored `config/config.toml`). Default startup uses only that canonical path; the legacy root `config.toml` is not auto-selected. Local tests can use `--config config/testing.toml` with `ARB_MODE=simulate` and `ARB_LIVE` unset (loopback RPC, isolated DB/ports). Configuration selection and environment override behavior: `docs/active/security/CONFIGURATION_SECURITY.md`.
 
 ## 18. Environment variables
 

@@ -91,17 +91,136 @@ pub fn decode_orca_vaults(data: &[u8]) -> Option<(Pubkey, Pubkey)> {
 
 /// Decode Raydium CPMM token vaults (`token_0_vault @72..104`, `token_1_vault @104..136`).
 pub fn decode_raydium_cpmm_vaults(data: &[u8]) -> Option<(Pubkey, Pubkey)> {
-    if data.len() < 136 {
+    let state = decode_raydium_cpmm_pool_accounting(data)?;
+    Some((state.token_0_vault, state.token_1_vault))
+}
+
+/// Verified Raydium CPMM pool accounting fields required to turn raw vault
+/// balances into the curve reserves used by the on-chain swap program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaydiumCpmmPoolAccounting {
+    pub amm_config: Pubkey,
+    pub token_0_vault: Pubkey,
+    pub token_1_vault: Pubkey,
+    pub token_0_mint: Pubkey,
+    pub token_1_mint: Pubkey,
+    pub token_0_program: Pubkey,
+    pub token_1_program: Pubkey,
+    pub mint_0_decimals: u8,
+    pub mint_1_decimals: u8,
+    pub protocol_fees: [u64; 2],
+    pub fund_fees: [u64; 2],
+    pub creator_fees: [u64; 2],
+    pub creator_fee_on: u8,
+    pub enable_creator_fee: bool,
+    pub swap_enabled: bool,
+}
+
+/// Live fee parameters from the Raydium CPMM AmmConfig account.
+/// All rates use the protocol's 1_000_000 denominator; do not normalize to
+/// integer basis points before quoting (sub-bps tiers are valid).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaydiumCpmmFeeConfig {
+    pub trade_fee_rate: u64,
+    pub protocol_fee_rate: u64,
+    pub fund_fee_rate: u64,
+    pub creator_fee_rate: u64,
+}
+
+/// Decode the fields that determine the Raydium CPMM curve reserves and the
+/// optional creator-fee mode. Offsets follow the official zero-copy PoolState
+/// layout; all accrued non-LP fees must be removed from raw vault balances.
+pub fn decode_raydium_cpmm_pool_accounting(data: &[u8]) -> Option<RaydiumCpmmPoolAccounting> {
+    const POOL_DISCRIMINATOR: [u8; 8] = [0xf7, 0xed, 0xe3, 0xf5, 0xd7, 0xc3, 0xde, 0x46];
+    // Official PoolState::LEN is 637 bytes. Requiring the complete account
+    // layout prevents truncated/unknown-version accounts from being quoted.
+    if data.len() < 637 || data.get(..8)? != POOL_DISCRIMINATOR {
         return None;
     }
-    let a: [u8; 32] = data.get(72..104)?.try_into().ok()?;
-    let b: [u8; 32] = data.get(104..136)?.try_into().ok()?;
-    let a = Pubkey::new_from_array(a);
-    let b = Pubkey::new_from_array(b);
-    if a == Pubkey::default() || b == Pubkey::default() {
+    let pubkey = |range: std::ops::Range<usize>| -> Option<Pubkey> {
+        let key = Pubkey::new_from_array(data.get(range)?.try_into().ok()?);
+        (key != Pubkey::default()).then_some(key)
+    };
+    let u64_at = |offset: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(
+            data.get(offset..offset + 8)?.try_into().ok()?,
+        ))
+    };
+    let creator_fee_on = *data.get(389)?;
+    let enable_creator_fee = match *data.get(390)? {
+        0 => false,
+        1 => true,
+        _ => return None,
+    };
+    if creator_fee_on > 2 {
         return None;
     }
-    Some((a, b))
+    let status = *data.get(329)?;
+    Some(RaydiumCpmmPoolAccounting {
+        amm_config: pubkey(8..40)?,
+        token_0_vault: pubkey(72..104)?,
+        token_1_vault: pubkey(104..136)?,
+        token_0_mint: pubkey(168..200)?,
+        token_1_mint: pubkey(200..232)?,
+        token_0_program: pubkey(232..264)?,
+        token_1_program: pubkey(264..296)?,
+        mint_0_decimals: *data.get(331)?,
+        mint_1_decimals: *data.get(332)?,
+        protocol_fees: [u64_at(341)?, u64_at(349)?],
+        fund_fees: [u64_at(357)?, u64_at(365)?],
+        creator_fees: [u64_at(397)?, u64_at(405)?],
+        creator_fee_on,
+        enable_creator_fee,
+        swap_enabled: status & 4 == 0,
+    })
+}
+
+/// Convert a raw Raydium CPMM vault balance into the invariant reserve by
+/// removing all accrued non-LP fee buckets for that token. These balances
+/// remain physically in the vault but are excluded from the curve's reserves.
+pub fn raydium_cpmm_curve_reserve(
+    raw_vault_balance: u64,
+    accounting: &RaydiumCpmmPoolAccounting,
+    token_index: usize,
+) -> Option<u64> {
+    if token_index > 1 {
+        return None;
+    }
+    let accrued = accounting.protocol_fees[token_index]
+        .checked_add(accounting.fund_fees[token_index])?
+        .checked_add(accounting.creator_fees[token_index])?;
+    raw_vault_balance.checked_sub(accrued)
+}
+
+/// Decode the exact Raydium CPMM AmmConfig fee rates. The config account is
+/// mutable by protocol governance, so callers must hydrate it live and must
+/// never fall back to a catalog's rounded `fee_bps` value.
+pub fn decode_raydium_cpmm_fee_config(data: &[u8]) -> Option<RaydiumCpmmFeeConfig> {
+    const AMM_CONFIG_DISCRIMINATOR: [u8; 8] = [0xda, 0xf4, 0x21, 0x68, 0xcb, 0xcb, 0x2b, 0x6f];
+    if data.len() < 236 || data.get(..8)? != AMM_CONFIG_DISCRIMINATOR {
+        return None;
+    }
+    let read = |offset: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(
+            data.get(offset..offset + 8)?.try_into().ok()?,
+        ))
+    };
+    let config = RaydiumCpmmFeeConfig {
+        trade_fee_rate: read(12)?,
+        protocol_fee_rate: read(20)?,
+        fund_fee_rate: read(28)?,
+        creator_fee_rate: read(108)?,
+    };
+    const DENOMINATOR: u64 = 1_000_000;
+    if config.trade_fee_rate == 0
+        || config.trade_fee_rate.checked_add(config.creator_fee_rate)? >= DENOMINATOR
+        || config.protocol_fee_rate > DENOMINATOR
+        || config.fund_fee_rate > DENOMINATOR
+        || config.protocol_fee_rate.checked_add(config.fund_fee_rate)? > DENOMINATOR
+    {
+        return None;
+    }
+    Some(config)
 }
 
 /// Decode Raydium CLMM token vaults (`token_vault_0 @137..169`, `token_vault_1 @169..201`).
@@ -678,11 +797,7 @@ pub fn decode_orca_fee_bps(data: &[u8]) -> Option<u16> {
 /// `token_1_mint` @200..232. Verified live against the mainnet SOL/USDC CPMM
 /// pool `7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny`.
 pub fn raydium_cpmm_amm_config_key(pool_data: &[u8]) -> Option<Pubkey> {
-    if pool_data.len() < 40 {
-        return None;
-    }
-    let key = Pubkey::new_from_array(pool_data[8..40].try_into().ok()?);
-    (key != Pubkey::default()).then_some(key)
+    decode_raydium_cpmm_pool_accounting(pool_data).map(|state| state.amm_config)
 }
 
 /// Decode the Raydium CPMM (constant product) swap fee in basis points from the
@@ -699,23 +814,12 @@ pub fn raydium_cpmm_amm_config_key(pool_data: &[u8]) -> Option<Pubkey> {
 /// 290 of the POOL account, which lands inside `token_1_program`/`observation_key`
 /// — fabricated bytes, never a fee.
 ///
-/// Returns `None` on short account or zero rate so the caller fails closed.
+/// Returns `None` on a short/wrong-discriminator account or invalid fee rates.
 pub fn decode_raydium_cpmm_fee_bps(data: &[u8]) -> Option<u16> {
-    const TRADE_FEE_RATE_OFFSET: usize = 12;
-    if data.len() < TRADE_FEE_RATE_OFFSET + 8 {
-        return None;
-    }
-    let rate = u64::from_le_bytes(
-        data[TRADE_FEE_RATE_OFFSET..TRADE_FEE_RATE_OFFSET + 8]
-            .try_into()
-            .ok()?,
-    );
-    if rate == 0 {
-        return None;
-    }
-    // rate is in hundredths of a basis point (denominator 1,000,000)
-    // 2500 => 25 bps
-    u16::try_from(rate / 100).ok()
+    // Conservative display/graph metadata only. Exact quote math must use the
+    // full `trade_fee_rate / 1_000_000` pair from decode_raydium_cpmm_fee_config.
+    let rate = decode_raydium_cpmm_fee_config(data)?.trade_fee_rate;
+    u16::try_from(rate.checked_add(99)? / 100).ok()
 }
 
 #[cfg(test)]
@@ -743,6 +847,7 @@ mod fee_decoder_tests {
     fn raydium_cpmm_fee_reads_live_value() {
         // AmmConfig: trade_fee_rate u64 LE @12 = 100 => 1 bps (CPMM 1 bps tier).
         let mut d = vec![0u8; 236];
+        d[..8].copy_from_slice(&[0xda, 0xf4, 0x21, 0x68, 0xcb, 0xcb, 0x2b, 0x6f]);
         d[12..20].copy_from_slice(&100u64.to_le_bytes());
         assert_eq!(decode_raydium_cpmm_fee_bps(&d), Some(1));
     }
@@ -751,6 +856,7 @@ mod fee_decoder_tests {
     fn raydium_cpmm_fee_reads_25bps_value() {
         // AmmConfig: trade_fee_rate = 2500 => 25 bps (SOL/USDC config D4FPEru...).
         let mut d = vec![0u8; 236];
+        d[..8].copy_from_slice(&[0xda, 0xf4, 0x21, 0x68, 0xcb, 0xcb, 0x2b, 0x6f]);
         d[12..20].copy_from_slice(&2500u64.to_le_bytes());
         assert_eq!(decode_raydium_cpmm_fee_bps(&d), Some(25));
     }
@@ -758,8 +864,12 @@ mod fee_decoder_tests {
     #[test]
     fn raydium_cpmm_amm_config_key_extracts_pool_field() {
         let mut pool = vec![0u8; 637];
+        pool[..8].copy_from_slice(&[0xf7, 0xed, 0xe3, 0xf5, 0xd7, 0xc3, 0xde, 0x46]);
         let cfg = Pubkey::new_unique();
         pool[8..40].copy_from_slice(&cfg.to_bytes());
+        for range in [72..104, 104..136, 168..200, 200..232, 232..264, 264..296] {
+            pool[range].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        }
         assert_eq!(raydium_cpmm_amm_config_key(&pool), Some(cfg));
         assert_eq!(raydium_cpmm_amm_config_key(&[0u8; 40]), None);
         assert_eq!(raydium_cpmm_amm_config_key(&[0u8; 10]), None);

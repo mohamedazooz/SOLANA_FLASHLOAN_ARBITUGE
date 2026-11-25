@@ -1,16 +1,13 @@
 # Sentinel Solana Arbitrage Bot — Production Configuration
 #
-# WARNING: Live trading is opt-in and requires BOTH:
-#   1. [bot] mode = "live" AND live_enabled = true
-#   2. ARB_LIVE=1 environment variable set to a truthy value
-#
-# Never enable live trading until all mandatory security controls pass
-# startup validation. Secrets must be provided through the secret provider,
-# never committed to this file.
+# WARNING: This is a standalone legacy [bot]/[rpc] config; it does not select
+# runtime mode. Live dispatch requires BotMode::Live AND ARB_LIVE=1 (truthy).
+# Set ARB_MODE=live explicitly if ARB_MODE is already defined in the environment.
+# The alternate AppConfig schema additionally has mode.live_enabled; that field
+# is not part of this legacy schema. Never enable live until all controls pass.
+# Secrets must be provided through the secret provider, never committed here.
 
 [bot]
-mode = "shadow"
-live_enabled = false
 
 [rpc]
 url = ""

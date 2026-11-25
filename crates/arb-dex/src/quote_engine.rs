@@ -22,6 +22,9 @@ pub struct QuoteRequest {
 }
 
 /// Detailed protocol fee breakdown for transparency and accounting.
+/// `total_fee` is authoritative. Some venues expose only an aggregate rate in
+/// the quote state; their component fields remain zero rather than inventing
+/// an LP/protocol/fund allocation that was not decoded from the live config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FeesBreakdown {
     pub lp_fee: u64,

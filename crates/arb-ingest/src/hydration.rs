@@ -8,6 +8,25 @@ use solana_pubkey::Pubkey;
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, warn};
 
+/// CPMM pool, both vaults and AmmConfig must be read from one identical RPC
+/// context slot. Mixing snapshots can combine pre-swap counters with
+/// post-swap vault balances and create a false curve reserve.
+fn coherent_cpmm_snapshot_slot(
+    pool_slot: Option<u64>,
+    vault_0_slot: Option<u64>,
+    vault_1_slot: Option<u64>,
+    config_slot: Option<u64>,
+) -> Option<u64> {
+    match (pool_slot, vault_0_slot, vault_1_slot, config_slot) {
+        (Some(pool), Some(v0), Some(v1), Some(config))
+            if pool > 0 && pool == v0 && pool == v1 && pool == config =>
+        {
+            Some(pool)
+        }
+        _ => None,
+    }
+}
+
 use super::MultiDexRegistry;
 use super::registry::*;
 use crate::rpc_pool::RpcPool;
@@ -127,13 +146,22 @@ impl MultiDexRegistry {
 
         let mut pool_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
             std::collections::HashMap::new();
+        let mut pool_owner_map: std::collections::HashMap<Pubkey, Pubkey> =
+            std::collections::HashMap::new();
         // 1. Pool accounts — batched (2 batch-100 calls for 163 pools).
         let pool_pubkeys: Vec<Pubkey> = self.pools.iter().map(|p| p.pool_id.0).collect();
-        let mut max_observed_slot =
-            Self::batch_fetch_accounts(&self.rpc, &pool_pubkeys, &mut pool_data_map, None).await;
+        let mut max_observed_slot = Self::batch_fetch_accounts(
+            &self.rpc,
+            &pool_pubkeys,
+            &mut pool_data_map,
+            Some(&mut pool_owner_map),
+        )
+        .await;
 
         // 2. CPMM vault accounts — batched (1 batch-100 call for ~68 vaults).
         let mut vault_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        let mut vault_owner_map: std::collections::HashMap<Pubkey, Pubkey> =
             std::collections::HashMap::new();
         let mut vault_pubkeys: Vec<Pubkey> = Vec::new();
         for p in &self.pools {
@@ -149,14 +177,21 @@ impl MultiDexRegistry {
                 }
             }
         }
-        let vault_slot =
-            Self::batch_fetch_accounts(&self.rpc, &vault_pubkeys, &mut vault_data_map, None).await;
+        let vault_slot = Self::batch_fetch_accounts(
+            &self.rpc,
+            &vault_pubkeys,
+            &mut vault_data_map,
+            Some(&mut vault_owner_map),
+        )
+        .await;
         max_observed_slot = max_observed_slot.max(vault_slot);
 
         // 2b. CPMM AmmConfig accounts — the swap fee lives here (trade_fee_rate
         // u64 LE @12), not in the pool account. Batch-fetched so the fee is
         // always the live on-chain value, never a catalog guess.
         let mut cpmm_config_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        let mut cpmm_config_owner_map: std::collections::HashMap<Pubkey, Pubkey> =
             std::collections::HashMap::new();
         let mut cpmm_config_pubkeys: Vec<Pubkey> = Vec::new();
         for p in &self.pools {
@@ -170,9 +205,13 @@ impl MultiDexRegistry {
                 cpmm_config_pubkeys.push(cfg);
             }
         }
-        let cpmm_cfg_slot =
-            Self::batch_fetch_accounts(&self.rpc, &cpmm_config_pubkeys, &mut cpmm_config_map, None)
-                .await;
+        let cpmm_cfg_slot = Self::batch_fetch_accounts(
+            &self.rpc,
+            &cpmm_config_pubkeys,
+            &mut cpmm_config_map,
+            Some(&mut cpmm_config_owner_map),
+        )
+        .await;
         max_observed_slot = max_observed_slot.max(cpmm_cfg_slot);
 
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
@@ -577,6 +616,99 @@ impl MultiDexRegistry {
             }
 
             let pool_bytes = pool_data_map.get(&p.pool_id.0).map(|(_, b)| b.as_slice());
+            let cpmm_accounting = if p.protocol == DexProtocol::RaydiumCpmm {
+                pool_bytes.and_then(crate::decoders::decode_raydium_cpmm_pool_accounting)
+            } else {
+                None
+            };
+            let cpmm_config_key = cpmm_accounting.map(|state| state.amm_config);
+            let cpmm_fee_config = cpmm_config_key
+                .and_then(|key| cpmm_config_map.get(&key))
+                .and_then(|(_, data)| crate::decoders::decode_raydium_cpmm_fee_config(data));
+            let cpmm_coherent_slot = if p.protocol == DexProtocol::RaydiumCpmm {
+                let pool_slot = pool_data_map.get(&p.pool_id.0).map(|(slot, _)| *slot);
+                let vault_0_slot = cpmm_accounting
+                    .and_then(|state| vault_data_map.get(&state.token_0_vault))
+                    .map(|(slot, _)| *slot);
+                let vault_1_slot = cpmm_accounting
+                    .and_then(|state| vault_data_map.get(&state.token_1_vault))
+                    .map(|(slot, _)| *slot);
+                let config_slot = cpmm_config_key
+                    .and_then(|key| cpmm_config_map.get(&key))
+                    .map(|(slot, _)| *slot);
+                coherent_cpmm_snapshot_slot(pool_slot, vault_0_slot, vault_1_slot, config_slot)
+            } else {
+                None
+            };
+            if p.protocol == DexProtocol::RaydiumCpmm {
+                if cpmm_coherent_slot.is_none() {
+                    debug!(
+                        "Raydium CPMM {} pool/vault/config snapshots are not slot-coherent; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                }
+                let Ok(cpmm_program) = Pubkey::from_str(arb_constants::RAYDIUM_CPMM_PROGRAM_ID)
+                else {
+                    continue;
+                };
+                let Some(pool_owner) = pool_owner_map.get(&p.pool_id.0) else {
+                    debug!(
+                        "Raydium CPMM {} pool owner unavailable; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                };
+                let Some(config_key) = cpmm_config_key else {
+                    continue;
+                };
+                if *pool_owner != cpmm_program
+                    || cpmm_config_owner_map.get(&config_key) != Some(&cpmm_program)
+                {
+                    debug!(
+                        "Raydium CPMM {} pool/AmmConfig owner mismatch; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                }
+                let (Some(accounting), Some(fees)) = (cpmm_accounting, cpmm_fee_config) else {
+                    debug!(
+                        "Raydium CPMM {} missing verified PoolState/AmmConfig accounting; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                };
+                if !accounting.swap_enabled {
+                    debug!("Raydium CPMM {} swap status disabled; skipping", p.pool_id);
+                    continue;
+                }
+                let Ok(spl_token_program) = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)
+                else {
+                    continue;
+                };
+                if accounting.token_0_program != spl_token_program
+                    || accounting.token_1_program != spl_token_program
+                {
+                    // Token-2022 remains excluded from the active pilot until
+                    // epoch-aware transfer-fee/hook state is wired end-to-end.
+                    debug!(
+                        "Raydium CPMM {} uses a non-legacy token program; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                }
+                // Creator fees may be charged on either the input or output
+                // side. Until the protocol-native fee-side quote is wired into
+                // this PoolState model, do not publish a potentially optimistic
+                // quote for enabled creator-fee pools.
+                if accounting.enable_creator_fee && fees.creator_fee_rate > 0 {
+                    debug!(
+                        "Raydium CPMM {} creator fee is enabled but not modeled; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                }
+            }
             let pump_curve = match (p.protocol, pool_bytes) {
                 (DexProtocol::PumpSwap, _) => None,
                 (DexProtocol::PumpFun, Some(data)) => {
@@ -609,12 +741,9 @@ impl MultiDexRegistry {
                 (DexProtocol::PumpFun, _) => None,
                 (DexProtocol::PumpSwap, _) => None,
                 (DexProtocol::RaydiumV4, Some(d)) => decode_raydium_fee_bps(d),
-                (DexProtocol::RaydiumCpmm, Some(d)) => {
-                    let cfg_fee = raydium_cpmm_amm_config_key(d)
-                        .and_then(|k| cpmm_config_map.get(&k))
-                        .and_then(|(_, cfg)| decode_raydium_cpmm_fee_bps(cfg));
-                    cfg_fee.or(Some(p.fee_bps))
-                }
+                (DexProtocol::RaydiumCpmm, _) => cpmm_fee_config.and_then(|cfg| {
+                    u16::try_from(cfg.trade_fee_rate.saturating_add(99) / 100).ok()
+                }),
                 (DexProtocol::RaydiumClmm, _) => Some(p.fee_bps.max(1)),
                 (DexProtocol::OrcaWhirlpool, Some(d)) => decode_orca_fee_bps(d),
                 (DexProtocol::MeteoraDlmm, _) => dlmm.as_ref().and_then(decode_dlmm_fee_bps),
@@ -654,8 +783,37 @@ impl MultiDexRegistry {
             // 1_249_511 "USDC-raw" out instead of 7_998), a 156x phantom edge
             // that flooded the pipeline with implausible-ROI rejections
             // (soak13/14: 4,276 + 1,058, p50 ROI 1,535,076 bps = 153.5x).
-            let (state_base, state_quote, dec_a, dec_b) = if p.protocol == DexProtocol::MeteoraDlmm
+            let (state_base, state_quote, dec_a, dec_b) = if p.protocol == DexProtocol::RaydiumCpmm
             {
+                let Some(accounting) = cpmm_accounting else {
+                    continue;
+                };
+                if p.base_mint.0 == accounting.token_0_mint
+                    && p.quote_mint.0 == accounting.token_1_mint
+                {
+                    (
+                        MintId(accounting.token_0_mint),
+                        MintId(accounting.token_1_mint),
+                        accounting.mint_0_decimals,
+                        accounting.mint_1_decimals,
+                    )
+                } else if p.base_mint.0 == accounting.token_1_mint
+                    && p.quote_mint.0 == accounting.token_0_mint
+                {
+                    (
+                        MintId(accounting.token_1_mint),
+                        MintId(accounting.token_0_mint),
+                        accounting.mint_1_decimals,
+                        accounting.mint_0_decimals,
+                    )
+                } else {
+                    debug!(
+                        "Raydium CPMM {} catalog mints do not match on-chain token0/token1; skipping",
+                        p.pool_id
+                    );
+                    continue;
+                }
+            } else if p.protocol == DexProtocol::MeteoraDlmm {
                 match pool_bytes {
                     Some(d) if d.len() >= 152 => {
                         let token_x = Pubkey::new_from_array(d[88..120].try_into().unwrap());
@@ -734,6 +892,55 @@ impl MultiDexRegistry {
             };
 
             let (reserve_in, reserve_out) = match p.protocol {
+                DexProtocol::RaydiumCpmm => {
+                    let Some(accounting) = cpmm_accounting else {
+                        continue;
+                    };
+                    let Some((_, vault_0_data)) = vault_data_map.get(&accounting.token_0_vault)
+                    else {
+                        continue;
+                    };
+                    let Some((_, vault_1_data)) = vault_data_map.get(&accounting.token_1_vault)
+                    else {
+                        continue;
+                    };
+                    if vault_owner_map.get(&accounting.token_0_vault)
+                        != Some(&accounting.token_0_program)
+                        || vault_owner_map.get(&accounting.token_1_vault)
+                            != Some(&accounting.token_1_program)
+                        || vault_0_data.get(0..32) != Some(accounting.token_0_mint.as_ref())
+                        || vault_1_data.get(0..32) != Some(accounting.token_1_mint.as_ref())
+                    {
+                        debug!(
+                            "Raydium CPMM {} vault owner/mint does not match PoolState; skipping",
+                            p.pool_id
+                        );
+                        continue;
+                    }
+                    let Some(raw_0) = decode_spl_token_amount_bytes(vault_0_data) else {
+                        continue;
+                    };
+                    let Some(raw_1) = decode_spl_token_amount_bytes(vault_1_data) else {
+                        continue;
+                    };
+                    let (Some(net_0), Some(net_1)) = (
+                        crate::decoders::raydium_cpmm_curve_reserve(raw_0, &accounting, 0),
+                        crate::decoders::raydium_cpmm_curve_reserve(raw_1, &accounting, 1),
+                    ) else {
+                        debug!(
+                            "Raydium CPMM {} accrued fee counters exceed vault balance; skipping",
+                            p.pool_id
+                        );
+                        continue;
+                    };
+                    if p.base_mint.0 == accounting.token_0_mint {
+                        (u128::from(net_0), u128::from(net_1))
+                    } else if p.base_mint.0 == accounting.token_1_mint {
+                        (u128::from(net_1), u128::from(net_0))
+                    } else {
+                        continue;
+                    }
+                }
                 DexProtocol::PumpSwap => (0, 0),
                 DexProtocol::PumpFun => match pump_state.as_ref() {
                     Some(state)
@@ -1028,7 +1235,12 @@ impl MultiDexRegistry {
                 _ => None,
             };
 
-            let state_slot = if p.protocol == DexProtocol::MeteoraDlmm {
+            let state_slot = if p.protocol == DexProtocol::RaydiumCpmm {
+                let Some(slot) = cpmm_coherent_slot else {
+                    continue;
+                };
+                Slot(slot)
+            } else if p.protocol == DexProtocol::MeteoraDlmm {
                 let Some(slot) = dlmm_coherent_slots.get(&p.pool_id).copied() else {
                     // Do not publish a DLMM PoolState without a coherent,
                     // owner-verified pool/bitmap/bin-array dependency snapshot.
@@ -1039,6 +1251,14 @@ impl MultiDexRegistry {
                 effective_slot
             };
             let wv = next_pool_write_version();
+            let (fee_numerator, fee_denominator) = if p.protocol == DexProtocol::RaydiumCpmm {
+                let Some(config) = cpmm_fee_config else {
+                    continue;
+                };
+                (config.trade_fee_rate, 1_000_000)
+            } else {
+                (u64::from(fee_bps), 10_000)
+            };
 
             states.push(PoolState {
                 pool_id: p.pool_id,
@@ -1051,8 +1271,8 @@ impl MultiDexRegistry {
                 decimals_b: dec_b,
                 reserve_in,
                 reserve_out,
-                fee_numerator: fee_bps as u64,
-                fee_denominator: 10_000,
+                fee_numerator,
+                fee_denominator,
                 is_active: true,
                 has_risky_token: false,
                 last_update_slot: state_slot.0,
@@ -1068,5 +1288,30 @@ impl MultiDexRegistry {
         }
 
         states
+    }
+}
+
+#[cfg(test)]
+mod cpmm_snapshot_slot_tests {
+    use super::coherent_cpmm_snapshot_slot;
+
+    #[test]
+    fn accepts_only_one_identical_nonzero_slot_for_all_dependencies() {
+        assert_eq!(
+            coherent_cpmm_snapshot_slot(Some(42), Some(42), Some(42), Some(42)),
+            Some(42)
+        );
+        assert_eq!(
+            coherent_cpmm_snapshot_slot(Some(0), Some(0), Some(0), Some(0)),
+            None
+        );
+        assert_eq!(
+            coherent_cpmm_snapshot_slot(Some(42), Some(43), Some(42), Some(42)),
+            None
+        );
+        assert_eq!(
+            coherent_cpmm_snapshot_slot(Some(42), Some(42), None, Some(42)),
+            None
+        );
     }
 }

@@ -41,19 +41,92 @@ fn real_pool_bytes_decode_to_verified_vaults() {
 }
 
 #[test]
+fn real_pool_accounting_decodes_accrued_fees_and_creator_fee_mode() {
+    let data = BASE64_STANDARD.decode(POOL_B64).expect("valid base64");
+    let state = arb_ingest::decoders::decode_raydium_cpmm_pool_accounting(&data)
+        .expect("official PoolState accounting fields decode");
+    assert_eq!(
+        state.amm_config,
+        arb_ingest::decoders::raydium_cpmm_amm_config_key(&data).unwrap()
+    );
+    assert_eq!(
+        state.token_0_vault,
+        Pubkey::from_str(CPMM_SOL_VAULT).unwrap()
+    );
+    assert_eq!(
+        state.token_1_vault,
+        Pubkey::from_str(CPMM_USDC_VAULT).unwrap()
+    );
+    assert!(!state.enable_creator_fee);
+    assert!(state.swap_enabled);
+    assert_eq!(state.protocol_fees, [899_192, 290_158]);
+    assert_eq!(state.fund_fees, [638_217, 125_380]);
+    assert_eq!(state.creator_fees, [0, 0]);
+    assert_eq!(
+        arb_ingest::decoders::raydium_cpmm_curve_reserve(10_000_000, &state, 0),
+        Some(8_462_591),
+        "curve reserve excludes protocol + fund + creator fee counters"
+    );
+    assert_eq!(
+        arb_ingest::decoders::raydium_cpmm_curve_reserve(1, &state, 0),
+        None
+    );
+    let mut creator_enabled = data.clone();
+    creator_enabled[390] = 1;
+    assert!(
+        arb_ingest::decoders::decode_raydium_cpmm_pool_accounting(&creator_enabled)
+            .unwrap()
+            .enable_creator_fee
+    );
+    let mut swap_disabled = data.clone();
+    swap_disabled[329] |= 4;
+    assert!(
+        !arb_ingest::decoders::decode_raydium_cpmm_pool_accounting(&swap_disabled)
+            .unwrap()
+            .swap_enabled
+    );
+    let mut bad_discriminator = data.clone();
+    bad_discriminator[0] ^= 0xff;
+    assert!(
+        arb_ingest::decoders::decode_raydium_cpmm_pool_accounting(&bad_discriminator).is_none()
+    );
+}
+
+#[test]
 fn real_amm_config_bytes_decode_to_verified_fee() {
     let data = BASE64_STANDARD
         .decode(AMM_CONFIG_B64)
         .expect("valid base64");
     assert_eq!(data.len(), 236);
+    let mut bad_discriminator = data.clone();
+    bad_discriminator[0] ^= 0xff;
+    assert!(arb_ingest::decoders::decode_raydium_cpmm_fee_config(&bad_discriminator).is_none());
     let pool = BASE64_STANDARD.decode(POOL_B64).unwrap();
     let cfg_key = arb_ingest::raydium_cpmm_amm_config_key(&pool).expect("amm_config key");
     assert_eq!(cfg_key, Pubkey::from_str(CPMM_AMM_CONFIG).unwrap());
+    let exact = arb_ingest::decoders::decode_raydium_cpmm_fee_config(&data)
+        .expect("full on-chain fee config");
+    assert_eq!(exact.trade_fee_rate, 2_500);
+    assert_eq!(exact.protocol_fee_rate, 120_000);
+    assert_eq!(exact.fund_fee_rate, 40_000);
+    assert_eq!(exact.creator_fee_rate, 500);
     assert_eq!(
         arb_ingest::decode_raydium_cpmm_fee_bps(&data),
         Some(25),
         "trade_fee_rate 2500 / 1_000_000 => 25 bps (matches Raydium API v3)"
     );
+
+    // A valid 0.005% tier is only 0.5 bps. The old u16-bps-only path
+    // rounded it down to zero and silently removed the trading fee; it now rounds up conservatively for graph metadata.
+    let mut sub_bps = data.clone();
+    sub_bps[12..20].copy_from_slice(&50u64.to_le_bytes());
+    assert_eq!(
+        arb_ingest::decoders::decode_raydium_cpmm_fee_config(&sub_bps)
+            .expect("valid sub-bps tier")
+            .trade_fee_rate,
+        50
+    );
+    assert_eq!(arb_ingest::decode_raydium_cpmm_fee_bps(&sub_bps), Some(1));
 }
 
 fn hex(s: &str) -> Vec<u8> {

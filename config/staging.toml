@@ -2,8 +2,6 @@
 # Mirrors production safety posture without live trading.
 
 [bot]
-mode = "simulate"
-live_enabled = false
 
 [rpc]
 url = ""

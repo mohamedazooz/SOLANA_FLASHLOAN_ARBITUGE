@@ -1,10 +1,8 @@
 # Sentinel Solana Arbitrage Bot — Development Configuration
-# Complete, independently loadable config. Inherits semantics from base.toml
-# with dev-appropriate overrides. Secrets are NOT stored here.
+# Complete, standalone legacy bot config for development. Select explicitly
+# with --config or ARB_CONFIG; no base/profile merge occurs. Secrets are NOT stored here.
 
 [bot]
-mode = "shadow"
-live_enabled = false
 
 [rpc]
 url = ""

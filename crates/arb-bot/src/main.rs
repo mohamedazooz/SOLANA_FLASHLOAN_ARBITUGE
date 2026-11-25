@@ -40,21 +40,11 @@ fn parse_args() -> Result<Args> {
     }
 
     if config_path.is_empty() {
-        // Fail-closed auto-discovery (OPS-001/CFN-N1): the profiled production
-        // candidate lives in config/. The legacy root config.toml is only a
-        // fallback candidate. config.example.toml is NEVER auto-selected — a
-        // placeholder-values example must not silently drive a live bot. If no
-        // candidate exists, abort with an explicit error instead of inventing a
-        // path that will later produce a confusing loader message.
-        if std::path::Path::new("config/config.toml").exists() {
-            config_path = "config/config.toml".to_string();
-        } else if std::path::Path::new("config.toml").exists() {
-            config_path = "config.toml".to_string();
-        } else {
-            anyhow::bail!(
-                "No configuration found. Provide --config <PATH>, set ARB_CONFIG, or create config/config.toml. Refusing to auto-select config.example.toml (placeholder values)."
-            );
-        }
+        // One canonical default only. The legacy root config.toml is no longer
+        // tracked or auto-selected; this prevents stale values from shadowing
+        // the operator-managed deployment file. config.example.toml is never
+        // auto-selected because it contains placeholder-safe defaults.
+        config_path = resolve_default_config_path(&std::env::current_dir()?)?;
     }
 
     // Mode is environment-controlled only. Precedence:
@@ -81,6 +71,17 @@ fn parse_args() -> Result<Args> {
 
     let mode: BotMode = mode_str.parse()?;
     Ok(Args { config_path, mode })
+}
+
+fn resolve_default_config_path(root: &std::path::Path) -> Result<String> {
+    let canonical = root.join("config").join("config.toml");
+    if canonical.is_file() {
+        return Ok(canonical.to_string_lossy().into_owned());
+    }
+    anyhow::bail!(
+        "No canonical configuration found at '{}'. Copy config/config.example.toml to config/config.toml, set ARB_CONFIG, or pass --config <PATH>. Legacy root config.toml is not auto-selected.",
+        canonical.display()
+    )
 }
 
 fn redact_secret(value: &str, secret: &str) -> String {
@@ -444,17 +445,60 @@ fn load_process_environment() -> Result<()> {
     Ok(())
 }
 
+fn append_config_audit_to(
+    audit_path: &std::path::Path,
+    config_path: &str,
+    mode: BotMode,
+) -> Result<()> {
+    use sha2::Digest;
+    use std::io::Write;
+    let bytes = std::fs::read(config_path)?;
+    let digest = sha2::Sha256::digest(&bytes);
+    let sha256 = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    if let Some(parent) = audit_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(audit_path)?;
+    let path_json = serde_json::to_string(config_path)?;
+    writeln!(
+        file,
+        "{{\"timestamp_unix\":{timestamp},\"config_path\":{path_json},\"config_sha256\":\"{sha256}\",\"mode\":\"{mode}\"}}"
+    )?;
+    Ok(())
+}
+
+fn append_config_audit(config_path: &str, mode: BotMode) -> Result<()> {
+    append_config_audit_to(
+        std::path::Path::new("data/config_load_audit.jsonl"),
+        config_path,
+        mode,
+    )
+}
+
 async fn run() -> Result<()> {
     let args = parse_args()?;
 
     init_event_logger();
 
     info!("Starting arb-bot in mode: {}", args.mode);
+    info!(config_path = %args.config_path, "Using selected configuration file");
 
     let config = config::load(&args.config_path)
         .with_context(|| format!("Failed to load configuration from '{}'", args.config_path))?;
+    if let Err(error) = append_config_audit(&args.config_path, args.mode) {
+        warn!("Could not append config provenance audit record: {error}");
+    }
 
-    info!("Configuration loaded — RPC: {}", config.rpc.url);
+    info!("Configuration loaded - RPC endpoint configured (credentials redacted)");
     info!("Max trade size: {} USD", config.risk.max_trade_size_usd);
     info!(
         "Min net profit: {} lamports ({} bps)",
@@ -644,6 +688,50 @@ mod flag_tests {
     #[cfg(feature = "shadow-only")]
     use super::is_shadow_excluded_environment_key;
     use super::{admin_authorized, constant_time_eq, is_placeholder_secret, is_truthy_flag};
+
+    #[test]
+    fn canonical_config_path_wins_and_legacy_root_is_never_selected() {
+        let root =
+            std::env::temp_dir().join(format!("arb-config-path-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("config")).unwrap();
+        std::fs::write(root.join("config.toml"), "legacy = true").unwrap();
+        std::fs::write(root.join("config/config.toml"), "canonical = true").unwrap();
+        let resolved = super::resolve_default_config_path(&root).unwrap();
+        assert_eq!(
+            std::path::PathBuf::from(resolved),
+            root.join("config").join("config.toml")
+        );
+        std::fs::remove_file(root.join("config/config.toml")).unwrap();
+        assert!(super::resolve_default_config_path(&root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_audit_is_append_only_and_contains_no_config_values() {
+        let root =
+            std::env::temp_dir().join(format!("arb-config-audit-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let config_path = root.join("runtime.toml");
+        let audit_path = root.join("audit/config_load_audit.jsonl");
+        std::fs::write(&config_path, "admin_token = \"never-log-this-secret\"\n").unwrap();
+        let config_path_string = config_path.to_string_lossy().into_owned();
+        super::append_config_audit_to(&audit_path, &config_path_string, arb_bot::BotMode::Simulate)
+            .unwrap();
+        super::append_config_audit_to(&audit_path, &config_path_string, arb_bot::BotMode::Simulate)
+            .unwrap();
+        let contents = std::fs::read_to_string(&audit_path).unwrap();
+        let rows: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["mode"], "simulate");
+        assert!(rows[0]["config_sha256"].as_str().unwrap().len() == 64);
+        assert!(!contents.contains("never-log-this-secret"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn arb_live_requires_an_explicit_truthy_value() {

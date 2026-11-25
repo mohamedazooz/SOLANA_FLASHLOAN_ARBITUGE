@@ -1,18 +1,14 @@
 # Sentinel Solana Arbitrage Bot — Base Configuration
 #
-# This file contains the deployment-independent operational parameters.
+# Standalone legacy bot configuration template. Select this file explicitly
+# with --config or ARB_CONFIG; the runtime does not merge base/profile files.
 # Secrets are NOT stored here; only secret ENV VAR NAMES are declared so the
 # runtime can resolve them through a secret provider (env for local dev, secret
-# manager in production).
-#
-# Precedence: compiled protocol invariants → base.toml → env-specific TOML →
-# environment variables → CLI overrides. Operator config can never override
-# protocol invariants or mandatory safety limits.
+# manager in production). Compiled protocol invariants and mandatory safety
+# limits remain enforced independently of this file.
 
 [bot]
-mode = "shadow"            # shadow | simulate | canary | live
-# live is additionally gated behind ARB_LIVE=1 and live_enabled = true.
-live_enabled = false
+# Runtime mode is selected by ARB_MODE / ARB_LIVE, not by TOML fields.
 
 [rpc]
 # Endpoint URL must be supplied by the operator (no default).

@@ -773,9 +773,8 @@ mod config_file_tests {
     use super::{Config, LIVE_MAX_STATE_AGE_SLOTS, validate_live_freshness};
 
     /// Regression: `min_liquidity_bin_raw` was declared `u128`, which the
-    /// `toml` crate cannot deserialize, so the tracked root `config.toml`
-    /// failed to parse and the bot aborted at startup (deploy run
-    /// 43741572901). Every tracked config file must deserialize.
+    /// `toml` crate cannot deserialize. Every tracked full bot config must
+    /// deserialize before it can be selected at startup.
     #[test]
     fn default_slippage_uses_the_shared_protocol_constant() {
         assert_eq!(
@@ -790,7 +789,13 @@ mod config_file_tests {
 
     #[test]
     fn tracked_config_files_deserialize() {
-        for path in ["../../config.toml", "../../config/config.example.toml"] {
+        for path in [
+            "../../config/config.example.toml",
+            "../../config/testing.toml",
+            "../../config/development.toml",
+            "../../config/staging.toml",
+            "../../config/production.toml",
+        ] {
             let full = concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + path;
             let contents = std::fs::read_to_string(&full)
                 .unwrap_or_else(|e| panic!("{full} must exist and be readable: {e}"));
@@ -798,6 +803,17 @@ mod config_file_tests {
                 .unwrap_or_else(|e| panic!("{full} must deserialize into Config: {e}"));
             let _ = parsed;
         }
+    }
+
+    #[test]
+    fn testing_config_is_loopback_and_uses_isolated_resources() {
+        let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/testing.toml");
+        let parsed = super::load(full).expect("testing config loads and validates");
+        assert_eq!(parsed.rpc.url, "http://127.0.0.1:8899");
+        assert_eq!(parsed.store.url, "sqlite://arb_sentinel_test.db");
+        assert_eq!(parsed.metrics.listen, "127.0.0.1:19100");
+        assert_eq!(parsed.admin.listen, "127.0.0.1:19101");
+        assert!(!parsed.bot.canary);
     }
 
     /// PIPE-08: start from the tracked production-shaped example (2 slots),
@@ -867,9 +883,12 @@ mod slippage_policy_tests {
     use super::{Config, validate_slippage_policies};
 
     fn tracked_config() -> Config {
-        let full = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.toml");
-        let contents = std::fs::read_to_string(full).expect("tracked config.toml readable");
-        toml::from_str(&contents).expect("tracked config.toml deserializes")
+        let full = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config/config.example.toml"
+        );
+        let contents = std::fs::read_to_string(full).expect("tracked config example readable");
+        toml::from_str(&contents).expect("tracked config example deserializes")
     }
 
     /// F-04: the shipped production values (hop 10 bps, 3-leg 15 bps) are both
@@ -903,9 +922,11 @@ mod slippage_policy_tests {
         assert!(validate_slippage_policies(&cfg).is_err());
 
         let mut cfg = tracked_config();
-        if let Some(three) = &mut cfg.strategy.dlmm_three_leg {
-            three.slippage_bps = 5_000;
-        }
+        let three = cfg
+            .strategy
+            .dlmm_three_leg
+            .get_or_insert_with(super::DlmmThreeLegTuning::default);
+        three.slippage_bps = 5_000;
         assert!(validate_slippage_policies(&cfg).is_err());
     }
 
