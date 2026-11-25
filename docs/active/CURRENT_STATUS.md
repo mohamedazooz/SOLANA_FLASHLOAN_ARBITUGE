@@ -1,8 +1,8 @@
 # Current Verified Status
 
 **Authoritative Git Baseline**: Commit `1ff841a` on `main` (merge of PR #164, 2026-11-25)
-**Current Local Branch**: `fix/deep-quote-accounting-hardening-20261125` (based directly on `origin/main`; not yet pushed)
-**CI Status**: Branch CI pending push; verify GitHub Actions after publication.
+**Current Branch**: `fix/deep-quote-accounting-hardening-20261125` (pushed to `origin`; commit `94c4730`; not merged)
+**CI Status**: Vercel status check succeeded for commit `94c4730`; no GitHub Actions workflow run is attached to the branch push. PR-triggered CI remains pending until a PR is opened.
 **Compilation Baseline**: Final full local workspace run: 1,803 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass.
 
 ## Local Hardening in Progress — 2026-11-25
