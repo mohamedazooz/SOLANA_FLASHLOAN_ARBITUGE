@@ -118,6 +118,16 @@ impl ThreePoolRouteEngine {
         let mut total_cu = 450u32 + 28_000u32; // Estimate only; final message/CU are builder-verified.
 
         for (i, hop) in hops.iter().enumerate() {
+            // This router feeds the borrow-size optimizer used by the live path.
+            // Quote-only venues must be rejected here as well as in `quote_hop`,
+            // otherwise a separate dispatcher call could bypass execution gating.
+            if let Err(reason) = crate::adapters::execution_capability(&hop.pool_state) {
+                return Err(ArbError::UnsupportedOperation(format!(
+                    "route hop {i} ({:?}) is quote-only: {reason}",
+                    hop.pool_state.protocol
+                )));
+            }
+
             // Continuity check between hops
             if i > 0 {
                 let prev_out = hops[i - 1].output_mint;
@@ -139,6 +149,11 @@ impl ThreePoolRouteEngine {
             };
 
             let res = self.dispatcher.quote_exact_in(&hop.pool_state, &req)?;
+            if !res.quote_validity || res.unfilled_input_raw != 0 || res.amount_out_raw == 0 {
+                return Err(ArbError::InvalidInput(format!(
+                    "route hop {i} returned an invalid, partial, or zero-output quote"
+                )));
+            }
 
             transfer_fees_by_hop.push(HopTransferFeeSummary {
                 hop_index: i,

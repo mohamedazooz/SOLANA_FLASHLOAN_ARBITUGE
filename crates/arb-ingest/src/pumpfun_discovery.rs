@@ -223,7 +223,9 @@ impl PumpFunDiscoveryClient {
                     quote_vault: Pubkey::default(),
                     decimals_a: 9,
                     decimals_b: 6,
-                    fee_bps: 100, // 1% fixed fee
+                    // Conservative discovery estimate for the documented SOL bonding-curve fee.
+                    // The live quote path still requires a verified on-chain FeeConfig.
+                    fee_bps: 125, // 1.25%; metadata only, not execution-authoritative
                     liquidity_usd: effective_tvl,
                 },
             ));
@@ -436,6 +438,7 @@ mod tests {
         assert_eq!(pools[0].protocol, DexProtocol::PumpFun);
         assert_eq!(pools[0].decimals_a, 9);
         assert_eq!(pools[0].decimals_b, 6);
+        assert_eq!(pools[0].fee_bps, 125); // documented 1.25% SOL bonding-curve estimate
     }
 
     #[test]

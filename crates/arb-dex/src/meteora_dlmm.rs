@@ -2,10 +2,7 @@
 
 use crate::traits::AmmPool;
 use arb_constants::{METEORA_BINS_PER_BIN_ARRAY, METEORA_DLMM_PROGRAM_ID};
-use arb_math::dlmm::{
-    DlmmBin as MathDlmmBin, DlmmParameters, DlmmVariableParameters, get_price_from_id,
-    quote_dlmm_multi_bin,
-};
+use arb_math::dlmm::get_price_from_id;
 use arb_types::{
     ArbError, DexProtocol, DlmmBin, DlmmFeeParams, DlmmState, MintId, PoolExecutionAccounts,
     PoolId, Result, TokenProgramKind,
@@ -470,60 +467,25 @@ impl AmmPool for MeteoraDlmmPool {
                     .into(),
             ));
         }
-        let net_in = amount_in;
-        let mut math_bins: Vec<MathDlmmBin> = self
-            .bins
-            .iter()
-            .map(|b| MathDlmmBin {
-                id: b.bin_id,
-                amount_x: u64::try_from(b.amount_x).unwrap_or(u64::MAX),
-                amount_y: u64::try_from(b.amount_y).unwrap_or(u64::MAX),
-                price_q64: get_price_from_id(b.bin_id, self.bin_step).unwrap_or(0),
-                open_order_amount: b.open_order_amount,
-                processed_order_remaining_amount: b.processed_order_remaining_amount,
-                limit_order_ask_side: b.limit_order_ask_side,
-            })
-            .collect();
-        let pool_state = arb_math::dlmm::DlmmPoolState {
-            active_id: self.active_id,
-            bin_step: self.bin_step,
+        let dlmm_state = DlmmState {
+            active_bin_id: self.active_id,
             status: self.status,
-            parameters: DlmmParameters {
-                bin_step: self.bin_step,
-                base_factor: params.base_factor,
-                filter_period: params.filter_period,
-                decay_period: params.decay_period,
-                reduction_factor: params.reduction_factor,
-                variable_fee_control: params.variable_fee_control,
-                max_volatility_accumulator: params.max_volatility_accumulator,
-                protocol_share: params.protocol_share,
-                base_fee_power_factor: params.base_fee_power_factor,
-                collect_fee_mode: params.collect_fee_mode,
-            },
-            v_parameters: DlmmVariableParameters {
-                volatility_accumulator: self.volatility_accumulator,
-                volatility_reference: self.volatility_reference,
-                index_reference: self.index_reference,
-                last_update_timestamp: self.last_update_timestamp,
-            },
+            bin_step_bps: self.bin_step,
+            bins: self.bins.clone(),
+            params: self.fee_params.clone(),
+            volatility_accumulator: self.volatility_accumulator,
+            volatility_reference: self.volatility_reference,
+            index_reference: self.index_reference,
+            last_update_timestamp: self.last_update_timestamp,
             support_limit_order: self.support_limit_order,
         };
-        let q = quote_dlmm_multi_bin(
-            &pool_state,
-            &mut math_bins,
-            net_in,
+        let quote = crate::engines::MeteoraDlmmQuoteEngine::quote_exact_in_from_parts(
+            &dlmm_state,
+            self.pool_id,
+            amount_in,
             a_to_b,
-            if self.last_update_timestamp > 0 {
-                Some(self.last_update_timestamp)
-            } else {
-                None
-            },
-        )
-        .map_err(|e| ArbError::InvalidInput(format!("DLMM quote error: {e:?}")))?;
-        arb_math::dlmm::validate_swap_depth(q.bins_crossed).map_err(|e| {
-            ArbError::InsufficientLiquidity(format!("DLMM swap is not executable: {e}"))
-        })?;
-        Ok(q.amount_out)
+        )?;
+        Ok(quote.amount_out)
     }
 }
 

@@ -115,6 +115,32 @@ impl QuoteRequest {
         }
         Ok(())
     }
+
+    /// Apply the verified input-mint Token-2022 transfer fee once, before venue math.
+    pub fn input_after_transfer_fee(&self) -> Result<(u64, u64)> {
+        let fee = self
+            .input_transfer_fee_config
+            .map_or(0, |config| config.calculate_fee(self.amount));
+        let net = self.amount.checked_sub(fee).ok_or(ArbError::Overflow)?;
+        if net == 0 {
+            return Err(ArbError::ZeroAmount);
+        }
+        Ok((net, fee))
+    }
+
+    /// Apply the verified output-mint Token-2022 transfer fee after venue math.
+    pub fn output_after_transfer_fee(&self, gross_output: u64) -> Result<(u64, u64)> {
+        let fee = self
+            .output_transfer_fee_config
+            .map_or(0, |config| config.calculate_fee(gross_output));
+        let net = gross_output.checked_sub(fee).ok_or(ArbError::Overflow)?;
+        Ok((net, fee))
+    }
+
+    /// Compute the common conservative min-out floor from the receiver's net output.
+    pub fn minimum_amount_out(&self, net_output: u64) -> u64 {
+        arb_constants::slippage_floor_bps(net_output, u64::from(self.slippage_bps))
+    }
 }
 /// Authoritative Quote Engine trait implemented independently by each protocol.
 pub trait QuoteEngine: Send + Sync {

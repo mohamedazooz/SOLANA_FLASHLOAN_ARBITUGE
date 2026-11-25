@@ -132,8 +132,42 @@ impl MeteoraDlmmQuoteEngine {
         Ok(())
     }
 
+    /// Canonical exact-in math path shared by every Meteora route adapter.
+    /// The caller supplies net pool input after any mint transfer fee; this method
+    /// owns the single PoolState -> math conversion, traversal, depth and fill checks.
+    pub fn quote_exact_in_from_parts(
+        dlmm_state: &arb_types::DlmmState,
+        pool_id: PoolId,
+        amount_in: u64,
+        swap_for_y: bool,
+    ) -> Result<arb_math::dlmm::DlmmSwapQuote> {
+        if amount_in == 0 {
+            return Err(ArbError::ZeroAmount);
+        }
+        let (pool_math_state, bins) = Self::build_dlmm_math_state_from_parts(dlmm_state, pool_id)?;
+        let quote = quote_dlmm_view(&pool_math_state, &bins, amount_in, swap_for_y, None).map_err(
+            |error| ArbError::CalculationError(format!("Meteora DLMM math error: {error:?}")),
+        )?;
+        if quote.amount_in != amount_in {
+            return Err(ArbError::InsufficientLiquidity(format!(
+                "Meteora DLMM consumed {} of {} input raw units",
+                quote.amount_in, amount_in
+            )));
+        }
+        arb_math::dlmm::validate_swap_depth(quote.bins_crossed).map_err(|error| {
+            ArbError::InsufficientLiquidity(format!("Meteora DLMM swap is not executable: {error}"))
+        })?;
+        if quote.amount_out == 0 {
+            return Err(ArbError::InsufficientLiquidity(
+                "Meteora DLMM returned zero output tokens".into(),
+            ));
+        }
+        Ok(quote)
+    }
+
     /// Canonical conversion from the ingested DLMM state to the math model.
-    /// This is the only mapping of fee parameters and bin amounts in the workspace.
+    /// This is the shared mapping used by the authoritative dispatcher and legacy
+    /// adapter compatibility APIs; they must not maintain independent bin math views.
     pub fn build_dlmm_math_state_from_parts(
         dlmm_state: &arb_types::DlmmState,
         pool_id: PoolId,
@@ -156,6 +190,9 @@ impl MeteoraDlmmQuoteEngine {
                 pool_id.0
             ))
         })?;
+        // Keep the production quote gate aligned with the account validator and
+        // legacy adapter: LimitOrder (2) remains disabled until non-empty order-layer
+        // quotes have differential parity against the official SDK.
         if fee_params.function_type > 1 || fee_params.collect_fee_mode > 1 {
             return Err(ArbError::UnsupportedOperation(format!(
                 "Meteora DLMM function_type {} / collect_fee_mode {} is not modeled",
@@ -324,16 +361,8 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
                 request.input_mint.0
             )));
         }
-        let (pool_math_state, bins) = Self::build_dlmm_math_state(state)?;
-
         // 1. Inbound Token-2022 transfer fee deduction
-        let (input_net_into_pool, input_transfer_fee) =
-            if let Some(config) = request.input_transfer_fee_config {
-                let fee = config.calculate_fee(request.amount);
-                (request.amount.saturating_sub(fee), fee)
-            } else {
-                (request.amount, 0)
-            };
+        let (input_net_into_pool, input_transfer_fee) = request.input_after_transfer_fee()?;
 
         if input_net_into_pool == 0 {
             return Err(ArbError::ZeroAmount);
@@ -344,40 +373,21 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
         // clock could understate fees. Without a trusted bank timestamp, retain the
         // on-chain volatility reference and intentionally quote conservatively.
 
-        // 3. Exact multi-bin discrete quoting
-        let quote = quote_dlmm_view(&pool_math_state, &bins, input_net_into_pool, a_to_b, None)
-            .map_err(|e| ArbError::CalculationError(format!("Meteora DLMM math error: {e:?}")))?;
-
-        if quote.amount_in != input_net_into_pool {
-            return Err(ArbError::InsufficientLiquidity(format!(
-                "Meteora DLMM consumed {} of {} input raw units",
-                quote.amount_in, input_net_into_pool
-            )));
-        }
-        arb_math::dlmm::validate_swap_depth(quote.bins_crossed).map_err(|e| {
-            ArbError::InsufficientLiquidity(format!("Meteora DLMM swap is not executable: {e}"))
-        })?;
+        // 3. Exact multi-bin discrete quoting through the shared DLMM quote core.
+        let quote = Self::quote_exact_in_from_parts(
+            dlmm_state,
+            state.pool_id,
+            input_net_into_pool,
+            a_to_b,
+        )?;
         let gross_out = quote.amount_out;
-        if gross_out == 0 {
-            return Err(ArbError::InsufficientLiquidity(
-                "Meteora DLMM returned 0 output tokens".into(),
-            ));
-        }
 
         // 4. Outbound Token-2022 transfer fee deduction
         let (output_net_to_next_hop, output_transfer_fee) =
-            if let Some(config) = request.output_transfer_fee_config {
-                let fee = config.calculate_fee(gross_out);
-                (gross_out.checked_sub(fee).ok_or(ArbError::Overflow)?, fee)
-            } else {
-                (gross_out, 0)
-            };
+            request.output_after_transfer_fee(gross_out)?;
 
         // 5. Slippage calculation
-        let min_amount_out = arb_constants::slippage_floor_bps(
-            output_net_to_next_hop,
-            u64::from(request.slippage_bps),
-        );
+        let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
         // 6. Include every BinArray traversed by the exact quote, in swap order.
         let lb_pair = state.pool_id.0;
