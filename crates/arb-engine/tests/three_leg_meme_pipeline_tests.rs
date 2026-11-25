@@ -478,8 +478,16 @@ fn test_pipeline_to_paper_journal_roundtrip() {
         status: "paper".to_string(),
     };
 
-    let log_dir =
-        std::env::temp_dir().join(format!("arb_3leg_paper_journal_{}", std::process::id()));
+    // A process ID can be reused across test runs; isolate this append-only journal
+    // so the round-trip assertion never reads a stale first record.
+    let log_dir = std::env::temp_dir().join(format!(
+        "arb_3leg_paper_journal_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock must be after UNIX epoch")
+            .as_nanos(),
+    ));
     let recorder = OpportunityHistoryRecorder::new(&log_dir);
     recorder
         .record_candidate(&candidate)

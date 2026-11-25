@@ -1291,7 +1291,6 @@ pub fn resolve_fee_bps(protocol: DexProtocol, pool_account_data: &[u8]) -> Optio
         DexProtocol::PumpSwap => None,
         DexProtocol::MeteoraDammV2 => None,
         DexProtocol::MeteoraDbc => None,
-        DexProtocol::MeteoraDlmmPro => None,
         DexProtocol::RaydiumLaunchLab => None,
     }
 }
@@ -1805,11 +1804,7 @@ mod tests {
     /// — the exclusion is a named arm, not an accident of buffer length.
     #[test]
     fn test_unsupported_meteora_venues_fail_closed() {
-        for protocol in [
-            DexProtocol::MeteoraDammV2,
-            DexProtocol::MeteoraDbc,
-            DexProtocol::MeteoraDlmmPro,
-        ] {
+        for protocol in [DexProtocol::MeteoraDammV2, DexProtocol::MeteoraDbc] {
             let data = vec![0x11u8; 4_096];
             assert_eq!(
                 resolve_fee_bps(protocol, &data),

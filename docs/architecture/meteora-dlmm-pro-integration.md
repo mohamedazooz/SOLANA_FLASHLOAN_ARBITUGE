@@ -1,8 +1,8 @@
-﻿# Meteora DLMM Pro integration contract
+# Archived research: Meteora DLMM Pro (not in active runtime)
 
 ## Status
 
-`MeteoraDlmmProPool` is metadata-only and fail-closed. It is not an executable quote engine. The previous local `arb-math::dlmm_pro` approximation has been removed because it used fabricated 1:1 limit-order fills, a synthetic tick walk, saturating liquidity changes, fixed six-decimal assumptions and `active_liquidity` as both token reserves. None of those values is a valid substitute for a protocol snapshot.
+**Retired from the active codebase.** The `DexProtocol::MeteoraDlmmPro` enum variant, quote adapter, decoder routing, account hydration hooks, CU estimates and transaction dispatch references have been removed. This document is retained only as research context; it does not describe a supported or planned runtime path. Do not add the protocol back without a separate, explicit implementation decision and complete official-SDK parity. The previous local `arb-math::dlmm_pro` approximation has been removed because it used fabricated 1:1 limit-order fills, a synthetic tick walk, saturating liquidity changes, fixed six-decimal assumptions and `active_liquidity` as both token reserves. None of those values is a valid substitute for a protocol snapshot.
 
 ## Authoritative implementation
 

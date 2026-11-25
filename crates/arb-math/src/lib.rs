@@ -80,18 +80,25 @@ pub use raydium_dynamic_fee::{
 
 use arb_types::Lamports;
 
-/// Apply Token-2022 transfer fee deduction with ceiling rounding and max-fee cap.
-pub fn apply_transfer_fee_ceil(amount: u64, fee_bps: u16, maximum_fee: u64) -> u64 {
-    if amount == 0 || fee_bps == 0 {
-        return amount;
+/// Checked Token-2022 transfer fee deduction with ceiling rounding and max-fee cap.
+pub fn apply_transfer_fee_ceil_checked(amount: u64, fee_bps: u16, maximum_fee: u64) -> Option<u64> {
+    if fee_bps > 10_000 {
+        return None;
     }
-    let num = u128::from(amount).saturating_mul(u128::from(fee_bps));
-    let raw_fee = num.saturating_add(9_999) / 10_000;
-    let capped_fee = u64::try_from(raw_fee).unwrap_or(amount).min(maximum_fee);
-    amount.saturating_sub(capped_fee)
+    if amount == 0 || fee_bps == 0 {
+        return Some(amount);
+    }
+    let numerator = u128::from(amount).checked_mul(u128::from(fee_bps))?;
+    let raw_fee = numerator.checked_add(9_999)? / 10_000;
+    let fee = u64::try_from(raw_fee).ok()?.min(maximum_fee);
+    amount.checked_sub(fee)
 }
 
-/// Apply Token-2022 transfer fee deduction (bps-only convenience wrapper).
+/// Compatibility wrapper. Invalid rates fail closed to zero output; quote paths should use the checked API.
+pub fn apply_transfer_fee_ceil(amount: u64, fee_bps: u16, maximum_fee: u64) -> u64 {
+    apply_transfer_fee_ceil_checked(amount, fee_bps, maximum_fee).unwrap_or(0)
+}
+
 pub fn apply_transfer_fee(amount: u64, fee_bps: u16) -> u64 {
     apply_transfer_fee_ceil(amount, fee_bps, u64::MAX)
 }
@@ -228,6 +235,19 @@ mod tests {
         let opt = optimal_three_pool(&l1, &l2, &l3);
         assert!(opt.is_some());
         assert!(opt.expect("invariant") > 0);
+    }
+
+    #[test]
+    fn checked_transfer_fee_rejects_rates_above_one_hundred_percent() {
+        assert_eq!(
+            apply_transfer_fee_ceil_checked(10_000, 10_001, u64::MAX),
+            None
+        );
+        assert_eq!(
+            apply_transfer_fee_ceil_checked(10_000, 100, 50),
+            Some(9_950)
+        );
+        assert_eq!(apply_transfer_fee_ceil_checked(10_000, 0, 0), Some(10_000));
     }
 
     #[test]

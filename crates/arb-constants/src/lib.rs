@@ -463,13 +463,6 @@ pub const METEORA_DBC_MIGRATION_KEEPER: &str = "9rpVELNUXLoMjAcc19UCVLJ73xjXNoYK
 /// Anchor discriminator for `dynamic_bonding_curve::swap2`: sha256("global:swap2")[..8].
 pub const METEORA_DBC_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 
-/// Meteora DLMM Pro Program ID on Mainnet.
-pub const METEORA_DLMM_PRO_PROGRAM_ID: &str = "dPro1D5wiqnGMH8vMDG23jh35btTHoWdyqXjqkqxe8n";
-/// Anchor discriminator for `dlmm_pro::swap`: sha256("global:swap")[..8].
-pub const METEORA_DLMM_PRO_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
-/// Anchor discriminator for DLMM Pro TickArray account.
-pub const METEORA_DLMM_PRO_TICK_ARRAY_DISCRIMINATOR: [u8; 8] = [69, 97, 189, 190, 110, 7, 66, 187];
-
 // ============================================================================
 // Raydium LaunchLab — Program & Discriminators
 // ============================================================================

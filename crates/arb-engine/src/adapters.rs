@@ -87,7 +87,6 @@ pub const fn cu_estimate(protocol: DexProtocol) -> u64 {
         DexProtocol::MeteoraDlmm => 60_000,
         DexProtocol::MeteoraDammV2 => 70_000,
         DexProtocol::MeteoraDbc => 55_000,
-        DexProtocol::MeteoraDlmmPro => 65_000,
         DexProtocol::RaydiumLaunchLab => 60_000,
         DexProtocol::PumpFun => 40_000,
         DexProtocol::PumpSwap => 48_000,
@@ -104,7 +103,6 @@ pub const fn accounts_required(protocol: DexProtocol) -> u8 {
         DexProtocol::MeteoraDlmm => 15,
         DexProtocol::MeteoraDammV2 => 13,
         DexProtocol::MeteoraDbc => 14,
-        DexProtocol::MeteoraDlmmPro => 16,
         DexProtocol::RaydiumLaunchLab => 14,
         DexProtocol::PumpFun => 16,
         DexProtocol::PumpSwap => 16,
@@ -138,9 +136,6 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
         ),
         DexProtocol::MeteoraDbc => Err(
             "Meteora DBC is quote-only until VirtualPool/PoolConfig, complete curve segments, migration state, epoch, and transfer-fee context are verified",
-        ),
-        DexProtocol::MeteoraDlmmPro => Err(
-            "Meteora DLMM Pro is quote-only until its official dynamic pool, tick arrays, bitmap extension, oracle, limit-order, and mint state are joined",
         ),
         DexProtocol::RaydiumLaunchLab => Err(
             "Raydium LaunchLab is quote-only until PoolState, GlobalConfig, PlatformConfig, fee shares, vaults, and token state are verified",
@@ -314,10 +309,6 @@ static METEORA_DBC_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::MeteoraDbc,
     reason: "Meteora DBC requires the official VirtualPool/PoolConfig and complete piecewise curve snapshot",
 };
-static METEORA_DLMM_PRO_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
-    venue: DexProtocol::MeteoraDlmmPro,
-    reason: "Meteora DLMM Pro requires official tick-array/bitmap/oracle/limit-order state; active-liquidity CLMM fallback is not valid",
-};
 static PUMP_FUN_ADAPTER: PumpFunQuoteAdapter = PumpFunQuoteAdapter;
 static RAYDIUM_LAUNCHLAB_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::RaydiumLaunchLab,
@@ -337,7 +328,6 @@ pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuo
         DexProtocol::MeteoraDlmm => &METEORA_DLMM_ADAPTER,
         DexProtocol::MeteoraDammV2 => &METEORA_DAMM_ADAPTER,
         DexProtocol::MeteoraDbc => &METEORA_DBC_ADAPTER,
-        DexProtocol::MeteoraDlmmPro => &METEORA_DLMM_PRO_ADAPTER,
         DexProtocol::RaydiumLaunchLab => &RAYDIUM_LAUNCHLAB_ADAPTER,
         DexProtocol::PumpFun => &PUMP_FUN_ADAPTER,
         DexProtocol::PumpSwap => &PUMP_SWAP_ADAPTER,
@@ -634,31 +624,36 @@ fn quote_cpmm_hop(
     if reserve_in == 0 || reserve_out == 0 {
         return Err(ArbError::InvalidInput("empty reserves".into()));
     }
-    // Use the pool's native integer numerator/denominator. Converting to BPS
-    // first truncates fractional fees (and can undercharge Raydium CPMM).
-    if pool.fee_denominator == 0 || pool.fee_numerator as u128 > pool.fee_denominator as u128 {
-        return Err(ArbError::InvalidInput("invalid CPMM fee ratio".into()));
-    }
-    let fee = (amount_in as u128)
-        .checked_mul(pool.fee_numerator as u128)
-        .ok_or_else(|| ArbError::InvalidInput("CPMM fee multiplication overflow".into()))?
-        .div_ceil(pool.fee_denominator as u128);
-    let fee =
-        u64::try_from(fee).map_err(|_| ArbError::InvalidInput("CPMM fee exceeds u64".into()))?;
-    let input_after_fee = amount_in.saturating_sub(fee);
-    let out = (reserve_out * input_after_fee as u128) / (reserve_in + input_after_fee as u128);
-    if out == 0 || out >= reserve_out {
+    // All CPMM venues use the same checked integer quote primitives as the
+    // protocol-specific UniversalQuoteDispatcher engines.
+    let fee = arb_math::cpmm::cpmm_fee_ceil(
+        u128::from(amount_in),
+        u128::from(pool.fee_numerator),
+        u128::from(pool.fee_denominator),
+    )
+    .ok_or_else(|| ArbError::InvalidInput("invalid CPMM fee ratio".into()))?;
+    let out = arb_math::cpmm::cpmm_out_upfront_fee_ceil(
+        u128::from(amount_in),
+        reserve_in,
+        reserve_out,
+        u128::from(pool.fee_numerator),
+        u128::from(pool.fee_denominator),
+    )
+    .ok_or(ArbError::Overflow)?;
+    if out == 0 || u128::from(out) >= reserve_out {
         return Err(ArbError::InvalidInput("insufficient liquidity".into()));
     }
-    // Price impact excluding fee: compare fee-free constant-product output to actual.
-    let no_fee_out = (reserve_out * amount_in as u128) / (reserve_in + amount_in as u128);
-    let impact = if no_fee_out == 0 {
-        10_000u16
-    } else {
-        let diff = no_fee_out.saturating_sub(out);
-        ((diff * 10_000) / no_fee_out).min(10_000) as u16
-    };
-    Ok((out as u64, fee, impact))
+    // Price impact measures the fee-free curve movement, so use the amount
+    // that actually enters the invariant after the upfront pool fee.
+    let input_after_fee = amount_in.checked_sub(fee).ok_or(ArbError::Overflow)?;
+    let impact = arb_math::cpmm::cpmm_price_impact_bps(
+        u128::from(input_after_fee),
+        reserve_in,
+        reserve_out,
+        0,
+    )
+    .0;
+    Ok((out, fee, impact))
 }
 
 fn quote_clmm_hop(pool: &mut PoolState, amount_in: u64, a_to_b: bool) -> Result<(u64, u64, u16)> {
@@ -1051,6 +1046,27 @@ mod tests {
         let q = quote_route(&mut pools, &hops, 10_000).unwrap();
         assert!(q.amount_out > 0);
         assert_eq!(q.cu_estimate, cu_estimate(DexProtocol::RaydiumClmm));
+    }
+
+    #[test]
+    fn cpmm_route_price_impact_excludes_upfront_trade_fee() {
+        let mut pool = cpmm_pool(7, 1_000_000, 1_000_000, 100);
+        let amount_in = 100_000u64;
+        let (out, fee, impact) =
+            quote_cpmm_hop(&mut pool, amount_in, true, DexProtocol::RaydiumV4).unwrap();
+        let input_after_fee = amount_in.checked_sub(fee).unwrap();
+        let expected = arb_math::cpmm::cpmm_price_impact_bps(
+            u128::from(input_after_fee),
+            1_000_000,
+            1_000_000,
+            0,
+        )
+        .0;
+        let impact_if_fee_were_double_counted =
+            arb_math::cpmm::cpmm_price_impact_bps(u128::from(amount_in), 1_000_000, 1_000_000, 0).0;
+        assert!(out > 0);
+        assert_eq!(impact, expected);
+        assert!(impact < impact_if_fee_were_double_counted);
     }
 
     #[test]

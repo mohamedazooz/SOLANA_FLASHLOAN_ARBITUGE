@@ -24,7 +24,7 @@ use arb_types::DexProtocol;
 
 /// All protocol variants must stay covered — adding a DEX without a pinned
 /// estimate is itself a regression (compile error via non-exhaustive match here).
-const ALL_PROTOCOLS: [DexProtocol; 11] = [
+const ALL_PROTOCOLS: [DexProtocol; 10] = [
     DexProtocol::RaydiumV4,
     DexProtocol::RaydiumCpmm,
     DexProtocol::RaydiumClmm,
@@ -32,7 +32,6 @@ const ALL_PROTOCOLS: [DexProtocol; 11] = [
     DexProtocol::MeteoraDlmm,
     DexProtocol::MeteoraDammV2,
     DexProtocol::MeteoraDbc,
-    DexProtocol::MeteoraDlmmPro,
     DexProtocol::RaydiumLaunchLab,
     DexProtocol::PumpFun,
     DexProtocol::PumpSwap,
@@ -42,7 +41,7 @@ const ALL_PROTOCOLS: [DexProtocol; 11] = [
 /// These values drive route ranking and the 200k wire-capacity rungs
 /// (`reports/phase15_5/V1_SIZE_LADDER.json`); changing any of them must be a
 /// conscious, reviewed edit — not a silent drift.
-const PINNED_CU_ESTIMATES: [(DexProtocol, u64); 11] = [
+const PINNED_CU_ESTIMATES: [(DexProtocol, u64); 10] = [
     (DexProtocol::RaydiumV4, 65_000),
     (DexProtocol::RaydiumCpmm, 45_000),
     (DexProtocol::RaydiumClmm, 55_000),
@@ -50,7 +49,6 @@ const PINNED_CU_ESTIMATES: [(DexProtocol, u64); 11] = [
     (DexProtocol::MeteoraDlmm, 60_000),
     (DexProtocol::MeteoraDammV2, 70_000),
     (DexProtocol::MeteoraDbc, 55_000),
-    (DexProtocol::MeteoraDlmmPro, 65_000),
     (DexProtocol::RaydiumLaunchLab, 60_000),
     (DexProtocol::PumpFun, 40_000),
     (DexProtocol::PumpSwap, 48_000),

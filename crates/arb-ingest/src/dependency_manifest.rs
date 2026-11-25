@@ -423,10 +423,7 @@ pub fn resolve_protocol_dependencies(
                 ));
             }
         }
-        DexProtocol::MeteoraDammV2
-        | DexProtocol::MeteoraDbc
-        | DexProtocol::MeteoraDlmmPro
-        | DexProtocol::RaydiumLaunchLab => {
+        DexProtocol::MeteoraDammV2 | DexProtocol::MeteoraDbc | DexProtocol::RaydiumLaunchLab => {
             require(AccountRole::PoolState)?;
             require(AccountRole::VaultA)?;
             require(AccountRole::VaultB)?;

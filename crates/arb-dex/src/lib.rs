@@ -6,7 +6,6 @@ pub mod engines;
 pub mod meteora_damm_v2;
 pub mod meteora_dbc;
 pub mod meteora_dlmm;
-pub mod meteora_dlmm_pro;
 pub mod orca_whirlpool;
 pub mod programs;
 pub mod pump_fun;
@@ -34,7 +33,6 @@ pub use dlmm_validation::{
 pub use meteora_damm_v2::MeteoraDammV2Pool;
 pub use meteora_dbc::MeteoraDbcPool;
 pub use meteora_dlmm::MeteoraDlmmPool;
-pub use meteora_dlmm_pro::MeteoraDlmmProPool;
 pub use orca_whirlpool::OrcaWhirlpool;
 pub use programs::{Network, ProgramInfo, ProgramRegistry, program_registry};
 pub use pump_fun::PumpFunBondingCurve;

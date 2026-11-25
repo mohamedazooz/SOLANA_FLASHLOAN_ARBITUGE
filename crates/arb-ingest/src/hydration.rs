@@ -972,27 +972,6 @@ impl MultiDexRegistry {
                         event_authority,
                     })
                 }
-                (DexProtocol::MeteoraDlmmPro, Some(d)) if d.len() >= 256 => {
-                    let vault_x = Pubkey::new_from_array(d[72..104].try_into().unwrap());
-                    let vault_y = Pubkey::new_from_array(d[104..136].try_into().unwrap());
-                    let oracle = Pubkey::new_from_array(d[136..168].try_into().unwrap());
-                    let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PRO_PROGRAM_ID)
-                        .unwrap_or_default();
-                    let (pool_authority, _) = Pubkey::find_program_address(
-                        &[b"pool_authority", p.pool_id.0.as_ref()],
-                        &prog,
-                    );
-                    let (event_authority, _) =
-                        Pubkey::find_program_address(&[b"__event_authority"], &prog);
-                    Some(arb_types::PoolExecutionAccounts::MeteoraDlmmPro {
-                        pool_authority,
-                        vault_x,
-                        vault_y,
-                        tick_arrays: vec![],
-                        oracle,
-                        event_authority,
-                    })
-                }
                 (DexProtocol::RaydiumLaunchLab, Some(d)) if d.len() >= 366 => {
                     let global_config = Pubkey::new_from_array(d[141..173].try_into().unwrap());
                     let platform_config = Pubkey::new_from_array(d[173..205].try_into().unwrap());

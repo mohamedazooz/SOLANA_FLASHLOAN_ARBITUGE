@@ -25,8 +25,6 @@ pub enum DexProtocol {
     MeteoraDammV2,
     /// Meteora Dynamic Bonding Curve (`dbcij…`): 16-point piecewise launchpad.
     MeteoraDbc,
-    /// Meteora DLMM Pro (`dPro1…`): continuous tick concentrated liquidity.
-    MeteoraDlmmPro,
     /// Raydium LaunchLab (`LanMV9…`): bonding curve launchpad.
     RaydiumLaunchLab,
     /// Pump.fun bonding curve constant-product AMM.
@@ -46,7 +44,6 @@ impl DexProtocol {
             Self::MeteoraDlmm => "meteora_dlmm",
             Self::MeteoraDammV2 => "meteora_damm_v2",
             Self::MeteoraDbc => "meteora_dbc",
-            Self::MeteoraDlmmPro => "meteora_dlmm_pro",
             Self::RaydiumLaunchLab => "raydium_launchlab",
             Self::PumpFun => "pump_fun",
             Self::PumpSwap => "pump_swap",
@@ -66,7 +63,7 @@ impl DexProtocol {
             | Self::RaydiumLaunchLab
             | Self::PumpFun
             | Self::PumpSwap => PoolKind::Cpmm,
-            Self::RaydiumClmm | Self::OrcaWhirlpool | Self::MeteoraDlmmPro => PoolKind::Clmm,
+            Self::RaydiumClmm | Self::OrcaWhirlpool => PoolKind::Clmm,
             Self::MeteoraDlmm => PoolKind::Dlmm,
         }
     }
@@ -255,14 +252,6 @@ pub enum PoolExecutionAccounts {
         authority: Pubkey,
         vault_base: Pubkey,
         vault_quote: Pubkey,
-        event_authority: Pubkey,
-    },
-    MeteoraDlmmPro {
-        pool_authority: Pubkey,
-        vault_x: Pubkey,
-        vault_y: Pubkey,
-        tick_arrays: Vec<Pubkey>,
-        oracle: Pubkey,
         event_authority: Pubkey,
     },
     RaydiumLaunchLab {

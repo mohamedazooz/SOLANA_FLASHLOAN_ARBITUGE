@@ -155,7 +155,7 @@ impl ThreePoolRouteEngine {
                 | DexProtocol::PumpFun
                 | DexProtocol::PumpSwap => 35_000,
                 DexProtocol::RaydiumClmm | DexProtocol::OrcaWhirlpool => 85_000,
-                DexProtocol::MeteoraDlmm | DexProtocol::MeteoraDlmmPro => 120_000,
+                DexProtocol::MeteoraDlmm => 120_000,
                 DexProtocol::MeteoraDammV2
                 | DexProtocol::MeteoraDbc
                 | DexProtocol::RaydiumLaunchLab => 60_000,
