@@ -1,8 +1,8 @@
 # Current Verified Status
 
 **Authoritative Git Baseline**: Commit `1ff841a` on `main` (merge of PR #164, 2026-11-25)
-**Current Branch**: `fix/deep-quote-accounting-hardening-20261125` (pushed to `origin` at `7defbf6`; fee-audit follow-up currently local; not merged)
-**CI Status**: Vercel status check succeeded for commit `7defbf6`; no GitHub Actions workflow run is attached to the branch push. Recheck after the fee-audit follow-up is pushed.
+**Current Branch**: `fix/deep-quote-accounting-hardening-20261125` (pushed to `origin`; fee-audit implementation commit `db3f26b`; not merged)
+**CI Status**: Vercel status check succeeded for fee-audit commit `db3f26b`; no GitHub Actions workflow run is attached to the branch push.
 **Compilation Baseline**: Latest full local workspace run: 1,805 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass.
 
 ## Local Hardening in Progress — 2026-11-25
