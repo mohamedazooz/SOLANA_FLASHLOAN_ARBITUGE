@@ -283,6 +283,35 @@ pub fn base_raw_to_lamports(
     Ok(Lamports(val_u64))
 }
 
+/// Convert base-mint raw units into Lamports using the verified rational rate,
+/// rounding UP. Use this for notional denominators and risk hurdles so integer
+/// conversion can never understate the borrowed value.
+pub fn base_raw_to_lamports_ceil(
+    base_raw: TokenAmount,
+    rate_num: u128,
+    rate_denom: u128,
+) -> Result<Lamports> {
+    if rate_num == 0 || rate_denom == 0 {
+        return Err(ArbError::InvalidInput(
+            "zero conversion rate or denominator".into(),
+        ));
+    }
+    let product = U256::from(base_raw.as_u64())
+        .checked_mul(U256::from(rate_denom))
+        .ok_or(ArbError::Overflow)?;
+    let divisor = U256::from(rate_num);
+    let (quotient, remainder) = product.div_rem(divisor);
+    let rounded = if remainder.is_zero() {
+        quotient
+    } else {
+        quotient
+            .checked_add(U256::from(1))
+            .ok_or(ArbError::Overflow)?
+    };
+    Ok(Lamports(
+        u64::try_from(rounded).map_err(|_| ArbError::Overflow)?,
+    ))
+}
 /// Ceiling share of `amount` at `per_hop_bps`, rounded up so any remainder
 /// reduces the returned floor rather than inflating it.
 fn ceil_bps_share(amount: u128, per_hop_bps: u64) -> Result<u128> {
@@ -1111,6 +1140,22 @@ mod tests {
 
         // Zero rate fails closed
         assert!(base_raw_to_lamports(TokenAmount(1_000_000), 0, 1).is_err());
+    }
+    #[test]
+    fn base_raw_to_lamports_ceil_never_understates_input_notional() {
+        assert_eq!(
+            base_raw_to_lamports_ceil(TokenAmount(1), 3, 2).unwrap(),
+            Lamports(1)
+        );
+        assert_eq!(
+            base_raw_to_lamports_ceil(TokenAmount(3), 3, 2).unwrap(),
+            Lamports(2)
+        );
+        assert_eq!(
+            base_raw_to_lamports_ceil(TokenAmount(1_000_000), 1, 5).unwrap(),
+            Lamports(5_000_000)
+        );
+        assert!(base_raw_to_lamports_ceil(TokenAmount(1), 0, 1).is_err());
     }
     #[test]
     fn losing_quote_is_signed_and_rejected_not_overflowed() {

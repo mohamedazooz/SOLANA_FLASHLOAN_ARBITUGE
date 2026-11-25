@@ -31,6 +31,7 @@ pub mod validation;
 /// allow-listed environment overrides. This loader does not merge base/profile
 /// files; callers choose the complete file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     /// Deployment mode: shadow | simulate | canary | live.
     /// `live` additionally requires `execution.live_enabled` to be true and all
@@ -90,6 +91,7 @@ impl std::fmt::Display for Mode {
 /// live execution (`ARB_LIVE` truthy). Presence of `Mode::Live` alone is
 /// insufficient to authorize trading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModeConfig {
     pub mode: Mode,
     /// Explicit opt-in for live execution. Default false; must be set to true
@@ -100,6 +102,7 @@ pub struct ModeConfig {
 
 /// RPC / gRPC provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     /// Primary RPC/Geyser endpoint URL (approved schemes: http, https).
     pub primary_url: String,
@@ -121,6 +124,7 @@ pub struct ProviderConfig {
 
 /// Jito block-engine and tip configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JitoConfig {
     /// Jito block-engine regions used for bundle submission.
     pub regions: Vec<String>,
@@ -169,6 +173,7 @@ pub struct JitoConfig {
 
 /// Jupiter swap API configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JupiterConfig {
     /// Base URL for the Jupiter v2/v6 swap API (approved scheme: https).
     pub base_url: String,
@@ -183,6 +188,7 @@ pub struct JupiterConfig {
 /// The private key material itself is never stored here; only the path to a
 /// key file (local development only) or a secret provider reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WalletConfig {
     /// Path to the operator keypair file (local development only).
     pub keypair_path: String,
@@ -195,6 +201,7 @@ pub struct WalletConfig {
 
 /// Strategy / routing parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrategyConfig {
     /// Base token mints monitored for arbitrage opportunities.
     pub base_tokens: Vec<String>,
@@ -260,6 +267,7 @@ fn default_max_route_hops() -> usize {
 /// Authoritative risk limits. These are the single source of truth for safety
 /// thresholds; no lower-priority config source may weaken them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RiskConfig {
     /// Maximum trade size in USD.
     pub max_trade_size_usd: UsdMicros,
@@ -288,6 +296,7 @@ pub struct RiskConfig {
 
 /// Chronos expected-value gate configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChronosConfig {
     /// Whether the EV gate is enabled.
     #[serde(default = "default_true")]
@@ -306,6 +315,7 @@ pub struct ChronosConfig {
 
 /// Persistence store configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoreConfig {
     /// Store URL (sqlite:// or postgres://).
     pub url: String,
@@ -313,6 +323,7 @@ pub struct StoreConfig {
 
 /// Observability / metrics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
     /// Prometheus metrics listen address (host:port).
     pub listen: SocketAddr,
@@ -320,6 +331,7 @@ pub struct ObservabilityConfig {
 
 /// Administrative API configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Admin HTTP listen address (host:port).
     pub listen: SocketAddr,
@@ -329,6 +341,7 @@ pub struct AdminConfig {
 
 /// Security controls: CORS, rate limiting, secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Explicit production CORS allowlist. Empty = deny all cross-origin.
     /// `CorsLayer::permissive()` is never allowed.

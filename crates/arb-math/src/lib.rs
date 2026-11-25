@@ -31,8 +31,9 @@ pub use chronos::{
 };
 pub use economic::{
     CostEntry, CostId, CostLedger, CostScope, CostType, CostUnit, ECONOMIC_CALCULATION_VERSION,
-    EconomicConfig, EconomicQuote, LAMPORTS_PER_SOL, base_raw_to_lamports, build_economic_quote,
-    calculate_flash_fee_raw, calculate_net_profit_raw,
+    EconomicConfig, EconomicQuote, LAMPORTS_PER_SOL, base_raw_to_lamports,
+    base_raw_to_lamports_ceil, build_economic_quote, calculate_flash_fee_raw,
+    calculate_net_profit_raw,
 };
 pub use economic_integration::{
     ExecutionCosts, UnifiedEconomicCalculator, UnifiedEconomicConfig, UnifiedEconomicResult,

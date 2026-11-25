@@ -1,6 +1,6 @@
 //! Risk management: multi-layer limits, circuit breaker, kill switch.
 
-use arb_types::{Lamports, Slot, TokenAmount};
+use arb_types::{Lamports, Slot};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -394,105 +394,251 @@ impl Default for ChronosRiskConfig {
 }
 
 /// Chronos Expected Value (EV) evaluation input parameters.
+///
+/// `net_profit_success_lamports` is already the canonical, fully-costed success
+/// PnL produced by `arb-math`. Do not pass gross PnL and re-deduct flash/DEX/tip
+/// costs here: doing so creates a second economic calculator and can flip a
+/// positive canonical result negative through duplicate costs or unit rounding.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChronosEvInput {
-    /// Latency since quote ingestion in milliseconds (tau = age_ms / 1000.0)
+    /// Latency since quote ingestion in milliseconds.
     pub age_ms: u64,
-    /// Maximum allowable age before dropping quote (e.g. 400ms = 1 slot)
+    /// Maximum allowable quote age in milliseconds (100..=5000).
     pub max_age_ms: u64,
-    /// Hazard decay rate per second (lambda in s^-1, default 3.0)
+    /// Hazard decay rate per second. Converted once to conservative micro-units.
     pub decay_lambda_per_sec: f64,
-    /// Gross profit in lamports
-    pub gross_profit_lamports: u64,
-    /// Kamino flash loan fee in lamports (e.g. 5 bps)
-    pub flash_fee_lamports: u64,
-    /// Base network signature fee (default 5,000 lamports)
+    /// Canonical net PnL after flash fee, base fee, priority fee and actual tip.
+    pub net_profit_success_lamports: i128,
+    /// Network fee paid when a transaction is attempted but the bundle fails.
     pub base_network_fee_lamports: u64,
-    /// Priority compute fee in lamports (CU_price * CU_limit / 10^6)
+    /// Priority fee paid when a transaction is attempted but the bundle fails.
     pub priority_fee_lamports: u64,
-    /// Jito tip in lamports (only deducted on landing success in private bundles)
-    pub jito_tip_lamports: u64,
-    /// Additional failed attempt cost in lamports (opportunity cost, simulation, dropped bundle overhead)
+    /// Additional verified failed-attempt overhead in lamports.
     pub failed_attempt_cost_lamports: u64,
-    /// Conversion rate: USD per SOL
+    /// Fresh USD per SOL reference, used only for the EV display/threshold conversion.
     pub sol_price_usd: f64,
-    /// Minimum EV in USD required to approve execution (e.g. $0.05)
+    /// Minimum expected value in USD required for approval.
     pub min_ev_usd: f64,
 }
 
-/// Result of Chronos EV Gate evaluation.
+/// Chronos result. Floating-point fields are display-only projections; the
+/// approval decision uses the exact integer/fixed-point fields below.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChronosEvResult {
-    /// Survival probability: P_survival = exp(-lambda * tau)
+    /// Display-only survival probability in [0, 1].
     pub survival_probability: f64,
-    /// Net profit on success in lamports (Gross - flash - base - priority - tip)
-    pub net_profit_success_lamports: i64,
-    /// Net profit on failure in lamports (-base - priority - failed_cost)
-    pub net_profit_failure_lamports: i64,
-    /// Expected Value in lamports: EV = P * Pi_success + (1 - P) * Pi_failure
+    /// Exact Q32 survival probability (1.0 == 2^32).
+    pub survival_probability_q32: u64,
+    /// Canonical net PnL on success, in lamports.
+    pub net_profit_success_lamports: i128,
+    /// PnL on failure, in lamports (network + priority + failed-attempt costs).
+    pub net_profit_failure_lamports: i128,
+    /// Display-only projection of `expected_value_lamports_exact`.
     pub expected_value_lamports: f64,
-    /// Expected Value converted to USD
+    /// Exact expected value in integer lamports, rounded down conservatively.
+    pub expected_value_lamports_exact: i128,
+    /// Display-only projection of `expected_value_usd_micros`.
     pub expected_value_usd: f64,
-    /// Approval flag: age <= max_age && Pi_success > 0 && EV >= min_ev_usd
+    /// Exact expected value in USD micros, rounded down conservatively.
+    pub expected_value_usd_micros: i128,
+    /// Approval flag computed exclusively from integer/fixed-point values.
     pub is_eligible: bool,
 }
 
-/// Evaluates survival probability and rigorous Expected Value (EV):
-///   EV = P_success * Pi_success + (1 - P_success) * Pi_failure
-pub fn evaluate_chronos_ev(input: ChronosEvInput) -> Result<ChronosEvResult, String> {
-    if input.max_age_ms == 0 {
-        return Err("max_age_ms must be > 0".to_string());
+const CHRONOS_Q32_ONE: u64 = 1_u64 << 32;
+const CHRONOS_EXP_TERMS: u128 = 256;
+const CHRONOS_LAMBDA_SCALE: f64 = 1_000_000.0;
+const CHRONOS_MAX_LAMBDA_MICROS_PER_SEC: u64 = 1_000_000_000_000; // 1e6 s^-1
+const USD_MICROS_PER_USD: f64 = 1_000_000.0;
+const LAMPORTS_PER_SOL_I128: i128 = 1_000_000_000;
+
+/// Convert a finite non-negative configuration float to a scaled integer.
+/// Ceiling is used for decay/minimum thresholds; floor is used for SOL price,
+/// so the EV gate cannot become more permissive due to decimal conversion.
+fn chronos_scaled_u64(value: f64, scale: f64, round_up: bool, name: &str) -> Result<u64, String> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!("{name} must be finite and non-negative"));
     }
-    if !input.decay_lambda_per_sec.is_finite() || input.decay_lambda_per_sec < 0.0 {
-        return Err("decay_lambda must be non-negative and finite".to_string());
+    let scaled = value * scale;
+    if !scaled.is_finite() || scaled >= u64::MAX as f64 {
+        return Err(format!("{name} is outside the supported fixed-point range"));
+    }
+    let rounded = if round_up {
+        scaled.ceil()
+    } else {
+        scaled.floor()
+    };
+    Ok(rounded as u64)
+}
+
+#[inline]
+fn chronos_mul_q32(lhs: u64, rhs: u64) -> u64 {
+    ((u128::from(lhs) * u128::from(rhs)) >> 32) as u64
+}
+
+/// Conservative lower bound for exp(-lambda * age).
+///
+/// For x >= 0, (1 - x/n)^n <= exp(-x) when x/n <= 1. We evaluate the
+/// 256th power in Q32 with floor-rounded products, preserving the lower bound.
+/// This is deterministic, allocation-free and needs only eight multiplications.
+fn chronos_survival_q32(
+    age_ms: u64,
+    max_age_ms: u64,
+    lambda_micros_per_sec: u64,
+) -> Result<u64, String> {
+    if age_ms > max_age_ms {
+        return Ok(0);
+    }
+    if lambda_micros_per_sec == 0 || age_ms == 0 {
+        return Ok(CHRONOS_Q32_ONE);
+    }
+
+    // x(Q32) = lambda(micro/s) * age(ms) * 2^32 / 1e9.
+    // Ceiling prevents an optimistic underestimate of decay.
+    let denominator = 1_000_000_000_u128;
+    let numerator = u128::from(lambda_micros_per_sec)
+        .checked_mul(u128::from(age_ms))
+        .and_then(|v| v.checked_mul(u128::from(CHRONOS_Q32_ONE)))
+        .ok_or_else(|| "Chronos decay exponent overflow".to_string())?;
+    let x_q32 = numerator
+        .checked_add(denominator - 1)
+        .ok_or_else(|| "Chronos decay exponent rounding overflow".to_string())?
+        / denominator;
+
+    // At x >= 32, exp(-x) is below Q32 resolution; zero is conservative.
+    if x_q32 >= 32_u128 * u128::from(CHRONOS_Q32_ONE) {
+        return Ok(0);
+    }
+
+    let reduction = x_q32
+        .checked_add(CHRONOS_EXP_TERMS - 1)
+        .ok_or_else(|| "Chronos range-reduction overflow".to_string())?
+        / CHRONOS_EXP_TERMS;
+    let base = u64::try_from(u128::from(CHRONOS_Q32_ONE) - reduction)
+        .map_err(|_| "Chronos range-reduction underflow".to_string())?;
+
+    let mut exponent = CHRONOS_EXP_TERMS;
+    let mut factor = base;
+    let mut result = CHRONOS_Q32_ONE;
+    while exponent > 0 {
+        if exponent & 1 == 1 {
+            result = chronos_mul_q32(result, factor);
+        }
+        exponent >>= 1;
+        if exponent > 0 {
+            factor = chronos_mul_q32(factor, factor);
+        }
+    }
+    Ok(result.min(CHRONOS_Q32_ONE))
+}
+
+fn format_signed_usd_micros(value: i128) -> String {
+    let magnitude = value.unsigned_abs();
+    let sign = if value < 0 { "-" } else { "" };
+    format!(
+        "{sign}{}.{:06}",
+        magnitude / 1_000_000,
+        magnitude % 1_000_000
+    )
+}
+
+/// Evaluates EV using the canonical fully-costed success PnL:
+/// EV = P(survival) * net_success + (1-P(survival)) * net_failure.
+/// All approval arithmetic is fixed-point/integer; floats are used only to
+/// ingest legacy TOML numeric fields and to produce human-readable projections.
+pub fn evaluate_chronos_ev(input: ChronosEvInput) -> Result<ChronosEvResult, String> {
+    if input.max_age_ms == 0 || input.max_age_ms > 5_000 {
+        return Err("max_age_ms must be in 1..=5000".to_string());
+    }
+    if input.net_profit_success_lamports <= 0 {
+        return Err("canonical net success PnL must be positive".to_string());
     }
     if !input.sol_price_usd.is_finite() || input.sol_price_usd <= 0.0 {
         return Err("sol_price_usd must be positive and finite".to_string());
     }
 
-    let tau_seconds = input.age_ms as f64 / 1_000.0;
-    let survival_probability = (-input.decay_lambda_per_sec * tau_seconds).exp();
+    let lambda_micros = chronos_scaled_u64(
+        input.decay_lambda_per_sec,
+        CHRONOS_LAMBDA_SCALE,
+        true,
+        "decay_lambda_per_sec",
+    )?;
+    if lambda_micros > CHRONOS_MAX_LAMBDA_MICROS_PER_SEC {
+        return Err("decay_lambda_per_sec exceeds the supported maximum".to_string());
+    }
+    let sol_price_micros = chronos_scaled_u64(
+        input.sol_price_usd,
+        USD_MICROS_PER_USD,
+        false,
+        "sol_price_usd",
+    )?;
+    if sol_price_micros == 0 {
+        return Err("sol_price_usd is below the supported micro-USD precision".to_string());
+    }
+    let min_ev_micros =
+        chronos_scaled_u64(input.min_ev_usd, USD_MICROS_PER_USD, true, "min_ev_usd")?;
 
-    // Pi_success: All costs deducted (including Jito tip and flash fee)
-    let total_success_costs = input
-        .flash_fee_lamports
-        .saturating_add(input.base_network_fee_lamports)
-        .saturating_add(input.priority_fee_lamports)
-        .saturating_add(input.jito_tip_lamports);
-
-    let net_profit_success_lamports = (input.gross_profit_lamports as i128
-        - total_success_costs as i128)
-        .clamp(i64::MIN as i128, i64::MAX as i128) as i64;
-
-    // Pi_failure: On failure in Jito private bundle, tip is NOT deducted, but network fee and fail overhead are paid
-    let total_failure_costs = input
+    let failure_costs = input
         .base_network_fee_lamports
-        .saturating_add(input.priority_fee_lamports)
-        .saturating_add(input.failed_attempt_cost_lamports);
+        .checked_add(input.priority_fee_lamports)
+        .and_then(|v| v.checked_add(input.failed_attempt_cost_lamports))
+        .ok_or_else(|| "Chronos failure-cost sum overflow".to_string())?;
+    let net_profit_failure_lamports = -i128::from(failure_costs);
+    let survival_probability_q32 =
+        chronos_survival_q32(input.age_ms, input.max_age_ms, lambda_micros)?;
 
-    let net_profit_failure_lamports =
-        (-(total_failure_costs as i128)).clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+    let probability = i128::from(survival_probability_q32);
+    let one_minus_probability = i128::from(CHRONOS_Q32_ONE) - probability;
+    let weighted_success = input
+        .net_profit_success_lamports
+        .checked_mul(probability)
+        .ok_or_else(|| "Chronos success EV multiplication overflow".to_string())?;
+    let weighted_failure = net_profit_failure_lamports
+        .checked_mul(one_minus_probability)
+        .ok_or_else(|| "Chronos failure EV multiplication overflow".to_string())?;
+    let expected_value_lamports_exact = weighted_success
+        .checked_add(weighted_failure)
+        .ok_or_else(|| "Chronos EV accumulation overflow".to_string())?
+        .div_euclid(i128::from(CHRONOS_Q32_ONE));
 
-    // EV = P * Pi_success + (1 - P) * Pi_failure
-    let expected_value_lamports = (survival_probability * net_profit_success_lamports as f64)
-        + ((1.0 - survival_probability) * net_profit_failure_lamports as f64);
-
-    let expected_value_usd = (expected_value_lamports / 1_000_000_000.0) * input.sol_price_usd;
+    // USD micros = lamports * USD-micros-per-SOL / 1e9. Euclidean division
+    // rounds negative values down and positive values down, never overstating EV.
+    let expected_value_usd_micros = expected_value_lamports_exact
+        .checked_mul(i128::from(sol_price_micros))
+        .ok_or_else(|| "Chronos USD conversion overflow".to_string())?
+        .div_euclid(LAMPORTS_PER_SOL_I128);
 
     let is_eligible = input.age_ms <= input.max_age_ms
-        && net_profit_success_lamports > 0
-        && expected_value_usd >= input.min_ev_usd;
+        && input.net_profit_success_lamports > 0
+        && expected_value_usd_micros >= i128::from(min_ev_micros);
 
     Ok(ChronosEvResult {
-        survival_probability,
-        net_profit_success_lamports,
+        survival_probability: survival_probability_q32 as f64 / CHRONOS_Q32_ONE as f64,
+        survival_probability_q32,
+        net_profit_success_lamports: input.net_profit_success_lamports,
         net_profit_failure_lamports,
-        expected_value_lamports,
-        expected_value_usd,
+        expected_value_lamports: expected_value_lamports_exact as f64,
+        expected_value_lamports_exact,
+        expected_value_usd: expected_value_usd_micros as f64 / USD_MICROS_PER_USD,
+        expected_value_usd_micros,
         is_eligible,
     })
 }
-
+/// Compute the conservative minimum net-profit hurdle in Lamports.
+/// Input notional and PnL must already be converted to the same SOL/Lamport unit.
+pub fn minimum_net_profit_hurdle_lamports(
+    amount_in_lamports: Lamports,
+    absolute_floor: Lamports,
+    min_profit_bps: u64,
+) -> Lamports {
+    let numerator = u128::from(amount_in_lamports.as_u64()) * u128::from(min_profit_bps);
+    let bps_floor = numerator / 10_000 + u128::from(numerator % 10_000 != 0);
+    Lamports(
+        absolute_floor
+            .as_u64()
+            .max(u64::try_from(bps_floor).unwrap_or(u64::MAX)),
+    )
+}
 pub struct RiskGate {
     limits: RiskLimits,
     breaker: Arc<CircuitBreaker>,
@@ -547,13 +693,16 @@ impl RiskGate {
         // of their apparent gross edge.
         let result = evaluate_chronos_ev(input)?;
         if self.chronos_config.enabled && !result.is_eligible {
+            let survival_hundredths = (u128::from(result.survival_probability_q32) * 10_000)
+                / u128::from(CHRONOS_Q32_ONE);
             return Err(format!(
-                "chronos EV gate rejected: age={}ms (max {}), EV=${:.4} (min ${:.4}), P_surv={:.2}%",
+                "chronos EV gate rejected: age={}ms (max {}), EV=${} (min ${:.4}), P_surv={}.{:02}%",
                 input.age_ms,
                 input.max_age_ms,
-                result.expected_value_usd,
+                format_signed_usd_micros(result.expected_value_usd_micros),
                 input.min_ev_usd,
-                result.survival_probability * 100.0
+                survival_hundredths / 100,
+                survival_hundredths % 100
             ));
         }
         Ok(result)
@@ -562,7 +711,7 @@ impl RiskGate {
     pub fn evaluate_full(
         &self,
         opportunity_net: Lamports,
-        amount_in: TokenAmount,
+        amount_in_lamports: Lamports,
         current_slot: Slot,
         state_age_slots: u64,
         trade_size_usd: f64,
@@ -582,7 +731,7 @@ impl RiskGate {
         self.check_tip_lamports(tip_lamports)?;
         self.check_price_impact(price_impact_bps)?;
         self.check_state_age(state_age_slots)?;
-        self.check_min_profit(opportunity_net, amount_in)?;
+        self.check_min_profit(opportunity_net, amount_in_lamports)?;
         self.check_losses()?;
         // Funding mode must not weaken the common execution risk policy.
         self.check_max_inflight_bundles(current_slot)?;
@@ -633,7 +782,7 @@ impl RiskGate {
     pub fn evaluate_flash_loan(
         &self,
         opportunity_net: Lamports,
-        amount_in: TokenAmount,
+        amount_in_lamports: Lamports,
         current_slot: Slot,
         state_age_slots: u64,
         trade_size_usd: f64,
@@ -653,7 +802,7 @@ impl RiskGate {
         self.check_tip_lamports(tip_lamports)?;
         self.check_price_impact(price_impact_bps)?;
         self.check_state_age(state_age_slots)?;
-        self.check_min_profit(opportunity_net, amount_in)?;
+        self.check_min_profit(opportunity_net, amount_in_lamports)?;
         self.check_losses()?;
 
         // Phase E: new enforcement checks
@@ -703,7 +852,7 @@ impl RiskGate {
     pub fn check_min_profit(
         &self,
         opportunity_net: Lamports,
-        amount_in: TokenAmount,
+        amount_in_lamports: Lamports,
     ) -> Result<(), String> {
         if opportunity_net.as_u64() < self.limits.min_net_profit_abs {
             return Err(format!(
@@ -712,9 +861,13 @@ impl RiskGate {
                 self.limits.min_net_profit_abs
             ));
         }
-        let min_bps_amount =
-            amount_in.as_u64() as u128 * self.limits.min_net_profit_bps as u128 / 10_000;
-        if (opportunity_net.as_u64() as u128) < min_bps_amount {
+        let min_bps_amount = minimum_net_profit_hurdle_lamports(
+            amount_in_lamports,
+            Lamports(0),
+            self.limits.min_net_profit_bps,
+        )
+        .as_u64();
+        if opportunity_net.as_u64() < min_bps_amount {
             return Err(format!("net profit {} < min_bps", opportunity_net.as_u64()));
         }
         Ok(())
@@ -1118,11 +1271,9 @@ mod tests {
             age_ms: 20, // 20ms fresh quote
             max_age_ms: 400,
             decay_lambda_per_sec: 3.0,
-            gross_profit_lamports: 10_000_000, // 0.01 SOL ($1.50 at $150/SOL)
-            flash_fee_lamports: 50_000,
+            net_profit_success_lamports: 4_935_000, // canonical net after all landed costs
             base_network_fee_lamports: 5_000,
             priority_fee_lamports: 10_000,
-            jito_tip_lamports: 5_000_000, // 50% tip
             failed_attempt_cost_lamports: 10_000,
             sol_price_usd: 150.0,
             min_ev_usd: 0.05,
@@ -1133,6 +1284,9 @@ mod tests {
         assert!(res.survival_probability > 0.90);
         assert!(res.net_profit_success_lamports > 4_000_000);
         assert!(res.expected_value_usd > 0.50);
+        assert_eq!(res.net_profit_success_lamports, 4_935_000);
+        assert_eq!(res.net_profit_failure_lamports, -25_000);
+        assert!(res.expected_value_usd_micros > 500_000);
     }
 
     #[test]
@@ -1141,11 +1295,9 @@ mod tests {
             age_ms: 450, // 450ms > max 400ms
             max_age_ms: 400,
             decay_lambda_per_sec: 3.0,
-            gross_profit_lamports: 10_000_000,
-            flash_fee_lamports: 50_000,
+            net_profit_success_lamports: 4_935_000, // canonical net after all landed costs
             base_network_fee_lamports: 5_000,
             priority_fee_lamports: 10_000,
-            jito_tip_lamports: 5_000_000,
             failed_attempt_cost_lamports: 10_000,
             sol_price_usd: 150.0,
             min_ev_usd: 0.05,
@@ -1165,11 +1317,9 @@ mod tests {
             age_ms: 350,
             max_age_ms: 400,
             decay_lambda_per_sec: 10.0, // Aggressive decay e^(-3.5) ~= 0.03 (3% survival)
-            gross_profit_lamports: 50_000, // Very small profit
-            flash_fee_lamports: 5_000,
+            net_profit_success_lamports: 5_000, // Already net of all success costs
             base_network_fee_lamports: 5_000,
             priority_fee_lamports: 10_000,
-            jito_tip_lamports: 25_000,
             failed_attempt_cost_lamports: 20_000,
             sol_price_usd: 150.0,
             min_ev_usd: 0.01,
@@ -1178,6 +1328,37 @@ mod tests {
         let res = evaluate_chronos_ev(input).expect("ev calculation");
         assert!(!res.is_eligible, "Low/Negative EV must be rejected");
         assert!(res.expected_value_lamports < 0.0);
+    }
+    #[test]
+    fn chronos_fixed_point_survival_is_monotone_and_conservative() {
+        let fresh = chronos_survival_q32(20, 400, 3_000_000).expect("fresh survival");
+        let older = chronos_survival_q32(40, 400, 3_000_000).expect("older survival");
+        assert!(fresh > older);
+        let probability = fresh as f64 / CHRONOS_Q32_ONE as f64;
+        assert!(probability <= (-0.06_f64).exp());
+        assert!(probability > 0.9417);
+        assert_eq!(
+            chronos_survival_q32(0, 400, 3_000_000).unwrap(),
+            CHRONOS_Q32_ONE
+        );
+        assert_eq!(chronos_survival_q32(20, 400, 0).unwrap(), CHRONOS_Q32_ONE);
+        assert_eq!(chronos_survival_q32(401, 400, 3_000_000).unwrap(), 0);
+    }
+
+    #[test]
+    fn chronos_failure_cost_overflow_fails_closed() {
+        let input = ChronosEvInput {
+            age_ms: 20,
+            max_age_ms: 400,
+            decay_lambda_per_sec: 3.0,
+            net_profit_success_lamports: 1_000_000,
+            base_network_fee_lamports: u64::MAX,
+            priority_fee_lamports: 1,
+            failed_attempt_cost_lamports: 0,
+            sol_price_usd: 150.0,
+            min_ev_usd: 0.01,
+        };
+        assert!(evaluate_chronos_ev(input).is_err());
     }
     #[test]
     fn breaker_half_open_admits_single_probe_and_retrips_on_failure() {

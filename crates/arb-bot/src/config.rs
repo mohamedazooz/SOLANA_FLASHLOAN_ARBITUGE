@@ -90,6 +90,48 @@ fn default_priority_fee_max_share_bps() -> u64 {
 fn default_max_implausible_roi_bps() -> u64 {
     1_500
 }
+/// Resolve the wallet SOL reserve. Zero/malformed overrides are rejected so
+/// an environment typo cannot silently disable the reserve guard.
+pub fn effective_min_sol_reserve_lamports(
+    configured: u64,
+    env_override: Option<&str>,
+) -> anyhow::Result<u64> {
+    if configured == 0 {
+        anyhow::bail!("wallet.min_sol_balance_lamports must be positive");
+    }
+    let Some(raw) = env_override else {
+        return Ok(configured);
+    };
+    let value = raw.trim().parse::<u64>().map_err(|error| {
+        anyhow::anyhow!("MIN_SOL_RESERVE_LAMPORTS must be a positive integer: {error}")
+    })?;
+    if value == 0 {
+        anyhow::bail!(
+            "MIN_SOL_RESERVE_LAMPORTS=0 is not allowed; reserve guard cannot be disabled"
+        );
+    }
+    Ok(value)
+}
+/// Apply the optional environment ROI ceiling without allowing it to weaken
+/// the configured phantom-quote guard. Invalid or zero overrides are errors.
+pub fn effective_max_implausible_roi_bps(
+    configured: u64,
+    env_override: Option<&str>,
+) -> anyhow::Result<u64> {
+    if configured == 0 {
+        anyhow::bail!("configured max_implausible_roi_bps must be positive");
+    }
+    let Some(raw) = env_override else {
+        return Ok(configured);
+    };
+    let value = raw.trim().parse::<u64>().map_err(|error| {
+        anyhow::anyhow!("ARB_MAX_IMPLAUSIBLE_ROI_BPS must be a positive integer: {error}")
+    })?;
+    if value == 0 {
+        anyhow::bail!("ARB_MAX_IMPLAUSIBLE_ROI_BPS must be positive");
+    }
+    Ok(configured.min(value))
+}
 fn default_jupiter_base_url() -> String {
     "https://api.jup.ag/swap/v2".to_string()
 }
@@ -635,7 +677,9 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     }
 
     // Concurrent trades / in-flight limit
-    if let Ok(raw) = std::env::var("MAX_CONCURRENT_TRADES") {
+    if let Ok(raw) =
+        std::env::var("MAX_INFLIGHT_BUNDLES").or_else(|_| std::env::var("MAX_CONCURRENT_TRADES"))
+    {
         if let Ok(value) = raw.trim().parse::<u32>() {
             if value > 0 {
                 config.risk.max_inflight_bundles = config.risk.max_inflight_bundles.min(value);
@@ -663,8 +707,10 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         }
     }
 
-    // Priority fee override
-    if let Ok(raw) = std::env::var("MAX_PRIORITY_FEE") {
+    // Priority fee share override (legacy MAX_PRIORITY_FEE alias retained)
+    if let Ok(raw) =
+        std::env::var("MAX_PRIORITY_FEE_SHARE_BPS").or_else(|_| std::env::var("MAX_PRIORITY_FEE"))
+    {
         if let Ok(value) = raw.trim().parse::<u64>() {
             config.strategy.priority_fee_max_share_bps =
                 config.strategy.priority_fee_max_share_bps.min(value);
@@ -725,7 +771,9 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         config.chronos.enabled &= enabled;
     }
     // Max transaction failures
-    if let Ok(raw) = std::env::var("MAX_TRANSACTION_FAILURES") {
+    if let Ok(raw) = std::env::var("MAX_CONSECUTIVE_FAILURES")
+        .or_else(|_| std::env::var("MAX_TRANSACTION_FAILURES"))
+    {
         if let Ok(value) = raw.trim().parse::<u64>() {
             if value > 0 {
                 config.risk.max_consecutive_failures =
@@ -1014,5 +1062,47 @@ mod slippage_policy_tests {
             three.slippage_bps = 0;
         }
         validate_slippage_policies(&cfg).expect("0 bps is a valid policy");
+    }
+}
+
+#[cfg(test)]
+#[cfg(test)]
+mod reserve_limit_tests {
+    use super::effective_min_sol_reserve_lamports;
+
+    #[test]
+    fn reserve_override_cannot_disable_wallet_reserve() {
+        assert_eq!(
+            effective_min_sol_reserve_lamports(50_000_000, None).unwrap(),
+            50_000_000
+        );
+        assert_eq!(
+            effective_min_sol_reserve_lamports(50_000_000, Some("10000000")).unwrap(),
+            10_000_000
+        );
+        assert!(effective_min_sol_reserve_lamports(50_000_000, Some("0")).is_err());
+        assert!(effective_min_sol_reserve_lamports(50_000_000, Some("bad")).is_err());
+    }
+}
+#[cfg(test)]
+mod roi_limit_tests {
+    use super::effective_max_implausible_roi_bps;
+
+    #[test]
+    fn roi_env_override_can_only_tighten_the_configured_ceiling() {
+        assert_eq!(
+            effective_max_implausible_roi_bps(1_500, None).unwrap(),
+            1_500
+        );
+        assert_eq!(
+            effective_max_implausible_roi_bps(1_500, Some("100000")).unwrap(),
+            1_500
+        );
+        assert_eq!(
+            effective_max_implausible_roi_bps(1_500, Some("750")).unwrap(),
+            750
+        );
+        assert!(effective_max_implausible_roi_bps(1_500, Some("0")).is_err());
+        assert!(effective_max_implausible_roi_bps(1_500, Some("invalid")).is_err());
     }
 }

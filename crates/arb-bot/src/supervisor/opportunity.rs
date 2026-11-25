@@ -629,10 +629,24 @@ impl Supervisor {
                 .saturating_mul(10_000)
                 .checked_div(opp.size_in.as_u64().max(1) as u128)
                 .unwrap_or(u128::MAX);
-            let max_implausible_roi_bps: u128 = std::env::var("ARB_MAX_IMPLAUSIBLE_ROI_BPS")
-                .ok()
-                .and_then(|v| v.trim().parse::<u128>().ok())
-                .unwrap_or(self.config.risk.max_implausible_roi_bps as u128);
+            let roi_override = match std::env::var("ARB_MAX_IMPLAUSIBLE_ROI_BPS") {
+                Ok(value) => Some(value),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    warn!("ARB_MAX_IMPLAUSIBLE_ROI_BPS is not valid Unicode; rejecting candidate");
+                    continue;
+                }
+            };
+            let max_implausible_roi_bps = match crate::config::effective_max_implausible_roi_bps(
+                self.config.risk.max_implausible_roi_bps,
+                roi_override.as_deref(),
+            ) {
+                Ok(value) => u128::from(value),
+                Err(error) => {
+                    warn!("Invalid ARB_MAX_IMPLAUSIBLE_ROI_BPS; rejecting candidate: {error}");
+                    continue;
+                }
+            };
             if implied_roi_bps > max_implausible_roi_bps {
                 tracing::info!(
                     target: "arb_events",
@@ -836,16 +850,43 @@ impl Supervisor {
                 continue;
             };
 
+            // Canonicalize both sides of the BPS hurdle once using the same
+            // verified base-mint/SOL rational rate. PnL rounds down; input
+            // notional rounds up so the minimum-profit hurdle is conservative.
+            let canonical_net_profit_lamports = match arb_math::economic::base_raw_to_lamports(
+                arb_types::TokenAmount(real_net_base_raw),
+                verified.lamports_per_base_raw.value,
+                verified.lamports_per_base_denom.value,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        "Cannot convert canonical net PnL to Lamports: {error}; rejecting candidate"
+                    );
+                    continue;
+                }
+            };
+            let amount_in_lamports = match arb_math::economic::base_raw_to_lamports_ceil(
+                opp.size_in,
+                verified.lamports_per_base_raw.value,
+                verified.lamports_per_base_denom.value,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        "Cannot convert input notional to Lamports: {error}; rejecting candidate"
+                    );
+                    continue;
+                }
+            };
             if self.config.chronos.enabled {
                 let chronos_input = arb_risk::ChronosEvInput {
                     age_ms: latency_ms as u64,
                     max_age_ms: self.config.chronos.max_age_ms,
                     decay_lambda_per_sec: self.config.chronos.decay_lambda_per_sec,
-                    gross_profit_lamports: gross,
-                    flash_fee_lamports: flash_fee_raw,
+                    net_profit_success_lamports: i128::from(canonical_net_profit_lamports.as_u64()),
                     base_network_fee_lamports: BASE_FEE_LAMPORTS,
                     priority_fee_lamports,
-                    jito_tip_lamports: tip.as_u64(),
                     failed_attempt_cost_lamports: self.config.chronos.failed_attempt_cost_lamports,
                     sol_price_usd: sol_price,
                     min_ev_usd: self.config.chronos.min_ev_usd,
@@ -952,15 +993,8 @@ impl Supervisor {
                             .unwrap_or(u64::MAX);
                         if self.config.strategy.use_flash_loan {
                             self.risk_gate.evaluate_flash_loan(
-                                Lamports(
-                                    arb_types::dimensional::base_raw_to_lamports_checked(
-                                        real_net_base_raw as u128,
-                                        verified.lamports_per_base_raw.value,
-                                        verified.lamports_per_base_denom.value,
-                                    )
-                                    .unwrap_or(0),
-                                ),
-                                opp.size_in,
+                                canonical_net_profit_lamports,
+                                amount_in_lamports,
                                 current_slot,
                                 state_age_slots,
                                 size_usd,
@@ -970,15 +1004,8 @@ impl Supervisor {
                             )
                         } else {
                             self.risk_gate.evaluate_full(
-                                Lamports(
-                                    arb_types::dimensional::base_raw_to_lamports_checked(
-                                        real_net_base_raw as u128,
-                                        verified.lamports_per_base_raw.value,
-                                        verified.lamports_per_base_denom.value,
-                                    )
-                                    .unwrap_or(0),
-                                ),
-                                opp.size_in,
+                                canonical_net_profit_lamports,
+                                amount_in_lamports,
                                 current_slot,
                                 state_age_slots,
                                 size_usd,
@@ -1459,14 +1486,7 @@ impl Supervisor {
                 id: attempt_id,
                 slot: current_slot.0 as i64,
                 route_id: format!("route-{}", opp.route_id.0),
-                expected_net: Lamports(
-                    arb_types::dimensional::base_raw_to_lamports_checked(
-                        real_net_base_raw as u128,
-                        verified.lamports_per_base_raw.value,
-                        verified.lamports_per_base_denom.value,
-                    )
-                    .unwrap_or(0),
-                ),
+                expected_net: canonical_net_profit_lamports,
                 tip_lamports: Some(tip),
                 decision: format!("{}", self.mode()),
                 // Economic reconstruction fields (base-mint raw unless stated).
@@ -1517,15 +1537,9 @@ impl Supervisor {
             let _size_in_base = opp.size_in.as_u64() as f64 / base_scale;
             let _gross_base = opp.expected_out.as_u64() as f64 / base_scale;
 
-            // For SOL-denominated display, convert base-mint raw → lamports
-            // using the verified rate. Fail closed (0.0) if conversion is
-            // unavailable — never guess.
-            let profit_lamports = arb_types::dimensional::base_raw_to_lamports_checked(
-                real_net_base_raw as u128,
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
-            )
-            .unwrap_or(0);
+            // Reuse the exact canonical PnL conversion already used by Chronos
+            // and RiskGate; telemetry must not recompute an independent value.
+            let profit_lamports = canonical_net_profit_lamports.as_u64();
             let profit_sol = profit_lamports as f64 / 1e9;
             let live_sol_price = self.live_sol_price().unwrap_or(0.0);
 

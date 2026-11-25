@@ -37,11 +37,19 @@ pub fn load(path: &str) -> ConfigResult<AppConfig> {
 /// Load a config with the ability to declare which top-level keys are allowed,
 /// for strict unknown-key rejection in environments that require it.
 pub fn load_strict(path: &str, allowed_top_keys: &[&str]) -> ConfigResult<AppConfig> {
-    let config = load(path)?;
-    // Re-serialize to inspect keys is not needed here; serde already rejected
-    // unknown fields if `deny_unknown_fields` were used. This hook is available
-    // for callers that parse a raw `HashMap<String, IgnoredAny>` first.
-    let _ = allowed_top_keys;
+    let contents =
+        fs::read_to_string(path).map_err(|e| ConfigError::IoError(path.to_string(), e))?;
+    let raw = parse_raw_toml(&contents)?;
+    let present: Vec<String> = raw.keys().cloned().collect();
+    crate::validation::reject_unknown_keys(&present, allowed_top_keys)?;
+
+    // Every nested config struct also has `deny_unknown_fields`, so both the
+    // explicit top-level allowlist and all nested schemas are enforced.
+    let mut config: AppConfig =
+        toml::from_str(&contents).map_err(|e| ConfigError::TomlParse(path.to_string(), e))?;
+    apply_env_overrides(&mut config)?;
+    crate::validation::validate(&config)?;
+    crate::validation::check_no_placeholder_secret_env_names(&config)?;
     Ok(config)
 }
 
@@ -154,41 +162,47 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
         }
         config.strategy.hop_slippage_bps.0 = config.strategy.hop_slippage_bps.0.min(value);
     }
-    if let Ok(raw) = std::env::var("MAX_PRIORITY_FEE") {
+    if let Ok(raw) =
+        std::env::var("MAX_PRIORITY_FEE_SHARE_BPS").or_else(|_| std::env::var("MAX_PRIORITY_FEE"))
+    {
         let value: u16 = raw.parse().map_err(|_| {
             ConfigError::InvalidEnv(
-                "MAX_PRIORITY_FEE".to_string(),
+                "MAX_PRIORITY_FEE_SHARE_BPS".to_string(),
                 "must be an integer basis-point share".to_string(),
             )
         })?;
         config.strategy.priority_fee_max_share_bps.0 =
             config.strategy.priority_fee_max_share_bps.0.min(value);
     }
-    if let Ok(raw) = std::env::var("MAX_CONCURRENT_TRADES") {
+    if let Ok(raw) =
+        std::env::var("MAX_INFLIGHT_BUNDLES").or_else(|_| std::env::var("MAX_CONCURRENT_TRADES"))
+    {
         let value: usize = raw.parse().map_err(|_| {
             ConfigError::InvalidEnv(
-                "MAX_CONCURRENT_TRADES".to_string(),
+                "MAX_INFLIGHT_BUNDLES".to_string(),
                 "must be a positive integer".to_string(),
             )
         })?;
         if value == 0 {
             return Err(ConfigError::InvalidEnv(
-                "MAX_CONCURRENT_TRADES".to_string(),
+                "MAX_INFLIGHT_BUNDLES".to_string(),
                 "must be positive".to_string(),
             ));
         }
         config.risk.max_inflight_bundles = config.risk.max_inflight_bundles.min(value);
     }
-    if let Ok(raw) = std::env::var("MAX_TRANSACTION_FAILURES") {
+    if let Ok(raw) = std::env::var("MAX_CONSECUTIVE_FAILURES")
+        .or_else(|_| std::env::var("MAX_TRANSACTION_FAILURES"))
+    {
         let value: u64 = raw.parse().map_err(|_| {
             ConfigError::InvalidEnv(
-                "MAX_TRANSACTION_FAILURES".to_string(),
+                "MAX_CONSECUTIVE_FAILURES".to_string(),
                 "must be a positive integer".to_string(),
             )
         })?;
         if value == 0 {
             return Err(ConfigError::InvalidEnv(
-                "MAX_TRANSACTION_FAILURES".to_string(),
+                "MAX_CONSECUTIVE_FAILURES".to_string(),
                 "must be positive".to_string(),
             ));
         }
@@ -258,6 +272,33 @@ pub fn parse_raw_toml(contents: &str) -> ConfigResult<HashMap<String, IgnoredAny
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strict_loader_rejects_unknown_top_level_keys() {
+        let mut contents = toml::to_string(&AppConfig::default_safe()).expect("serialize config");
+        contents = format!("unknown_top_level = true\n{contents}");
+        let path =
+            std::env::temp_dir().join(format!("arb-config-strict-{}.toml", std::process::id()));
+        std::fs::write(&path, contents).expect("write temporary config");
+        let result = load_strict(
+            path.to_str().expect("utf8 path"),
+            &[
+                "mode", "provider", "jito", "jupiter", "wallet", "strategy", "risk", "chronos",
+                "store", "metrics", "admin", "security",
+            ],
+        );
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(result, Err(ConfigError::UnknownKey(key)) if key == "unknown_top_level"));
+    }
+
+    #[test]
+    fn config_deserializer_rejects_unknown_nested_keys() {
+        let mut contents = toml::to_string(&AppConfig::default_safe()).expect("serialize config");
+        let marker = "[risk]\n";
+        let offset = contents.find(marker).expect("serialized risk table");
+        contents.insert_str(offset + marker.len(), "unknown_nested = true\n");
+        assert!(toml::from_str::<AppConfig>(&contents).is_err());
+    }
 
     #[test]
     fn load_missing_file_returns_io_error() {

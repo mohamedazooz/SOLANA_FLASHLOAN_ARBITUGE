@@ -486,10 +486,24 @@ impl Supervisor {
         );
 
         let tx_rpc = Arc::new(arb_ingest::TransactionRpcAdapter::new(rpc_pool.clone()));
-        let min_sol_reserve_lamports = std::env::var("MIN_SOL_RESERVE_LAMPORTS")
-            .ok()
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .unwrap_or(config.wallet.min_sol_balance_lamports);
+        let reserve_override = match std::env::var("MIN_SOL_RESERVE_LAMPORTS") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                warn!("MIN_SOL_RESERVE_LAMPORTS is not valid Unicode; using configured reserve");
+                None
+            }
+        };
+        let min_sol_reserve_lamports = match crate::config::effective_min_sol_reserve_lamports(
+            config.wallet.min_sol_balance_lamports,
+            reserve_override.as_deref(),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                warn!("Invalid MIN_SOL_RESERVE_LAMPORTS; using configured reserve: {error}");
+                config.wallet.min_sol_balance_lamports
+            }
+        };
 
         Self {
             mode,

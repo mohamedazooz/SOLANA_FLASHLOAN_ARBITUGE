@@ -187,6 +187,12 @@ fn validate_jupiter(cfg: &JupiterConfig) -> ConfigResult<()> {
 }
 
 fn validate_wallet(cfg: &WalletConfig) -> ConfigResult<()> {
+    if cfg.min_sol_balance_lamports.0 == 0 {
+        return Err(ConfigError::Validation(
+            "wallet.min_sol_balance_lamports must be positive; reserve guard cannot be disabled"
+                .to_string(),
+        ));
+    }
     if cfg.keypair_path.trim().is_empty() {
         return Err(ConfigError::Validation(
             "wallet.keypair_path must not be empty".to_string(),
@@ -338,6 +344,11 @@ fn validate_risk(cfg: &RiskConfig) -> ConfigResult<()> {
 }
 
 fn validate_chronos(cfg: &ChronosConfig) -> ConfigResult<()> {
+    if cfg.decay_lambda_per_sec > 1_000_000.0 {
+        return Err(ConfigError::Validation(
+            "chronos.decay_lambda_per_sec must not exceed 1,000,000 per second".to_string(),
+        ));
+    }
     if cfg.decay_lambda_per_sec < 0.0 || !cfg.decay_lambda_per_sec.is_finite() {
         return Err(ConfigError::Validation(
             "chronos.decay_lambda_per_sec must be finite and non-negative".to_string(),
@@ -488,6 +499,15 @@ mod tests {
     }
 
     #[test]
+    fn chronos_decay_lambda_has_a_bounded_supported_range() {
+        let mut cfg = base_valid();
+        cfg.chronos.decay_lambda_per_sec = 1_000_000.1;
+        assert!(validate(&cfg).is_err());
+        cfg.chronos.decay_lambda_per_sec = 1_000_000.0;
+        assert!(validate(&cfg).is_ok());
+    }
+
+    #[test]
     fn max_route_hops_default_is_three() {
         let cfg = base_valid();
         assert_eq!(cfg.strategy.max_route_hops, 3);
@@ -570,6 +590,13 @@ mod tests {
     fn graph_age_must_not_be_stricter_than_state_age() {
         let mut cfg = base_valid();
         cfg.strategy.graph_max_age_slots = Some(Slot(1)); // < state age 2
+        assert!(validate(&cfg).is_err());
+    }
+
+    #[test]
+    fn wallet_reserve_must_be_positive() {
+        let mut cfg = base_valid();
+        cfg.wallet.min_sol_balance_lamports = Lamports(0);
         assert!(validate(&cfg).is_err());
     }
 

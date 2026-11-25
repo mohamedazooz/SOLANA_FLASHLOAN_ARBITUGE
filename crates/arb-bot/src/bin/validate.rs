@@ -15,6 +15,7 @@ use arb_engine::MarketGraph;
 use arb_ingest::{AccountSnapshot, AccountSnapshotStore, MultiDexRegistry, RpcPool};
 use arb_math::economic::calculate_flash_fee_raw;
 use arb_math::{Leg, cpmm_out, optimal_two_pool};
+use arb_risk::minimum_net_profit_hurdle_lamports;
 use arb_tx::JupiterClient;
 use arb_types::{Lamports, MintId, Slot, TokenAmount};
 use base64::Engine as _;
@@ -238,6 +239,66 @@ async fn main() -> Result<()> {
 
     // ── 3. Build MarketGraph with the authoritative config ──
     let app_config = arb_config::loader::load("config/base.toml").ok();
+
+    // Match the read-only scan size to the same caps used by the running bot.
+    // The previous 1..100 SOL stress ladder was unrelated to this wallet's
+    // 0.02 SOL / USD caps and could make the diagnostic look artificially bad.
+    let config_max_trade_usd = app_config
+        .as_ref()
+        .map(|c| c.risk.max_trade_size_usd.0 as f64 / 1_000_000.0)
+        .unwrap_or(1.5);
+    let max_trade_usd = positive_env_f64("MAX_TRADE_SIZE_USD", config_max_trade_usd)?;
+    let max_flash_borrow_usd = positive_env_f64("MAX_FLASH_BORROW_USD", max_trade_usd)?;
+    let max_trade_sol = positive_env_f64("MAX_TRADE_SIZE_SOL", 1.0)?;
+    let portfolio_cap_sol =
+        optional_positive_env_f64("PORTFOLIO_CAPITAL_SOL")?.unwrap_or(f64::INFINITY);
+    let mut spot_prices: Vec<f64> = priced
+        .iter()
+        .map(|(_, price)| *price)
+        .filter(|price| price.is_finite() && *price > 0.0)
+        .collect();
+    spot_prices.sort_by(f64::total_cmp);
+    // Use the highest observed live pool price for a conservative USD-to-SOL cap.
+    let live_max_sol_usd = spot_prices.iter().copied().reduce(f64::max);
+    let sol_usd_price = live_max_sol_usd
+        .or(optional_positive_env_f64("SOL_USD_PRICE")?)
+        .ok_or_else(|| {
+            anyhow::anyhow!("No fresh SOL/USD price available; refusing to ignore USD trade caps")
+        })?;
+    let usd_cap_sol = max_trade_usd.min(max_flash_borrow_usd) / sol_usd_price;
+    let max_probe_sol = max_trade_sol.min(portfolio_cap_sol).min(usd_cap_sol);
+    let max_probe_lamports_f64 = max_probe_sol * 1_000_000_000.0;
+    if !max_probe_lamports_f64.is_finite()
+        || max_probe_lamports_f64 <= 0.0
+        || max_probe_lamports_f64 >= u64::MAX as f64
+    {
+        anyhow::bail!("Configured trade caps resolve to an invalid probe size");
+    }
+    let max_probe_lamports = max_probe_lamports_f64.floor() as u64;
+    if max_probe_lamports == 0 {
+        anyhow::bail!("Configured trade caps resolve below one lamport");
+    }
+    let min_profit_abs = app_config
+        .as_ref()
+        .map(|c| c.strategy.min_net_profit_abs.0)
+        .unwrap_or(100_000);
+    let min_profit_bps = app_config
+        .as_ref()
+        .map(|c| u64::from(c.strategy.min_net_profit_bps.0))
+        .unwrap_or(50);
+    let math_check_slippage_bps = app_config
+        .as_ref()
+        .map(|c| c.strategy.hop_slippage_bps.0)
+        .unwrap_or(10);
+    info!(
+        "Execution-sized probe cap: {:.6} SOL (${:.4} at ${:.4}/SOL); min net hurdle={} lamports / {} bps; slippage={} bps",
+        max_probe_lamports as f64 / 1e9,
+        max_probe_lamports as f64 / 1e9 * sol_usd_price,
+        sol_usd_price,
+        min_profit_abs,
+        min_profit_bps,
+        math_check_slippage_bps
+    );
     let min_profit = app_config
         .as_ref()
         .map(|c| c.strategy.min_net_profit_abs.0)
@@ -256,7 +317,7 @@ async fn main() -> Result<()> {
     let edge_count = graph.edges_by_from.values().map(|v| v.len()).sum::<usize>();
     info!("MarketGraph built: {edge_count} edges");
 
-    let opportunities = graph.find_base_cycles(slot, 1_000_000_000);
+    let opportunities = graph.find_base_cycles(slot, max_probe_lamports);
     info!("Detected {} arbitrage cycle(s)", opportunities.len());
     for opp in &opportunities {
         info!(
@@ -285,11 +346,14 @@ async fn main() -> Result<()> {
     // ── 4. MATH VALIDATION: our cpmm_out vs Jupiter venue quote ──
     // Pick the live SOL/USDC pool with the largest reserves and compare our
     // constant-product quote against Jupiter's quote restricted to that venue.
-    let amount_in = 1_000_000_000u64; // 1 SOL
-    let sol_usdc = live_pools.iter().find(|p| {
-        (p.base_mint.0 == wsol && p.quote_mint.0 == usdc)
-            || (p.base_mint.0 == usdc && p.quote_mint.0 == wsol)
-    });
+    let amount_in = max_probe_lamports;
+    let sol_usdc = live_pools
+        .iter()
+        .filter(|p| {
+            (p.base_mint.0 == wsol && p.quote_mint.0 == usdc)
+                || (p.base_mint.0 == usdc && p.quote_mint.0 == wsol)
+        })
+        .max_by_key(|p| p.reserve_in.saturating_mul(p.reserve_out));
 
     let jupiter = if let Some(cfg) = &app_config {
         JupiterClient::with_endpoint_and_timeout(
@@ -329,7 +393,7 @@ async fn main() -> Result<()> {
                 &wsol.to_string(),
                 &usdc.to_string(),
                 amount_in,
-                50,
+                math_check_slippage_bps,
                 Some(&[label]),
             )
             .await
@@ -347,8 +411,12 @@ async fn main() -> Result<()> {
                     f64::NAN
                 };
                 info!(
-                    "📐 MATH CHECK [{}] 1 SOL → USDC: ours={} jupiter={} diff={:.4}%",
-                    label, ours, jup_out, diff
+                    "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} jupiter={} diff={:.4}%",
+                    label,
+                    amount_in as f64 / 1e9,
+                    ours,
+                    jup_out,
+                    diff
                 );
                 info!(
                     "   (a small diff is expected: Jupiter includes its own fee tier / \
@@ -377,8 +445,8 @@ async fn main() -> Result<()> {
             }
         }
     };
-    let base_fee: u64 = 5_000;
-    let priority_fee: u64 = 5_000;
+    let base_fee: u64 = 5_000; // one payer signature
+    let priority_fee: u64 = 5_000; // conservative diagnostic estimate; production uses live fee estimation
     let sf = verified.flash_loan_fee_sf.value;
 
     let legs_of = |p: &arb_types::PoolState| -> (u128, u128) {
@@ -446,24 +514,26 @@ async fn main() -> Result<()> {
         costs: i128,
         net: i128,
         edge_bps: f64,
+        hurdle: u64,
         optimum: Option<u64>,
     }
 
     if !dirs.is_empty() {
         let mut results_summary: Vec<RouteEdgeResult> = Vec::new();
         for (name, l1, l2) in dirs {
-            // Probe several loan sizes and report the BEST net edge. A negative
+            // Probe fractions of the configured maximum and report the BEST net PnL. A negative
             // best net is the honest answer "no arbitrage"; the numbers are shown
             // so the equation is visible, not hidden behind a boolean.
-            let probes: [u64; 6] = [
-                1_000_000_000,
-                5_000_000_000,
-                10_000_000_000,
-                25_000_000_000,
-                50_000_000_000,
-                100_000_000_000,
-            ];
-            let mut best: Option<(u64, i128, i128, i128, f64)> = None; // (size, gross, costs, net, edge_bps)
+            let mut probes: Vec<u64> = [10_000u64, 7_500, 5_000, 2_500, 1_000, 500]
+                .into_iter()
+                .map(|fraction_bps| {
+                    (u128::from(max_probe_lamports) * u128::from(fraction_bps) / 10_000) as u64
+                })
+                .filter(|size| *size > 0)
+                .collect();
+            probes.sort_unstable_by(|a, b| b.cmp(a));
+            probes.dedup();
+            let mut best: Option<(u64, i128, i128, i128, f64, u64)> = None;
             for size in probes {
                 let Some(mid) = cpmm_out(size as u128, l1.r_in, l1.r_out, l1.gamma) else {
                     continue;
@@ -477,12 +547,18 @@ async fn main() -> Result<()> {
                     flash_fee + tip_lamports as i128 + base_fee as i128 + priority_fee as i128;
                 let net = gross - costs;
                 let edge_bps = net as f64 / size as f64 * 10_000.0;
+                let hurdle = minimum_net_profit_hurdle_lamports(
+                    Lamports(size),
+                    Lamports(min_profit_abs),
+                    min_profit_bps,
+                )
+                .as_u64();
                 if best.is_none_or(|b| net > b.3) {
-                    best = Some((size, gross, costs, net, edge_bps));
+                    best = Some((size, gross, costs, net, edge_bps, hurdle));
                 }
             }
-            let optimum = optimal_two_pool(&l1, &l2);
-            if let Some((size, gross, costs, net, edge_bps)) = best {
+            let optimum = optimal_two_pool(&l1, &l2).filter(|size| *size <= max_probe_lamports);
+            if let Some((size, gross, costs, net, edge_bps, hurdle)) = best {
                 results_summary.push(RouteEdgeResult {
                     name,
                     size,
@@ -490,27 +566,26 @@ async fn main() -> Result<()> {
                     costs,
                     net,
                     edge_bps,
+                    hurdle,
                     optimum,
                 });
             }
         }
 
-        // Sort routes by net edge descending (most profitable first)
-        results_summary.sort_by(|a, b| {
-            b.edge_bps
-                .partial_cmp(&a.edge_bps)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Maximize absolute net PnL under the configured cap; edge bps is diagnostic only.
+        results_summary.sort_by_key(|result| std::cmp::Reverse(result.net));
 
         info!("\n================================================================================");
-        info!("📊 MULTI-DEX ROUTE PROFITABILITY RANKING (SOL/USDC)");
+        info!(
+            "📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, CONFIG-CAPPED; conservative fixed priority fee)"
+        );
         info!("================================================================================");
         for res in &results_summary {
             info!(
-                "\n💠 EDGE [{}]\n   best probe size = {:.3} SOL   (closed-form optimum = {:?})\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + prio {})\n   NET     = {:+} lamports ({:+.6} SOL)\n   EDGE    = {:+.3} bps\n   verdict = {}",
+                "\n💠 EDGE [{}]\n   best probe size = {:.6} SOL (closed-form optimum within cap = {:?})\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
                 res.name,
                 res.size as f64 / 1e9,
-                res.optimum.map(|o| format!("{:.3} SOL", o as f64 / 1e9)),
+                res.optimum.map(|o| format!("{:.6} SOL", o as f64 / 1e9)),
                 res.gross,
                 res.costs,
                 tip_lamports,
@@ -518,11 +593,15 @@ async fn main() -> Result<()> {
                 priority_fee,
                 res.net,
                 res.net as f64 / 1e9,
+                res.hurdle,
+                min_profit_bps,
                 res.edge_bps,
-                if res.net > 0 {
-                    "✅ POSITIVE — executable profitable edge"
+                if res.net >= i128::from(res.hurdle) {
+                    "✅ ABOVE CONFIGURED NET-PROFIT FLOOR (still subject to Chronos/landing gate)"
+                } else if res.net > 0 {
+                    "⚠️ POSITIVE BUT BELOW CONFIGURED FLOOR — reject"
                 } else {
-                    "❌ NEGATIVE — no edge (fees exceed spread)"
+                    "❌ NEGATIVE — fees exceed spread"
                 }
             );
         }
@@ -532,4 +611,27 @@ async fn main() -> Result<()> {
 
     info!("✅ Validation path complete — no transactions submitted");
     Ok(())
+}
+
+fn optional_positive_env_f64(name: &str) -> Result<Option<f64>> {
+    match std::env::var(name) {
+        Ok(raw) => {
+            let value = raw
+                .trim()
+                .parse::<f64>()
+                .map_err(|error| anyhow::anyhow!("{name} must be a positive number: {error}"))?;
+            if !value.is_finite() || value <= 0.0 {
+                anyhow::bail!("{name} must be finite and greater than zero");
+            }
+            Ok(Some(value))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{name} is not valid Unicode")
+        }
+    }
+}
+
+fn positive_env_f64(name: &str, fallback: f64) -> Result<f64> {
+    Ok(optional_positive_env_f64(name)?.unwrap_or(fallback))
 }

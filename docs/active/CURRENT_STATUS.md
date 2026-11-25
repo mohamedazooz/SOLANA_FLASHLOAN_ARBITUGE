@@ -1,8 +1,22 @@
 # Current Verified Status
 
-**Authoritative Git Baseline**: Commit `a4524ba` on `main` (merge of PR #99)
-**CI Status**: GitHub Actions workflow `Rust CI` passing on `main` (Run ID: 44802369313, 2026-11-20T19:27Z)
-**Compilation Baseline**: `cargo check --workspace` 0 errors; `cargo test -p arb-ingest` 162 passed / 0 failed (local run 2026-11-20, rustc 1.99.1)
+**Authoritative Git Baseline**: Commit `1ff841a` on `main` (merge of PR #164, 2026-11-25)
+**Current Local Branch**: `fix/deep-quote-accounting-hardening-20261125` (based directly on `origin/main`; not yet pushed)
+**CI Status**: Branch CI pending push; verify GitHub Actions after publication.
+**Compilation Baseline**: Final full local workspace run: 1,803 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass.
+
+## Local Hardening in Progress — 2026-11-25
+
+- Canonical success PnL from `arb-math` is now shared by Chronos, RiskGate and telemetry; Chronos no longer re-deducts landed costs.
+- Chronos EV approval uses conservative Q32 survival probability and integer lamport/USD-micro arithmetic; floats remain display/config-boundary projections only.
+- RiskGate converts input notional to Lamports with ceiling and compares it to net Lamports; the BPS floor rounds upward through one shared `arb-risk` helper also used by the validator.
+- TOML config structs reject unknown fields; `load_strict` enforces its explicit top-level allowlist. The read-only validator now sizes probes from the live USD price and `.env` SOL/USD/portfolio caps, uses configured slippage and applies the same absolute/BPS net hurdle.
+- ROI environment overrides can only tighten the configured phantom-quote ceiling; zero/invalid SOL reserve overrides cannot disable the reserve guard.
+- Canonical env names are `MAX_PRIORITY_FEE_SHARE_BPS`, `MAX_INFLIGHT_BUNDLES`, and `MAX_CONSECUTIVE_FAILURES`; legacy aliases remain supported. Unused gas-budget keys were removed from the local ignored `.env`.
+- `.env` and `config/config.toml` remain local/ignored; only `.env.example` is tracked. No secret values are committed.
+- Live execution remains disabled. Historical `ISSUE-P0-04` and empirical landing/fee calibration remain open blockers.
+- Read-only mainnet validation (2026-11-25 18:33Z, slot 473859686): 5/9 registered pools decoded (55%); 0 cycles; configured probe cap 0.020000 SOL (~$1.40); minimum net hurdle 100,000 lamports / 50 bps; best diagnostic route remained negative (-15,292 lamports at 0.001 SOL under fixed conservative fee assumptions). No transactions submitted.
+- Whirlpool CPMM-vs-Jupiter venue-restricted quote differed by 0.0856% (8.56 bps), within but close to the 10 bps slippage ceiling; exact pool/account alignment and same-slot comparison remain an investigation item.
 
 ---
 
