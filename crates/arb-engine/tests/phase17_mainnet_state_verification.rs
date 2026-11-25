@@ -16,8 +16,7 @@
 
 use arb_dex::dlmm_validation::{
     METEORA_DLMM_PROGRAM, derive_bin_array_pda, derive_bitmap_extension_pda, derive_oracle_pda,
-    derive_reserve_pda, validate_bin_array_account, validate_bitmap_extension_account,
-    validate_lb_pair_account,
+    derive_reserve_pda, validate_bin_array_account, validate_lb_pair_account,
 };
 use arb_dex::meteora_dlmm::MeteoraDlmmPool;
 use arb_types::PoolId;
@@ -321,19 +320,24 @@ fn both_pools_trade_the_same_wsoli_usdc_pair() {
 }
 
 #[test]
-fn bitmap_extension_accounts_exist_and_are_owned_by_the_program() {
+fn bitmap_extension_accounts_are_captured_owned_and_derived_correctly() {
     let f = load();
     for pool in &f.pools {
         let ext = pool
             .bitmap_extension
             .as_ref()
             .expect("bitmap extension captured");
+        let lb_pair = pk(&pool.address);
         assert_eq!(pk(&ext.owner), METEORA_DLMM_PROGRAM);
-        assert!(ext.datalen > 0);
-        // The validation path accepts it.
-        let data = vec![0u8; ext.datalen];
-        validate_bitmap_extension_account(&pk(&pool.address), &pk(&ext.owner), &data)
-            .expect("bitmap extension validation");
+        assert_eq!(
+            derive_bitmap_extension_pda(&lb_pair).to_string(),
+            ext.address,
+            "bitmap extension PDA must match the captured account"
+        );
+        assert!(
+            ext.datalen >= 8 + 32 + (2 * 12 * 8 * 8),
+            "captured bitmap extension must contain the complete Anchor account layout"
+        );
     }
 }
 

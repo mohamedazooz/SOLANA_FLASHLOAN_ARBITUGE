@@ -330,6 +330,14 @@ pub const METEORA_BINS_PER_BIN_ARRAY: i64 = 70;
 /// cannot be executed on-chain: the swap would abort with `TooManyBins`.
 /// Quotes and bin-array plans must fail closed above this limit.
 pub const METEORA_MAX_BINS_PER_SWAP: u32 = 260;
+/// Maximum on-chain DLMM bin step (basis-point price increment).
+pub const METEORA_MAX_BIN_STEP: u16 = 400;
+/// Worst-case initialized BinArrays needed to cover a 260-bin traversal,
+/// including an arbitrary starting offset within the active 70-bin array.
+pub const METEORA_MAX_BIN_ARRAYS_PER_SWAP: usize =
+    ((METEORA_MAX_BINS_PER_SWAP as usize + METEORA_BINS_PER_BIN_ARRAY as usize - 2)
+        / METEORA_BINS_PER_BIN_ARRAY as usize)
+        + 1;
 /// Anchor 8-byte discriminator for `swap2` = sha256("global:swap2")[..8].
 pub const METEORA_SWAP2_DISCRIMINATOR: [u8; 8] = [65, 75, 63, 76, 235, 91, 91, 136];
 

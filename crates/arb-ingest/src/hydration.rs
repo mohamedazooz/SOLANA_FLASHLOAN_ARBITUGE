@@ -65,6 +65,7 @@ impl MultiDexRegistry {
         rpc: &RpcPool,
         keys: &[Pubkey],
         into: &mut std::collections::HashMap<Pubkey, (u64, Vec<u8>)>,
+        mut owner_into: Option<&mut std::collections::HashMap<Pubkey, Pubkey>>,
     ) -> u64 {
         let mut max_slot = 0u64;
         for chunk in keys.chunks(100) {
@@ -96,6 +97,14 @@ impl MultiDexRegistry {
             // so a single max would mask a slow replica's staleness.
             for ((val, chunk_slot), pk) in accounts.into_iter().zip(slots).zip(chunk.iter()) {
                 let Some(acc) = val else { continue };
+                if let Some(owner_map) = owner_into.as_deref_mut()
+                    && let Some(owner) = acc
+                        .get("owner")
+                        .and_then(|value| value.as_str())
+                        .and_then(|value| Pubkey::from_str(value).ok())
+                {
+                    owner_map.insert(*pk, owner);
+                }
                 let Some(raw_b64) = acc
                     .get("data")
                     .and_then(|d| d.get(0))
@@ -121,7 +130,7 @@ impl MultiDexRegistry {
         // 1. Pool accounts — batched (2 batch-100 calls for 163 pools).
         let pool_pubkeys: Vec<Pubkey> = self.pools.iter().map(|p| p.pool_id.0).collect();
         let mut max_observed_slot =
-            Self::batch_fetch_accounts(&self.rpc, &pool_pubkeys, &mut pool_data_map).await;
+            Self::batch_fetch_accounts(&self.rpc, &pool_pubkeys, &mut pool_data_map, None).await;
 
         // 2. CPMM vault accounts — batched (1 batch-100 call for ~68 vaults).
         let mut vault_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
@@ -141,7 +150,7 @@ impl MultiDexRegistry {
             }
         }
         let vault_slot =
-            Self::batch_fetch_accounts(&self.rpc, &vault_pubkeys, &mut vault_data_map).await;
+            Self::batch_fetch_accounts(&self.rpc, &vault_pubkeys, &mut vault_data_map, None).await;
         max_observed_slot = max_observed_slot.max(vault_slot);
 
         // 2b. CPMM AmmConfig accounts — the swap fee lives here (trade_fee_rate
@@ -162,7 +171,8 @@ impl MultiDexRegistry {
             }
         }
         let cpmm_cfg_slot =
-            Self::batch_fetch_accounts(&self.rpc, &cpmm_config_pubkeys, &mut cpmm_config_map).await;
+            Self::batch_fetch_accounts(&self.rpc, &cpmm_config_pubkeys, &mut cpmm_config_map, None)
+                .await;
         max_observed_slot = max_observed_slot.max(cpmm_cfg_slot);
 
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
@@ -171,17 +181,10 @@ impl MultiDexRegistry {
             if let Some((_, data)) = pool_data_map.get(&p.pool_id.0) {
                 match p.protocol {
                     DexProtocol::MeteoraDlmm => {
-                        if let Some(d) = decode_dlmm_state(data) {
-                            for key in
-                                dlmm_bin_array_pdas(&p.pool_id.0, d.active_bin_id, d.bin_step_bps)
-                            {
-                                if !derived_pubkeys.contains(&key) {
-                                    derived_pubkeys.push(key);
-                                }
-                            }
-                            // Fetch the bitmap-extension PDA in the same batch so
-                            // the execution account can carry an EXISTENCE-PROVEN
-                            // Some(extension) instead of an unverified derivation.
+                        if decode_dlmm_state(data).is_some() {
+                            // The extension must be fetched before bin-array
+                            // selection; its bitmap, not a guessed price span,
+                            // determines which arrays actually exist.
                             let ext = bitmap_extension_pda(&p.pool_id.0);
                             if !derived_pubkeys.contains(&ext) {
                                 derived_pubkeys.push(ext);
@@ -220,11 +223,85 @@ impl MultiDexRegistry {
 
         let mut derived_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
             std::collections::HashMap::new();
-        let derived_slot =
-            Self::batch_fetch_accounts(&self.rpc, &derived_pubkeys, &mut derived_data_map).await;
+        let mut derived_owner_map: std::collections::HashMap<Pubkey, Pubkey> =
+            std::collections::HashMap::new();
+        let derived_slot = Self::batch_fetch_accounts(
+            &self.rpc,
+            &derived_pubkeys,
+            &mut derived_data_map,
+            Some(&mut derived_owner_map),
+        )
+        .await;
         max_observed_slot = max_observed_slot.max(derived_slot);
 
+        // Resolve actual initialized DLMM arrays from the LbPair inline bitmap
+        // plus the existence- and owner-validated extension account. We fetch
+        // the protocol worst-case initialized-array coverage in each direction;
+        // missing bitmap entries are NOT
+        // converted into fabricated writable accounts.
+        let mut dlmm_selected_indices: std::collections::HashMap<PoolId, Vec<i64>> =
+            std::collections::HashMap::new();
+        let mut dlmm_array_pubkeys = Vec::new();
+        for p in &self.pools {
+            if p.protocol != DexProtocol::MeteoraDlmm {
+                continue;
+            }
+            let Some((_, pool_bytes)) = pool_data_map.get(&p.pool_id.0) else {
+                continue;
+            };
+            let Some(d) = decode_dlmm_state(pool_bytes) else {
+                continue;
+            };
+            let Some(internal) = crate::decoders::decode_dlmm_internal_bitmap(pool_bytes) else {
+                continue;
+            };
+            let extension_pda = bitmap_extension_pda(&p.pool_id.0);
+            let extension = derived_data_map
+                .get(&extension_pda)
+                .zip(derived_owner_map.get(&extension_pda))
+                .and_then(|((_, bytes), owner)| {
+                    arb_dex::decode_bitmap_extension_account(&p.pool_id.0, owner, bytes).ok()
+                });
+            let mut indices = Vec::new();
+            for swap_for_y in [true, false] {
+                indices.extend(crate::decoders::dlmm_initialized_bin_array_indices(
+                    d.active_bin_id,
+                    swap_for_y,
+                    &internal,
+                    extension.as_ref(),
+                    arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP,
+                ));
+            }
+            indices.sort_unstable();
+            indices.dedup();
+            if indices.is_empty() {
+                // Neither direction found a bitmap-proven initialized array.
+                continue;
+            }
+            for index in &indices {
+                let key = crate::decoders::derive_meteora_bin_array_pda(&p.pool_id.0, *index);
+                if !dlmm_array_pubkeys.contains(&key) {
+                    dlmm_array_pubkeys.push(key);
+                }
+            }
+            dlmm_selected_indices.insert(p.pool_id, indices);
+        }
+
+        let dlmm_array_slot = Self::batch_fetch_accounts(
+            &self.rpc,
+            &dlmm_array_pubkeys,
+            &mut derived_data_map,
+            Some(&mut derived_owner_map),
+        )
+        .await;
+        max_observed_slot = max_observed_slot.max(dlmm_array_slot);
+
         let mut dlmm_bins: std::collections::HashMap<PoolId, Vec<arb_types::DlmmBin>> =
+            std::collections::HashMap::new();
+        // Conservative slot for each DLMM dependency group. Unlike the
+        // workspace-wide max slot, this records the OLDEST account in the
+        // pool/extension/bin-array set so freshness can never be overstated.
+        let mut dlmm_coherent_slots: std::collections::HashMap<PoolId, Slot> =
             std::collections::HashMap::new();
         let mut clmm_ticks: std::collections::HashMap<PoolId, Vec<arb_types::ClmmTickArray>> =
             std::collections::HashMap::new();
@@ -234,15 +311,136 @@ impl MultiDexRegistry {
                 match p.protocol {
                     DexProtocol::MeteoraDlmm => {
                         if let Some(d) = decode_dlmm_state(data) {
-                            let mut bins = Vec::new();
-                            for key in
-                                dlmm_bin_array_pdas(&p.pool_id.0, d.active_bin_id, d.bin_step_bps)
-                            {
-                                if let Some((_, bytes)) = derived_data_map.get(&key) {
-                                    bins.extend(decode_bin_array(bytes));
+                            let mut by_bin_id = std::collections::BTreeMap::new();
+                            let Some(indices) = dlmm_selected_indices.get(&p.pool_id) else {
+                                dlmm_bins.insert(p.pool_id, Vec::new());
+                                continue;
+                            };
+                            let pool_slot = pool_data_map
+                                .get(&p.pool_id.0)
+                                .map(|(slot, _)| *slot)
+                                .unwrap_or(0);
+                            let mut min_dependency_slot = pool_slot;
+                            let mut max_dependency_slot = pool_slot;
+                            let mut complete = pool_slot > 0;
+
+                            if crate::decoders::dlmm_requires_bitmap_extension(
+                                d.active_bin_id,
+                                indices,
+                            ) {
+                                let extension_pda = bitmap_extension_pda(&p.pool_id.0);
+                                match (
+                                    derived_data_map.get(&extension_pda),
+                                    derived_owner_map.get(&extension_pda),
+                                ) {
+                                    (Some((slot, bytes)), Some(owner))
+                                        if *slot > 0
+                                            && arb_dex::validate_bitmap_extension_account(
+                                                &p.pool_id.0,
+                                                owner,
+                                                bytes,
+                                            )
+                                            .is_ok() =>
+                                    {
+                                        min_dependency_slot = min_dependency_slot.min(*slot);
+                                        max_dependency_slot = max_dependency_slot.max(*slot);
+                                    }
+                                    _ => complete = false,
                                 }
                             }
-                            dlmm_bins.insert(p.pool_id, bins);
+
+                            for index in indices {
+                                let key = crate::decoders::derive_meteora_bin_array_pda(
+                                    &p.pool_id.0,
+                                    *index,
+                                );
+                                let Some((array_slot, bytes)) = derived_data_map.get(&key) else {
+                                    complete = false;
+                                    break;
+                                };
+                                let Some(owner) = derived_owner_map.get(&key) else {
+                                    complete = false;
+                                    break;
+                                };
+                                if *array_slot == 0 {
+                                    complete = false;
+                                    break;
+                                }
+                                min_dependency_slot = min_dependency_slot.min(*array_slot);
+                                max_dependency_slot = max_dependency_slot.max(*array_slot);
+                                let Ok(validated_bins) = arb_dex::validate_bin_array_account(
+                                    &p.pool_id.0,
+                                    *index,
+                                    owner,
+                                    bytes,
+                                ) else {
+                                    complete = false;
+                                    break;
+                                };
+                                if validated_bins.len()
+                                    != arb_constants::METEORA_BINS_PER_BIN_ARRAY as usize
+                                {
+                                    complete = false;
+                                    break;
+                                }
+                                for bin in validated_bins {
+                                    by_bin_id.insert(bin.bin_id, bin);
+                                }
+                            }
+                            // Pool, extension and selected arrays are one
+                            // tightly-coupled snapshot. Reject mixed batches
+                            // rather than stamping them with the newest slot.
+                            if max_dependency_slot.saturating_sub(min_dependency_slot) > 2 {
+                                complete = false;
+                            }
+
+                            // The on-chain bitmap omits uninitialized arrays.
+                            // The local bin walker still needs explicit empty
+                            // bins to cross those gaps, but never fake an array
+                            // whose bitmap bit says it is initialized.
+                            if complete {
+                                if let Some((first_array, last_array)) =
+                                    crate::decoders::dlmm_bin_array_span(
+                                        d.active_bin_id,
+                                        indices,
+                                        64,
+                                    )
+                                {
+                                    let bins_per_array =
+                                        arb_constants::METEORA_BINS_PER_BIN_ARRAY as i32;
+                                    let first_bin =
+                                        (first_array as i32).saturating_mul(bins_per_array);
+                                    let last_bin = (last_array as i32)
+                                        .saturating_add(1)
+                                        .saturating_mul(bins_per_array)
+                                        .saturating_sub(1);
+                                    for bin_id in first_bin..=last_bin {
+                                        by_bin_id.entry(bin_id).or_insert_with(|| {
+                                            arb_types::DlmmBin {
+                                                bin_id,
+                                                amount_x: 0,
+                                                amount_y: 0,
+                                                open_order_amount: 0,
+                                                processed_order_remaining_amount: 0,
+                                                limit_order_ask_side: false,
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    complete = false;
+                                }
+                            }
+                            let bins: Vec<_> = if complete {
+                                by_bin_id.into_values().collect()
+                            } else {
+                                Vec::new()
+                            };
+                            if !complete || !bins.iter().any(|bin| bin.bin_id == d.active_bin_id) {
+                                dlmm_bins.insert(p.pool_id, Vec::new());
+                            } else {
+                                dlmm_coherent_slots.insert(p.pool_id, Slot(min_dependency_slot));
+                                dlmm_bins.insert(p.pool_id, bins);
+                            }
                         }
                     }
                     DexProtocol::OrcaWhirlpool => {
@@ -646,9 +844,14 @@ impl MultiDexRegistry {
                 (DexProtocol::MeteoraDlmm, Some(d)) if d.len() >= 216 => {
                     let reserve_x = Pubkey::new_from_array(d[152..184].try_into().unwrap());
                     let reserve_y = Pubkey::new_from_array(d[184..216].try_into().unwrap());
-                    let active_id = i32::from_le_bytes(d[76..80].try_into().unwrap());
-                    let bin_step = u16::from_le_bytes(d[80..82].try_into().unwrap()).max(1);
-                    let bin_arrays = dlmm_bin_array_pdas(&p.pool_id.0, active_id, bin_step);
+                    let bin_arrays = dlmm_selected_indices
+                        .get(&p.pool_id)
+                        .into_iter()
+                        .flatten()
+                        .map(|index| {
+                            crate::decoders::derive_meteora_bin_array_pda(&p.pool_id.0, *index)
+                        })
+                        .collect();
                     let prog = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
                         .unwrap_or_default();
                     let bitmap_ext_pda = bitmap_extension_pda(&p.pool_id.0);
@@ -658,10 +861,21 @@ impl MultiDexRegistry {
                     // actually fetched from the chain in this batch. A derived
                     // PDA alone is NOT proof of initialization — passing a
                     // nonexistent writable account fails the swap on-chain.
-                    let bitmap_extension = if derived_data_map.contains_key(&bitmap_ext_pda) {
-                        Some(bitmap_ext_pda)
-                    } else {
-                        None
+                    let bitmap_extension = match (
+                        derived_data_map.get(&bitmap_ext_pda),
+                        derived_owner_map.get(&bitmap_ext_pda),
+                    ) {
+                        (Some((_, bytes)), Some(owner))
+                            if arb_dex::validate_bitmap_extension_account(
+                                &p.pool_id.0,
+                                owner,
+                                bytes,
+                            )
+                            .is_ok() =>
+                        {
+                            Some(bitmap_ext_pda)
+                        }
+                        _ => None,
                     };
                     Some(arb_types::PoolExecutionAccounts::MeteoraDlmm {
                         reserve_x,
@@ -835,12 +1049,22 @@ impl MultiDexRegistry {
                 _ => None,
             };
 
+            let state_slot = if p.protocol == DexProtocol::MeteoraDlmm {
+                let Some(slot) = dlmm_coherent_slots.get(&p.pool_id).copied() else {
+                    // Do not publish a DLMM PoolState without a coherent,
+                    // owner-verified pool/bitmap/bin-array dependency snapshot.
+                    continue;
+                };
+                slot
+            } else {
+                effective_slot
+            };
             let wv = next_pool_write_version();
 
             states.push(PoolState {
                 pool_id: p.pool_id,
                 protocol: p.protocol,
-                slot: effective_slot,
+                slot: state_slot,
                 write_version: wv,
                 base_mint: state_base,
                 quote_mint: state_quote,
@@ -852,7 +1076,7 @@ impl MultiDexRegistry {
                 fee_denominator: 10_000,
                 is_active: true,
                 has_risky_token: false,
-                last_update_slot: effective_slot.0,
+                last_update_slot: state_slot.0,
                 last_update_ms: now_ms,
                 kind,
                 clmm,

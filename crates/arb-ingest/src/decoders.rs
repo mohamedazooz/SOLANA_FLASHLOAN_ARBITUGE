@@ -221,7 +221,10 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
             {
                 return None;
             }
-            let bin_step = u16::from_le_bytes(data.get(80..82)?.try_into().ok()?).max(1);
+            let bin_step = u16::from_le_bytes(data.get(80..82)?.try_into().ok()?);
+            if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+                return None;
+            }
             Some(DecodedPoolInfo {
                 token_a_mint,
                 token_b_mint,
@@ -395,8 +398,11 @@ pub fn raydium_clmm_tick_array_pdas(
 /// active bin. Shared by the PDA deriver and the event-driven hydration
 /// coverage check (helius_ws.rs).
 pub fn dlmm_bin_array_indices(active_id: i32, bin_step: u16) -> Vec<i64> {
+    if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+        return Vec::new();
+    }
     let index = bin_id_to_bin_array_index(active_id);
-    let step = u32::from(bin_step.max(1));
+    let step = u32::from(bin_step);
     let bins_traversed = 500u32 / step + 1;
     // Canonical span derivation (matches `arb_tx::plan_bin_arrays`):
     // hydration must cover the worst-case traversal in BOTH directions from
@@ -430,6 +436,155 @@ pub fn dlmm_bin_array_pdas(pool: &Pubkey, active_id: i32, bin_step: u16) -> Vec<
         .collect()
 }
 
+/// Offset of `LbPair::bin_array_bitmap` in the Anchor account bytes.
+/// Derived from the official Meteora LbPair IDL field order (8-byte discriminator included).
+pub const METEORA_LB_PAIR_BITMAP_OFFSET: usize = 584;
+pub const METEORA_LB_PAIR_BITMAP_END: usize = METEORA_LB_PAIR_BITMAP_OFFSET + 16 * 8;
+const METEORA_LB_PAIR_DISCRIMINATOR: [u8; 8] = [33, 11, 49, 98, 181, 101, 177, 13];
+
+pub fn decode_dlmm_internal_bitmap(data: &[u8]) -> Option<[u64; 16]> {
+    if data.len() < METEORA_LB_PAIR_BITMAP_END || data.get(..8)? != METEORA_LB_PAIR_DISCRIMINATOR {
+        return None;
+    }
+    let mut bitmap = [0u64; 16];
+    for (i, word) in bitmap.iter_mut().enumerate() {
+        let offset = METEORA_LB_PAIR_BITMAP_OFFSET + i * 8;
+        *word = u64::from_le_bytes(data.get(offset..offset + 8)?.try_into().ok()?);
+    }
+    Some(bitmap)
+}
+
+fn next_dlmm_internal_index(bitmap: &[u64; 16], start: i32, swap_for_y: bool) -> Option<i32> {
+    let (mut index, end, step) = if swap_for_y {
+        (start.min(511), -512, -1)
+    } else {
+        (start.max(-512), 511, 1)
+    };
+    if (swap_for_y && index < -512) || (!swap_for_y && index > 511) {
+        return None;
+    }
+    loop {
+        let offset = usize::try_from(index + 512).ok()?;
+        if ((bitmap[offset / 64] >> (offset % 64)) & 1) != 0 {
+            return Some(index);
+        }
+        if index == end {
+            break;
+        }
+        index = index.checked_add(step)?;
+    }
+    None
+}
+
+/// Select initialized bin arrays in one swap direction, mirroring
+/// `get_bin_array_pubkeys_for_swap` from MeteoraAg/dlmm-sdk
+/// (commons/src/quote.rs, upstream commit
+/// 1532e540db41ac405dbf4c5bb2ddfceaa1f98ff1). The active array is included
+/// only when its initialized bit is set; an empty active array advances to
+/// the next initialized array in the requested direction.
+pub fn dlmm_initialized_bin_array_indices(
+    active_id: i32,
+    swap_for_y: bool,
+    internal: &[u64; 16],
+    extension: Option<&arb_dex::DecodedBitmapExtension>,
+    count: usize,
+) -> Vec<i64> {
+    let active = bin_id_to_bin_array_index(active_id) as i32;
+    if !(-512..=511).contains(&active) && extension.is_none() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count.min(32));
+    let mut cursor = active;
+    while out.len() < count.min(32) {
+        let next = if (-512..=511).contains(&cursor) {
+            match next_dlmm_internal_index(internal, cursor, swap_for_y) {
+                Some(index) => Some(index),
+                None => extension.and_then(|ext| {
+                    ext.next_initialized_index(if swap_for_y { -513 } else { 512 }, swap_for_y)
+                }),
+            }
+        } else {
+            extension
+                .and_then(|ext| ext.next_initialized_index(cursor, swap_for_y))
+                .or_else(|| {
+                    let moving_toward_internal =
+                        (cursor > 511 && swap_for_y) || (cursor < -512 && !swap_for_y);
+                    if moving_toward_internal {
+                        next_dlmm_internal_index(
+                            internal,
+                            if swap_for_y { 511 } else { -512 },
+                            swap_for_y,
+                        )
+                    } else {
+                        None
+                    }
+                })
+        };
+        let Some(index) = next else {
+            break;
+        };
+        if out.last().copied() == Some(index as i64) {
+            break;
+        }
+        out.push(index as i64);
+        cursor = match index.checked_add(if swap_for_y { -1 } else { 1 }) {
+            Some(v) => v,
+            None => break,
+        };
+    }
+    out
+}
+
+pub fn dlmm_initialized_bin_array_pdas(
+    pool: &Pubkey,
+    active_id: i32,
+    swap_for_y: bool,
+    internal: &[u64; 16],
+    extension: Option<&arb_dex::DecodedBitmapExtension>,
+    count: usize,
+) -> Vec<Pubkey> {
+    dlmm_initialized_bin_array_indices(active_id, swap_for_y, internal, extension, count)
+        .into_iter()
+        .map(|index| derive_meteora_bin_array_pda(pool, index))
+        .collect()
+}
+
+/// Return the inclusive bin-array span needed by the local bin walker.
+///
+/// Meteora's SDK starts bitmap lookup at the active array but may return the
+/// next initialized array when the active array itself is empty. The local
+/// walker must retain the active bin and synthesize only the intervening
+/// zero-liquidity bins; those gaps are never emitted as writable accounts.
+pub fn dlmm_bin_array_span(
+    active_id: i32,
+    selected_indices: &[i64],
+    max_span_arrays: i64,
+) -> Option<(i64, i64)> {
+    if selected_indices.is_empty() || max_span_arrays < 0 {
+        return None;
+    }
+    let active_index = bin_id_to_bin_array_index(active_id);
+    let first = selected_indices
+        .iter()
+        .copied()
+        .fold(active_index, i64::min);
+    let last = selected_indices
+        .iter()
+        .copied()
+        .fold(active_index, i64::max);
+    (last.checked_sub(first)? <= max_span_arrays).then_some((first, last))
+}
+
+/// Whether the SDK-style search or the local bin walk needs the bitmap
+/// extension, including an out-of-range active array that searches back into
+/// the inline bitmap and therefore would not appear in selected_indices.
+pub fn dlmm_requires_bitmap_extension(active_id: i32, selected_indices: &[i64]) -> bool {
+    arb_constants::meteora_bin_array_index_requires_bitmap_extension(bin_id_to_bin_array_index(
+        active_id,
+    )) || selected_indices
+        .iter()
+        .any(|index| arb_constants::meteora_bin_array_index_requires_bitmap_extension(*index))
+}
 /// Decode an RPC account's `data[0]` base64 payload.
 pub fn decode_account_data(acc: &serde_json::Value) -> Option<Vec<u8>> {
     let b64 = acc.get("data")?.get(0)?.as_str()?;
@@ -666,6 +821,17 @@ mod fee_decoder_tests {
     }
 
     #[test]
+    fn decode_dlmm_state_rejects_bin_step_outside_protocol_range() {
+        let mut data = vec![0u8; 720];
+        data[80..82].copy_from_slice(&arb_constants::METEORA_MAX_BIN_STEP.to_le_bytes());
+        assert!(decode_dlmm_state(&data).is_some());
+        data[80..82].copy_from_slice(&(arb_constants::METEORA_MAX_BIN_STEP + 1).to_le_bytes());
+        assert!(decode_dlmm_state(&data).is_none());
+        data[80..82].copy_from_slice(&0u16.to_le_bytes());
+        assert!(decode_dlmm_state(&data).is_none());
+    }
+
+    #[test]
     fn decode_dlmm_state_reads_params_and_active_id() {
         let mut d = vec![0u8; 96];
         d[8..10].copy_from_slice(&10_000u16.to_le_bytes()); // base_factor
@@ -682,6 +848,185 @@ mod fee_decoder_tests {
         let prm = s.params.expect("params");
         assert_eq!(prm.base_factor, 10_000);
         assert_eq!(prm.protocol_share, 1_000);
+    }
+
+    #[test]
+    fn dlmm_internal_bitmap_decodes_official_lb_pair_offset_and_rejects_bad_layout() {
+        let mut data = vec![0u8; METEORA_LB_PAIR_BITMAP_END];
+        data[..8].copy_from_slice(&METEORA_LB_PAIR_DISCRIMINATOR);
+        data[METEORA_LB_PAIR_BITMAP_OFFSET..METEORA_LB_PAIR_BITMAP_OFFSET + 8]
+            .copy_from_slice(&1u64.to_le_bytes());
+        data[METEORA_LB_PAIR_BITMAP_OFFSET + 8 * 8..METEORA_LB_PAIR_BITMAP_OFFSET + 9 * 8]
+            .copy_from_slice(&1u64.to_le_bytes());
+        let bitmap = decode_dlmm_internal_bitmap(&data).expect("IDL bitmap");
+        assert_eq!(next_dlmm_internal_index(&bitmap, -512, false), Some(-512));
+        assert_eq!(next_dlmm_internal_index(&bitmap, -511, false), Some(0));
+        assert_eq!(next_dlmm_internal_index(&bitmap, 1, true), Some(0));
+        assert!(decode_dlmm_internal_bitmap(&[0u8; METEORA_LB_PAIR_BITMAP_END]).is_none());
+    }
+
+    #[test]
+    fn dlmm_bitmap_selection_covers_worst_case_protocol_swap_depth() {
+        assert_eq!(arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP, 5);
+        let mut bitmap = [0u64; 16];
+        for index in 0i32..6 {
+            let offset = (index + 512) as usize;
+            bitmap[offset / 64] |= 1u64 << (offset % 64);
+        }
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(
+                0,
+                false,
+                &bitmap,
+                None,
+                arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP,
+            ),
+            vec![0, 1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn dlmm_bitmap_selection_uses_direction_and_skips_uninitialized_arrays() {
+        let mut bitmap = [0u64; 16];
+        for index in [0i32, 3, -2] {
+            let offset = (index + 512) as usize;
+            bitmap[offset / 64] |= 1u64 << (offset % 64);
+        }
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(0, false, &bitmap, None, 4),
+            vec![0, 3]
+        );
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(0, true, &bitmap, None, 4),
+            vec![0, -2]
+        );
+        assert!(dlmm_initialized_bin_array_indices(512 * 70, false, &bitmap, None, 4).is_empty());
+    }
+
+    #[test]
+    fn dlmm_bitmap_selection_can_start_from_an_uninitialized_active_array() {
+        let mut bitmap = [0u64; 16];
+        for index in [1i32, 3, -2] {
+            let offset = (index + 512) as usize;
+            bitmap[offset / 64] |= 1u64 << (offset % 64);
+        }
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(0, false, &bitmap, None, 3),
+            vec![1, 3]
+        );
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(0, true, &bitmap, None, 3),
+            vec![-2]
+        );
+    }
+
+    #[test]
+    fn dlmm_bitmap_traversal_crosses_into_extension_in_both_directions() {
+        let mut internal = [0u64; 16];
+        let positive_edge = 511usize + 512;
+        internal[positive_edge / 64] |= 1u64 << (positive_edge % 64);
+        let negative_edge = 0usize;
+        internal[negative_edge / 64] |= 1u64 << (negative_edge % 64);
+        let mut extension = arb_dex::DecodedBitmapExtension {
+            positive: [[0u64; 8]; 12],
+            negative: [[0u64; 8]; 12],
+        };
+        extension.positive[0][0] |= 1;
+        extension.negative[0][0] |= 1;
+
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(511 * 70, false, &internal, Some(&extension), 3),
+            vec![511, 512]
+        );
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(-512 * 70, true, &internal, Some(&extension), 3),
+            vec![-512, -513]
+        );
+    }
+
+    #[test]
+    fn dlmm_bitmap_lookup_resumes_in_internal_bitmap_before_opposite_extension() {
+        let mut internal = [0u64; 16];
+        for index in [100i32, -100] {
+            let offset = (index + 512) as usize;
+            internal[offset / 64] |= 1u64 << (offset % 64);
+        }
+        let mut extension = arb_dex::DecodedBitmapExtension {
+            positive: [[0u64; 8]; 12],
+            negative: [[0u64; 8]; 12],
+        };
+        extension.negative[0][0] |= 1; // -513
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(512 * 70, true, &internal, Some(&extension), 3),
+            vec![100, -100, -513]
+        );
+
+        let mut positive_extension = arb_dex::DecodedBitmapExtension {
+            positive: [[0u64; 8]; 12],
+            negative: [[0u64; 8]; 12],
+        };
+        positive_extension.positive[0][0] |= 1; // +512
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(
+                -513 * 70,
+                false,
+                &internal,
+                Some(&positive_extension),
+                3
+            ),
+            vec![-100, 100, 512]
+        );
+    }
+
+    #[test]
+    fn dlmm_bitmap_extension_traverses_all_twelve_pages_in_both_directions() {
+        let mut internal = [0u64; 16];
+        let positive_edge = 511usize + 512;
+        internal[positive_edge / 64] |= 1u64 << (positive_edge % 64);
+        let negative_edge = 0usize;
+        internal[negative_edge / 64] |= 1u64 << (negative_edge % 64);
+
+        let mut extension = arb_dex::DecodedBitmapExtension {
+            positive: [[0u64; 8]; 12],
+            negative: [[0u64; 8]; 12],
+        };
+        for page in 0..12 {
+            // First bit in each page; page 11's final bit is the hard limit.
+            extension.positive[page][0] |= 1;
+            extension.negative[page][0] |= 1;
+        }
+        extension.positive[11][7] |= 1u64 << 63;
+        extension.negative[11][7] |= 1u64 << 63;
+
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(511 * 70, false, &internal, Some(&extension), 13),
+            vec![
+                511, 512, 1024, 1536, 2048, 2560, 3072, 3584, 4096, 4608, 5120, 5632, 6144
+            ]
+        );
+        assert_eq!(
+            dlmm_initialized_bin_array_indices(-512 * 70, true, &internal, Some(&extension), 13),
+            vec![
+                -512, -513, -1025, -1537, -2049, -2561, -3073, -3585, -4097, -4609, -5121, -5633,
+                -6145
+            ]
+        );
+        assert_eq!(extension.next_initialized_index(6655, false), Some(6655));
+        assert_eq!(extension.next_initialized_index(-6656, true), Some(-6656));
+    }
+
+    #[test]
+    fn dlmm_bin_array_span_includes_empty_active_array_but_bounds_gap() {
+        assert_eq!(dlmm_bin_array_span(5 * 70 + 12, &[6, 7], 64), Some((5, 7)));
+        assert_eq!(
+            dlmm_bin_array_span(5 * 70 + 12, &[-2, -1], 64),
+            Some((-2, 5))
+        );
+        assert_eq!(dlmm_bin_array_span(5 * 70 + 12, &[70], 64), None);
+        assert_eq!(dlmm_bin_array_span(0, &[], 64), None);
+        assert!(dlmm_requires_bitmap_extension(512 * 70, &[511]));
+        assert!(dlmm_requires_bitmap_extension(0, &[512]));
+        assert!(!dlmm_requires_bitmap_extension(0, &[-512, 0, 511]));
     }
 }
 
@@ -775,8 +1120,8 @@ pub fn decode_dlmm_state(data: &[u8]) -> Option<arb_types::DlmmState> {
     let active_bin_id = i32::from_le_bytes(data[76..80].try_into().ok()?);
     let bin_step_bps = u16::from_le_bytes(data[80..82].try_into().ok()?);
     let status = data[82];
-    if status != 0 || bin_step_bps == 0 {
-        return None; // pool disabled / invalid
+    if status != 0 || bin_step_bps == 0 || bin_step_bps > arb_constants::METEORA_MAX_BIN_STEP {
+        return None; // pool disabled / invalid protocol bin_step
     }
 
     let function_type = if data.len() > 35 { data[35] } else { 0 };
@@ -854,8 +1199,9 @@ pub fn bin_id_to_bin_array_index(bin_id: i32) -> i64 {
     bin_id.div_euclid(METEORA_BINS_PER_ARRAY as i32) as i64
 }
 
-/// Decode the bins of one `BinArray` account. Bins with zero liquidity are
-/// dropped; `bin_id = index * 70 + i`.
+/// Decode all 70 bins of one `BinArray` account, including zero-liquidity
+/// slots; the canonical multi-bin quote walker requires contiguous bin IDs.
+/// `bin_id = index * 70 + i`.
 pub fn decode_bin_array(data: &[u8]) -> Vec<arb_types::DlmmBin> {
     let need = METEORA_BIN_ARRAY_HEADER + (METEORA_BINS_PER_ARRAY as usize) * METEORA_BIN_SIZE;
     if data.len() < need {

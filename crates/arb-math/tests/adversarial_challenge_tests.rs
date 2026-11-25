@@ -462,7 +462,7 @@ fn challenge_clmm_token_ordering_invariance() {
 
 #[test]
 fn challenge_dlmm_extreme_bin_steps_and_active_bin_crossing() {
-    let extreme_steps: [u16; 5] = [1, 10, 100, 500, 1000]; // 0.01% to 10% per bin
+    let extreme_steps: [u16; 4] = [1, 10, 100, 400]; // 0.01% to 4% per bin (protocol maximum)
 
     for &bs in &extreme_steps {
         // Verify price computation does not overflow or produce zero
@@ -626,7 +626,7 @@ fn challenge_dlmm_variable_fee_surge_under_high_volatility() {
 fn challenge_dlmm_maximum_fee_rate_clamping() {
     // 1. Extreme base fee alone
     let high_base_params = DlmmParameters {
-        bin_step: 1000,
+        bin_step: 400,
         base_factor: 65535,
         filter_period: 30,
         decay_period: 600,
@@ -638,7 +638,7 @@ fn challenge_dlmm_maximum_fee_rate_clamping() {
         collect_fee_mode: 0,
     };
     let total_fee_high_base =
-        compute_total_fee_rate(&high_base_params, 1000, 0).expect("Base fee clamping");
+        compute_total_fee_rate(&high_base_params, 400, 0).expect("Base fee clamping");
     assert_eq!(
         total_fee_high_base, MAX_FEE_RATE,
         "Base fee exceeding 10% must be strictly clamped to MAX_FEE_RATE (100_000_000)"

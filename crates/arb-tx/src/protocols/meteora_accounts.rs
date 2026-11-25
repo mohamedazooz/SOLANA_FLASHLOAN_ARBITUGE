@@ -151,20 +151,11 @@ impl MeteoraDlmmAccounts {
     }
 }
 
-/// Build a genuine Meteora DLMM `swap2` instruction with the complete real account
-/// matrix (lb_pair, reserve vaults, user token accounts, mints, oracle, signer,
-/// token program, Anchor event-authority + program) and the swap-route bin arrays.
-///
-/// `active_bin_id` and `bin_step` are LIVE values decoded from the on-chain LbPair
-/// account by the ingestion layer — they drive the correct bin-array selection so
-/// the instruction targets the active liquidity region. No hardcoded reserve
-/// values are used: the on-chain program reads live vault balances at execution.
-///
-/// NOTE: for byte-exact, fully-account-resolved execution the supervisor routes
-/// Meteora hops through the Jupiter v6 `swap-instructions` API (live). This native
-/// builder produces a structurally correct DLMM instruction against the REAL
-/// Meteora program (never the Raydium V4 dummy) and is used by the synchronous
-/// assemble paths.
+/// Legacy geometry-only `swap2` builder retained for compatibility and unit tests.
+/// It cannot prove that its BinArray PDAs are initialized and has no owner-verified
+/// Bitmap Extension snapshot. Production execution must use
+/// `build_meteora_dlmm_swap_instruction_with_bin_arrays` with the bitmap-selected
+/// account set from live ingestion. This helper must not be wired into live routing.
 pub fn build_meteora_dlmm_swap_instruction(
     accounts: &MeteoraDlmmAccounts,
     user_authority: Pubkey,
@@ -206,9 +197,13 @@ pub fn build_meteora_dlmm_swap_instruction(
     } else {
         0
     };
-    let bin_step_bps = bin_step.max(1) as u32;
-    let bins_traversed = (impact_bps / bin_step_bps).saturating_add(1).max(1);
-    let bin_array_indices = meteora_bin_array_indices(active_bin_id, swap_for_y, bins_traversed);
+    let bin_array_indices = if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+        Vec::new()
+    } else {
+        let bin_step_bps = u32::from(bin_step);
+        let bins_traversed = (impact_bps / bin_step_bps).saturating_add(1).max(1);
+        meteora_bin_array_indices(active_bin_id, swap_for_y, bins_traversed)
+    };
 
     let mut bin_array_metas = Vec::with_capacity(bin_array_indices.len());
     for idx in bin_array_indices {
@@ -237,10 +232,11 @@ pub fn build_meteora_dlmm_swap_instruction(
     // Remaining:
     //  16..16+N bin_arrays                 (writable, dynamically sized, no fixed cap)
     // -------------------------------------------------------------------------
-    let bitmap_extension_pda = derive_meteora_bin_array_bitmap_extension_pda(&accounts.lb_pair);
+    // This legacy builder has no validated extension snapshot. Encode the official
+    // absent-optional-account sentinel rather than a derived but potentially nonexistent PDA.
     let mut account_list = vec![
         AccountMeta::new(accounts.lb_pair, false),
-        AccountMeta::new(bitmap_extension_pda, false),
+        AccountMeta::new_readonly(accounts.program_id, false),
         AccountMeta::new(accounts.reserve_x, false),
         AccountMeta::new(accounts.reserve_y, false),
         AccountMeta::new(user_token_in, false),

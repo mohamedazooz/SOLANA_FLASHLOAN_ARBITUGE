@@ -33,7 +33,7 @@ use crate::{
     SOLANA_PACKET_V1_MTU, TransactionVersion, TxBuilder, V1ConfigParams, build_compute_unit_limit,
     build_compute_unit_price, build_create_ata_idempotent_for_program,
     build_meteora_dlmm_swap_instruction_with_bin_arrays, derive_meteora_bin_array_pda,
-    get_associated_token_address_with_program_id, meteora_bin_array_indices,
+    get_associated_token_address_with_program_id,
 };
 use arb_constants::{TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID};
 use arb_types::{PoolExecutionAccounts, PoolState, TokenProgramKind};
@@ -194,6 +194,104 @@ impl MeteoraDlmmAtomicArbitrageBuilder {
         }
     }
 
+    /// Resolve only bitmap-selected BinArrays already present in the live PoolState.
+    /// The account set is produced by the ingestion layer from the LbPair bitmap and
+    /// the validated extension; this builder must never invent writable BinArray PDAs.
+    fn extract_bin_array_plan(
+        pool: &PoolState,
+        active_bin_id: i32,
+        bin_step: u16,
+        swap_for_y: bool,
+        bins_traversed: u32,
+    ) -> Result<(Vec<Pubkey>, Option<Pubkey>), TxError> {
+        if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+            return Err(TxError::InvalidInput(format!(
+                "invalid Meteora bin_step {bin_step}; expected 1..={}",
+                arb_constants::METEORA_MAX_BIN_STEP
+            )));
+        }
+        if bins_traversed > arb_constants::METEORA_MAX_BINS_PER_SWAP {
+            return Err(TxError::InvalidInput(format!(
+                "Meteora traversal {bins_traversed} exceeds protocol limit {}",
+                arb_constants::METEORA_MAX_BINS_PER_SWAP
+            )));
+        }
+        let Some(PoolExecutionAccounts::MeteoraDlmm {
+            bin_array_pdas,
+            bitmap_extension,
+            ..
+        }) = pool.execution_accounts.as_ref()
+        else {
+            return Err(TxError::MissingExecutionAccounts {
+                pool_id: pool.pool_id.0,
+                reason: "missing bitmap-selected Meteora BinArray dependencies".into(),
+            });
+        };
+        if bin_array_pdas.is_empty() {
+            return Err(TxError::MissingExecutionAccounts {
+                pool_id: pool.pool_id.0,
+                reason: "no bitmap-proven initialized Meteora BinArrays are hydrated".into(),
+            });
+        }
+
+        let direction = if swap_for_y { -1i64 } else { 1i64 };
+        let end_bin = i64::from(active_bin_id)
+            .checked_add(direction * i64::from(bins_traversed))
+            .ok_or(TxError::InvalidInput(
+                "Meteora bin traversal overflow".into(),
+            ))?;
+        let end_bin = i32::try_from(end_bin)
+            .map_err(|_| TxError::InvalidInput("Meteora end bin is out of range".into()))?;
+        let bins_per_array = arb_constants::METEORA_BINS_PER_BIN_ARRAY;
+        let start_index = i64::from(active_bin_id).div_euclid(bins_per_array);
+        let end_index = i64::from(end_bin).div_euclid(bins_per_array);
+        let lower = start_index.min(end_index);
+        let upper = start_index.max(end_index);
+        let arrays_in_span = upper - lower + 1;
+        if arrays_in_span as usize > arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP {
+            return Err(TxError::InvalidInput(format!(
+                "Meteora quote spans {arrays_in_span} BinArrays; protocol coverage limit is {}",
+                arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP
+            )));
+        }
+
+        let available: std::collections::HashSet<Pubkey> = bin_array_pdas.iter().copied().collect();
+        let mut selected = Vec::with_capacity(arrays_in_span as usize);
+        let mut index = start_index;
+        loop {
+            let pda = derive_meteora_bin_array_pda(&pool.pool_id.0, index);
+            if available.contains(&pda) {
+                selected.push(pda);
+            }
+            if index == end_index {
+                break;
+            }
+            index = index.checked_add(direction).ok_or(TxError::InvalidInput(
+                "Meteora BinArray index overflow".into(),
+            ))?;
+        }
+        if selected.is_empty() {
+            return Err(TxError::MissingExecutionAccounts {
+                pool_id: pool.pool_id.0,
+                reason: "quote span has no bitmap-proven initialized BinArray".into(),
+            });
+        }
+
+        let extension_required = lower < arb_constants::METEORA_DEFAULT_BITMAP_MIN_INDEX
+            || upper > arb_constants::METEORA_DEFAULT_BITMAP_MAX_INDEX;
+        let extension = if extension_required {
+            Some(*bitmap_extension.as_ref().ok_or_else(|| {
+                TxError::MissingExecutionAccounts {
+                    pool_id: pool.pool_id.0,
+                    reason: "quote crosses the default bitmap boundary without a validated Bitmap Extension".into(),
+                }
+            })?)
+        } else {
+            None
+        };
+        Ok((selected, extension))
+    }
+
     /// Build the ATA creations and the two DLMM swaps for a two-pool cycle.
     ///
     /// This is the single source of truth for the route: both the 1,232-byte legacy path
@@ -271,15 +369,13 @@ impl MeteoraDlmmAtomicArbitrageBuilder {
 
         // Dynamic bin array resolution for Hop 1: derive the exact array span from
         // the quote's bins_crossed, in the swap direction. No fixed ceiling.
-        let hop1_indices = meteora_bin_array_indices(
+        let (hop1_bin_pdas, hop1_bitmap_extension) = Self::extract_bin_array_plan(
+            first_pool,
             dlmm_first.active_bin_id,
+            dlmm_first.bin_step_bps,
             hop1_swap_for_y,
-            hop1_bins_traversed.max(1),
-        );
-        let hop1_bin_pdas: Vec<Pubkey> = hop1_indices
-            .iter()
-            .map(|&idx| derive_meteora_bin_array_pda(&first_accs.lb_pair, idx))
-            .collect();
+            hop1_bins_traversed,
+        )?;
 
         let ix_hop1 = build_meteora_dlmm_swap_instruction_with_bin_arrays(
             &first_accs,
@@ -291,7 +387,7 @@ impl MeteoraDlmmAtomicArbitrageBuilder {
             amount_in,
             hop1_min_out,
             &hop1_bin_pdas,
-            None,
+            hop1_bitmap_extension,
         );
 
         // Hop 2 parameters: input is exactly the guaranteed intermediate amount `hop1_min_out`
@@ -305,15 +401,13 @@ impl MeteoraDlmmAtomicArbitrageBuilder {
                 })?;
         let hop2_swap_for_y = second_pool.base_mint.0 == token_mid;
 
-        let hop2_indices = meteora_bin_array_indices(
+        let (hop2_bin_pdas, hop2_bitmap_extension) = Self::extract_bin_array_plan(
+            second_pool,
             dlmm_second.active_bin_id,
+            dlmm_second.bin_step_bps,
             hop2_swap_for_y,
-            hop2_bins_traversed.max(1),
-        );
-        let hop2_bin_pdas: Vec<Pubkey> = hop2_indices
-            .iter()
-            .map(|&idx| derive_meteora_bin_array_pda(&second_accs.lb_pair, idx))
-            .collect();
+            hop2_bins_traversed,
+        )?;
 
         let ix_hop2 = build_meteora_dlmm_swap_instruction_with_bin_arrays(
             &second_accs,
@@ -325,7 +419,7 @@ impl MeteoraDlmmAtomicArbitrageBuilder {
             hop1_min_out,
             min_final_out,
             &hop2_bin_pdas,
-            None,
+            hop2_bitmap_extension,
         );
 
         // ATA creation, token-program aware: a Token-2022 mint needs its own ATA program

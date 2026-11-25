@@ -25,10 +25,11 @@ pub use quote_engine::*;
 pub use token2022::{DANGEROUS_EXTENSIONS, HopTransferFeeBreakdown, TokenSemantics};
 
 pub use dlmm_validation::{
-    DlmmValidationError, DlmmValidationResult, ValidatedDlmmPool, canonical_mint_pair,
-    derive_bin_array_pda, derive_bitmap_extension_pda, derive_event_authority, derive_oracle_pda,
-    derive_reserve_pda, validate_bin_array_account, validate_bitmap_extension_account,
-    validate_lb_pair_account, validate_pool_pair_compatibility,
+    DecodedBitmapExtension, DlmmValidationError, DlmmValidationResult, ValidatedDlmmPool,
+    canonical_mint_pair, decode_bitmap_extension_account, derive_bin_array_pda,
+    derive_bitmap_extension_pda, derive_event_authority, derive_oracle_pda, derive_reserve_pda,
+    validate_bin_array_account, validate_bitmap_extension_account, validate_lb_pair_account,
+    validate_pool_pair_compatibility,
 };
 pub use meteora_damm_v2::MeteoraDammV2Pool;
 pub use meteora_dbc::MeteoraDbcPool;

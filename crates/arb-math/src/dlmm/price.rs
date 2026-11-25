@@ -65,6 +65,9 @@ pub fn pow_q64(base: u128, exp: i32) -> Result<u128, DlmmError> {
 /// Formula: $P_i = (1 + \text{bin\_step}/10{,}000)^i$
 /// Returns the price of 1 unit of Token X in terms of Token Y.
 pub fn get_price_from_id(active_id: i32, bin_step: u16) -> Result<u128, DlmmError> {
+    if bin_step == 0 || bin_step > arb_constants::METEORA_MAX_BIN_STEP {
+        return Err(DlmmError::InvalidBinStep(bin_step));
+    }
     if !(MIN_BIN_ID..=MAX_BIN_ID).contains(&active_id) {
         return Err(DlmmError::BinIdOutOfRange(active_id));
     }
