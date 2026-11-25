@@ -308,6 +308,12 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
             )));
         }
 
+        // The canonical PoolState base/quote ordering must match the verified
+        // on-chain LbPair token X/Y snapshot before deriving swap direction.
+        // Keep this guard in the authoritative quote engine (not only route
+        // wrappers), because callers may invoke QuoteEngine directly.
+        Self::validate_pool_mint_snapshot(state)?;
+
         let dlmm_state = state.dlmm.as_ref().ok_or_else(|| {
             ArbError::IncompleteState(format!("Missing DLMM state for pool {}", state.pool_id.0))
         })?;
@@ -564,6 +570,32 @@ mod bitmap_extension_tests {
         let y = MintId(Pubkey::new_unique());
         let pool = fee_mode_pool(1, x, y, Pubkey::new_unique());
         assert!(MeteoraDlmmQuoteEngine::fee_mint_for_quote(&pool, x).is_err());
+    }
+
+    #[test]
+    fn direct_quote_rejects_pool_mint_order_mismatch_before_math() {
+        let x = MintId(Pubkey::new_unique());
+        let y = MintId(Pubkey::new_unique());
+        let mut pool = fee_mode_pool(0, x, y, y.0);
+        if let Some(PoolExecutionAccounts::MeteoraDlmm { pool_token_x, .. }) =
+            pool.execution_accounts.as_mut()
+        {
+            *pool_token_x = Pubkey::new_unique();
+        }
+
+        let request = QuoteRequest {
+            input_mint: x,
+            output_mint: y,
+            amount: 1,
+            slippage_bps: 0,
+            input_transfer_fee_config: None,
+            output_transfer_fee_config: None,
+        };
+        let result = MeteoraDlmmQuoteEngine::new().quote_exact_in(&pool, &request);
+        assert!(
+            matches!(result, Err(ArbError::InvalidToken(_))),
+            "direct quote must fail closed on token X/Y mismatch: {result:?}"
+        );
     }
 
     #[test]
