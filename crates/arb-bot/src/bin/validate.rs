@@ -323,7 +323,15 @@ async fn main() -> Result<()> {
     let edge_count = graph.edges_by_from.values().map(|v| v.len()).sum::<usize>();
     info!("MarketGraph built: {edge_count} edges");
 
-    let opportunities = graph.find_base_cycles(slot, max_probe_lamports);
+    let (opportunities, cycle_stats) = graph.find_base_cycles_with_stats(slot, max_probe_lamports);
+    info!(
+        "Cycle scan: {} base anchor(s), {} gross-profitable 2-hop, {} gross-profitable 3-hop, {} rejected by verified economic gate, {} execution-eligible",
+        cycle_stats.base_anchors,
+        cycle_stats.two_hop_gross_profitable,
+        cycle_stats.three_hop_gross_profitable,
+        cycle_stats.gate_rejected,
+        cycle_stats.opportunities,
+    );
     info!("Detected {} arbitrage cycle(s)", opportunities.len());
     for opp in &opportunities {
         info!(

@@ -97,7 +97,10 @@ pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPO
 /// pool, unsupported function/fee mode, or any bin amount outside the `u64`
 /// quote domain). Capacity estimation (`edge_max_input_capacity`) keeps its
 /// own saturating clamp by design and must not switch to this helper.
-pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<(DlmmPoolState, Vec<ArbDlmmBin>)> {
+type DlmmQuoteComponents = (DlmmPoolState, Vec<ArbDlmmBin>);
+type DlmmQuoteCache = HashMap<PoolId, Option<DlmmQuoteComponents>>;
+
+pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteComponents> {
     if edge.protocol != DexProtocol::MeteoraDlmm
         || edge.transfer_fee_bps != 0
         || edge.token_programs.contains(&TokenProgramKind::Token2022)
@@ -126,6 +129,21 @@ pub fn quote_pool(
     y: u128,
     gamma: u128,
     edge: Option<&MarketEdge>,
+) -> u128 {
+    quote_pool_with_dlmm_cache(kind, dx, x, y, gamma, edge, None)
+}
+
+/// Internal quote path that reuses validated DLMM math state across every
+/// sizing sample for one immutable route snapshot. `Some(cache)` also caches
+/// invalid snapshots as `None`, avoiding repeated 600+ bin validation work.
+fn quote_pool_with_dlmm_cache(
+    kind: PoolKind,
+    dx: u128,
+    x: u128,
+    y: u128,
+    gamma: u128,
+    edge: Option<&MarketEdge>,
+    dlmm_cache: Option<&DlmmQuoteCache>,
 ) -> u128 {
     match kind {
         PoolKind::Cpmm => cpmm_out(dx, x, y, gamma).unwrap_or(0),
@@ -199,16 +217,28 @@ pub fn quote_pool(
             0
         }
         PoolKind::Dlmm => {
-            if let Some(e) = edge
-                && let Some((pool, bins)) = dlmm_quote_components(e)
-                && !bins.is_empty()
-                && let Ok(amount) = u64::try_from(dx)
-            {
-                let a_to_b = e.pool_base == e.from_mint;
-                if let Ok(q) = quote_dlmm_view(&pool, &bins, amount, a_to_b, None)
-                    && arb_math::dlmm::validate_swap_depth(q.bins_crossed).is_ok()
-                {
-                    return q.amount_out as u128;
+            if let Some(e) = edge {
+                let quote_components = |pool: &DlmmPoolState, bins: &[ArbDlmmBin]| {
+                    if bins.is_empty() {
+                        return None;
+                    }
+                    let amount = u64::try_from(dx).ok()?;
+                    let a_to_b = e.pool_base == e.from_mint;
+                    let quote = quote_dlmm_view(pool, bins, amount, a_to_b, None).ok()?;
+                    arb_math::dlmm::validate_swap_depth(quote.bins_crossed)
+                        .ok()
+                        .map(|()| quote.amount_out as u128)
+                };
+                let output = match dlmm_cache {
+                    Some(cache) => cache
+                        .get(&e.pool_id)
+                        .and_then(Option::as_ref)
+                        .and_then(|(pool, bins)| quote_components(pool, bins)),
+                    None => dlmm_quote_components(e)
+                        .and_then(|(pool, bins)| quote_components(&pool, &bins)),
+                };
+                if let Some(output) = output {
+                    return output;
                 }
             }
             // Fail-closed: Never fall back to linear/CPMM for DLMM
@@ -465,6 +495,11 @@ impl MarketGraph {
             return None;
         }
 
+        let dlmm_cache: DlmmQuoteCache = edges
+            .iter()
+            .filter(|edge| edge.kind == PoolKind::Dlmm)
+            .map(|edge| (edge.pool_id, dlmm_quote_components(edge)))
+            .collect();
         let capacities: Vec<Option<u64>> = edges
             .iter()
             .map(|edge| Self::edge_max_input_capacity(edge))
@@ -486,7 +521,7 @@ impl MarketGraph {
             let mut high = upper;
             while low < high {
                 let mid = low + (high - low).div_ceil(2);
-                let amount = Self::amount_before_hop(edges, mid, hop_index);
+                let amount = Self::amount_before_hop(edges, mid, hop_index, Some(&dlmm_cache));
                 if amount.is_some_and(|value| value <= u128::from(*capacity)) {
                     low = mid;
                 } else {
@@ -512,7 +547,8 @@ impl MarketGraph {
             8,
             &boundary_seeds,
             |size_in| {
-                let hop_inputs = Self::quote_route_input_ladder(edges, size_in, &capacities)?;
+                let hop_inputs =
+                    Self::quote_route_input_ladder(edges, size_in, &capacities, Some(&dlmm_cache))?;
                 let final_out = u128::from(*hop_inputs.last()?);
                 if final_out <= u128::from(size_in) {
                     return None;
@@ -565,17 +601,23 @@ impl MarketGraph {
         })
     }
 
-    fn amount_before_hop(edges: &[&MarketEdge], size_in: u64, hop_index: usize) -> Option<u128> {
+    fn amount_before_hop(
+        edges: &[&MarketEdge],
+        size_in: u64,
+        hop_index: usize,
+        dlmm_cache: Option<&DlmmQuoteCache>,
+    ) -> Option<u128> {
         let mut amount = u128::from(size_in);
         for edge in edges.iter().take(hop_index) {
             let gamma = 10_000u128.saturating_sub(u128::from(edge.fee_bps));
-            amount = quote_pool(
+            amount = quote_pool_with_dlmm_cache(
                 edge.kind,
                 amount,
                 edge.reserve_in,
                 edge.reserve_out,
                 gamma,
                 Some(edge),
+                dlmm_cache,
             );
         }
         Some(amount)
@@ -587,6 +629,7 @@ impl MarketGraph {
         edges: &[&MarketEdge],
         size_in: u64,
         capacities: &[Option<u64>],
+        dlmm_cache: Option<&DlmmQuoteCache>,
     ) -> Option<Vec<u64>> {
         let mut amount = u128::from(size_in);
         let mut ladder = Vec::with_capacity(edges.len() + 1);
@@ -603,13 +646,14 @@ impl MarketGraph {
                 return None;
             }
             let gamma = 10_000u128.saturating_sub(u128::from(edge.fee_bps));
-            amount = quote_pool(
+            amount = quote_pool_with_dlmm_cache(
                 edge.kind,
                 amount,
                 edge.reserve_in,
                 edge.reserve_out,
                 gamma,
                 Some(edge),
+                dlmm_cache,
             );
             if amount == 0 {
                 return None;
