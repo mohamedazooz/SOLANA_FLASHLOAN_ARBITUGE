@@ -1485,9 +1485,11 @@ pub fn decode_dlmm_fee_bps(s: &arb_types::DlmmState) -> Option<u16> {
 /// Fail-closed rules (each returns `None`, dropping the pool from the graph):
 /// - no bins attached, or the ACTIVE bin itself is missing from the attached
 ///   BinArrays (hydration incomplete \u{2014} never guess its contents);
-/// - either side depth is zero (one-sided book: no honest two-sided quote);
-/// - implied price `y_depth / x_depth` diverges from the active-bin price by
-///   more than [`DLMM_RESERVE_PRICE_TOLERANCE`] (corrupt/inconsistent bin data).
+/// - either directional depth is zero (one-sided book: no honest two-sided quote).
+///
+/// Directional depth can be heavily imbalanced in a legitimate DLMM book. It
+/// is not a reliable spot-price estimator; the active bin is authoritative.
+/// The graph adapter therefore normalizes the smaller side to active-bin price.
 ///
 /// The previous implementation derived one side from the other via the active
 /// price whenever the active bin missed one token (`rx else sum` fallbacks).
@@ -1504,6 +1506,7 @@ pub fn compute_dlmm_reserves(
     quote_mint: &Pubkey,
 ) -> Option<(u128, u128)> {
     if d.bins.is_empty() {
+        debug!("DLMM reserve rejection: no hydrated bins");
         return None;
     }
     let p_x_in_y = arb_math::dlmm::get_price_from_id(d.active_bin_id, d.bin_step_bps)
@@ -1514,9 +1517,17 @@ pub fn compute_dlmm_reserves(
         .filter(|_| pool_data.len() >= 152)
         .and_then(|s| <[u8; 32]>::try_from(s).ok())
         .map(Pubkey::new_from_array)?;
-    // The active bin must be present: it anchors both side sums and the
-    // price-consistency check. Missing active bin = incomplete hydration.
-    d.bins.iter().find(|b| b.bin_id == d.active_bin_id)?;
+    // The active bin must be present: it anchors both directional depth sums
+    // and supplies the authoritative spot price. Missing active bin means
+    // incomplete hydration, so never synthesize its contents.
+    if !d.bins.iter().any(|b| b.bin_id == d.active_bin_id) {
+        debug!(
+            "DLMM reserve rejection: active bin {} absent from {} hydrated bins",
+            d.active_bin_id,
+            d.bins.len()
+        );
+        return None;
+    }
     let x_depth: u128 = d
         .bins
         .iter()
@@ -1530,12 +1541,14 @@ pub fn compute_dlmm_reserves(
         .map(|b| b.amount_y)
         .sum();
     if x_depth == 0 || y_depth == 0 {
+        debug!(
+            "DLMM reserve rejection: one-sided depth x={} y={} active_bin={}",
+            x_depth, y_depth, d.active_bin_id
+        );
         return None;
     }
-    // Price-consistency invariant: the side sums must imply a price within a
-    // sane band of the active-bin price. With correctly attached arrays this
-    // holds by construction (bins within \u{00b1}70 bins of active); a violation
-    // means corrupt or mismatched bin data, never a real market state.
+    // Directional book depth can be asymmetric in a valid DLMM pool. Treat
+    // the ratio as telemetry only; the active bin is the spot-price authority.
     let implied_q64 =
         (ruint::aliases::U256::from(y_depth) << 64usize) / ruint::aliases::U256::from(x_depth);
     let p_u256 = ruint::aliases::U256::from(p_x_in_y);
@@ -1543,21 +1556,44 @@ pub fn compute_dlmm_reserves(
     if implied_q64 > band
         || implied_q64 < p_u256 / ruint::aliases::U256::from(DLMM_RESERVE_PRICE_TOLERANCE)
     {
+        debug!(
+            "DLMM asymmetric depth (not a spot-price failure): active_bin={}, x_depth={}, y_depth={}; graph price uses active bin",
+            d.active_bin_id, x_depth, y_depth
+        );
+    }
+
+    // MarketGraph uses a constant-product edge only for candidate discovery;
+    // exact route quotes still walk the real DLMM bins. Raw sums across many
+    // bins do NOT define a spot price: the Y/X depth ratio drifted ~12% on a
+    // live 9-array pool and moved its graph price away from the active bin.
+    // Build a conservative synthetic reserve pair at the protocol's active-bin
+    // price instead. Normalize quote-side depth into X units and take the
+    // smaller side, so neither direction advertises more depth than exists.
+    let y_as_x = (ruint::aliases::U256::from(y_depth) << 64usize) / p_u256;
+    let x_depth_u256 = ruint::aliases::U256::from(x_depth);
+    let x_equivalent = if x_depth_u256 < y_as_x {
+        x_depth_u256
+    } else {
+        y_as_x
+    };
+    let y_equivalent = (x_equivalent * p_u256) >> 64usize;
+    let x_equivalent: u128 = x_equivalent.try_into().ok()?;
+    let y_equivalent: u128 = y_equivalent.try_into().ok()?;
+    if x_equivalent == 0 || y_equivalent == 0 {
+        debug!("DLMM reserve rejection: conservative active-price depth rounded to zero");
         return None;
     }
     if tx == *base_mint {
-        Some((x_depth, y_depth))
+        Some((x_equivalent, y_equivalent))
     } else if tx == *quote_mint {
-        Some((y_depth, x_depth))
+        Some((y_equivalent, x_equivalent))
     } else {
-        Some((0, 0))
+        None
     }
 }
 
-/// Max allowed ratio between the bin-sum implied price and the active-bin
-/// price. 4x is far outside any correctly-hydrated \u{00b1}1-bin-array window
-/// (\u{00b1}70 bins * 0.02% \u{2248} \u{00b1}1.4% for the tightest bin_step=2 pools) yet
-/// still catches grossly corrupt data.
+/// Diagnostic threshold for flagging unusually asymmetric DLMM directional
+/// depth. It never rejects a pool; active-bin price remains authoritative.
 const DLMM_RESERVE_PRICE_TOLERANCE: u64 = 4;
 
 /// Decode a u64 token amount from raw SPL token account bytes (offset 64..72).
@@ -2067,7 +2103,7 @@ mod tests {
     }
 
     #[test]
-    fn dlmm_reserves_sum_correct_sides_both_directions() {
+    fn dlmm_reserves_use_active_bin_spot_price_and_conservative_depth_both_directions() {
         let x = Pubkey::new_unique();
         let y = Pubkey::new_unique();
         let data = dlmm_probe_pool_bytes(x, y);
@@ -2094,20 +2130,41 @@ mod tests {
                 },
             ],
         );
-        // x_depth = bins >= 1000 => 1000 + 3000 = 4000
-        // y_depth = bins <= 1000 => 500 + 2700 = 3200
-        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), Some((4000, 3200)));
+        // Raw depth sums are X=4000 and Y=3200. They are NOT the spot price:
+        // the graph reserve ratio must follow the active bin, while each side
+        // is capped by its independently observed depth.
+        let (reserve_x, reserve_y) = compute_dlmm_reserves(&d, &data, &x, &y).unwrap();
+        assert!(reserve_x <= 4000 && reserve_y <= 3200);
+        let active_price = ruint::aliases::U256::from(
+            arb_math::dlmm::get_price_from_id(d.active_bin_id, d.bin_step_bps).unwrap(),
+        );
+        let graph_price = (ruint::aliases::U256::from(reserve_y) << 64usize)
+            / ruint::aliases::U256::from(reserve_x);
+        let deviation = if graph_price > active_price {
+            graph_price - active_price
+        } else {
+            active_price - graph_price
+        };
+        assert!(
+            deviation * ruint::aliases::U256::from(10_000u64)
+                <= active_price * ruint::aliases::U256::from(10u64),
+            "graph price must stay within 1 bp of active bin"
+        );
         // Flipped pool orientation (token_x is the quote mint): reserves swap.
-        assert_eq!(compute_dlmm_reserves(&d, &data, &y, &x), Some((3200, 4000)));
+        assert_eq!(
+            compute_dlmm_reserves(&d, &data, &y, &x),
+            Some((reserve_y, reserve_x))
+        );
     }
 
     #[test]
-    fn dlmm_reserves_reject_price_inconsistent_bins() {
+    fn dlmm_reserves_accept_asymmetric_depth_but_preserve_active_bin_price() {
         let x = Pubkey::new_unique();
         let y = Pubkey::new_unique();
         let data = dlmm_probe_pool_bytes(x, y);
-        // active_id=1000, step=10bps => p ~ 2.717 y-raw per x-raw. A book
-        // implying 0.1 y-raw per x-raw is >4x below p: corrupt data.
+        // active_id=1000, step=10bps => p ~ 2.717 y-raw per x-raw. The
+        // book's 0.1 depth ratio is intentionally asymmetric; graph pricing
+        // must still use the active bin and cap both sides by actual depth.
         let d = dlmm_probe_state(
             1000,
             vec![arb_types::DlmmBin {
@@ -2117,6 +2174,22 @@ mod tests {
                 ..Default::default()
             }],
         );
-        assert_eq!(compute_dlmm_reserves(&d, &data, &x, &y), None);
+        let (reserve_x, reserve_y) = compute_dlmm_reserves(&d, &data, &x, &y).unwrap();
+        assert!(reserve_x <= 1_000_000);
+        assert!(reserve_y <= 100_000);
+        let active_price = ruint::aliases::U256::from(
+            arb_math::dlmm::get_price_from_id(d.active_bin_id, d.bin_step_bps).unwrap(),
+        );
+        let graph_price = (ruint::aliases::U256::from(reserve_y) << 64usize)
+            / ruint::aliases::U256::from(reserve_x);
+        let deviation = if graph_price > active_price {
+            graph_price - active_price
+        } else {
+            active_price - graph_price
+        };
+        assert!(
+            deviation * ruint::aliases::U256::from(10_000u64)
+                <= active_price * ruint::aliases::U256::from(10u64)
+        );
     }
 }
