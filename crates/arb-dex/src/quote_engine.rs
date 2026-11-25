@@ -7,7 +7,7 @@
 //! - Required account resolution for transaction packing.
 
 use crate::token2022::{HopTransferFeeBreakdown, TransferFeeConfig};
-use arb_types::{ArbError, Bps, DexProtocol, MintId, PoolId, PoolState, Result};
+use arb_types::{ArbError, Bps, DexProtocol, MintId, PoolId, PoolState, Result, TokenProgramKind};
 use solana_pubkey::Pubkey;
 
 /// Inbound quote request parameters.
@@ -17,7 +17,11 @@ pub struct QuoteRequest {
     pub output_mint: MintId,
     pub amount: u64,
     pub slippage_bps: u16,
+    /// Verified fee schedule selected for the current Clock epoch. `None` means
+    /// the schedule is unavailable/unverified, not that the mint has zero fees.
     pub input_transfer_fee_config: Option<TransferFeeConfig>,
+    /// Verified fee schedule selected for the current Clock epoch. `None` means
+    /// the schedule is unavailable/unverified, not that the mint has zero fees.
     pub output_transfer_fee_config: Option<TransferFeeConfig>,
 }
 
@@ -93,6 +97,28 @@ impl QuoteRequest {
                 "quote direction {} -> {} does not match pool mints {} / {}",
                 self.input_mint.0, self.output_mint.0, state.base_mint.0, state.quote_mint.0
             )));
+        }
+        if state.has_risky_token {
+            return Err(ArbError::InvalidToken(
+                "quote contains an unsupported or unverified token extension".into(),
+            ));
+        }
+        // PoolState token_programs are ordered (base_mint, quote_mint). Resolve
+        // fee schedules by the actual hop direction so every protocol engine
+        // fails closed consistently when a Token-2022 schedule is missing.
+        let input_index = usize::from(self.input_mint != state.base_mint);
+        let output_index = 1 - input_index;
+        for (side, token_index, fee_config) in [
+            ("input", input_index, self.input_transfer_fee_config),
+            ("output", output_index, self.output_transfer_fee_config),
+        ] {
+            if state.token_programs[token_index] == TokenProgramKind::Token2022
+                && fee_config.is_none()
+            {
+                return Err(ArbError::IncompleteState(format!(
+                    "{side} Token-2022 mint has no verified current-epoch transfer-fee configuration"
+                )));
+            }
         }
         if state.kind != state.protocol.family() {
             return Err(ArbError::InvalidInput(format!(

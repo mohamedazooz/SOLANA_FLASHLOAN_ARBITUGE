@@ -313,7 +313,6 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
         // Keep this guard in the authoritative quote engine (not only route
         // wrappers), because callers may invoke QuoteEngine directly.
         Self::validate_pool_mint_snapshot(state)?;
-
         let dlmm_state = state.dlmm.as_ref().ok_or_else(|| {
             ArbError::IncompleteState(format!("Missing DLMM state for pool {}", state.pool_id.0))
         })?;
@@ -595,6 +594,64 @@ mod bitmap_extension_tests {
         assert!(
             matches!(result, Err(ArbError::InvalidToken(_))),
             "direct quote must fail closed on token X/Y mismatch: {result:?}"
+        );
+    }
+
+    #[test]
+    fn direct_quote_rejects_token_2022_without_verified_fee_schedules() {
+        let x = MintId(Pubkey::new_unique());
+        let y = MintId(Pubkey::new_unique());
+        let mut pool = fee_mode_pool(0, x, y, y.0);
+        pool.token_programs = [
+            arb_types::TokenProgramKind::Token2022,
+            arb_types::TokenProgramKind::SplToken,
+        ];
+        let request = QuoteRequest {
+            input_mint: x,
+            output_mint: y,
+            amount: 1_000,
+            slippage_bps: 50,
+            input_transfer_fee_config: None,
+            output_transfer_fee_config: None,
+        };
+        let result = MeteoraDlmmQuoteEngine::new().quote_exact_in(&pool, &request);
+        assert!(
+            matches!(result, Err(ArbError::IncompleteState(_))),
+            "direct quote must not assume zero Token-2022 fees: {result:?}"
+        );
+
+        // The same fail-closed rule applies when Token-2022 is the output mint.
+        pool.token_programs = [
+            arb_types::TokenProgramKind::SplToken,
+            arb_types::TokenProgramKind::Token2022,
+        ];
+        assert!(request.validate(&pool).is_err());
+
+        // An explicit, verified zero-fee schedule is different from missing data.
+        let mut verified_request = request;
+        verified_request.output_transfer_fee_config =
+            Some(crate::token2022::TransferFeeConfig::ZERO);
+        assert!(verified_request.validate(&pool).is_ok());
+    }
+
+    #[test]
+    fn direct_quote_rejects_unverified_risky_token_extensions() {
+        let x = MintId(Pubkey::new_unique());
+        let y = MintId(Pubkey::new_unique());
+        let mut pool = fee_mode_pool(0, x, y, y.0);
+        pool.has_risky_token = true;
+        let request = QuoteRequest {
+            input_mint: x,
+            output_mint: y,
+            amount: 1_000,
+            slippage_bps: 50,
+            input_transfer_fee_config: None,
+            output_transfer_fee_config: None,
+        };
+        let result = MeteoraDlmmQuoteEngine::new().quote_exact_in(&pool, &request);
+        assert!(
+            matches!(result, Err(ArbError::InvalidToken(_))),
+            "direct quote must reject unsupported token extensions: {result:?}"
         );
     }
 
