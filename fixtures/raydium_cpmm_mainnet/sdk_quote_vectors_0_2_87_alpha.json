@@ -1,0 +1,403 @@
+{
+  "schema_version": 1,
+  "sdk": {
+    "package": "@raydium-io/raydium-sdk-v2",
+    "version": "0.2.87-alpha",
+    "repository": "https://github.com/raydium-io/raydium-sdk-V2",
+    "source_commit": "44d856ae7cfd2a25fa3b62724a564502978d7589",
+    "source_file": "src/raydium/cpmm/curve/calculator.ts"
+  },
+  "mainnet_fixture": {
+    "path": "fixtures/raydium_cpmm_mainnet/sol_usdc_confirmed_2026-11-25.json",
+    "pool": "7JuwJuNU88gurFnyWeiyGKbFmExMWcmRZntn9imEzdny",
+    "slot": 473731445,
+    "trade_fee_rate": 2500,
+    "protocol_fee_rate": 120000,
+    "fund_fee_rate": 40000,
+    "creator_fee_rate": 0,
+    "raw_vault_0": "527491346",
+    "raw_vault_1": "35958126",
+    "reserve_0": "525834808",
+    "reserve_1": "35535138"
+  },
+  "cases": [
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "1",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "1",
+        "output_amount": "0",
+        "trade_fee": "1",
+        "protocol_fee": "0",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "525834808",
+        "new_output_vault_amount": "35535138"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "10",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "10",
+        "output_amount": "0",
+        "trade_fee": "1",
+        "protocol_fee": "0",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "525834817",
+        "new_output_vault_amount": "35535138"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "1000",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "1000",
+        "output_amount": "67",
+        "trade_fee": "3",
+        "protocol_fee": "0",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "525835805",
+        "new_output_vault_amount": "35535071"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "10000",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "10000",
+        "output_amount": "674",
+        "trade_fee": "25",
+        "protocol_fee": "3",
+        "fund_fee": "1",
+        "creator_fee": "0",
+        "new_input_vault_amount": "525844783",
+        "new_output_vault_amount": "35534464"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "52583",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "52583",
+        "output_amount": "3544",
+        "trade_fee": "132",
+        "protocol_fee": "15",
+        "fund_fee": "5",
+        "creator_fee": "0",
+        "new_input_vault_amount": "525887259",
+        "new_output_vault_amount": "35531594"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "100000",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "100000",
+        "output_amount": "6739",
+        "trade_fee": "250",
+        "protocol_fee": "30",
+        "fund_fee": "10",
+        "creator_fee": "0",
+        "new_input_vault_amount": "525934558",
+        "new_output_vault_amount": "35528399"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "525834",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "525834",
+        "output_amount": "35410",
+        "trade_fee": "1315",
+        "protocol_fee": "157",
+        "fund_fee": "52",
+        "creator_fee": "0",
+        "new_input_vault_amount": "526359327",
+        "new_output_vault_amount": "35499728"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "5258348",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "5258348",
+        "output_amount": "350962",
+        "trade_fee": "13146",
+        "protocol_fee": "1577",
+        "fund_fee": "525",
+        "creator_fee": "0",
+        "new_input_vault_amount": "531080010",
+        "new_output_vault_amount": "35184176"
+      }
+    },
+    {
+      "direction": "token0_to_token1",
+      "amount_in": "52583480",
+      "input_reserve": "525834808",
+      "output_reserve": "35535138",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "52583480",
+        "output_amount": "3223123",
+        "trade_fee": "131459",
+        "protocol_fee": "15775",
+        "fund_fee": "5258",
+        "creator_fee": "0",
+        "new_input_vault_amount": "578286829",
+        "new_output_vault_amount": "32312015"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "1",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "1",
+        "output_amount": "0",
+        "trade_fee": "1",
+        "protocol_fee": "0",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35535138",
+        "new_output_vault_amount": "525834808"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "10",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "10",
+        "output_amount": "133",
+        "trade_fee": "1",
+        "protocol_fee": "0",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35535147",
+        "new_output_vault_amount": "525834675"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "1000",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "1000",
+        "output_amount": "14752",
+        "trade_fee": "3",
+        "protocol_fee": "0",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35536135",
+        "new_output_vault_amount": "525820056"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "3553",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "3553",
+        "output_amount": "52437",
+        "trade_fee": "9",
+        "protocol_fee": "1",
+        "fund_fee": "0",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35538682",
+        "new_output_vault_amount": "525782371"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "10000",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "10000",
+        "output_amount": "147564",
+        "trade_fee": "25",
+        "protocol_fee": "3",
+        "fund_fee": "1",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35545113",
+        "new_output_vault_amount": "525687244"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "35535",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "35535",
+        "output_amount": "523993",
+        "trade_fee": "89",
+        "protocol_fee": "10",
+        "fund_fee": "3",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35570584",
+        "new_output_vault_amount": "525310815"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "100000",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "100000",
+        "output_amount": "1471928",
+        "trade_fee": "250",
+        "protocol_fee": "30",
+        "fund_fee": "10",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35634888",
+        "new_output_vault_amount": "524362880"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "355351",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "355351",
+        "output_amount": "5193383",
+        "trade_fee": "889",
+        "protocol_fee": "106",
+        "fund_fee": "35",
+        "creator_fee": "0",
+        "new_input_vault_amount": "35889600",
+        "new_output_vault_amount": "520641425"
+      }
+    },
+    {
+      "direction": "token1_to_token0",
+      "amount_in": "3553513",
+      "input_reserve": "35535138",
+      "output_reserve": "525834808",
+      "trade_fee_rate": 2500,
+      "protocol_fee_rate": 120000,
+      "fund_fee_rate": 40000,
+      "creator_fee_rate": 0,
+      "is_creator_fee_on_input": true,
+      "expected": {
+        "input_amount": "3553513",
+        "output_amount": "47694483",
+        "trade_fee": "8884",
+        "protocol_fee": "1066",
+        "fund_fee": "355",
+        "creator_fee": "0",
+        "new_input_vault_amount": "39079767",
+        "new_output_vault_amount": "478140325"
+      }
+    }
+  ]
+}
