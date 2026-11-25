@@ -54,6 +54,21 @@ fn request(input_mint: MintId, output_mint: MintId, amount: u64) -> QuoteRequest
 }
 
 #[test]
+fn raydium_clmm_is_rejected_by_dispatcher_without_verified_amm_config_snapshot() {
+    let dispatcher = UniversalQuoteDispatcher::new();
+    let (pool, base, quote) = create_test_pool(DexProtocol::RaydiumClmm, true);
+    assert!(
+        dispatcher
+            .quote_exact_in(&pool, &request(base, quote, 10_000))
+            .is_err()
+    );
+    assert!(
+        dispatcher
+            .quote_exact_out(&pool, &request(base, quote, 10_000))
+            .is_err()
+    );
+}
+#[test]
 fn raydium_cpmm_and_v4_dispatch_with_reserve_state() {
     let dispatcher = UniversalQuoteDispatcher::new();
     for protocol in [DexProtocol::RaydiumCpmm, DexProtocol::RaydiumV4] {

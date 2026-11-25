@@ -67,18 +67,11 @@ impl PoolRejectionReason {
     }
 }
 
-/// Canonical fee bps conversion (`fee_numerator / fee_denominator` scaled to
-/// bps), matching the conversion used in `lib.rs` and `bellman_ford.rs`.
-/// Discovery previously cast `fee_numerator` straight to bps, which silently
-/// misreads pools with non-BPS fee denominators.
+/// Conservative, ceiling-rounded fee metadata shared with all graph paths.
+/// Exact quote math continues to use the PoolState numerator/denominator pair.
 fn pool_fee_bps(pool: &PoolState) -> Option<u16> {
-    if pool.fee_denominator == 0 {
-        return None;
-    }
-    let bps = (u128::from(pool.fee_numerator) * 10_000) / u128::from(pool.fee_denominator);
-    u16::try_from(bps).ok()
+    pool.fee_bps()
 }
-
 /// Aggregate report of the Meteora DLMM pool pair discovery process.
 #[derive(Debug, Clone, Default)]
 pub struct MeteoraDlmmPairDiscoveryReport {
@@ -616,6 +609,29 @@ mod tests {
         assert_eq!(cp_report.eligible_pairs[0].pool_b_fee_bps, 25);
     }
 
+    #[test]
+    fn dlmm_pair_sub_basis_point_fee_rounds_up_for_graph_metadata() {
+        let mint_x = MintId(Pubkey::new_unique());
+        let mint_y = MintId(Pubkey::new_unique());
+        let pool_a = dlmm_pool_with_fee(
+            PoolId(Pubkey::new_from_array([1; 32])),
+            mint_x,
+            mint_y,
+            50,
+            1_000_000,
+        );
+        let pool_b = dlmm_pool_with_fee(
+            PoolId(Pubkey::new_from_array([2; 32])),
+            mint_x,
+            mint_y,
+            25,
+            10_000,
+        );
+        let report = MeteoraDlmmPoolPairDiscovery::discover_pairs(&[pool_a, pool_b]);
+        assert_eq!(report.distinct_eligible_pool_pairs, 1);
+        assert_eq!(report.eligible_pairs[0].pool_a_fee_bps, 1);
+        assert_eq!(report.eligible_pairs[0].pool_b_fee_bps, 25);
+    }
     // A zero (or unrepresentable) fee denominator must fail closed: no pair,
     // and the rejection is counted under INVALID_FEE_RATIO.
     #[test]

@@ -205,11 +205,11 @@ impl AmmPool for RaydiumCpmmPool {
         if !self.amm_config_loaded {
             return None;
         }
-        let eff_ppm = self.effective_fee_rate_ppm();
-        let bps = (u128::from(eff_ppm) * 10_000) / RAYDIUM_CPMM_FEE_DENOMINATOR;
-        u16::try_from(bps).ok().filter(|b| *b <= 10_000)
+        // Graph metadata is conservative: any non-zero sub-bps fee rounds up.
+        u16::try_from(self.effective_fee_rate_ppm().div_ceil(100))
+            .ok()
+            .filter(|bps| *bps <= 10_000)
     }
-
     fn decimals(&self) -> (u8, u8) {
         (self.mint_0_decimals, self.mint_1_decimals)
     }
@@ -489,6 +489,16 @@ mod tests {
         assert_eq!(p.fee_bps(), None);
     }
 
+    #[test]
+    fn fee_bps_metadata_rounds_up_and_respects_creator_enable_flag() {
+        let mut p = pool(0, false, 5_000);
+        p.trade_fee_rate_ppm = 50;
+        assert_eq!(p.fee_bps(), Some(1));
+        p.enable_creator_fee = true;
+        assert_eq!(p.fee_bps(), Some(51));
+        p.enable_creator_fee = false;
+        assert_eq!(p.fee_bps(), Some(1));
+    }
     #[test]
     fn trade_fee_only_quotes_match_the_official_curve() {
         let p = pool(0, false, 0);

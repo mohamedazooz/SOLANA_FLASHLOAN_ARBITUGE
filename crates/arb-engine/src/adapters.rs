@@ -154,13 +154,9 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
         DexProtocol::PumpSwap => Err(
             "PumpSwap remains quote-only until its dedicated fee/creator-fee quote adapter is accepted",
         ),
-        DexProtocol::RaydiumClmm => {
-            if pool.clmm.is_some() {
-                Ok(())
-            } else {
-                Err("Raydium CLMM pool has no decoded CLMM state")
-            }
-        }
+        DexProtocol::RaydiumClmm => Err(
+            "Raydium CLMM is telemetry-only until the live AmmConfig, dynamic-fee state, and tick arrays are joined at a coherent slot",
+        ),
         DexProtocol::MeteoraDlmm => {
             if pool.dlmm.is_some()
                 && pool.dlmm.as_ref().unwrap().status == 0
@@ -1007,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn raydium_clmm_route_quotes_whose_active_tick_sits_in_a_60_spaced_array() {
+    fn raydium_clmm_route_is_disabled_until_amm_config_snapshot_is_verified() {
         // Regression: both engine consumers defaulted to the Whirlpool
         // 88-tick span and Orca tick rounding. With the active tick inside
         // the second 60-spaced array (start 60), the 88-span lookup aligned
@@ -1043,9 +1039,11 @@ mod tests {
             pool_id: PoolId::new([3; 32]),
             mint_in: MintId(Pubkey::new_from_array([1; 32])),
         }];
-        let q = quote_route(&mut pools, &hops, 10_000).unwrap();
-        assert!(q.amount_out > 0);
-        assert_eq!(q.cu_estimate, cu_estimate(DexProtocol::RaydiumClmm));
+        let result = quote_route(&mut pools, &hops, 10_000);
+        assert!(
+            result.is_err(),
+            "CLMM route must fail closed without verified AmmConfig"
+        );
     }
 
     #[test]

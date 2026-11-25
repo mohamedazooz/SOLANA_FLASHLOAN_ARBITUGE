@@ -71,45 +71,84 @@ impl QuoteEngine for PumpSwapQuoteEngine {
             return Err(ArbError::ZeroAmount);
         }
 
-        // 2. Fee calculation (default 30 bps = 0.3% total fee on PumpSwap AMM)
-        let total_fee_bps = if state.fee_numerator > 0 && state.fee_denominator > 0 {
-            (state.fee_numerator as u128 * 10_000) / state.fee_denominator as u128
-        } else {
-            30u128 // 0.3%
-        };
-
-        let num_fee = (input_net_into_pool as u128).saturating_mul(total_fee_bps);
-        let fee = num_fee.div_ceil(10_000);
-        let fee_u64 = u64::try_from(fee).unwrap_or(input_net_into_pool);
-
-        let input_after_fee = input_net_into_pool.saturating_sub(fee_u64);
-        if input_after_fee == 0 {
-            return Err(ArbError::InsufficientLiquidity(
-                "Input exhausted by swap fee".into(),
+        // PumpSwap charges quote-token fees on input for buys, and on quote
+        // output for sells. PoolState carries the exact aggregate PPM ratio.
+        // +2 raw units conservatively cover up to three independently rounded
+        // LP/protocol/creator fee components when only their sum is available.
+        let fee_denominator = u128::from(state.fee_denominator);
+        let fee_numerator = u128::from(state.fee_numerator);
+        if fee_denominator == 0 || fee_numerator > fee_denominator {
+            return Err(ArbError::InvalidInput(
+                "PumpSwap fee ratio is missing or invalid".into(),
             ));
         }
-
+        let fee_for_amount = |amount: u64| -> Result<u64> {
+            if fee_numerator == 0 || amount == 0 {
+                return Ok(0);
+            }
+            let numerator = u128::from(amount)
+                .checked_mul(fee_numerator)
+                .ok_or(ArbError::Overflow)?;
+            let aggregate = numerator.div_ceil(fee_denominator);
+            let conservative = aggregate.checked_add(2).ok_or(ArbError::Overflow)?;
+            u64::try_from(conservative).map_err(|_| ArbError::Overflow)
+        };
+        let mut fee_u64 = 0u64;
+        let curve_input = if a_to_b {
+            // Sell: fee is charged after the curve on quote-token output.
+            input_net_into_pool
+        } else {
+            // Buy: fee is deducted from quote-token input before the curve.
+            fee_u64 = fee_for_amount(input_net_into_pool)?;
+            input_net_into_pool
+                .checked_sub(fee_u64)
+                .filter(|amount| *amount > 0)
+                .ok_or_else(|| {
+                    ArbError::InsufficientLiquidity("Input exhausted by PumpSwap fee".into())
+                })?
+        };
         // 3. Constant product swap formula: dy = floor((y * dx') / (x + dx'))
-        let dx_prime = input_after_fee as u128;
-        let num_out = r_out.saturating_mul(dx_prime);
-        let denom_out = r_in.saturating_add(dx_prime);
+        let dx_prime = curve_input as u128;
+        let num_out = r_out.checked_mul(dx_prime).ok_or(ArbError::Overflow)?;
+        let denom_out = r_in.checked_add(dx_prime).ok_or(ArbError::Overflow)?;
         let gross_out = u64::try_from(num_out / denom_out).map_err(|_| ArbError::Overflow)?;
-
+        let spot_out = num_out.checked_div(r_in).ok_or(ArbError::Overflow)?;
+        if spot_out == 0 {
+            return Err(ArbError::InsufficientLiquidity(
+                "PumpSwap spot output rounds to zero".into(),
+            ));
+        }
+        let impact_numerator = spot_out.saturating_sub(u128::from(gross_out));
+        let impact_bps = impact_numerator
+            .checked_mul(10_000)
+            .ok_or(ArbError::Overflow)?
+            / spot_out;
+        let price_impact = Bps(u16::try_from(impact_bps).map_err(|_| ArbError::Overflow)?);
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
                 "PumpSwap returned 0 output".into(),
             ));
         }
+        let pool_output_after_trade_fee = if a_to_b {
+            fee_u64 = fee_for_amount(gross_out)?;
+            gross_out
+                .checked_sub(fee_u64)
+                .filter(|amount| *amount > 0)
+                .ok_or_else(|| {
+                    ArbError::InsufficientLiquidity("PumpSwap sell fees consume output".into())
+                })?
+        } else {
+            gross_out
+        };
 
-        // 4. Outbound Token-2022 transfer fee deduction
+        // Outbound Token-2022 transfer fee applies after the PumpSwap trade fee.
         let (output_net_to_next_hop, output_transfer_fee) =
             if let Some(config) = request.output_transfer_fee_config {
-                let fee = config.calculate_fee(gross_out);
-                (gross_out.saturating_sub(fee), fee)
+                let fee = config.calculate_fee(pool_output_after_trade_fee);
+                (pool_output_after_trade_fee.saturating_sub(fee), fee)
             } else {
-                (gross_out, 0)
+                (pool_output_after_trade_fee, 0)
             };
-
         // 5. Slippage calculation
         let min_amount_out = output_net_to_next_hop.saturating_sub(
             (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
@@ -123,9 +162,11 @@ impl QuoteEngine for PumpSwapQuoteEngine {
             amount_in_raw: request.amount,
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
+            // This generic PoolState contains only a conservative total fee ratio;
+            // component allocation is not available here. Do not invent an 80/20 split.
             fees_breakdown: FeesBreakdown {
-                lp_fee: (fee_u64 * 80) / 100,       // 80% to LPs
-                protocol_fee: (fee_u64 * 20) / 100, // 20% to Protocol
+                lp_fee: 0,
+                protocol_fee: 0,
                 fund_fee: 0,
                 creator_fee: 0,
                 dynamic_fee: 0,
@@ -139,7 +180,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
                 output_transfer_fee,
                 output_net_to_next_hop,
             },
-            price_impact: Bps(0),
+            price_impact,
             unfilled_input_raw: 0,
             required_accounts: vec![state.pool_id.0],
             state_slot: state.slot.0,

@@ -330,8 +330,9 @@ impl PumpSwapPool {
         if amount_in == 0 {
             return Err(ArbError::InvalidInput("zero PumpSwap input".into()));
         }
-        let scale = 10_000u128;
-        let fee_bps = [
+        const FEE_DENOMINATOR: u128 = 1_000_000;
+        let scale = FEE_DENOMINATOR;
+        let fee_ppm = [
             self.fee.lp_fee_ppm,
             self.fee.protocol_fee_ppm,
             if self.header.coin_creator == Pubkey::default() {
@@ -340,17 +341,11 @@ impl PumpSwapPool {
                 self.fee.creator_or_holder_fee_ppm
             },
         ];
-        if fee_bps.iter().any(|rate| rate % 100 != 0) {
-            return Err(ArbError::InvalidInput(
-                "PumpSwap fee PPM is not an integer BPS multiple".into(),
-            ));
-        }
-        let fee_bps = fee_bps.map(|rate| (rate / 100) as u64);
-        let fee_amount = |gross: u128, bps: u64| -> Result<u128> {
+        let fee_amount = |gross: u128, ppm: u32| -> Result<u128> {
             gross
-                .checked_mul(bps as u128)
+                .checked_mul(u128::from(ppm))
                 .ok_or(ArbError::Overflow)
-                .map(|v| v.div_ceil(scale))
+                .map(|value| value.div_ceil(FEE_DENOMINATOR))
         };
         let out = if base_to_quote {
             let gross = cpmm_out_fee(
@@ -361,9 +356,9 @@ impl PumpSwapPool {
                 scale,
             )
             .ok_or_else(|| ArbError::InvalidInput("PumpSwap gross sell quote failed".into()))?;
-            let lp = fee_amount(gross, fee_bps[0])?;
-            let protocol = fee_amount(gross, fee_bps[1])?;
-            let creator = fee_amount(gross, fee_bps[2])?;
+            let lp = fee_amount(gross, fee_ppm[0])?;
+            let protocol = fee_amount(gross, fee_ppm[1])?;
+            let creator = fee_amount(gross, fee_ppm[2])?;
             let without_lp = gross.checked_sub(lp).ok_or(ArbError::Overflow)?;
             let out = without_lp
                 .checked_sub(protocol)
@@ -380,9 +375,9 @@ impl PumpSwapPool {
             // PumpSwap buy: fees are taken from the input quote amount per component
             // (ceiling rounding, matching the on-chain program), then the remainder
             // is swapped through the constant-product curve.
-            let fee_lp = fee_amount(input, fee_bps[0])?;
-            let fee_protocol = fee_amount(input, fee_bps[1])?;
-            let fee_creator = fee_amount(input, fee_bps[2])?;
+            let fee_lp = fee_amount(input, fee_ppm[0])?;
+            let fee_protocol = fee_amount(input, fee_ppm[1])?;
+            let fee_creator = fee_amount(input, fee_ppm[2])?;
             let total_fee = fee_lp
                 .checked_add(fee_protocol)
                 .and_then(|v| v.checked_add(fee_creator))
@@ -435,10 +430,7 @@ impl AmmPool for PumpSwapPool {
     }
     fn fee_bps(&self) -> Option<u16> {
         let ppm = self.fee.total_ppm().ok()?;
-        if ppm % 100 != 0 {
-            return None;
-        }
-        u16::try_from(ppm / 100).ok()
+        u16::try_from(ppm.div_ceil(100)).ok()
     }
     fn decimals(&self) -> (u8, u8) {
         (self.base_decimals, self.quote_decimals)
@@ -584,6 +576,30 @@ mod tests {
         assert!(pool.quote_exact_in(100, true).is_err());
     }
 
+    #[test]
+    fn sub_basis_point_fee_is_quoted_exactly_and_graph_metadata_rounds_up() {
+        let pool = PumpSwapPool::new_with_decimals(
+            PoolId(Pubkey::new_unique()),
+            fixture_header(),
+            1_000_000,
+            2_000_000,
+            PumpSwapFeeConfig {
+                lp_fee_ppm: 50,
+                protocol_fee_ppm: 0,
+                creator_or_holder_fee_ppm: 0,
+            },
+            6,
+            9,
+        )
+        .unwrap();
+        assert_eq!(pool.fee_bps(), Some(1));
+        let sell = pool.quote_exact_in(10_000, true).unwrap();
+        let mut no_fee_pool = pool.clone();
+        no_fee_pool.fee.lp_fee_ppm = 0;
+        let gross = u128::from(no_fee_pool.quote_exact_in(10_000, true).unwrap());
+        let fee = (gross * 50).div_ceil(1_000_000);
+        assert_eq!(u128::from(sell), gross - fee);
+    }
     #[test]
     fn rejects_invalid_fee_and_zero_liquidity() {
         assert!(

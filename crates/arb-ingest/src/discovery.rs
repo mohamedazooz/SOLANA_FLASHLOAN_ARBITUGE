@@ -514,11 +514,16 @@ impl PoolDiscovery {
                 quote_mint: MintId(quote),
                 decimals_a: ma.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
                 decimals_b: mb.get("decimals").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
-                fee_bps: p
-                    .get("feeRate")
-                    .and_then(|v| v.as_f64())
-                    .map(|f| (f * 10_000.0).round() as u16)
-                    .unwrap_or(25),
+                fee_bps: {
+                    let Some(rate) = p
+                        .get("feeRate")
+                        .and_then(|v| v.as_f64())
+                        .filter(|rate| rate.is_finite() && *rate > 0.0 && *rate <= 1.0)
+                    else {
+                        continue;
+                    };
+                    (rate * 10_000.0).ceil() as u16
+                },
                 tvl,
             });
         }

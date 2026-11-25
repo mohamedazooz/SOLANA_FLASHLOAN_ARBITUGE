@@ -170,16 +170,14 @@ impl AmmPool for RaydiumV4Pool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
-        if self.fee_denominator == 0 {
-            None
-        } else {
-            Some(
-                u16::try_from((self.fee_numerator as u128 * 10_000) / self.fee_denominator as u128)
-                    .unwrap_or(10_000),
-            )
+        let denominator = u128::from(self.fee_denominator);
+        if denominator == 0 {
+            return None;
         }
+        let scaled = u128::from(self.fee_numerator).checked_mul(10_000)?;
+        let fee = scaled.div_ceil(denominator);
+        u16::try_from(fee).ok().filter(|bps| *bps <= 10_000)
     }
-
     fn token_programs(&self) -> [TokenProgramKind; 2] {
         [TokenProgramKind::SplToken, TokenProgramKind::SplToken]
     }
@@ -409,6 +407,20 @@ impl AmmPool for RaydiumV4Pool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fee_bps_metadata_rounds_sub_basis_point_rates_up() {
+        let mut pool = RaydiumV4Pool::new(
+            PoolId::new([9; 32]),
+            MintId::new([1; 32]),
+            MintId::new([2; 32]),
+            Pubkey::default(),
+            Pubkey::default(),
+            Pubkey::default(),
+        );
+        pool.fee_numerator = 50;
+        pool.fee_denominator = 1_000_000;
+        assert_eq!(pool.fee_bps(), Some(1));
+    }
     #[test]
     fn test_raydium_v4_binary_offsets() {
         let mut data = vec![0u8; RAYDIUM_V4_LAYOUT_SIZE];

@@ -65,11 +65,9 @@ pub struct BfEdge {
 
 impl BfEdge {
     pub fn from_pool_state(p: &arb_types::PoolState) -> Self {
-        let fee = if p.fee_denominator == 0 {
-            25u16
-        } else {
-            ((p.fee_numerator as u128 * 10_000) / p.fee_denominator as u128) as u16
-        };
+        // Conservative graph metadata must not understate a valid fee. Invalid
+        // ratios receive the maximum fee and are rejected by exact quote validation.
+        let fee = p.fee_bps().unwrap_or(10_000);
         let gamma = (10_000u32 - fee as u32) as f64 / 10_000.0;
         let rate = if p.reserve_in > 0 {
             p.reserve_out as f64 / p.reserve_in as f64

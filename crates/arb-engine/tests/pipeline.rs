@@ -3,7 +3,7 @@
 //! the sizing bench do, so a change in any layer that breaks the chain fails here
 //! rather than only in a unit test that stubs the layer next to it.
 
-use arb_engine::{MarketEdge, MarketGraph, cycle_profit_at};
+use arb_engine::{BfEdge, MarketEdge, MarketGraph, cycle_profit_at};
 use arb_math::economic::EconomicConfig;
 use arb_types::{DexProtocol, Lamports, MintId, PoolId, PoolKind, PoolState, Slot, TokenAmount};
 
@@ -203,4 +203,27 @@ fn risky_and_inactive_pools_never_reach_the_graph() {
 
     assert!(graph.edges_by_from.is_empty());
     assert!(graph.find_base_cycles(Slot(1), 100_000).is_empty());
+}
+
+#[test]
+fn sub_basis_point_fee_is_ceiled_in_every_poolstate_graph_projection() {
+    let mut p = pool(30, BASE, TOKEN, 1_000_000_000, 2_000_000_000);
+    p.protocol = DexProtocol::RaydiumCpmm;
+    p.fee_numerator = 50;
+    p.fee_denominator = 1_000_000;
+    assert_eq!(p.fee_bps(), Some(1));
+
+    let mut graph = MarketGraph::default();
+    graph.build_from_pools(std::slice::from_ref(&p));
+    let forward = graph.edges_by_from.get(&mint(BASE)).unwrap();
+    let reverse = graph.edges_by_from.get(&mint(TOKEN)).unwrap();
+    assert_eq!(forward.len(), 1);
+    assert_eq!(reverse.len(), 1);
+    assert_eq!(forward[0].fee_bps, 1);
+    assert_eq!(reverse[0].fee_bps, 1);
+
+    let bellman = BfEdge::from_pool_state(&p);
+    assert_eq!(bellman.fee_bps, 1);
+    let depth = arb_engine::route_worker::pool_depth_from_state(&p).unwrap();
+    assert_eq!(depth.fee_bps, 1);
 }
