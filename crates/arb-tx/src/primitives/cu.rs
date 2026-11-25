@@ -18,12 +18,26 @@ pub fn estimate_minimal_cu(has_flash_loan: bool, hops_count: usize) -> u32 {
         .saturating_add(swap_cu)
 }
 
-/// Calculate dynamic compute unit limit with measured buffer (simulated via reserve depth proxy — upgrade path: real simulateTransaction).
+/// Calculate a dynamic CU limit with a caller-selected safety margin.
+/// The margin is rounded up so integer truncation cannot understate the requested
+/// headroom, then clamped to Solana's runtime transaction cap.
+pub fn calculate_dynamic_cu_limit_with_buffer(
+    base_required_units: u32,
+    safety_margin_bps: u16,
+) -> u32 {
+    if base_required_units == 0 {
+        return 0;
+    }
+    let margin_bps = u128::from(safety_margin_bps.min(10_000));
+    let numerator = u128::from(base_required_units) * margin_bps;
+    let buffer = numerator.div_ceil(10_000);
+    let total = u128::from(base_required_units).saturating_add(buffer);
+    u32::try_from(total.min(u128::from(MAX_COMPUTE_UNIT_LIMIT))).unwrap_or(MAX_COMPUTE_UNIT_LIMIT)
+}
+
+/// Conservative fallback for unmeasured route estimates: 15% headroom.
 pub fn calculate_dynamic_cu_limit(base_required_units: u32) -> u32 {
-    // 15% safety buffer over measured base requirement.
-    let buffer = base_required_units.saturating_mul(15) / 100;
-    let total = base_required_units.saturating_add(buffer);
-    total.min(MAX_COMPUTE_UNIT_LIMIT)
+    calculate_dynamic_cu_limit_with_buffer(base_required_units, 1_500)
 }
 
 /// Apply the authoritative profit cap to a desired compute-unit price.

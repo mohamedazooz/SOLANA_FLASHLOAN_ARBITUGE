@@ -452,8 +452,9 @@ impl Supervisor {
 
     async fn start_wallet_balance_monitor(&self) -> Result<()> {
         if self.min_sol_reserve_lamports == 0 {
-            info!("Wallet SOL reserve guard disabled by MIN_SOL_RESERVE_LAMPORTS=0");
-            return Ok(());
+            anyhow::bail!(
+                "wallet SOL reserve guard cannot be disabled; min_sol_reserve_lamports must be positive"
+            );
         }
         let Some(payer) = self.keypair.as_ref().map(|keypair| keypair.pubkey()) else {
             if matches!(self.mode(), BotMode::Live) {

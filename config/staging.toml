@@ -10,11 +10,11 @@ commitment = "confirmed"
 [jito]
 regions = ["frankfurt", "amsterdam", "ny"]
 tip_floor_percentile = "p75"
-tip_share_bps = 5500
-max_tip_lamports = 2000000
-max_tip_share_bps = 7000
+tip_share_bps = 500
+max_tip_lamports = 125000
+max_tip_share_bps = 1000
 min_keep_lamports = 10000
-keep_share = 0.60
+keep_share = 0.90
 ladder_growth = 1.6
 tip_floor_max_age_ms = 5000
 tip_floor_poll_ms = 1000
@@ -36,8 +36,8 @@ base_tokens = [
     "So11111111111111111111111111111111111111112",
     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
 ]
-min_net_profit_abs = 50000
-min_net_profit_bps = 5
+min_net_profit_abs = 10000
+min_net_profit_bps = 1
 max_price_impact_bps = 40
 max_state_age_slots = 2
 graph_max_age_slots = 8
@@ -54,7 +54,7 @@ max_consecutive_failures = 8
 min_landing_rate = 0.02
 max_attempts_per_slot = 3
 max_inflight_bundles = 2
-max_tip_spend_ratio = 0.7
+max_tip_spend_ratio = 0.10
 max_orders_per_hour = 120
 cooldown_slots = 75
 
@@ -72,6 +72,6 @@ token_env = "SENTINEL_ADMIN_KEY"
 enabled = true
 decay_lambda_per_sec = 3.0
 max_age_ms = 400
-min_ev_usd = 0.05
+min_ev_usd = 0.01
 failed_attempt_cost_lamports = 10000
 beta_risk_factor = 0.0005

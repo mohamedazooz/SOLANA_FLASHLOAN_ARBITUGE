@@ -4,6 +4,30 @@ This register tracks all identified engineering defects, correctness gaps, and a
 
 ---
 
+
+## Resolved locally on 2026-11-25 — branch `fix/deep-quote-accounting-hardening-20261125` (not yet merged)
+
+### QNT-CORR-2026-11-25-N1: Chronos Recomputed Success Costs and Used Floating-Point EV
+
+- **Status**: Fixed locally.
+- **Root cause**: Chronos received gross PnL and independently subtracted flash/network/priority/tip costs after `arb-math` had already produced the canonical fully-costed result. Its survival probability and EV approval also depended on `f64` calculations.
+- **Fix**: Pass canonical net-success PnL in Lamports to Chronos; model failure costs separately (network + priority + failed-attempt overhead; no landed-only Jito tip); use a conservative Q32 lower bound for `exp(-lambda * age)` and integer EV/threshold arithmetic. Display-only float projections do not drive eligibility.
+- **Tests**: Q32 monotonicity/lower-bound/staleness/overflow; exact success/failure PnL; max-age and lambda bounds.
+- **Remaining**: Lambda calibration still requires a representative sample of observed quote-to-land latencies and failed/landed outcomes. The configured value is a guardrail, not a claim of empirically optimal calibration.
+
+### QNT-CORR-2026-11-25-N2: RiskGate Compared Raw Base-Mint Units to Lamport PnL
+
+- **Status**: Fixed locally.
+- **Root cause**: The BPS hurdle used `TokenAmount` raw units as its notional while net profit was in Lamports. This only coincided for WSOL (9 decimals), and could misstate the hurdle for a 6-decimal base mint.
+- **Fix**: Convert input notional to Lamports with ceiling using the same verified rational rate as canonical PnL conversion; keep PnL conversion rounded down; compute the BPS floor with ceiling division in one shared `arb-risk` helper used by both RiskGate and the read-only validator.
+- **Tests**: Cross-mint USDC-to-Lamports regression and fractional-lamport BPS boundary.
+
+### CFG-CORR-2026-11-25-N1: Config Unknown Keys and Environment Safety Overrides
+
+- **Status**: Fixed locally.
+- **Fixes**: Apply `deny_unknown_fields` to every typed TOML config struct; implement `load_strict` top-level allowlist; cap `ARB_MAX_IMPLAUSIBLE_ROI_BPS` at the configured ceiling; reject zero wallet reserve and bound Chronos decay lambda; clarify fee/concurrency/failure environment variable names while retaining legacy aliases.
+- **Operator note**: Local `.env` is ignored and is not part of the branch; `.env.example` carries safe, non-secret variable names and explanations.
+
 ## Resolved during second-pass hardening (2026-11-23)
 
 ### TX-CORR-2026-11-23-N1: Jito Tip Account Must Stay Inline, Not ALT-Loaded
@@ -375,3 +399,10 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **PumpSwap:** Ingestion preserves exact `total_ppm / 1_000_000`; the dedicated pool adapter computes each LP/protocol/creator component directly in PPM and graph metadata rounds up to BPS. The generic quote engine uses direction-correct fee placement and a two-raw-unit conservative margin because `PoolState` does not carry component allocation. Pools whose effective and spendable quote reserves differ are withheld from the generic state path.
 - **Other venues:** Orca/Raydium V4 sub-bps graph metadata rounds up; missing/invalid fee ratios fail closed; Orca no longer receives a guessed 5-bps default.
 - **Remaining limitation:** `MarketEdge` still stores integer BPS and generic PumpSwap results still cannot attribute the total fee to individual components. Carry exact ratios and verified allocation metadata through graph edges/results before removing conservative bounds.
+### DATA-COVERAGE-2026-11-25-N1: Live Pool Decode Coverage and Same-Venue Quote Differential
+
+- **Status**: Open; fail-closed behavior is correct, but coverage is incomplete.
+- **Evidence**: Read-only validation at slot `473859686` decoded 5 of 9 registered pools (4 Orca Whirlpool, 1 Raydium V4); 4 were skipped because their reserves/fees could not be decoded. The current graph produced 0 cycles. Given the `mainnet_default` registry composition (1 Raydium V4, 1 Raydium CPMM, 4 Orca Whirlpool, 3 Meteora DLMM), the unpriced set is the Raydium CPMM pool plus all 3 Meteora DLMM pools; exact per-pool skip reasons are not yet emitted.
+- **Differential**: A venue-restricted Whirlpool Jupiter quote differed from the selected pool's local CPMM output by 0.0856% (8.56 bps), close to the configured 10 bps slippage ceiling. This may reflect different pool selection or slot drift; it is not yet proof of a math defect.
+- **Next action**: Log per-pool skip reasons and pool IDs; compare the exact same pool/account state at the same slot against its protocol SDK quote. Do not widen slippage to hide the discrepancy.
+- **Safety**: Keep undecodable pools excluded until fee/reserve decoding and protocol-specific differential tests pass.

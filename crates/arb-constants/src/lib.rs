@@ -106,7 +106,7 @@ pub const JITO_TIP_ACCOUNTS: [&str; 8] = [
 /// Solana base fee per transaction signature, in lamports.
 pub const SOLANA_BASE_FEE_PER_SIGNATURE_LAMPORTS: u64 = 5_000;
 /// Default minimum net profit (retained edge) that justifies execution, in lamports.
-pub const DEFAULT_MIN_PROFIT_LAMPORTS: u64 = 50_000;
+pub const DEFAULT_MIN_PROFIT_LAMPORTS: u64 = 10_000;
 /// Minimum borrow size used by the legacy Kamino route-size optimizer (0.01 SOL).
 pub const MIN_KAMINO_FLASH_BORROW_LAMPORTS: u64 = 10_000_000;
 /// Maximum borrow size used by the legacy Kamino route-size optimizer (50 SOL).
@@ -117,18 +117,17 @@ pub const MAX_FLASH_BORROW_POOL_RESERVE_SHARE_BPS: u64 = 1_500;
 pub const DEFAULT_MAX_BINS_PER_LEG: u32 = 3;
 /// Minimum Jito bundle tip accepted by the block engine, in lamports.
 pub const MIN_JITO_TIP_LAMPORTS: u64 = 1_000;
-/// Conservative default Jito tip floor in lamports. The block-engine-enforced
-/// minimum is 1,000 lamports (docs.jito.wtf); this runtime floor is 10x that to
-/// avoid submitting bundles that can never clear a quiet auction.
-pub const DEFAULT_JITO_TIP_FLOOR_LAMPORTS: u64 = 10_000;
-/// Default Jito tip share applied to a route's gross edge (70% per SEEEVV.MD).
-pub const DEFAULT_JITO_TIP_SHARE_BPS: u64 = 7_000;
-/// Default maximum Jito tip share as a fraction of the available edge (85% per SEEEVV.MD).
-pub const DEFAULT_JITO_MAX_TIP_SHARE_BPS: u64 = 8_500;
+/// Default fallback Jito tip floor in lamports; live bidding uses the fresh
+/// auction tip-floor feed and the block-engine minimum is 1,000 lamports.
+pub const DEFAULT_JITO_TIP_FLOOR_LAMPORTS: u64 = 1_000;
+/// Default Jito tip share applied to a route's gross edge (5%).
+pub const DEFAULT_JITO_TIP_SHARE_BPS: u64 = 500;
+/// Default maximum Jito tip share as a fraction of the available edge (10%).
+pub const DEFAULT_JITO_MAX_TIP_SHARE_BPS: u64 = 1_000;
 /// Default keep-share used by the adaptive bidder when no operator override is set.
-pub const DEFAULT_KEEP_SHARE: f64 = 0.85;
-/// Default hard cap on the tip as a fraction of the edge (85% per SEEEVV.MD).
-pub const DEFAULT_MAX_TIP_SHARE: f64 = 0.85;
+pub const DEFAULT_KEEP_SHARE: f64 = 0.90;
+/// Default hard cap on the tip as a fraction of the edge (10%).
+pub const DEFAULT_MAX_TIP_SHARE: f64 = 0.10;
 /// Default minimum retained edge after tip, in lamports.
 pub const DEFAULT_MIN_KEEP_LAMPORTS: u64 = DEFAULT_MIN_PROFIT_LAMPORTS;
 
@@ -641,10 +640,10 @@ pub const BASE_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 1_000;
 /// source of truth for every flash-pipeline default; encode paths still clamp
 /// the resulting price against the profit share via `cap_cu_price_by_profit`.
 pub const FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS: u64 = 10_000;
-/// Default baseline priority fee maximum share of gross profit (1,000 bps = 10%).
-pub const DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS: u64 = 1_000;
-/// Default maximum priority fee share cap under peak competition (2,000 bps = 20%).
-pub const DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS: u64 = 2_000;
+/// Default baseline priority fee share of gross profit (200 bps = 2%).
+pub const DEFAULT_PRIORITY_FEE_BASE_SHARE_BPS: u64 = 200;
+/// Default maximum priority fee share cap under peak competition (1,000 bps = 10%).
+pub const DEFAULT_PRIORITY_FEE_MAX_SHARE_BPS: u64 = 1_000;
 
 /// Agave runtime maximum instruction invocation stack depth (`MAX_INSTRUCTION_STACK_DEPTH`):
 /// the deepest chain of nested CPI frames a transaction may build. The executor-CPI

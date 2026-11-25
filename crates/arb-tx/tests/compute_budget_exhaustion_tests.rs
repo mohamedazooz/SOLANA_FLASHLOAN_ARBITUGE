@@ -32,7 +32,7 @@ fn measured_cu_over_runtime_max_is_clamped_to_exactly_1_400_000() {
 fn dynamic_limit_always_covers_measured_cu_plus_buffer_unless_clamped() {
     for measured in [1u32, 50_000, 98_450, 500_000, 1_000_000, 1_216_000] {
         let limit = calculate_dynamic_cu_limit(measured);
-        let with_buffer = (measured as u64 + (measured as u64 * 15) / 100) as u32;
+        let with_buffer = (measured as u64 + (measured as u64 * 15).div_ceil(100)) as u32;
         if with_buffer <= MAX_COMPUTE_UNIT_LIMIT {
             assert_eq!(
                 limit, with_buffer,

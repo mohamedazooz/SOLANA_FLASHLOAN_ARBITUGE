@@ -46,7 +46,7 @@ fn default_max_age_ms() -> u64 {
     400
 }
 fn default_min_ev_usd() -> f64 {
-    0.05
+    0.01
 }
 fn default_failed_cost() -> u64 {
     10_000
@@ -55,7 +55,7 @@ fn default_beta_risk() -> f64 {
     0.0005
 }
 fn default_keep_share() -> f64 {
-    0.85
+    0.90
 }
 fn default_ladder_growth() -> f64 {
     1.6
@@ -89,6 +89,48 @@ fn default_priority_fee_max_share_bps() -> u64 {
 }
 fn default_max_implausible_roi_bps() -> u64 {
     1_500
+}
+/// Resolve the wallet SOL reserve. Zero/malformed overrides are rejected so
+/// an environment typo cannot silently disable the reserve guard.
+pub fn effective_min_sol_reserve_lamports(
+    configured: u64,
+    env_override: Option<&str>,
+) -> anyhow::Result<u64> {
+    if configured == 0 {
+        anyhow::bail!("wallet.min_sol_balance_lamports must be positive");
+    }
+    let Some(raw) = env_override else {
+        return Ok(configured);
+    };
+    let value = raw.trim().parse::<u64>().map_err(|error| {
+        anyhow::anyhow!("MIN_SOL_RESERVE_LAMPORTS must be a positive integer: {error}")
+    })?;
+    if value == 0 {
+        anyhow::bail!(
+            "MIN_SOL_RESERVE_LAMPORTS=0 is not allowed; reserve guard cannot be disabled"
+        );
+    }
+    Ok(value)
+}
+/// Apply the optional environment ROI ceiling without allowing it to weaken
+/// the configured phantom-quote guard. Invalid or zero overrides are errors.
+pub fn effective_max_implausible_roi_bps(
+    configured: u64,
+    env_override: Option<&str>,
+) -> anyhow::Result<u64> {
+    if configured == 0 {
+        anyhow::bail!("configured max_implausible_roi_bps must be positive");
+    }
+    let Some(raw) = env_override else {
+        return Ok(configured);
+    };
+    let value = raw.trim().parse::<u64>().map_err(|error| {
+        anyhow::anyhow!("ARB_MAX_IMPLAUSIBLE_ROI_BPS must be a positive integer: {error}")
+    })?;
+    if value == 0 {
+        anyhow::bail!("ARB_MAX_IMPLAUSIBLE_ROI_BPS must be positive");
+    }
+    Ok(configured.min(value))
 }
 fn default_jupiter_base_url() -> String {
     "https://api.jup.ag/swap/v2".to_string()
@@ -126,7 +168,7 @@ impl Default for ChronosConfig {
             enabled: true,
             decay_lambda_per_sec: 3.0,
             max_age_ms: 400,
-            min_ev_usd: 0.05,
+            min_ev_usd: 0.01,
             failed_attempt_cost_lamports: 10_000,
             beta_risk_factor: 0.0005,
         }
@@ -635,7 +677,9 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     }
 
     // Concurrent trades / in-flight limit
-    if let Ok(raw) = std::env::var("MAX_CONCURRENT_TRADES") {
+    if let Ok(raw) =
+        std::env::var("MAX_INFLIGHT_BUNDLES").or_else(|_| std::env::var("MAX_CONCURRENT_TRADES"))
+    {
         if let Ok(value) = raw.trim().parse::<u32>() {
             if value > 0 {
                 config.risk.max_inflight_bundles = config.risk.max_inflight_bundles.min(value);
@@ -648,7 +692,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         std::env::var("MIN_NET_PROFIT").or_else(|_| std::env::var("MIN_NET_PROFIT_LAMPORTS"))
     {
         if let Ok(value) = raw.trim().parse::<u64>() {
-            config.strategy.min_net_profit_abs = config.strategy.min_net_profit_abs.max(value);
+            config.strategy.min_net_profit_abs = value;
         }
     }
     // Apply the same optional USD floor in both AppConfig and legacy BotConfig
@@ -663,8 +707,32 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         }
     }
 
-    // Priority fee override
-    if let Ok(raw) = std::env::var("MAX_PRIORITY_FEE") {
+    if let Ok(raw) = std::env::var("JITO_MIN_KEEP_LAMPORTS") {
+        let value: u64 = raw
+            .trim()
+            .parse()
+            .context("JITO_MIN_KEEP_LAMPORTS must be an integer")?;
+        if value == 0 {
+            anyhow::bail!("JITO_MIN_KEEP_LAMPORTS must be positive");
+        }
+        config.jito.min_keep_lamports = value;
+    }
+    if let Ok(raw) = std::env::var("JITO_MAX_TIP_SHARE_BPS") {
+        let value: u64 = raw
+            .trim()
+            .parse()
+            .context("JITO_MAX_TIP_SHARE_BPS must be an integer")?;
+        if value == 0 || value > 10_000 {
+            anyhow::bail!("JITO_MAX_TIP_SHARE_BPS must be in 1..=10000");
+        }
+        config.jito.max_tip_share_bps = config.jito.max_tip_share_bps.min(value);
+        if config.jito.tip_share_bps > config.jito.max_tip_share_bps {
+            anyhow::bail!("JITO_MAX_TIP_SHARE_BPS cannot be lower than JITO_TIP_SHARE_BPS");
+        }
+    } // Priority fee share override (legacy MAX_PRIORITY_FEE alias retained)
+    if let Ok(raw) =
+        std::env::var("MAX_PRIORITY_FEE_SHARE_BPS").or_else(|_| std::env::var("MAX_PRIORITY_FEE"))
+    {
         if let Ok(value) = raw.trim().parse::<u64>() {
             config.strategy.priority_fee_max_share_bps =
                 config.strategy.priority_fee_max_share_bps.min(value);
@@ -707,7 +775,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
             .trim()
             .parse()
             .context("MIN_NET_PROFIT_BPS must be an integer")?;
-        config.strategy.min_net_profit_bps = config.strategy.min_net_profit_bps.max(value);
+        config.strategy.min_net_profit_bps = value;
     }
     if let Ok(raw) = std::env::var("MAX_PRICE_IMPACT_BPS") {
         let value: u64 = raw
@@ -725,7 +793,9 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         config.chronos.enabled &= enabled;
     }
     // Max transaction failures
-    if let Ok(raw) = std::env::var("MAX_TRANSACTION_FAILURES") {
+    if let Ok(raw) = std::env::var("MAX_CONSECUTIVE_FAILURES")
+        .or_else(|_| std::env::var("MAX_TRANSACTION_FAILURES"))
+    {
         if let Ok(value) = raw.trim().parse::<u64>() {
             if value > 0 {
                 config.risk.max_consecutive_failures =
@@ -784,7 +854,9 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
 
     if config.strategy.use_flash_loan {
         use tracing::info;
-        info!("⚡ Flash Loan enabled — zero-risk atomic flash loan execution active");
+        info!(
+            "⚡ Flash Loan enabled — atomic borrow/repay path configured; risk gates still apply"
+        );
     }
 
     validate_live_freshness(&config, crate::live_execution_enabled())?;
@@ -1014,5 +1086,47 @@ mod slippage_policy_tests {
             three.slippage_bps = 0;
         }
         validate_slippage_policies(&cfg).expect("0 bps is a valid policy");
+    }
+}
+
+#[cfg(test)]
+#[cfg(test)]
+mod reserve_limit_tests {
+    use super::effective_min_sol_reserve_lamports;
+
+    #[test]
+    fn reserve_override_cannot_disable_wallet_reserve() {
+        assert_eq!(
+            effective_min_sol_reserve_lamports(50_000_000, None).unwrap(),
+            50_000_000
+        );
+        assert_eq!(
+            effective_min_sol_reserve_lamports(50_000_000, Some("10000000")).unwrap(),
+            10_000_000
+        );
+        assert!(effective_min_sol_reserve_lamports(50_000_000, Some("0")).is_err());
+        assert!(effective_min_sol_reserve_lamports(50_000_000, Some("bad")).is_err());
+    }
+}
+#[cfg(test)]
+mod roi_limit_tests {
+    use super::effective_max_implausible_roi_bps;
+
+    #[test]
+    fn roi_env_override_can_only_tighten_the_configured_ceiling() {
+        assert_eq!(
+            effective_max_implausible_roi_bps(1_500, None).unwrap(),
+            1_500
+        );
+        assert_eq!(
+            effective_max_implausible_roi_bps(1_500, Some("100000")).unwrap(),
+            1_500
+        );
+        assert_eq!(
+            effective_max_implausible_roi_bps(1_500, Some("750")).unwrap(),
+            750
+        );
+        assert!(effective_max_implausible_roi_bps(1_500, Some("0")).is_err());
+        assert!(effective_max_implausible_roi_bps(1_500, Some("invalid")).is_err());
     }
 }

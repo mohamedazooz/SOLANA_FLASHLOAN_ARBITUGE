@@ -66,12 +66,29 @@ mod tests {
         // A 2-hop flash route with one ephemeral ATA is sized above the flat guess.
         let cu = estimate_route_cu(true, &[DexProtocol::RaydiumV4, DexProtocol::MeteoraDlmm], 1);
         assert!(cu >= 28_000 + 35_000 + 120_000);
-        // The dynamic limit adds the 15% buffer and respects the ceiling.
+        // The dynamic limit adds a ceiling-rounded 15% buffer and respects the ceiling.
         let lim = calculate_dynamic_cu_limit(cu);
-        assert_eq!(lim, cu + cu * 15 / 100);
+        assert_eq!(lim, cu + cu.saturating_mul(15).div_ceil(100));
         assert!(calculate_dynamic_cu_limit(u32::MAX) <= MAX_COMPUTE_UNIT_LIMIT);
     }
 
+    #[test]
+    fn measured_compute_limit_uses_ceil_ten_percent_margin() {
+        assert_eq!(
+            calculate_dynamic_cu_limit_with_buffer(100_000, 1_000),
+            110_000
+        );
+        assert_eq!(
+            calculate_dynamic_cu_limit_with_buffer(100_001, 1_000),
+            110_002
+        );
+        assert_eq!(calculate_dynamic_cu_limit_with_buffer(1, 1_000), 2);
+        assert_eq!(calculate_dynamic_cu_limit_with_buffer(0, 1_000), 0);
+        assert_eq!(
+            calculate_dynamic_cu_limit_with_buffer(u32::MAX, 1_000),
+            MAX_COMPUTE_UNIT_LIMIT
+        );
+    }
     #[test]
     fn priority_fee_is_capped_by_profit_share() {
         // 1 SOL profit, 200k CU limit, 20% cap => budget 200_000_000 lamports.

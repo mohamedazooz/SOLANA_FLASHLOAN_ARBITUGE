@@ -11,7 +11,7 @@
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID;
-use arb_math::clmm::{TickArrayFacade, TickFacade, orca_tick_array_start_indexes, quote_clmm};
+use arb_math::clmm::{TickArrayFacade, TickFacade, compute_swap, orca_tick_array_start_indexes};
 use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -142,19 +142,20 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
         })?;
 
         // 3. Compute CLMM swap step traversal
-        let gross_out = quote_clmm(
-            input_net_into_pool,
+        let swap_quote = compute_swap(
             clmm_state.sqrt_price,
             clmm_state.tick_current,
             clmm_state.liquidity,
             clmm_state.tick_spacing,
             fee_rate,
+            input_net_into_pool,
             a_to_b,
             &arrays,
         )
         .map_err(|e| {
             ArbError::CalculationError(format!("Orca Whirlpool step swap failed: {e:?}"))
         })?;
+        let gross_out = swap_quote.amount_out_received;
 
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
@@ -169,7 +170,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
         // 5. Slippage calculation
         let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
-        let fee_amount = (input_net_into_pool as u128 * fee_rate as u128 / 1_000_000) as u64;
+        let fee_amount = swap_quote.fee_paid;
 
         // 6. Required Accounts (3 TickArray PDAs)
         let (ta0, ta1, ta2) = Self::get_tick_arrays_for_swap(

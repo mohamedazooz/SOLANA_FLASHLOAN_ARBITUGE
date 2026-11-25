@@ -16,13 +16,12 @@ commitment = "processed"
 [jito]
 regions = ["frankfurt", "amsterdam", "ny"]
 tip_floor_percentile = "p75"
-tip_share_bps = 1000
+tip_share_bps = 500
 max_tip_lamports = 125000
-max_tip_share_bps = 2000
-min_keep_lamports = 100000
-
+max_tip_share_bps = 1000
+min_keep_lamports = 10000
 # --- Adaptive tip pricing ---------------------------------------------------
-keep_share = 0.80
+keep_share = 0.90
 ladder_growth = 1.6               # max escalation of a retry inside one window
 tip_floor_max_age_ms = 5000       # a staler snapshot is treated as no market
 tip_floor_poll_ms = 1000          # the public endpoint allows 1 rps per IP
@@ -74,8 +73,8 @@ base_tokens = [
     "2FPyTwcZLUg1MDrwsyoP4D6s1tA7hRiG97fLqS4B9gqA", # ETH (Wormhole wrapped)
     "9n4nbM75f5Ui33ZbPYXn59EwSgE8CGsHtAeTH5YFeJ9E", # BTC (wrapped Bitcoin)
 ]
-min_net_profit_abs = 50000
-min_net_profit_bps = 5
+min_net_profit_abs = 10000
+min_net_profit_bps = 1
 max_price_impact_bps = 40
 max_state_age_slots = 2
 graph_max_age_slots = 8
@@ -116,7 +115,7 @@ min_landing_rate = 0.02
 max_attempts_per_slot = 1
 cooldown_slots = 75
 max_inflight_bundles = 1
-max_tip_spend_ratio = 0.2
+max_tip_spend_ratio = 0.10
 max_orders_per_hour = 30
 max_implausible_roi_bps = 1500
 

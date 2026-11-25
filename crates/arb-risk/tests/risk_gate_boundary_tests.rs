@@ -7,8 +7,12 @@
 //! 4. Jito tip exceeding gross profit rejected before execution.
 //! 5. RiskGate exact hurdle boundary (min_net_profit_abs: 9999 rejected, 10000 accepted, 10001 accepted).
 
-use arb_math::economic::{build_economic_quote, calculate_net_profit_raw};
-use arb_risk::{CircuitBreaker, KillSwitch, RiskGate, RiskLimits};
+use arb_math::economic::{
+    base_raw_to_lamports_ceil, build_economic_quote, calculate_net_profit_raw,
+};
+use arb_risk::{
+    CircuitBreaker, KillSwitch, RiskGate, RiskLimits, minimum_net_profit_hurdle_lamports,
+};
 use arb_types::{Lamports, MintId, Slot, TokenAmount};
 use solana_pubkey::Pubkey;
 use std::sync::Arc;
@@ -196,7 +200,7 @@ fn test_risk_gate_min_profit_exact_hurdle_boundary() {
     let kill_switch = Arc::new(KillSwitch::new());
     let gate = RiskGate::new(limits, breaker, kill_switch);
 
-    let amount_in = TokenAmount(1_000_000_000);
+    let amount_in = Lamports(1_000_000_000);
 
     // 1 lamport below hurdle: must be rejected
     let res_below = gate.check_min_profit(Lamports(9_999), amount_in);
@@ -215,4 +219,67 @@ fn test_risk_gate_min_profit_exact_hurdle_boundary() {
     // 1 lamport above hurdle: must pass
     let res_above = gate.check_min_profit(Lamports(10_001), amount_in);
     assert!(res_above.is_ok(), "Above hurdle must pass");
+}
+
+/// Cross-mint regression: one USDC (6 decimals) converts to 5,000,000
+/// lamports at the verified $200/SOL rational rate. The 50 bps hurdle must
+/// therefore be 25,000 lamports, not 5,000 (raw USDC units are not lamports).
+#[test]
+fn bps_hurdle_uses_lamports_for_non_wsol_base_mints() {
+    let amount_in =
+        base_raw_to_lamports_ceil(TokenAmount(1_000_000), 1, 5).expect("USDC notional conversion");
+    assert_eq!(amount_in, Lamports(5_000_000));
+
+    let limits = RiskLimits {
+        min_net_profit_abs: 1,
+        min_net_profit_bps: 50,
+        ..Default::default()
+    };
+    let gate = RiskGate::new(
+        limits,
+        Arc::new(CircuitBreaker::new(5, 50)),
+        Arc::new(KillSwitch::new()),
+    );
+    assert!(gate.check_min_profit(Lamports(24_999), amount_in).is_err());
+    assert!(gate.check_min_profit(Lamports(25_000), amount_in).is_ok());
+}
+
+#[test]
+fn bps_hurdle_rounds_up_fractional_lamports() {
+    let limits = RiskLimits {
+        min_net_profit_abs: 1,
+        min_net_profit_bps: 50,
+        ..Default::default()
+    };
+    let gate = RiskGate::new(
+        limits,
+        Arc::new(CircuitBreaker::new(5, 50)),
+        Arc::new(KillSwitch::new()),
+    );
+    // 5,000,001 * 50 / 10,000 = 25,000.005; required hurdle is 25,001.
+    let input_lamports = Lamports(5_000_001);
+    assert!(
+        gate.check_min_profit(Lamports(25_000), input_lamports)
+            .is_err()
+    );
+    assert!(
+        gate.check_min_profit(Lamports(25_001), input_lamports)
+            .is_ok()
+    );
+}
+
+#[test]
+fn shared_min_profit_hurdle_uses_max_absolute_or_bps_and_rounds_up() {
+    assert_eq!(
+        minimum_net_profit_hurdle_lamports(Lamports(10_000_000), Lamports(100_000), 50),
+        Lamports(100_000),
+    );
+    assert_eq!(
+        minimum_net_profit_hurdle_lamports(Lamports(5_000_000_000), Lamports(100_000), 50),
+        Lamports(25_000_000),
+    );
+    assert_eq!(
+        minimum_net_profit_hurdle_lamports(Lamports(5_000_001), Lamports(1), 50),
+        Lamports(25_001),
+    );
 }

@@ -1,8 +1,22 @@
 # Current Verified Status
 
-**Authoritative Git Baseline**: Commit `a4524ba` on `main` (merge of PR #99)
-**CI Status**: GitHub Actions workflow `Rust CI` passing on `main` (Run ID: 44802369313, 2026-11-20T19:27Z)
-**Compilation Baseline**: `cargo check --workspace` 0 errors; `cargo test -p arb-ingest` 162 passed / 0 failed (local run 2026-11-20, rustc 1.99.1)
+**Authoritative Git Baseline**: Commit `1ff841a` on `main` (merge of PR #164, 2026-11-25)
+**Current Branch**: `fix/deep-quote-accounting-hardening-20261125` (pushed to `origin`; fee-audit implementation commit `db3f26b`; not merged)
+**CI Status**: Vercel status check succeeded for fee-audit commit `db3f26b`; no GitHub Actions workflow run is attached to the branch push.
+**Compilation Baseline**: Latest full local workspace run: 1,805 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass.
+
+## Local Hardening in Progress — 2026-11-25
+
+- Canonical success PnL from `arb-math` is now shared by Chronos, RiskGate and telemetry; Chronos no longer re-deducts landed costs.
+- Chronos EV approval uses conservative Q32 survival probability and integer lamport/USD-micro arithmetic; floats remain display/config-boundary projections only.
+- RiskGate converts input notional to Lamports with ceiling and compares it to net Lamports; the BPS floor rounds upward through one shared `arb-risk` helper also used by the validator.
+- TOML config structs reject unknown fields; `load_strict` enforces its explicit top-level allowlist. The read-only validator now sizes probes from the live USD price and `.env` SOL/USD/portfolio caps, uses configured slippage and applies the same absolute/BPS net hurdle.
+- ROI environment overrides can only tighten the configured phantom-quote ceiling; zero/invalid SOL reserve overrides cannot disable the reserve guard.
+- Canonical env names are `MAX_PRIORITY_FEE_SHARE_BPS`, `MAX_INFLIGHT_BUNDLES`, and `MAX_CONSECUTIVE_FAILURES`; legacy aliases remain supported. Unused gas-budget keys were removed from the local ignored `.env`.
+- `.env` and `config/config.toml` remain local/ignored; only `.env.example` is tracked. No secret values are committed.
+- Live execution remains disabled. Historical `ISSUE-P0-04` and empirical landing/fee calibration remain open blockers.
+- Read-only mainnet validation (2026-11-25 19:17Z, slot 473871973): 5/9 registered pools priced (55%); 10 graph edges; 0 cycles; probe cap 0.020000 SOL ($1.4082); configured minimum net hurdle 10,000 lamports / 1 bps. Best tested route gross edge was -250 lamports and net was -19,921 lamports at 0.001 SOL after flash fee, Jito p75 benchmark (14,661), and 5,000-lamport base signature fee. No transactions submitted.
+- Whirlpool-vs-Jupiter venue-restricted quote at 0.020000 SOL differed by 0.0480% (4.80 bps), within the 10 bps slippage ceiling; exact pool/account alignment and same-slot comparison remain an investigation item.
 
 ---
 
@@ -73,3 +87,15 @@ Every critical capability in the codebase is explicitly classified across six st
 
 1. **Phase 4 (Optional Yellowstone gRPC Ingestion)**: research the official Yellowstone/Geyser protocol and a concrete managed provider (auth, filters, quotas, pricing) before implementing the feature-gated client; WebSocket path must remain independently operable.
 2. **Live-execution blockers (do not clear without evidence)**: ISSUE-P0-04 `0x1773` same-snapshot quote/replay reproduction; Phase 5 comparative benchmark before any "gRPC is faster" claim; Phase 18 soak before any readiness claim.
+## Transaction Fee Audit & Profit Calibration — 2026-11-25
+
+- **Profit gate**: `.env` and all active TOML profiles now use `MIN_NET_PROFIT_LAMPORTS=10000`, `MIN_NET_PROFIT_BPS=1`, and `CHRONOS_MIN_EV_USD=0.01`. These are strategy thresholds, so explicit ENV values replace TOML values; they are not silently raised by `max()`.
+- **Priority fees**: base share 200 bps (2%); local ENV caps the maximum share at 500 bps (5%). The diagnostic validator now estimates route-specific CU from the two DEX protocols plus flash-loan overhead, adds a ceiling-rounded 15% fallback margin, and computes `ceil(cu_price_micro_lamports * requested_cu_limit / 1_000_000)`. Production uses measured route CU with 10% headroom and keeps the wider 15% margin for unmeasured routes.
+- **Priority-fee market data gap**: `adaptive_cu_price` currently receives an empty recent-fee sample list, so its CU-price input remains the 100,000 micro-lamports/CU fallback; the 5% profit-share cap prevents unbounded spend, but a background `getRecentPrioritizationFees` sampler is still needed for market-responsive bidding. Do not describe the current CU price as live-fee-oracle output.
+- **Base transaction fee**: 5,000 lamports per signature. The current flash-arbitrage builder path uses the payer as its only transaction signer; signature precompiles are not used. Revisit the count if a future route adds another signer.
+- **Jito**: protocol minimum is 1,000 lamports, but this is not a competitive bid recommendation. Current bidding targets 5% of available edge, caps at 10%, retains at least 90% of edge, caps the tip at 125,000 lamports, and requires at least 10,000 lamports retained. `max_tip_spend_ratio=0.10`. The validator reports the live p75 tip floor (14,661 lamports in this sample) as a market-cost benchmark, not a guaranteed fixed charge.
+- **DEX fee accounting**: `amount_out_raw` is post-pool-fee and post-output-transfer-fee; `fees_breakdown` is diagnostic and must not be deducted again from that amount. Orca Whirlpool and Raydium CLMM fee breakdowns now use the exact `fee_paid` returned by the protocol-specific per-step swap traversal instead of an aggregate floor estimate. Raydium CPMM pools with enabled creator fees remain fail-closed until the generic quote path can represent that fee direction.
+- **Validator configuration**: it now loads the legacy `config/base.toml` schema through `arb_bot::config::load` and fails on config errors instead of silently falling back to hardcoded 100,000 lamports / 50 bps. Its priority-fee estimate is route-sized and profit-capped.
+- **Safety**: live execution remains disabled. Read-only validation submitted no transactions. The latest live graph still has no profitable cycles; lowering the hurdle does not make negative gross edges executable.
+
+References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structure), [Solana compute budget](https://solana.com/docs/core/fees/compute-budget), [Jito low-latency transaction and bundle docs](https://docs.jito.wtf/lowlatencytxnsend/), [Orca Whirlpool swap math](https://github.com/orca-so/whirlpools/blob/main/programs/whirlpool/src/math/swap_math.rs), [Raydium CPMM source](https://github.com/raydium-io/raydium-cp-swap).

@@ -31,6 +31,7 @@ pub mod validation;
 /// allow-listed environment overrides. This loader does not merge base/profile
 /// files; callers choose the complete file path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     /// Deployment mode: shadow | simulate | canary | live.
     /// `live` additionally requires `execution.live_enabled` to be true and all
@@ -90,6 +91,7 @@ impl std::fmt::Display for Mode {
 /// live execution (`ARB_LIVE` truthy). Presence of `Mode::Live` alone is
 /// insufficient to authorize trading.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModeConfig {
     pub mode: Mode,
     /// Explicit opt-in for live execution. Default false; must be set to true
@@ -100,6 +102,7 @@ pub struct ModeConfig {
 
 /// RPC / gRPC provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     /// Primary RPC/Geyser endpoint URL (approved schemes: http, https).
     pub primary_url: String,
@@ -121,6 +124,7 @@ pub struct ProviderConfig {
 
 /// Jito block-engine and tip configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JitoConfig {
     /// Jito block-engine regions used for bundle submission.
     pub regions: Vec<String>,
@@ -169,6 +173,7 @@ pub struct JitoConfig {
 
 /// Jupiter swap API configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JupiterConfig {
     /// Base URL for the Jupiter v2/v6 swap API (approved scheme: https).
     pub base_url: String,
@@ -183,6 +188,7 @@ pub struct JupiterConfig {
 /// The private key material itself is never stored here; only the path to a
 /// key file (local development only) or a secret provider reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WalletConfig {
     /// Path to the operator keypair file (local development only).
     pub keypair_path: String,
@@ -195,6 +201,7 @@ pub struct WalletConfig {
 
 /// Strategy / routing parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StrategyConfig {
     /// Base token mints monitored for arbitrage opportunities.
     pub base_tokens: Vec<String>,
@@ -260,6 +267,7 @@ fn default_max_route_hops() -> usize {
 /// Authoritative risk limits. These are the single source of truth for safety
 /// thresholds; no lower-priority config source may weaken them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RiskConfig {
     /// Maximum trade size in USD.
     pub max_trade_size_usd: UsdMicros,
@@ -288,6 +296,7 @@ pub struct RiskConfig {
 
 /// Chronos expected-value gate configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChronosConfig {
     /// Whether the EV gate is enabled.
     #[serde(default = "default_true")]
@@ -306,6 +315,7 @@ pub struct ChronosConfig {
 
 /// Persistence store configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StoreConfig {
     /// Store URL (sqlite:// or postgres://).
     pub url: String,
@@ -313,6 +323,7 @@ pub struct StoreConfig {
 
 /// Observability / metrics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservabilityConfig {
     /// Prometheus metrics listen address (host:port).
     pub listen: SocketAddr,
@@ -320,6 +331,7 @@ pub struct ObservabilityConfig {
 
 /// Administrative API configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     /// Admin HTTP listen address (host:port).
     pub listen: SocketAddr,
@@ -329,6 +341,7 @@ pub struct AdminConfig {
 
 /// Security controls: CORS, rate limiting, secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Explicit production CORS allowlist. Empty = deny all cross-origin.
     /// `CorsLayer::permissive()` is never allowed.
@@ -418,11 +431,11 @@ impl AppConfig {
                     "ny".to_string(),
                 ],
                 tip_floor_percentile: "p50".to_string(),
-                tip_share_bps: Bps(5500),
-                max_tip_lamports: Lamports(2_000_000),
-                max_tip_share_bps: Bps(7000),
+                tip_share_bps: Bps(500),
+                max_tip_lamports: Lamports(125_000),
+                max_tip_share_bps: Bps(1_000),
                 min_keep_lamports: Lamports(10_000),
-                keep_share: 0.60,
+                keep_share: 0.90,
                 ladder_growth: 1.6,
                 tip_floor_max_age_ms: Milliseconds(5_000),
                 tip_floor_poll_ms: Milliseconds(1_000),
@@ -448,8 +461,8 @@ impl AppConfig {
                     arb_constants::WSOL_MINT.to_string(), // WSOL
                     arb_constants::USDC_MINT.to_string(), // USDC
                 ],
-                min_net_profit_abs: Lamports(50_000),
-                min_net_profit_bps: Bps(5),
+                min_net_profit_abs: Lamports(10_000),
+                min_net_profit_bps: Bps(1),
                 max_price_impact_bps: Bps(40),
                 hop_slippage_bps: default_hop_slippage_bps(),
                 max_state_age_slots: Slot(2),
@@ -476,7 +489,7 @@ impl AppConfig {
                 min_landing_rate: 0.02,
                 max_attempts_per_slot: 3,
                 max_inflight_bundles: 2,
-                max_tip_spend_ratio: 0.7,
+                max_tip_spend_ratio: 0.10,
                 max_orders_per_hour: 120,
                 cooldown_slots: Slot(75),
                 max_implausible_roi_bps: Bps(1_500),
@@ -485,7 +498,7 @@ impl AppConfig {
                 enabled: true,
                 decay_lambda_per_sec: 3.0,
                 max_age_ms: Milliseconds(400),
-                min_ev_usd: UsdMicros(50_000_000), // $0.05
+                min_ev_usd: UsdMicros(10_000_000), // $0.01
                 failed_attempt_cost_lamports: Lamports(10_000),
                 beta_risk_factor: 0.0005,
             },

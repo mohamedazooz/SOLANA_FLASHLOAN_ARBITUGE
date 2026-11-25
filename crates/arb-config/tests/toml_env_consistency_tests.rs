@@ -20,8 +20,8 @@ const STAGING: &str = include_str!("../../../config/staging.toml");
 const ENV_EXAMPLE: &str = include_str!("../../../.env.example");
 
 const EXPECTED: [(&str, i64); 6] = [
-    ("min_net_profit_abs", 50_000),
-    ("min_net_profit_bps", 5),
+    ("min_net_profit_abs", 10_000),
+    ("min_net_profit_bps", 1),
     ("max_price_impact_bps", 40),
     ("max_state_age_slots", 2),
     ("contingency_buffer_lamports", 10_000),
