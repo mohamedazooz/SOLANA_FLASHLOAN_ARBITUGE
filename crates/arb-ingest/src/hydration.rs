@@ -726,6 +726,10 @@ impl MultiDexRegistry {
             }
 
             let onchain_fee_bps = match (p.protocol, pool_bytes) {
+                // Pump.fun bonding curves use their own flat FeeConfig schedule;
+                // PumpSwap canonical pools have a separate market-cap tier ladder.
+                // Until the Pump-program FeeConfig PDA/owner is joined and decoded,
+                // do not promote a curve from the 125-bps discovery estimate.
                 (DexProtocol::PumpFun, _) => None,
                 (DexProtocol::PumpSwap, _) => None,
                 (DexProtocol::RaydiumV4, Some(d)) => decode_raydium_fee_bps(d),

@@ -44,6 +44,55 @@ fn make_cpmm_pool(
 }
 
 #[test]
+fn test_three_pool_route_rejects_quote_only_pump_fun_before_optimization() {
+    let engine = ThreePoolRouteEngine::new();
+    let sol = arb_constants::wsol_mint();
+    let meme = Pubkey::new_unique();
+
+    let mut pump_curve = make_cpmm_pool(
+        Pubkey::new_unique(),
+        sol,
+        meme,
+        30_000_000_000,
+        1_073_000_000_000_000,
+        125,
+    );
+    pump_curve.protocol = DexProtocol::PumpFun;
+    pump_curve.pump_fun = Some(arb_types::PumpFunState::default());
+
+    let return_pool = make_cpmm_pool(
+        Pubkey::new_unique(),
+        meme,
+        sol,
+        1_000_000_000_000,
+        30_000_000_000,
+        25,
+    );
+    let hops = vec![
+        RouteHopSpec {
+            pool_state: pump_curve,
+            input_mint: MintId::from(sol),
+            output_mint: MintId::from(meme),
+            input_transfer_fee: None,
+            output_transfer_fee: None,
+        },
+        RouteHopSpec {
+            pool_state: return_pool,
+            input_mint: MintId::from(meme),
+            output_mint: MintId::from(sol),
+            input_transfer_fee: None,
+            output_transfer_fee: None,
+        },
+    ];
+
+    let result = engine.simulate_route(&hops, 1_000_000_000, 0, 0, 0);
+    assert!(
+        matches!(result, Err(arb_types::ArbError::UnsupportedOperation(_))),
+        "quote-only Pump.fun must not enter the flash-borrow optimizer: {result:?}"
+    );
+}
+
+#[test]
 fn test_three_pool_route_sequential_chaining() {
     let engine = ThreePoolRouteEngine::new();
 

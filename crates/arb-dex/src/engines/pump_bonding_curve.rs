@@ -4,7 +4,7 @@
 //! Enforces:
 //! - Strict separation between pre-migration bonding curve and post-migration PumpSwap AMM.
 //! - Virtual reserves formula `(x + dx)(y - dy) = k` with real reserves liquidity limits.
-//! - Protocol fee: Exactly 100 bps (1.00%) taken on SOL.
+//! - Requires a verified aggregate fee ratio from the Pump bonding-curve FeeConfig.
 //! - Rejects trading on graduated/complete pools (must use PumpSwap engine instead).
 
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
@@ -13,7 +13,6 @@ use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
 use std::time::Instant;
 
 pub const PUMP_BONDING_CURVE_VERSION: &str = "pump-bonding-curve-v1.0";
-pub const PUMP_FEE_BPS: u128 = 100; // 1%
 
 #[derive(Debug, Default, Clone)]
 pub struct PumpBondingCurveQuoteEngine;
@@ -66,6 +65,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
         let v_token = pump_state.virtual_token_reserves as u128;
         let v_sol = pump_state.virtual_sol_reserves as u128;
         let r_token = pump_state.real_token_reserves as u128;
+        let r_sol = pump_state.real_sol_reserves as u128;
 
         if v_token == 0 || v_sol == 0 {
             return Err(ArbError::InsufficientLiquidity(
@@ -74,28 +74,45 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
         }
 
         // 1. Inbound Token-2022 transfer fee deduction
-        let (input_net_into_pool, input_transfer_fee) =
-            if let Some(config) = request.input_transfer_fee_config {
-                let fee = config.calculate_fee(request.amount);
-                (request.amount.saturating_sub(fee), fee)
-            } else {
-                (request.amount, 0)
-            };
+        let (input_net_into_pool, input_transfer_fee) = request.input_after_transfer_fee()?;
 
         if input_net_into_pool == 0 {
             return Err(ArbError::ZeroAmount);
         }
 
-        let (gross_out, protocol_fee) = if is_buy {
-            // BUY: SOL In -> Meme Token Out
-            // 1% fee taken on SOL in
-            let num_fee = (input_net_into_pool as u128).saturating_mul(PUMP_FEE_BPS);
-            let fee_sol = num_fee.div_ceil(10_000); // ceil
-            let sol_eff = (input_net_into_pool as u128).saturating_sub(fee_sol);
+        // Pump.fun SOL/USDC bonding curves use a flat 1.25% trade-fee schedule;
+        // market-cap tiers belong to canonical post-graduation PumpSwap pools.
+        // PoolState must carry a verified aggregate rate from the bonding-curve
+        // FeeConfig snapshot; discovery metadata is never an execution fallback.
+        let fee_num = u128::from(state.fee_numerator);
+        let fee_den = u128::from(state.fee_denominator);
+        if fee_den == 0 || fee_num == 0 || fee_num > fee_den {
+            return Err(ArbError::IncompleteState(
+                "Pump.fun quote requires a verified nonzero bonding-curve FeeConfig ratio".into(),
+            ));
+        }
+        let calculate_trade_fee = |amount: u64| -> Result<u64> {
+            if amount == 0 || fee_num == 0 {
+                return Ok(0);
+            }
+            let numerator = u128::from(amount)
+                .checked_mul(fee_num)
+                .ok_or(ArbError::Overflow)?;
+            u64::try_from(numerator.div_ceil(fee_den)).map_err(|_| ArbError::Overflow)
+        };
+
+        let (gross_out, trade_fee, curve_gross_out) = if is_buy {
+            // BUY: SOL In -> Meme Token Out; the trade fee is charged on SOL input.
+            let fee_sol = calculate_trade_fee(input_net_into_pool)?;
+            let sol_eff = u128::from(
+                input_net_into_pool
+                    .checked_sub(fee_sol)
+                    .ok_or(ArbError::Overflow)?,
+            );
 
             if sol_eff == 0 {
                 return Err(ArbError::InsufficientLiquidity(
-                    "SOL input exhausted by 1% fee".into(),
+                    "Pump.fun trade fee exhausts SOL input".into(),
                 ));
             }
 
@@ -110,7 +127,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
                 ));
             }
 
-            (tokens_out as u64, fee_sol as u64)
+            (tokens_out as u64, fee_sol, tokens_out as u64)
         } else {
             // SELL: Meme Token In -> SOL Out
             // sol_gross = floor((v_sol * tokens_in) / (v_token + tokens_in))
@@ -118,11 +135,17 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
             let num = v_sol.saturating_mul(tokens_in);
             let denom = v_token.saturating_add(tokens_in);
             let sol_gross = num / denom;
+            if sol_gross > r_sol {
+                return Err(ArbError::PumpFunReserveExceeded {
+                    requested: u64::try_from(sol_gross).unwrap_or(u64::MAX),
+                    available: pump_state.real_sol_reserves,
+                });
+            }
 
-            // 1% fee taken on SOL out
-            let num_fee = sol_gross.saturating_mul(PUMP_FEE_BPS);
-            let fee_sol = num_fee.div_ceil(10_000); // ceil
-            let sol_out = sol_gross.saturating_sub(fee_sol);
+            // SELL: the same verified trade fee is charged on gross SOL output.
+            let sol_gross = u64::try_from(sol_gross).map_err(|_| ArbError::Overflow)?;
+            let fee_sol = calculate_trade_fee(sol_gross)?;
+            let sol_out = sol_gross.checked_sub(fee_sol).ok_or(ArbError::Overflow)?;
 
             if sol_out == 0 {
                 return Err(ArbError::InsufficientLiquidity(
@@ -130,22 +153,49 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
                 ));
             }
 
-            (sol_out as u64, fee_sol as u64)
+            (sol_out, fee_sol, sol_gross)
         };
 
         // 2. Outbound Token-2022 transfer fee deduction
         let (output_net_to_next_hop, output_transfer_fee) =
-            if let Some(config) = request.output_transfer_fee_config {
-                let fee = config.calculate_fee(gross_out);
-                (gross_out.saturating_sub(fee), fee)
-            } else {
-                (gross_out, 0)
-            };
+            request.output_after_transfer_fee(gross_out)?;
 
         // 3. Slippage calculation
-        let min_amount_out = output_net_to_next_hop.saturating_sub(
-            (output_net_to_next_hop as u128 * request.slippage_bps as u128 / 10_000) as u64,
-        );
+        let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
+
+        let curve_input = if is_buy {
+            input_net_into_pool
+                .checked_sub(trade_fee)
+                .ok_or(ArbError::Overflow)?
+        } else {
+            input_net_into_pool
+        };
+        let (spot_numerator, spot_denominator) = if is_buy {
+            (
+                u128::from(curve_input)
+                    .checked_mul(v_token)
+                    .ok_or(ArbError::Overflow)?,
+                v_sol,
+            )
+        } else {
+            (
+                u128::from(curve_input)
+                    .checked_mul(v_sol)
+                    .ok_or(ArbError::Overflow)?,
+                v_token,
+            )
+        };
+        let spot_out = spot_numerator / spot_denominator;
+        let impact_bps = u64::try_from(
+            spot_out
+                .saturating_sub(u128::from(curve_gross_out))
+                .checked_mul(10_000)
+                .ok_or(ArbError::Overflow)?
+                .checked_div(spot_out)
+                .unwrap_or(10_000),
+        )
+        .map_err(|_| ArbError::Overflow)?
+        .min(10_000) as u16;
 
         let elapsed = start_time.elapsed().as_micros() as u64;
 
@@ -157,11 +207,11 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
             minimum_amount_out_raw: min_amount_out,
             fees_breakdown: FeesBreakdown {
                 lp_fee: 0,
-                protocol_fee,
+                protocol_fee: 0,
                 fund_fee: 0,
                 creator_fee: 0,
                 dynamic_fee: 0,
-                total_fee: protocol_fee,
+                total_fee: trade_fee,
             },
             transfer_fee_breakdown: HopTransferFeeBreakdown {
                 input_gross: request.amount,
@@ -171,7 +221,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
                 output_transfer_fee,
                 output_net_to_next_hop,
             },
-            price_impact: Bps(0),
+            price_impact: Bps(impact_bps),
             unfilled_input_raw: 0,
             required_accounts: vec![state.pool_id.0],
             state_slot: state.slot.0,

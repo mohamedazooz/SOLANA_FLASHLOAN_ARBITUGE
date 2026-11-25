@@ -300,7 +300,9 @@ impl PoolDiscovery {
                                 quote_vault: Pubkey::default(),
                                 decimals_a: 9,
                                 decimals_b: if dec > 0 { dec } else { 6 },
-                                fee_bps: 100,
+                                // Discovery-only estimate; hydration refuses to promote
+                                // Pump.fun curves without their verified FeeConfig snapshot.
+                                fee_bps: 125,
                                 liquidity_usd: p.liquidity_usd,
                             });
                         }

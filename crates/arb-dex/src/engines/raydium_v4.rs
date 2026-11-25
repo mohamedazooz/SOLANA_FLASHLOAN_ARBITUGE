@@ -66,16 +66,7 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
         }
 
         // 1. Inbound Token-2022 transfer fee deduction
-        let (input_net_into_pool, input_transfer_fee) =
-            if let Some(config) = request.input_transfer_fee_config {
-                let fee = config.calculate_fee(request.amount);
-                (
-                    request.amount.checked_sub(fee).ok_or(ArbError::Overflow)?,
-                    fee,
-                )
-            } else {
-                (request.amount, 0)
-            };
+        let (input_net_into_pool, input_transfer_fee) = request.input_after_transfer_fee()?;
 
         if input_net_into_pool == 0 {
             return Err(ArbError::ZeroAmount);
@@ -103,18 +94,10 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
 
         // 4. Outbound Token-2022 transfer fee deduction
         let (output_net_to_next_hop, output_transfer_fee) =
-            if let Some(config) = request.output_transfer_fee_config {
-                let fee = config.calculate_fee(gross_out);
-                (gross_out.checked_sub(fee).ok_or(ArbError::Overflow)?, fee)
-            } else {
-                (gross_out, 0)
-            };
+            request.output_after_transfer_fee(gross_out)?;
 
         // 5. Slippage calculation
-        let min_amount_out = arb_constants::slippage_floor_bps(
-            output_net_to_next_hop,
-            u64::from(request.slippage_bps),
-        );
+        let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
         let impact_bps = arb_math::cpmm::cpmm_price_impact_bps(
             u128::from(

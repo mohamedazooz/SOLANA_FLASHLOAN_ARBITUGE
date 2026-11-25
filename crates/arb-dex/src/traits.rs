@@ -5,9 +5,11 @@ use arb_types::{
 };
 use solana_pubkey::Pubkey;
 
-/// Unified interface for AMM pools across all 9 supported Solana DEX protocols:
-/// Raydium V4, Raydium CPMM, Raydium CLMM, Orca Whirlpool, Meteora DLMM,
-/// Meteora DAMM v2, Raydium LaunchLab, Pump.fun, and PumpSwap.
+/// Legacy adapter interface for AMM pool discovery and candidate ranking.
+///
+/// `quote` implementations do not receive the complete verified mint/epoch fee
+/// context required for an executable quote. Production route pricing must use
+/// hydrated `PoolState` values and `UniversalQuoteDispatcher` instead.
 pub trait AmmPool: Send + Sync {
     /// Canonical pool public key address.
     fn pool_id(&self) -> PoolId;

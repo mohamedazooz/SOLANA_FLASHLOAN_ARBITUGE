@@ -6,9 +6,7 @@
 
 use arb_dex::engines::UniversalQuoteDispatcher;
 use arb_dex::quote_engine::QuoteRequest;
-use arb_types::{
-    ArbError, DexProtocol, MintId, PoolId, PoolState, PumpFunState, Slot, TokenProgramKind,
-};
+use arb_types::{ArbError, DexProtocol, MintId, PoolId, PoolState, Slot, TokenProgramKind};
 use solana_pubkey::Pubkey;
 
 fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintId, MintId) {
@@ -83,10 +81,10 @@ fn raydium_cpmm_and_v4_dispatch_with_reserve_state() {
 }
 
 #[test]
-fn graduated_pump_fun_routes_to_pumpswap() {
+fn graduated_pump_fun_curve_is_not_reinterpreted_as_a_pumpswap_pool() {
     let dispatcher = UniversalQuoteDispatcher::new();
     let (mut pool, base, quote) = create_test_pool(DexProtocol::PumpFun, true);
-    pool.pump_fun = Some(PumpFunState {
+    pool.pump_fun = Some(arb_types::PumpFunState {
         virtual_token_reserves: 1_000_000_000_000,
         virtual_sol_reserves: 30_000_000_000,
         real_token_reserves: 793_100_000_000,
@@ -95,9 +93,22 @@ fn graduated_pump_fun_routes_to_pumpswap() {
         complete: true,
         ..Default::default()
     });
+
+    let result = dispatcher.quote_exact_in(&pool, &request(base, quote, 10_000_000));
+    assert!(
+        matches!(result, Err(ArbError::PoolMigrated(_))),
+        "a completed bonding curve must be rejected; only a separately hydrated PumpSwap pool may be quoted: {result:?}"
+    );
+}
+
+#[test]
+fn explicit_pumpswap_pool_dispatches_to_pumpswap_engine() {
+    let dispatcher = UniversalQuoteDispatcher::new();
+    let (pool, base, quote) = create_test_pool(DexProtocol::PumpSwap, true);
     let result = dispatcher
         .quote_exact_in(&pool, &request(base, quote, 10_000_000))
-        .expect("graduated curve routes to PumpSwap");
+        .expect("explicit PumpSwap pool has its own reserve and fee snapshot");
+
     assert_eq!(result.protocol, DexProtocol::PumpSwap);
     assert!(result.amount_out_raw > 0);
 }
