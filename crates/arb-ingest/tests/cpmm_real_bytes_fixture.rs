@@ -135,3 +135,91 @@ fn hex(s: &str) -> Vec<u8> {
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
         .collect()
 }
+
+/// Versioned, same-context Mainnet snapshot covering every account used by the
+/// CPMM loader: pool, AmmConfig, both vaults and both mints. Captured with one
+/// getMultipleAccounts(confirmed) response; account data is retained verbatim.
+#[test]
+fn versioned_mainnet_snapshot_has_coherent_slot_owners_and_vault_mints() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/raydium_cpmm_mainnet/sol_usdc_confirmed_2026-11-25.json"
+    ))
+    .expect("versioned mainnet snapshot JSON");
+    assert_eq!(fixture["schema_version"], 1);
+    assert_eq!(fixture["commitment"], "confirmed");
+    assert!(fixture["context_slot"].as_u64().unwrap() > 0);
+
+    let accounts = &fixture["accounts"];
+    let read_account = |name: &str| {
+        let account = &accounts[name];
+        let bytes = BASE64_STANDARD
+            .decode(account["data_base64"].as_str().unwrap())
+            .expect("account data base64");
+        assert_eq!(
+            account["data_length"].as_u64().unwrap() as usize,
+            bytes.len()
+        );
+        (account, bytes)
+    };
+
+    let (pool_meta, pool_bytes) = read_account("pool");
+    assert_eq!(pool_meta["address"], fixture["pool_address"]);
+    assert_eq!(pool_meta["owner"], fixture["cpmm_program_id"]);
+    assert_eq!(pool_bytes.len(), 637);
+    let state = arb_ingest::decoders::decode_raydium_cpmm_pool_accounting(&pool_bytes)
+        .expect("mainnet PoolState decodes");
+
+    let (config_meta, config_bytes) = read_account("amm_config");
+    assert_eq!(config_meta["owner"], fixture["cpmm_program_id"]);
+    assert_eq!(
+        state.amm_config,
+        Pubkey::from_str(config_meta["address"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(config_bytes.len(), 236);
+    let fees = arb_ingest::decoders::decode_raydium_cpmm_fee_config(&config_bytes)
+        .expect("mainnet AmmConfig decodes");
+    assert_eq!(fees.trade_fee_rate, 2_500);
+    assert_eq!(fees.protocol_fee_rate, 120_000);
+    assert_eq!(fees.fund_fee_rate, 40_000);
+
+    for (index, vault_name, mint_name, token_program, mint, decimals) in [
+        (
+            0usize,
+            "vault0",
+            "mint0",
+            state.token_0_program,
+            state.token_0_mint,
+            state.mint_0_decimals,
+        ),
+        (
+            1usize,
+            "vault1",
+            "mint1",
+            state.token_1_program,
+            state.token_1_mint,
+            state.mint_1_decimals,
+        ),
+    ] {
+        let (vault_meta, vault_bytes) = read_account(vault_name);
+        assert_eq!(vault_meta["owner"], token_program.to_string());
+        assert_eq!(
+            Pubkey::new_from_array(vault_bytes[0..32].try_into().unwrap()),
+            mint,
+            "vault {index} mint matches PoolState"
+        );
+        assert_eq!(vault_bytes.len(), 165);
+        let raw_amount = u64::from_le_bytes(vault_bytes[64..72].try_into().unwrap());
+        assert!(
+            arb_ingest::decoders::raydium_cpmm_curve_reserve(raw_amount, &state, index).is_some(),
+            "vault {index} balance covers accrued non-LP fee counters"
+        );
+
+        let (mint_meta, mint_bytes) = read_account(mint_name);
+        assert_eq!(mint_meta["owner"], token_program.to_string());
+        assert_eq!(mint_bytes.len(), 82);
+        assert_eq!(
+            mint_bytes[44], decimals,
+            "mint {index} decimals match PoolState"
+        );
+    }
+}
