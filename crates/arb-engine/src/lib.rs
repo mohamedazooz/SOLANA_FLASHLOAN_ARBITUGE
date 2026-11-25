@@ -629,6 +629,7 @@ impl MarketGraph {
 
         for p in pools {
             if !p.is_active
+                || p.protocol == DexProtocol::RaydiumClmm
                 || p.reserve_in == 0
                 || p.reserve_out == 0
                 || p.has_risky_token
@@ -637,7 +638,7 @@ impl MarketGraph {
             {
                 continue;
             }
-            let fee = ((p.fee_numerator as u128 * 10_000) / p.fee_denominator as u128) as u16;
+            let fee = p.fee_bps().expect("fee validity was checked above");
 
             // Edge: base_mint -> quote_mint
             self.edges_by_from
@@ -1053,6 +1054,39 @@ mod tests {
         profit_term + temporal_term + risk_term
     }
 
+    #[test]
+    fn market_graph_rejects_stale_cached_raydium_clmm_pool_states() {
+        let base = MintId::new([31; 32]);
+        let quote = MintId::new([32; 32]);
+        let pool = PoolState {
+            pool_id: PoolId::new([33; 32]),
+            protocol: DexProtocol::RaydiumClmm,
+            slot: Slot(100),
+            write_version: 1,
+            base_mint: base,
+            quote_mint: quote,
+            decimals_a: 6,
+            decimals_b: 9,
+            reserve_in: 1_000_000,
+            reserve_out: 2_000_000,
+            fee_numerator: 2_500,
+            fee_denominator: 1_000_000,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Clmm,
+            clmm: Some(arb_types::ClmmState::default()),
+            dlmm: None,
+            pump_fun: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken; 2],
+            execution_accounts: None,
+            last_update_slot: 100,
+            last_update_ms: 1_700_000_000_000,
+        };
+        let mut graph = MarketGraph::default();
+        graph.build_from_pools(&[pool]);
+        assert!(graph.edges_by_from.is_empty());
+    }
     #[test]
     fn raydium_clmm_edge_quotes_with_60_tick_span_in_graph_quoting() {
         // Regression for the discovery path: quote_pool previously routed

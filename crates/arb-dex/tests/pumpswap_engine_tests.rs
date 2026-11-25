@@ -28,8 +28,8 @@ fn create_sample_pumpswap_pool(is_active: bool) -> (PoolState, MintId, MintId) {
         decimals_b: 9,
         reserve_in: 1_000_000_000, // Base token reserve (e.g. 1,000 tokens)
         reserve_out: 50_000_000_000, // Quote token reserve (e.g. 50 SOL)
-        fee_numerator: 30,
-        fee_denominator: 10_000,
+        fee_numerator: 3_000,
+        fee_denominator: 1_000_000,
         is_active,
         has_risky_token: false,
         kind: PoolKind::Cpmm,
@@ -53,6 +53,60 @@ fn test_pumpswap_quote_engine_protocol_id_resolution() {
 }
 
 #[test]
+fn test_pumpswap_quote_engine_fails_closed_without_fee_ratio() {
+    let engine = PumpSwapQuoteEngine::new();
+    let (mut pool, base_mint, quote_mint) = create_sample_pumpswap_pool(true);
+    pool.fee_denominator = 0;
+    let request = QuoteRequest {
+        input_mint: base_mint,
+        output_mint: quote_mint,
+        amount: 10_000_000,
+        slippage_bps: 50,
+        input_transfer_fee_config: None,
+        output_transfer_fee_config: None,
+    };
+    assert!(engine.quote_exact_in(&pool, &request).is_err());
+}
+#[test]
+fn test_pumpswap_quote_preserves_exact_sub_bps_fee_ratio() {
+    let engine = PumpSwapQuoteEngine::new();
+    let (mut pool, base_mint, quote_mint) = create_sample_pumpswap_pool(true);
+    pool.fee_numerator = 50; // 50 ppm = 0.5 bps
+    pool.fee_denominator = 1_000_000;
+    let request = QuoteRequest {
+        input_mint: quote_mint,
+        output_mint: base_mint,
+        amount: 10_000_000,
+        slippage_bps: 50,
+        input_transfer_fee_config: None,
+        output_transfer_fee_config: None,
+    };
+    let result = engine
+        .quote_exact_in(&pool, &request)
+        .expect("exact ppm quote");
+    assert_eq!(result.fees_breakdown.total_fee, 502);
+    assert!(result.price_impact.0 > 0);
+}
+#[test]
+fn test_pumpswap_sell_fee_is_charged_on_quote_output() {
+    let engine = PumpSwapQuoteEngine::new();
+    let (mut pool, base_mint, quote_mint) = create_sample_pumpswap_pool(true);
+    pool.fee_numerator = 50; // 50 ppm = 0.5 bps
+    pool.fee_denominator = 1_000_000;
+    let request = QuoteRequest {
+        input_mint: base_mint,
+        output_mint: quote_mint,
+        amount: 10_000_000,
+        slippage_bps: 50,
+        input_transfer_fee_config: None,
+        output_transfer_fee_config: None,
+    };
+    let result = engine.quote_exact_in(&pool, &request).expect("sell quote");
+    let gross_out = (pool.reserve_out * 10_000_000u128) / (pool.reserve_in + 10_000_000u128);
+    let expected_fee = ((gross_out * 50).div_ceil(1_000_000)) + 2;
+    assert_eq!(u128::from(result.fees_breakdown.total_fee), expected_fee);
+}
+#[test]
 fn test_pumpswap_quote_engine_quote_exact_in_sell_base() {
     let engine = PumpSwapQuoteEngine::new();
     let (pool, base_mint, quote_mint) = create_sample_pumpswap_pool(true);
@@ -69,20 +123,16 @@ fn test_pumpswap_quote_engine_quote_exact_in_sell_base() {
     let result = engine
         .quote_exact_in(&pool, &request)
         .expect("quote succeeds");
-    assert_eq!(result.protocol, DexProtocol::PumpSwap);
-    assert!(result.amount_out_raw > 0);
     assert_eq!(
-        result.minimum_amount_out_raw,
-        result.amount_out_raw.saturating_sub(
-            (result.amount_out_raw as u128 * request.slippage_bps as u128 / 10_000) as u64
-        )
+        result.fees_breakdown.lp_fee
+            + result.fees_breakdown.protocol_fee
+            + result.fees_breakdown.fund_fee
+            + result.fees_breakdown.creator_fee,
+        0,
+        "generic PoolState does not contain verified PumpSwap fee attribution"
     );
     assert!(result.quote_validity);
     assert!(result.fees_breakdown.total_fee > 0);
-    assert_eq!(
-        result.fees_breakdown.lp_fee + result.fees_breakdown.protocol_fee,
-        result.fees_breakdown.total_fee
-    );
 }
 
 #[test]

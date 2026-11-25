@@ -268,7 +268,8 @@ fn test_universal_dispatcher_boundary_exact_out_unsupported_protocols() {
                 assert!(
                     msg.contains("not yet supported")
                         || msg.contains("lacks")
-                        || msg.contains("not backed"),
+                        || msg.contains("not backed")
+                        || msg.contains("disabled until"),
                     "protocol {:?} msg: {}",
                     protocol,
                     msg

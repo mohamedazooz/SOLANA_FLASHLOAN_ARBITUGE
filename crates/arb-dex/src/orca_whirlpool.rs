@@ -160,7 +160,7 @@ impl AmmPool for OrcaWhirlpool {
         if self.fee_rate == 0 {
             None
         } else {
-            Some(self.fee_rate / 100)
+            Some(self.fee_rate.div_ceil(100))
         }
     }
 

@@ -12,7 +12,7 @@ Objective: prove that repo quote math equals official protocol math for every SU
 | Raydium CPMM | CP-Swap (constant product + exact trade fee; reserve accounting from PoolState) | `raydium_cpmm_boundary_tests`, `cpmm_real_bytes_fixture` (Mainnet six-account snapshot, dual-decoder parity, 18 official-SDK Mainnet vectors + 36 synthetic creator-fee vectors) | PARTIAL / GATED: all 54 exact-input outputs match Raydium TS SDK 0.2.87-alpha in both directions; Mainnet creator-fee is disabled in captured pool, so creator-fee modes are synthetic; exact-output, Token-2022 transfer-fee and fee-attribution parity remain open |
 | Raydium V4 | constant-product with on-chain AMM fee fields | `raydium_v4_boundary_tests`, `raydium_v4_v2_execution_tests` | PASS for decoded account snapshots; invalid/missing fee state is fail-closed |
 | Pump.fun | bonding-curve `virtual_reserves` formula | `pump_fun_boundary_tests`, `pump_boost_arb_tests`, `pump_state_tests` | PASS (embedded state fixtures; no live snapshot) |
-| PumpSwap | constant-product post-grad pool | `pumpswap_boundary_tests`, `pumpswap_engine_tests` | PASS |
+| PumpSwap | constant-product post-grad pool | `pumpswap_boundary_tests`, `pumpswap_engine_tests` | PARTIAL / GATED: missing fee ratios fail closed; generic PoolState quote reports total fee only with no invented split; dedicated live-config quote path still lacks a committed Mainnet snapshot |
 | Kamino flash fee | klend `flash_borrow_reserve` fee (see Phase 2 audit) | `kamino_fee_boundary_tests`, `differential.rs` | PASS (`U68F60`, ties-away, `2^60` floor) |
 | Cross-venue net economics | — | `three_leg_net_economics_tests`, `differential_fuzzing_boundary_tests`, `fuzzing_suite`, `differential` proptest suite, `python_oracle_differential` (independent oracle), `adversarial_*` | PASS |
 
@@ -26,7 +26,7 @@ Objective: prove that repo quote math equals official protocol math for every SU
 | Pump.fun / PumpSwap | No committed Mainnet account snapshots in the test corpus (fixtures are synthetic but formula-faithful) | Improvement item (P3) |
 | Token-2022 transfer-fee venues | Unsupported by policy; quote helpers exist but are not wired to discovery | Per ISSUE-P1-01, unchanged |
 
-**Raydium CPMM fee attribution:** quote state carries the exact aggregate trade-fee ratio; generic `FeesBreakdown` component fields remain zero when allocation rates are not carried into `PoolState`. `total_fee` is authoritative. Graph prefiltering currently uses conservative integer-bps ceiling (safe but may under-rank sub-bps opportunities); exact fee ratios are retained in the quote engines. Carry exact ratios into `MarketEdge` and live allocation rates into `PoolState` in the follow-up tracked as DEX-F-2026-11-25-N2.
+**Raydium CPMM fee attribution:** quote state carries the exact aggregate trade-fee ratio; generic `FeesBreakdown` component fields remain zero when allocation rates are not carried into `PoolState`. `total_fee` is authoritative. All PoolState graph projections now use conservative ceiling-rounded BPS (safe but may under-rank sub-bps opportunities); exact fee ratios remain in CPMM quote engines, while MarketEdge still cannot carry them. Carry exact ratios into `MarketEdge` and live allocation rates into `PoolState` in the follow-up tracked as DEX-F-2026-11-25-N2.
 
 ## 3. Nonlinear-math policy check
 
@@ -46,3 +46,7 @@ PASS
 cargo fmt --all -- --check
 PASS
 ```
+
+## Raydium CLMM runtime gate (2026-11-25)
+
+The CLMM math adapter and historical tick-array parity tests remain as isolated math evidence, but the live pricing path is disabled until the pool's program-owned AmmConfig and dynamic-fee state are joined at a coherent slot. Hydration, WebSocket refresh, MarketGraph, UniversalQuoteDispatcher, and route adapters all fail closed, including for stale cached PoolState. This is a runtime-safety classification, not a claim that the CLMM math tests failed.

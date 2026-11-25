@@ -241,20 +241,8 @@ impl MultiDexRegistry {
                             }
                         }
                     }
-                    DexProtocol::RaydiumClmm => {
-                        if let Some(c) = decode_raydium_clmm_state(data, p.fee_bps) {
-                            let (keys, _) = raydium_clmm_tick_array_pdas(
-                                &p.pool_id,
-                                c.tick_current,
-                                c.tick_spacing,
-                            );
-                            for key in keys {
-                                if !derived_pubkeys.contains(&key) {
-                                    derived_pubkeys.push(key);
-                                }
-                            }
-                        }
-                    }
+                    // Raydium CLMM is currently telemetry-only: catalog fee metadata is not
+                    // a verified AmmConfig snapshot, and dynamic-fee state is not joined.
                     _ => {}
                 }
             }
@@ -744,7 +732,7 @@ impl MultiDexRegistry {
                 (DexProtocol::RaydiumCpmm, _) => cpmm_fee_config.and_then(|cfg| {
                     u16::try_from(cfg.trade_fee_rate.saturating_add(99) / 100).ok()
                 }),
-                (DexProtocol::RaydiumClmm, _) => Some(p.fee_bps.max(1)),
+                (DexProtocol::RaydiumClmm, _) => None,
                 (DexProtocol::OrcaWhirlpool, Some(d)) => decode_orca_fee_bps(d),
                 (DexProtocol::MeteoraDlmm, _) => dlmm.as_ref().and_then(decode_dlmm_fee_bps),
                 _ => None,

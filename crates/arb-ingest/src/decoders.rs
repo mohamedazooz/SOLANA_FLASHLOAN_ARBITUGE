@@ -272,7 +272,7 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
             {
                 return None;
             }
-            let fee_bps = decode_raydium_fee_bps(data).unwrap_or(25);
+            let fee_bps = decode_raydium_fee_bps(data)?;
             Some(DecodedPoolInfo {
                 token_a_mint,
                 token_b_mint,
@@ -310,7 +310,7 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
             {
                 return None;
             }
-            let fee_bps = decode_orca_fee_bps(data).unwrap_or(5);
+            let fee_bps = decode_orca_fee_bps(data)?;
             Some(DecodedPoolInfo {
                 token_a_mint,
                 token_b_mint,
@@ -380,7 +380,8 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
                 token_b_mint,
                 token_a_vault,
                 token_b_vault,
-                fee_bps: 25,
+                // Discovery-only sentinel: CLMM hydration rejects this venue until live AmmConfig and dynamic fees are joined.
+                fee_bps: 10_000,
                 decimals_a: if (1..=18).contains(&dec_a) {
                     Some(dec_a)
                 } else {
@@ -768,24 +769,25 @@ pub fn decode_raydium_fee_bps(data: &[u8]) -> Option<u16> {
     if data.len() < 192 {
         return None;
     }
-    let num = u64::from_le_bytes(data[176..184].try_into().ok()?);
-    let den = u64::from_le_bytes(data[184..192].try_into().ok()?);
-    if den == 0 {
+    let fee_numerator = u64::from_le_bytes(data[176..184].try_into().ok()?);
+    let fee_denominator = u64::from_le_bytes(data[184..192].try_into().ok()?);
+    if fee_denominator == 0 || fee_numerator > fee_denominator {
         return None;
     }
-    u16::try_from((num as u128 * 10_000) / den as u128).ok()
+    let scaled = u128::from(fee_numerator).checked_mul(10_000)?;
+    let fee_bps = scaled.div_ceil(u128::from(fee_denominator));
+    u16::try_from(fee_bps).ok().filter(|bps| *bps <= 10_000)
 }
-
 /// Decode the Orca Whirlpool fee in basis points from the whirlpool account.
 ///
 /// `fee_rate` @45 (u16) is in HUNDREDTHS OF A BIP (denominator 1_000_000), so
-/// bps = fee_rate / 100. Verified live on the SOL/USDC pool: 400 => 4 bps.
+/// bps = ceil(fee_rate / 100). Verified live on the SOL/USDC pool: 400 => 4 bps.
 pub fn decode_orca_fee_bps(data: &[u8]) -> Option<u16> {
     if data.len() < 47 {
         return None;
     }
     let fee_rate = u16::from_le_bytes(data[45..47].try_into().ok()?);
-    Some(fee_rate / 100)
+    Some(fee_rate.div_ceil(100))
 }
 
 /// Extract the `amm_config` pubkey from Raydium CPMM pool account data.
@@ -826,6 +828,22 @@ pub fn decode_raydium_cpmm_fee_bps(data: &[u8]) -> Option<u16> {
 mod fee_decoder_tests {
     use super::*;
 
+    #[test]
+    fn raydium_sub_basis_point_fee_rounds_up_and_invalid_ratio_fails_closed() {
+        let mut data = vec![0u8; 192];
+        data[176..184].copy_from_slice(&50u64.to_le_bytes());
+        data[184..192].copy_from_slice(&1_000_000u64.to_le_bytes());
+        assert_eq!(decode_raydium_fee_bps(&data), Some(1));
+        data[184..192].fill(0);
+        assert_eq!(decode_raydium_fee_bps(&data), None);
+    }
+
+    #[test]
+    fn orca_sub_basis_point_fee_rounds_up() {
+        let mut data = vec![0u8; 48];
+        data[45..47].copy_from_slice(&50u16.to_le_bytes());
+        assert_eq!(decode_orca_fee_bps(&data), Some(1));
+    }
     #[test]
     fn raydium_fee_reads_live_value() {
         // swap_fee_numerator=25, swap_fee_denominator=10_000 => 25 bps.
@@ -1357,41 +1375,16 @@ pub fn decode_bin_array(data: &[u8]) -> Vec<arb_types::DlmmBin> {
 /// `fetch_live_pool_states` (see `dlmm_bin_array_pdas`), not here.
 pub fn resolve_fee_bps(protocol: DexProtocol, pool_account_data: &[u8]) -> Option<u16> {
     match protocol {
-        DexProtocol::RaydiumV4 => {
-            if pool_account_data.len() < 192 {
-                return None;
-            }
-            let num = u64::from_le_bytes(pool_account_data[176..184].try_into().ok()?);
-            let den = u64::from_le_bytes(pool_account_data[184..192].try_into().ok()?);
-            if den == 0 {
-                return None;
-            }
-            let bps = u16::try_from(num as u128 * 10_000 / den as u128).unwrap_or(10_000);
-            if bps > 10_000 { None } else { Some(bps) }
-        }
+        DexProtocol::RaydiumV4 => decode_raydium_fee_bps(pool_account_data),
         DexProtocol::OrcaWhirlpool => {
             if pool_account_data.len() < 47 {
                 return None;
             }
             let fee_rate = u16::from_le_bytes(pool_account_data[45..47].try_into().ok()?);
-            let bps = fee_rate / 100;
+            let bps = fee_rate.div_ceil(100);
             if bps > 10_000 { None } else { Some(bps) }
         }
-        DexProtocol::MeteoraDlmm => {
-            // Reuse the verified LbPair decoder instead of carrying a second,
-            // stale offset table: `base_factor` lives at 8 and `bin_step` at 80,
-            // not at the 9/11 used by the old copy of this layout.
-            let state = decode_dlmm_state(pool_account_data)?;
-            let prm = state.params?;
-            let base = (prm.base_factor as u64) * (state.bin_step_bps as u64) * 10;
-            let scaled = if prm.base_fee_power_factor == 0 {
-                base
-            } else {
-                base.checked_mul(10u64.checked_pow(prm.base_fee_power_factor as u32)?)?
-            };
-            let bps = u16::try_from(scaled.saturating_mul(10_000) / 1_000_000_000).ok()?;
-            if bps > 10_000 { None } else { Some(bps) }
-        }
+        DexProtocol::MeteoraDlmm => decode_dlmm_fee_bps(&decode_dlmm_state(pool_account_data)?),
         DexProtocol::RaydiumClmm => None,
         // Fail closed: the CPMM fee lives in the separate AmmConfig account,
         // not in pool data. `fetch_live_pool_states` resolves it via
@@ -1447,16 +1440,38 @@ pub fn clmm_tick_array_covers_tick(
 
 /// Decode Meteora DLMM dynamic base fee in basis points.
 pub fn decode_dlmm_fee_bps(s: &arb_types::DlmmState) -> Option<u16> {
-    let prm = s.params.as_ref()?;
-    let base = (prm.base_factor as u64) * (s.bin_step_bps as u64) * 10;
-    let scaled = if prm.base_fee_power_factor == 0 {
-        base
-    } else {
-        base.checked_mul(10u64.checked_pow(prm.base_fee_power_factor as u32)?)?
+    let p = s.params.as_ref()?;
+    if s.bin_step_bps == 0
+        || s.volatility_accumulator > p.max_volatility_accumulator
+        || s.volatility_reference > p.max_volatility_accumulator
+    {
+        return None;
+    }
+    let parameters = arb_math::dlmm::DlmmParameters {
+        bin_step: s.bin_step_bps,
+        base_factor: p.base_factor,
+        filter_period: p.filter_period,
+        decay_period: p.decay_period,
+        reduction_factor: p.reduction_factor,
+        variable_fee_control: p.variable_fee_control,
+        max_volatility_accumulator: p.max_volatility_accumulator,
+        protocol_share: p.protocol_share,
+        base_fee_power_factor: p.base_fee_power_factor,
+        collect_fee_mode: p.collect_fee_mode,
     };
-    u16::try_from(scaled.saturating_mul(10_000) / 1_000_000_000).ok()
+    // Candidate-graph metadata must never understate the variable fee. Use the
+    // protocol's configured maximum volatility accumulator as a conservative
+    // upper bound; exact quote math still uses live volatility and bin traversal.
+    let fee_rate = arb_math::dlmm::compute_total_fee_rate(
+        &parameters,
+        s.bin_step_bps,
+        p.max_volatility_accumulator,
+    )
+    .ok()?;
+    let scaled = fee_rate.checked_mul(10_000)?;
+    let bps = scaled.div_ceil(1_000_000_000);
+    u16::try_from(bps).ok().filter(|value| *value <= 10_000)
 }
-
 /// Compute effective base/quote reserves for Meteora DLMM from decoded `DlmmState` bins and raw `LbPair` bytes.
 ///
 /// DLMM semantics (verified against the Meteora DLMM program layout): bins with
@@ -1642,6 +1657,16 @@ mod tests {
     }
 
     #[test]
+    fn resolve_fee_bps_raydium_rejects_invalid_ratio_and_rounds_up() {
+        let mut data = vec![0u8; 192];
+        data[176..184].copy_from_slice(&1u64.to_le_bytes());
+        data[184..192].copy_from_slice(&1_000_000u64.to_le_bytes());
+        assert_eq!(resolve_fee_bps(DexProtocol::RaydiumV4, &data), Some(1));
+        data[176..184].copy_from_slice(&10_001u64.to_le_bytes());
+        data[184..192].copy_from_slice(&10_000u64.to_le_bytes());
+        assert_eq!(resolve_fee_bps(DexProtocol::RaydiumV4, &data), None);
+    }
+    #[test]
     fn resolve_fee_bps_raydium() {
         let mut data = vec![0u8; 192];
         data[176..184].copy_from_slice(&25u64.to_le_bytes());
@@ -1650,12 +1675,34 @@ mod tests {
     }
 
     #[test]
+    fn resolve_fee_bps_orca_rounds_sub_basis_point_up() {
+        let mut data = vec![0u8; 47];
+        data[45..47].copy_from_slice(&50u16.to_le_bytes());
+        assert_eq!(resolve_fee_bps(DexProtocol::OrcaWhirlpool, &data), Some(1));
+    }
+    #[test]
     fn resolve_fee_bps_orca() {
         let mut data = vec![0u8; 47];
         data[45..47].copy_from_slice(&500u16.to_le_bytes()); // 5 bps
         assert_eq!(resolve_fee_bps(DexProtocol::OrcaWhirlpool, &data), Some(5));
     }
 
+    #[test]
+    fn dlmm_graph_fee_includes_maximum_dynamic_surcharge() {
+        let state = arb_types::DlmmState {
+            bin_step_bps: 2,
+            params: Some(arb_types::DlmmFeeParams {
+                base_factor: 10_000,
+                variable_fee_control: 40_000,
+                max_volatility_accumulator: 350_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Base fee alone is 2 bps; max-volatility dynamic surcharge lifts
+        // the conservative graph metadata to ceil(3.96 bps) = 4 bps.
+        assert_eq!(decode_dlmm_fee_bps(&state), Some(4));
+    }
     #[test]
     fn resolve_fee_bps_meteora() {
         // Real layout: base_factor @8, bin_step @80, status @82.
@@ -1696,6 +1743,22 @@ mod tests {
         assert_eq!(info.decimals_a, None);
     }
 
+    #[test]
+    fn test_decode_pool_info_raydium_v4_rejects_missing_fee_ratio() {
+        let mut data = vec![0u8; 500];
+        data[336..368].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[368..400].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[400..432].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[432..464].copy_from_slice(&Pubkey::new_unique().to_bytes());
+        data[176..184].copy_from_slice(&50u64.to_le_bytes());
+        data[184..192].copy_from_slice(&1_000_000u64.to_le_bytes());
+        let info = decode_pool_info(DexProtocol::RaydiumV4, &data)
+            .expect("sub-bps Raydium fee is conservatively rounded up");
+        assert_eq!(info.fee_bps, 1);
+
+        data[184..192].fill(0);
+        assert!(decode_pool_info(DexProtocol::RaydiumV4, &data).is_none());
+    }
     #[test]
     fn test_decode_pool_info_raydium_cpmm_fails_closed() {
         // The CPMM fee lives in the separate AmmConfig account, so a
@@ -1774,7 +1837,7 @@ mod tests {
         assert_eq!(info.token_b_vault, vb);
         assert_eq!(info.decimals_a, Some(9));
         assert_eq!(info.decimals_b, Some(6));
-        assert_eq!(info.fee_bps, 25);
+        assert_eq!(info.fee_bps, 10_000); // discovery-only sentinel, never a quote fee
     }
 
     #[test]

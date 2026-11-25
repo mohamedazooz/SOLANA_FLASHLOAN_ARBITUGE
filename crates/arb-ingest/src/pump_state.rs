@@ -641,11 +641,17 @@ impl crate::IngestClient {
                     continue;
                 }
             };
-            // The graph is a candidate detector and currently stores integer BPS.
+            if pool.quote_reserve != pool.real_quote_reserve {
+                // PoolState has one quote-reserve field, while native PumpSwap
+                // sells also enforce spendable quote-vault liquidity. Until both
+                // representations agree, do not publish an under-specified state.
+                report.pools_rejected += 1;
+                continue;
+            } // The graph is a candidate detector and currently stores integer BPS.
             // Round the PPM fee UP to the next BPS so candidate discovery is conservative;
             // exact execution quotes must call PumpSwapPool::quote_exact_in.
             let total_ppm = match pool.fee.total_ppm() {
-                Ok(value) => value as u64,
+                Ok(value) => u64::from(value),
                 Err(_) => {
                     report.pools_rejected += 1;
                     continue;
@@ -687,8 +693,9 @@ impl crate::IngestClient {
                 decimals_b: joined.quote_decimals,
                 reserve_in: pool.base_reserve as u128,
                 reserve_out: pool.quote_reserve as u128,
-                fee_numerator: conservative_fee_bps,
-                fee_denominator: 10_000,
+                // Preserve the exact PPM fee ratio; graph metadata rounds up via fee_bps().
+                fee_numerator: total_ppm,
+                fee_denominator: 1_000_000,
                 is_active: true,
                 has_risky_token: false,
                 kind: PoolKind::Cpmm,

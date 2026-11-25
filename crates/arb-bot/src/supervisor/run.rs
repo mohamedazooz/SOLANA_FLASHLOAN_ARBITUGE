@@ -380,6 +380,12 @@ impl Supervisor {
                     route_missing_pool = true;
                     break;
                 };
+                let Some(fee_bps) = pool.fee_bps() else {
+                    // Fee state changed or became invalid after candidate pricing.
+                    // Do not serialize a zero-fee hop from an unverifiable snapshot.
+                    route_missing_pool = true;
+                    break;
+                };
                 hops.push(SwapHop {
                     pool_id: leg.pool_id,
                     protocol: DexProtocol::MeteoraDlmm,
@@ -388,7 +394,7 @@ impl Supervisor {
                     // Pipeline pre-filtered pools to those with a valid fee; a
                     // missing fee here can only mean a mid-tick state mutation, and
                     // the pipeline's own quote already priced the route.
-                    fee_bps: pool.fee_bps().unwrap_or(0),
+                    fee_bps,
                     active_bin_id: pool.dlmm.as_ref().map(|d| d.active_bin_id),
                     // SwapHop contract (arb-types): token_programs is
                     // (mint_in, mint_out) — flip the pool's (base, quote) pair

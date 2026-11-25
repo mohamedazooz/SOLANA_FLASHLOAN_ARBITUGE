@@ -221,7 +221,7 @@ pub fn pool_depth_from_state(state: &PoolState) -> Option<PoolDepth> {
     if !state.is_fee_valid() {
         return None;
     }
-    let fee = ((state.fee_numerator as u128 * 10_000) / state.fee_denominator as u128) as u64;
+    let fee = u64::from(state.fee_bps()?);
     Some(PoolDepth {
         pool_id: state.pool_id,
         protocol: state.protocol,

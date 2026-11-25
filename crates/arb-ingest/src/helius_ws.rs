@@ -1314,43 +1314,8 @@ impl HeliusWsClient {
                 }
             }
             DexProtocol::RaydiumClmm => {
-                let Some(mut clmm) = decode_raydium_clmm_state(bytes, reg.fee_bps) else {
-                    return;
-                };
-                let existing_ticks = state
-                    .clmm
-                    .as_ref()
-                    .map(|c| c.tick_arrays.clone())
-                    .unwrap_or_default();
-                if existing_ticks.is_empty()
-                    || !clmm_tick_array_covers_tick(
-                        &existing_ticks,
-                        clmm.tick_current,
-                        clmm.tick_spacing,
-                    )
-                {
-                    self.queue_derived_hydration(pool_id, slot); // fail closed + event-driven hydration
-                    return;
-                }
-                clmm.tick_arrays = existing_ticks;
-                let (r_in, r_out) = compute_clmm_virtual_reserves(&clmm);
-                if r_in == 0 || r_out == 0 {
-                    return;
-                }
-                state.clmm = Some(clmm);
-                state.fee_numerator = u64::from(reg.fee_bps.max(1));
-                state.fee_denominator = 10_000;
-                state.reserve_in = r_in;
-                state.reserve_out = r_out;
-                state.slot = update_slot;
-                state.write_version = if slot > state.last_update_slot {
-                    1
-                } else {
-                    state.write_version.saturating_add(1)
-                };
-                state.last_update_slot = slot;
-                state.last_update_ms = now_ms;
-                let _ = ingest.apply_pool_update(state);
+                // Do not promote catalog-fee CLMM state. The live AmmConfig and
+                // dynamic-fee configuration are not part of this coherent WS snapshot.
             }
             DexProtocol::PumpFun => {
                 let Ok(pump_state) =
