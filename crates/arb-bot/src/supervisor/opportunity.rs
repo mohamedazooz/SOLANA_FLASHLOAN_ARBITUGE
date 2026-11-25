@@ -262,8 +262,17 @@ impl Supervisor {
                 None => arb_tx::calculate_dynamic_cu_limit(estimated_cu),
             };
             let desired_cu_price = {
-                let recent = self.recent_landed_cu.lock().clone();
-                self.tip_strategy.adaptive_cu_price(&recent)
+                let landed = self.recent_landed_cu.lock().clone();
+                let fresh_market = {
+                    let market = self.recent_priority_market_cu.lock();
+                    market
+                        .as_ref()
+                        .filter(|(_, sampled_at)| sampled_at.elapsed() <= Duration::from_secs(12))
+                        .map(|(samples, _)| samples.clone())
+                        .unwrap_or_default()
+                };
+                self.tip_strategy
+                    .adaptive_cu_price_with_market(&landed, &fresh_market)
             };
             // Dynamic priority fee ceiling: scales adaptively between base_share and max_share
             // according to real-time competition factor observed by TipOracle.
