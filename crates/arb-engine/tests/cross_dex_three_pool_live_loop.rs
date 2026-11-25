@@ -28,6 +28,7 @@ fn economic_config() -> EconomicConfig {
         lamports_to_base_mint_rate: 1,
         lamports_to_base_rate_denom: 1,
         min_profit_raw: TokenAmount::ZERO,
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
     }
 }
 

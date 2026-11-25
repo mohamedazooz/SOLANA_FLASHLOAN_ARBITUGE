@@ -497,7 +497,7 @@ pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
             base_tokens: arb.strategy.base_tokens,
             min_net_profit_abs: min_net_profit_floor_lamports(arb.strategy.min_net_profit_abs.0),
             min_net_profit_bps: arb.strategy.min_net_profit_bps.0 as u64,
-            hop_slippage_bps: default_hop_slippage_bps(),
+            hop_slippage_bps: u64::from(arb.strategy.hop_slippage_bps.0),
             max_price_impact_bps: arb.strategy.max_price_impact_bps.0 as u64,
             max_state_age_slots: arb.strategy.max_state_age_slots.0,
             graph_max_age_slots: arb.strategy.graph_max_age_slots.map(|s| s.0),
@@ -618,7 +618,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     {
         if let Ok(value) = raw.trim().parse::<f64>() {
             if value.is_finite() && value > 0.0 {
-                config.risk.max_trade_size_usd = value;
+                config.risk.max_trade_size_usd = config.risk.max_trade_size_usd.min(value);
             }
         }
     }
@@ -629,7 +629,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     {
         if let Ok(value) = raw.trim().parse::<f64>() {
             if value.is_finite() && value > 0.0 {
-                config.risk.max_daily_loss_usd = value;
+                config.risk.max_daily_loss_usd = config.risk.max_daily_loss_usd.min(value);
             }
         }
     }
@@ -638,7 +638,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     if let Ok(raw) = std::env::var("MAX_CONCURRENT_TRADES") {
         if let Ok(value) = raw.trim().parse::<u32>() {
             if value > 0 {
-                config.risk.max_inflight_bundles = value;
+                config.risk.max_inflight_bundles = config.risk.max_inflight_bundles.min(value);
             }
         }
     }
@@ -648,7 +648,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         std::env::var("MIN_NET_PROFIT").or_else(|_| std::env::var("MIN_NET_PROFIT_LAMPORTS"))
     {
         if let Ok(value) = raw.trim().parse::<u64>() {
-            config.strategy.min_net_profit_abs = value;
+            config.strategy.min_net_profit_abs = config.strategy.min_net_profit_abs.max(value);
         }
     }
     // Apply the same optional USD floor in both AppConfig and legacy BotConfig
@@ -659,22 +659,77 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     // Slippage BPS override
     if let Ok(raw) = std::env::var("MAX_SLIPPAGE_BPS") {
         if let Ok(value) = raw.trim().parse::<u64>() {
-            config.strategy.hop_slippage_bps = value;
+            config.strategy.hop_slippage_bps = config.strategy.hop_slippage_bps.min(value);
         }
     }
 
     // Priority fee override
     if let Ok(raw) = std::env::var("MAX_PRIORITY_FEE") {
         if let Ok(value) = raw.trim().parse::<u64>() {
-            config.strategy.priority_fee_max_share_bps = value;
+            config.strategy.priority_fee_max_share_bps =
+                config.strategy.priority_fee_max_share_bps.min(value);
         }
     }
 
+    // Explicit flash-borrow cap intersects the general USD notional limit.
+    if let Ok(raw) = std::env::var("MAX_FLASH_BORROW_USD") {
+        let value: f64 = raw
+            .trim()
+            .parse()
+            .context("MAX_FLASH_BORROW_USD must be numeric")?;
+        if !value.is_finite() || value <= 0.0 {
+            anyhow::bail!("MAX_FLASH_BORROW_USD must be positive and finite");
+        }
+        config.risk.max_trade_size_usd = config.risk.max_trade_size_usd.min(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_DAILY_LOSS_USD") {
+        let value: f64 = raw
+            .trim()
+            .parse()
+            .context("MAX_DAILY_LOSS_USD must be numeric")?;
+        if !value.is_finite() || value <= 0.0 {
+            anyhow::bail!("MAX_DAILY_LOSS_USD must be positive and finite");
+        }
+        config.risk.max_daily_loss_usd = config.risk.max_daily_loss_usd.min(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_HOURLY_LOSS_USD") {
+        let value: f64 = raw
+            .trim()
+            .parse()
+            .context("MAX_HOURLY_LOSS_USD must be numeric")?;
+        if !value.is_finite() || value <= 0.0 {
+            anyhow::bail!("MAX_HOURLY_LOSS_USD must be positive and finite");
+        }
+        config.risk.max_hourly_loss_usd = config.risk.max_hourly_loss_usd.min(value);
+    }
+    if let Ok(raw) = std::env::var("MIN_NET_PROFIT_BPS") {
+        let value: u64 = raw
+            .trim()
+            .parse()
+            .context("MIN_NET_PROFIT_BPS must be an integer")?;
+        config.strategy.min_net_profit_bps = config.strategy.min_net_profit_bps.max(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_PRICE_IMPACT_BPS") {
+        let value: u64 = raw
+            .trim()
+            .parse()
+            .context("MAX_PRICE_IMPACT_BPS must be an integer")?;
+        config.strategy.max_price_impact_bps = config.strategy.max_price_impact_bps.min(value);
+    }
+    if let Ok(raw) = std::env::var("CHRONOS_ENABLED") {
+        let enabled = match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => anyhow::bail!("CHRONOS_ENABLED must be true or false"),
+        };
+        config.chronos.enabled &= enabled;
+    }
     // Max transaction failures
     if let Ok(raw) = std::env::var("MAX_TRANSACTION_FAILURES") {
         if let Ok(value) = raw.trim().parse::<u64>() {
             if value > 0 {
-                config.risk.max_consecutive_failures = value;
+                config.risk.max_consecutive_failures =
+                    config.risk.max_consecutive_failures.min(value);
             }
         }
     }
@@ -688,16 +743,17 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         config.chronos.decay_lambda_per_sec = value;
     }
     if let Ok(raw) = std::env::var("CHRONOS_MAX_AGE_MS") {
-        config.chronos.max_age_ms = raw
-            .parse()
-            .context("CHRONOS_MAX_AGE_MS must be an integer")?;
+        config.chronos.max_age_ms = config.chronos.max_age_ms.min(
+            raw.parse()
+                .context("CHRONOS_MAX_AGE_MS must be an integer")?,
+        );
     }
     if let Ok(raw) = std::env::var("CHRONOS_MIN_EV_USD") {
         let value: f64 = raw.parse().context("CHRONOS_MIN_EV_USD must be numeric")?;
         if !value.is_finite() || value < 0.0 {
             anyhow::bail!("CHRONOS_MIN_EV_USD must be finite and non-negative");
         }
-        config.chronos.min_ev_usd = value;
+        config.chronos.min_ev_usd = config.chronos.min_ev_usd.max(value);
     }
 
     if config.risk.max_tip_spend_ratio > 1.0 {
@@ -801,6 +857,12 @@ mod config_file_tests {
                 .unwrap_or_else(|e| panic!("{full} must exist and be readable: {e}"));
             let parsed: Config = toml::from_str(&contents)
                 .unwrap_or_else(|e| panic!("{full} must deserialize into Config: {e}"));
+            let local = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/config.toml");
+            if std::path::Path::new(local).is_file() {
+                let loaded =
+                    super::load(local).expect("local runtime config must deserialize and validate");
+                assert!(loaded.risk.max_trade_size_usd > 0.0);
+            }
             let _ = parsed;
         }
     }

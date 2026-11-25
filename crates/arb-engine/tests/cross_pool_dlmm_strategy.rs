@@ -148,6 +148,7 @@ fn econ(min_profit: u64) -> EconomicConfig {
         lamports_to_base_mint_rate: 1,
         lamports_to_base_rate_denom: 1,
         min_profit_raw: TokenAmount(min_profit),
+        hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
     }
 }
 

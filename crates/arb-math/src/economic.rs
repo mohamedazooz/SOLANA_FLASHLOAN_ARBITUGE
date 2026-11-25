@@ -159,6 +159,7 @@ pub struct EconomicConfig {
     pub lamports_to_base_rate_denom: u128,
     /// Minimum acceptable profit in base-mint raw units (NOT lamports), configurable.
     pub min_profit_raw: TokenAmount,
+    pub hop_slippage_bps: u64,
 }
 
 /// The authoritative economic quote for one opportunity. All token amounts are in
@@ -819,6 +820,50 @@ mod tests {
         assert_eq!(q.minimum_net_profit_signed_raw, 20_000);
     }
 
+    #[test]
+    fn positive_expected_edge_can_be_negative_after_min_out_and_real_costs() {
+        let borrowed = 1_000_000_000u64;
+        let expected_out = 1_002_000_000u64; // +2,000,000 raw gross on the optimistic quote.
+        let per_hop_slippage_bps = 10u64;
+        let hops = 3usize;
+        let min_out = slippage_haircut_min_final(expected_out, hops, per_hop_slippage_bps)
+            .expect("checked compounded slippage haircut");
+        assert!(
+            expected_out > borrowed,
+            "spot/expected math appears profitable"
+        );
+        assert!(
+            min_out < borrowed,
+            "three 10 bps hop haircuts erase the expected edge"
+        );
+
+        let quote = build_economic_quote(
+            wsol_mint(),
+            9,
+            TokenAmount(borrowed),
+            TokenAmount(expected_out),
+            TokenAmount(min_out),
+            TokenAmount(10_000), // verified flash-loan premium
+            TokenAmount(0),      // AMM fees are already inside each exact quote output.
+            TokenAmount(0),
+            TokenAmount(0),
+            TokenAmount(0),
+            Lamports(5_000),
+            Lamports(10_000),
+            Lamports(100_000),
+            1,
+            1,
+            TokenAmount(500_000),
+            Slot(100),
+            1_000_000_000,
+        )
+        .expect("economic amounts fit the checked ledger");
+
+        assert!(quote.expected_net_profit_signed_raw > 0);
+        assert!(quote.minimum_net_profit_signed_raw < 0);
+        assert!(!quote.meets_min_profit);
+        assert!(!quote.is_profitable());
+    }
     #[test]
     fn flash_fee_uses_u68f60_sf_exactly() {
         // sf = 5% expressed in U68F60 (60 fractional bits), derived with INTEGER

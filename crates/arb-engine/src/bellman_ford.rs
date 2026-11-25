@@ -485,8 +485,7 @@ impl BellmanFordEngine {
         // expected final output, not `expected_out` itself; fail closed when
         // the haircut arithmetic fails.
         let minimum_final_out =
-            slippage_haircut_min_final(final_out, hops.len(), arb_types::DEFAULT_HOP_SLIPPAGE_BPS)
-                .ok()?;
+            slippage_haircut_min_final(final_out, hops.len(), config.hop_slippage_bps).ok()?;
         let quote = match build_economic_quote(
             base_mint,
             config.base_decimals,
@@ -532,7 +531,7 @@ impl BellmanFordEngine {
         };
 
         Some(ExecutionOpportunity {
-            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            hop_slippage_bps: config.hop_slippage_bps,
             route_id: RouteId(route_counter),
             slot: current_slot,
             size_in: TokenAmount(best_size),
@@ -805,6 +804,7 @@ mod tests {
             lamports_to_base_mint_rate: 1,
             lamports_to_base_rate_denom: 1,
             min_profit_raw: TokenAmount::ZERO,
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         }
     }
 

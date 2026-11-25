@@ -64,9 +64,149 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
             ));
         }
         // UsdMicros = USD * 1e6.
-        config.risk.max_trade_size_usd = usd_micros_from_f64(value);
+        config.risk.max_trade_size_usd = config
+            .risk
+            .max_trade_size_usd
+            .min(usd_micros_from_f64(value));
     }
 
+    // Explicit flash-borrow cap intersects the general notional cap.
+    if let Ok(raw) = std::env::var("MAX_FLASH_BORROW_USD") {
+        let value: f64 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MAX_FLASH_BORROW_USD".to_string(),
+                "must be numeric".to_string(),
+            )
+        })?;
+        if !value.is_finite() || value <= 0.0 {
+            return Err(ConfigError::InvalidEnv(
+                "MAX_FLASH_BORROW_USD".to_string(),
+                "must be positive and finite".to_string(),
+            ));
+        }
+        config.risk.max_trade_size_usd = config
+            .risk
+            .max_trade_size_usd
+            .min(usd_micros_from_f64(value));
+    }
+    for (key, target) in [
+        ("MAX_DAILY_LOSS_USD", &mut config.risk.max_daily_loss_usd),
+        ("MAX_HOURLY_LOSS_USD", &mut config.risk.max_hourly_loss_usd),
+    ] {
+        if let Ok(raw) = std::env::var(key) {
+            let value: f64 = raw.parse().map_err(|_| {
+                ConfigError::InvalidEnv(key.to_string(), "must be numeric".to_string())
+            })?;
+            if !value.is_finite() || value <= 0.0 {
+                return Err(ConfigError::InvalidEnv(
+                    key.to_string(),
+                    "must be positive and finite".to_string(),
+                ));
+            }
+            *target = (*target).min(usd_micros_from_f64(value));
+        }
+    }
+    if let Ok(raw) = std::env::var("MIN_NET_PROFIT_LAMPORTS") {
+        let value: u64 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MIN_NET_PROFIT_LAMPORTS".to_string(),
+                "must be an integer".to_string(),
+            )
+        })?;
+        if value == 0 {
+            return Err(ConfigError::InvalidEnv(
+                "MIN_NET_PROFIT_LAMPORTS".to_string(),
+                "must be positive".to_string(),
+            ));
+        }
+        config.strategy.min_net_profit_abs.0 = config.strategy.min_net_profit_abs.0.max(value);
+    }
+    if let Ok(raw) = std::env::var("MIN_NET_PROFIT_BPS") {
+        let value: u16 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MIN_NET_PROFIT_BPS".to_string(),
+                "must be an integer".to_string(),
+            )
+        })?;
+        config.strategy.min_net_profit_bps.0 = config.strategy.min_net_profit_bps.0.max(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_PRICE_IMPACT_BPS") {
+        let value: u16 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MAX_PRICE_IMPACT_BPS".to_string(),
+                "must be an integer".to_string(),
+            )
+        })?;
+        config.strategy.max_price_impact_bps.0 = config.strategy.max_price_impact_bps.0.min(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_SLIPPAGE_BPS") {
+        let value: u16 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MAX_SLIPPAGE_BPS".to_string(),
+                "must be an integer".to_string(),
+            )
+        })?;
+        if u64::from(value) > arb_constants::HOP_SLIPPAGE_MAX_BPS {
+            return Err(ConfigError::InvalidEnv(
+                "MAX_SLIPPAGE_BPS".to_string(),
+                "exceeds HOP_SLIPPAGE_MAX_BPS".to_string(),
+            ));
+        }
+        config.strategy.hop_slippage_bps.0 = config.strategy.hop_slippage_bps.0.min(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_PRIORITY_FEE") {
+        let value: u16 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MAX_PRIORITY_FEE".to_string(),
+                "must be an integer basis-point share".to_string(),
+            )
+        })?;
+        config.strategy.priority_fee_max_share_bps.0 =
+            config.strategy.priority_fee_max_share_bps.0.min(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_CONCURRENT_TRADES") {
+        let value: usize = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MAX_CONCURRENT_TRADES".to_string(),
+                "must be a positive integer".to_string(),
+            )
+        })?;
+        if value == 0 {
+            return Err(ConfigError::InvalidEnv(
+                "MAX_CONCURRENT_TRADES".to_string(),
+                "must be positive".to_string(),
+            ));
+        }
+        config.risk.max_inflight_bundles = config.risk.max_inflight_bundles.min(value);
+    }
+    if let Ok(raw) = std::env::var("MAX_TRANSACTION_FAILURES") {
+        let value: u64 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "MAX_TRANSACTION_FAILURES".to_string(),
+                "must be a positive integer".to_string(),
+            )
+        })?;
+        if value == 0 {
+            return Err(ConfigError::InvalidEnv(
+                "MAX_TRANSACTION_FAILURES".to_string(),
+                "must be positive".to_string(),
+            ));
+        }
+        config.risk.max_consecutive_failures = config.risk.max_consecutive_failures.min(value);
+    }
+    if let Ok(raw) = std::env::var("CHRONOS_ENABLED") {
+        let enabled = match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => {
+                return Err(ConfigError::InvalidEnv(
+                    "CHRONOS_ENABLED".to_string(),
+                    "must be true or false".to_string(),
+                ));
+            }
+        };
+        config.chronos.enabled &= enabled;
+    }
     // Chronos overrides.
     if let Ok(raw) = std::env::var("CHRONOS_DECAY_LAMBDA_PER_SEC") {
         let value: f64 = raw.parse().map_err(|_| {
@@ -84,7 +224,7 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
         let value: u64 = raw
             .parse()
             .map_err(|_| ConfigError::InvalidEnv("CHRONOS_MAX_AGE_MS".to_string(), raw.clone()))?;
-        config.chronos.max_age_ms = Milliseconds(value);
+        config.chronos.max_age_ms = Milliseconds(config.chronos.max_age_ms.0.min(value));
     }
     if let Ok(raw) = std::env::var("CHRONOS_MIN_EV_USD") {
         let value: f64 = raw
@@ -96,7 +236,7 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
                 "must be finite and non-negative".to_string(),
             ));
         }
-        config.chronos.min_ev_usd = usd_micros_from_f64(value);
+        config.chronos.min_ev_usd = config.chronos.min_ev_usd.max(usd_micros_from_f64(value));
     }
 
     Ok(())

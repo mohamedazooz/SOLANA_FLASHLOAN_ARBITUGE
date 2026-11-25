@@ -244,9 +244,13 @@ async fn main() -> Result<()> {
         .unwrap_or(arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS);
     let mut graph = MarketGraph::new(vec![MintId(wsol)]);
     graph.set_economic_config(
-        verified
-            .clone()
-            .into_economic_config(TokenAmount(min_profit)),
+        verified.clone().into_economic_config(
+            TokenAmount(min_profit),
+            app_config
+                .as_ref()
+                .map(|c| u64::from(c.strategy.hop_slippage_bps.0))
+                .unwrap_or(arb_constants::DEFAULT_HOP_SLIPPAGE_BPS),
+        ),
     );
     graph.build_from_pools(&live_pools);
     let edge_count = graph.edges_by_from.values().map(|v| v.len()).sum::<usize>();

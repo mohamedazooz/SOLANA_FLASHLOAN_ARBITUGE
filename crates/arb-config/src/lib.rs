@@ -204,6 +204,9 @@ pub struct StrategyConfig {
     pub min_net_profit_bps: Bps,
     /// Maximum price impact in basis points.
     pub max_price_impact_bps: Bps,
+    /// Per-hop min-out haircut in basis points; capped by HOP_SLIPPAGE_MAX_BPS.
+    #[serde(default = "default_hop_slippage_bps")]
+    pub hop_slippage_bps: Bps,
     /// Maximum pool state age in slots for fresh quotes.
     pub max_state_age_slots: Slot,
     /// Maximum slot age for a pool to enter the discovery graph. None → same
@@ -244,6 +247,10 @@ pub struct StrategyConfig {
     /// Maximum share of gross profit allocated to priority fee under peak competition (bps).
     #[serde(default = "default_priority_fee_max_share_bps")]
     pub priority_fee_max_share_bps: Bps,
+}
+
+fn default_hop_slippage_bps() -> Bps {
+    Bps(arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16)
 }
 
 fn default_max_route_hops() -> usize {
@@ -429,7 +436,7 @@ impl AppConfig {
             jupiter: JupiterConfig {
                 base_url: "https://api.jup.ag/swap/v2".to_string(),
                 api_key_env: "JUPITER_API_KEY".to_string(),
-                timeout_ms: Milliseconds(400),
+                timeout_ms: Milliseconds(3_000),
             },
             wallet: WalletConfig {
                 keypair_path: "solana_keypair.json".to_string(),
@@ -444,6 +451,7 @@ impl AppConfig {
                 min_net_profit_abs: Lamports(50_000),
                 min_net_profit_bps: Bps(5),
                 max_price_impact_bps: Bps(40),
+                hop_slippage_bps: default_hop_slippage_bps(),
                 max_state_age_slots: Slot(2),
                 graph_max_age_slots: None,
                 use_flash_loan: true,

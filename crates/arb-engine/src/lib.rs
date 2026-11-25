@@ -387,12 +387,8 @@ impl MarketGraph {
         // both anchored to a compounded per-hop slippage haircut of the expected
         // final output, never to `expected_out` itself. Fail closed on any
         // haircut arithmetic failure by rejecting the opportunity.
-        let minimum_final_out = slippage_haircut_min_final(
-            final_out_u64,
-            hops.len(),
-            arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
-        )
-        .ok()?;
+        let minimum_final_out =
+            slippage_haircut_min_final(final_out_u64, hops.len(), config.hop_slippage_bps).ok()?;
         let quote_timestamp_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -438,7 +434,7 @@ impl MarketGraph {
         .ok()?;
 
         Some(ExecutionOpportunity {
-            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            hop_slippage_bps: config.hop_slippage_bps,
             route_id,
             slot: current_slot,
             size_in: TokenAmount(size_in),
@@ -1028,6 +1024,7 @@ mod tests {
             lamports_to_base_mint_rate: 1,
             lamports_to_base_rate_denom: 1,
             min_profit_raw: TokenAmount::ZERO,
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         }
     }
     use arb_types::{DexProtocol, MintId, PoolId, PoolKind, Slot};
@@ -1269,7 +1266,9 @@ mod tests {
         let p1 = make_pool(10, 1, 2, 1_000_000, 1_000_000);
         let p2 = make_pool(20, 2, 1, 1_000_000, 1_050_000);
 
-        let mut graph = MarketGraph::new(vec![base]).with_economic_config(test_config());
+        let mut economic = test_config();
+        economic.hop_slippage_bps = 50;
+        let mut graph = MarketGraph::new(vec![base]).with_economic_config(economic);
         graph.build_from_pools(&[p1, p2]);
 
         let opps = graph.find_base_cycles(Slot(1), 100_000);
@@ -1277,6 +1276,7 @@ mod tests {
         let opp = &opps[0];
         let expected = opp.expected_out.as_u64();
         let min_final = opp.expected_min_final_output;
+        assert_eq!(opp.hop_slippage_bps, 50);
         assert!(
             min_final > 0,
             "haircut floor must be set, not the 0 sentinel"
@@ -1284,13 +1284,8 @@ mod tests {
         assert!(min_final < expected, "haircut floor must be < expected_out");
         assert_eq!(
             min_final,
-            arb_math::economic::slippage_haircut_min_final(
-                expected,
-                opp.hops.len(),
-                arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
-            )
-            .unwrap(),
-            "floor must equal the canonical compounded haircut"
+            arb_math::economic::slippage_haircut_min_final(expected, opp.hops.len(), 50,).unwrap(),
+            "floor must equal the configured compounded haircut"
         );
     }
 
@@ -1309,6 +1304,7 @@ mod tests {
             lamports_to_base_mint_rate: 1,
             lamports_to_base_rate_denom: 1,
             min_profit_raw: TokenAmount(u64::MAX),
+            hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
         };
         let mut graph = MarketGraph::new(vec![base]).with_economic_config(config);
         graph.build_from_pools(&[p1, p2]);
