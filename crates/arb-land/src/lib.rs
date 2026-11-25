@@ -104,7 +104,7 @@ impl TipStrategy {
     ) -> Self {
         Self {
             share_bps,
-            max_share_bps: share_bps.max(7500),
+            max_share_bps: share_bps.max(arb_constants::DEFAULT_JITO_MAX_TIP_SHARE_BPS),
             floor_lamports,
             cap_lamports,
             min_keep_lamports,

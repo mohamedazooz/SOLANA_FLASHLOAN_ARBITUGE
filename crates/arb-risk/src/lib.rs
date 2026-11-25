@@ -348,17 +348,17 @@ impl Default for RiskLimits {
         Self {
             max_trade_size_usd: 25.0,
             min_net_profit_abs: arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS,
-            min_net_profit_bps: 8,
+            min_net_profit_bps: 1,
             max_price_impact_bps: 40,
             max_state_age_slots: 2,
             max_tip_share_bps: arb_constants::DEFAULT_JITO_MAX_TIP_SHARE_BPS,
-            max_tip_lamports: 2_000_000,
+            max_tip_lamports: 125_000,
             max_daily_loss_usd: 5.0,
             max_hourly_loss_usd: 2.0,
             // Phase E defaults
             min_landing_rate: 0.02,
             max_inflight_bundles: 2,
-            max_tip_spend_ratio: 0.7,
+            max_tip_spend_ratio: 0.10,
             max_orders_per_hour: 120,
         }
     }
@@ -372,7 +372,7 @@ pub struct ChronosRiskConfig {
     pub decay_lambda_per_sec: f64,
     /// Maximum allowable age in milliseconds before auto-dropping (default 400ms = 1 slot)
     pub max_age_ms: u64,
-    /// Minimum expected value in USD required for execution approval (default $0.05)
+    /// Minimum expected value in USD required for execution approval (default $0.01)
     pub min_ev_usd: f64,
     /// Estimated failed transaction cost overhead in lamports
     pub failed_attempt_cost_lamports: u64,
@@ -386,7 +386,7 @@ impl Default for ChronosRiskConfig {
             enabled: true,
             decay_lambda_per_sec: 3.0,
             max_age_ms: 400,
-            min_ev_usd: 0.05,
+            min_ev_usd: 0.01,
             failed_attempt_cost_lamports: 10_000,
             beta_risk_factor: 0.0005,
         }
@@ -1238,10 +1238,14 @@ mod tests {
             Arc::new(CircuitBreaker::default()),
             Arc::new(KillSwitch::default()),
         );
+        assert_eq!(RiskLimits::default().min_net_profit_abs, 10_000);
+        assert_eq!(RiskLimits::default().min_net_profit_bps, 1);
+        assert_eq!(RiskLimits::default().max_tip_share_bps, 1_000);
+        assert!((RiskLimits::default().max_tip_spend_ratio - 0.10).abs() < f64::EPSILON);
         assert!(rg.check_trade_size(10.0).is_ok());
         assert!(rg.check_trade_size(100.0).is_err());
-        assert!(rg.check_tip_share(8000).is_ok()); // 80% is within 70-85% dynamic cap
-        assert!(rg.check_tip_share(9000).is_err()); // 90% exceeds 85% cap
+        assert!(rg.check_tip_share(1000).is_ok()); // 10% is the configured default cap
+        assert!(rg.check_tip_share(1001).is_err()); // Above the 10% default cap is rejected
         assert!(rg.check_price_impact(50).is_err());
         assert!(rg.check_state_age(5).is_err());
     }
@@ -1276,7 +1280,7 @@ mod tests {
             priority_fee_lamports: 10_000,
             failed_attempt_cost_lamports: 10_000,
             sol_price_usd: 150.0,
-            min_ev_usd: 0.05,
+            min_ev_usd: 0.01,
         };
 
         let res = evaluate_chronos_ev(input).expect("ev evaluation success");
@@ -1300,7 +1304,7 @@ mod tests {
             priority_fee_lamports: 10_000,
             failed_attempt_cost_lamports: 10_000,
             sol_price_usd: 150.0,
-            min_ev_usd: 0.05,
+            min_ev_usd: 0.01,
         };
 
         let res = evaluate_chronos_ev(input).expect("ev calculation");

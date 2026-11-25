@@ -127,7 +127,7 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
                 "must be positive".to_string(),
             ));
         }
-        config.strategy.min_net_profit_abs.0 = config.strategy.min_net_profit_abs.0.max(value);
+        config.strategy.min_net_profit_abs.0 = value;
     }
     if let Ok(raw) = std::env::var("MIN_NET_PROFIT_BPS") {
         let value: u16 = raw.parse().map_err(|_| {
@@ -136,7 +136,7 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
                 "must be an integer".to_string(),
             )
         })?;
-        config.strategy.min_net_profit_bps.0 = config.strategy.min_net_profit_bps.0.max(value);
+        config.strategy.min_net_profit_bps.0 = value;
     }
     if let Ok(raw) = std::env::var("MAX_PRICE_IMPACT_BPS") {
         let value: u16 = raw.parse().map_err(|_| {
@@ -173,6 +173,36 @@ fn apply_env_overrides(config: &mut AppConfig) -> ConfigResult<()> {
         })?;
         config.strategy.priority_fee_max_share_bps.0 =
             config.strategy.priority_fee_max_share_bps.0.min(value);
+    }
+    if let Ok(raw) = std::env::var("JITO_MIN_KEEP_LAMPORTS") {
+        let value: u64 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "JITO_MIN_KEEP_LAMPORTS".to_string(),
+                "must be an integer".to_string(),
+            )
+        })?;
+        if value == 0 {
+            return Err(ConfigError::InvalidEnv(
+                "JITO_MIN_KEEP_LAMPORTS".to_string(),
+                "must be positive".to_string(),
+            ));
+        }
+        config.jito.min_keep_lamports.0 = value;
+    }
+    if let Ok(raw) = std::env::var("JITO_MAX_TIP_SHARE_BPS") {
+        let value: u16 = raw.parse().map_err(|_| {
+            ConfigError::InvalidEnv(
+                "JITO_MAX_TIP_SHARE_BPS".to_string(),
+                "must be an integer".to_string(),
+            )
+        })?;
+        if value == 0 || value > 10_000 {
+            return Err(ConfigError::InvalidEnv(
+                "JITO_MAX_TIP_SHARE_BPS".to_string(),
+                "must be in 1..=10000".to_string(),
+            ));
+        }
+        config.jito.max_tip_share_bps.0 = config.jito.max_tip_share_bps.0.min(value);
     }
     if let Ok(raw) =
         std::env::var("MAX_INFLIGHT_BUNDLES").or_else(|_| std::env::var("MAX_CONCURRENT_TRADES"))
@@ -272,6 +302,47 @@ pub fn parse_raw_toml(contents: &str) -> ConfigResult<HashMap<String, IgnoredAny
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn env_can_lower_profit_hurdles_and_bound_tip_spend() {
+        let keys = [
+            "MIN_NET_PROFIT_LAMPORTS",
+            "MIN_NET_PROFIT_BPS",
+            "JITO_MIN_KEEP_LAMPORTS",
+            "JITO_MAX_TIP_SHARE_BPS",
+            "MAX_PRIORITY_FEE_SHARE_BPS",
+        ];
+        let previous: Vec<_> = keys
+            .iter()
+            .map(|key| (key.to_string(), std::env::var(key).ok()))
+            .collect();
+        unsafe {
+            std::env::set_var("MIN_NET_PROFIT_LAMPORTS", "10000");
+            std::env::set_var("MIN_NET_PROFIT_BPS", "1");
+            std::env::set_var("JITO_MIN_KEEP_LAMPORTS", "10000");
+            std::env::set_var("JITO_MAX_TIP_SHARE_BPS", "1000");
+            std::env::set_var("MAX_PRIORITY_FEE_SHARE_BPS", "500");
+        }
+        let mut config = AppConfig::default_safe();
+        config.strategy.min_net_profit_abs.0 = 50_000;
+        config.strategy.min_net_profit_bps.0 = 5;
+        config.jito.max_tip_share_bps.0 = 2_000;
+        let result = apply_env_overrides(&mut config);
+        for (key, value) in previous {
+            unsafe {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+        result.expect("valid lower strategy and Jito caps");
+        assert_eq!(config.strategy.min_net_profit_abs.0, 10_000);
+        assert_eq!(config.strategy.min_net_profit_bps.0, 1);
+        assert_eq!(config.jito.min_keep_lamports.0, 10_000);
+        assert_eq!(config.jito.max_tip_share_bps.0, 1_000);
+        assert_eq!(config.strategy.priority_fee_max_share_bps.0, 500);
+    }
 
     #[test]
     fn strict_loader_rejects_unknown_top_level_keys() {

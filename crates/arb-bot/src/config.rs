@@ -46,7 +46,7 @@ fn default_max_age_ms() -> u64 {
     400
 }
 fn default_min_ev_usd() -> f64 {
-    0.05
+    0.01
 }
 fn default_failed_cost() -> u64 {
     10_000
@@ -55,7 +55,7 @@ fn default_beta_risk() -> f64 {
     0.0005
 }
 fn default_keep_share() -> f64 {
-    0.85
+    0.90
 }
 fn default_ladder_growth() -> f64 {
     1.6
@@ -168,7 +168,7 @@ impl Default for ChronosConfig {
             enabled: true,
             decay_lambda_per_sec: 3.0,
             max_age_ms: 400,
-            min_ev_usd: 0.05,
+            min_ev_usd: 0.01,
             failed_attempt_cost_lamports: 10_000,
             beta_risk_factor: 0.0005,
         }
@@ -692,7 +692,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         std::env::var("MIN_NET_PROFIT").or_else(|_| std::env::var("MIN_NET_PROFIT_LAMPORTS"))
     {
         if let Ok(value) = raw.trim().parse::<u64>() {
-            config.strategy.min_net_profit_abs = config.strategy.min_net_profit_abs.max(value);
+            config.strategy.min_net_profit_abs = value;
         }
     }
     // Apply the same optional USD floor in both AppConfig and legacy BotConfig
@@ -707,7 +707,29 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
         }
     }
 
-    // Priority fee share override (legacy MAX_PRIORITY_FEE alias retained)
+    if let Ok(raw) = std::env::var("JITO_MIN_KEEP_LAMPORTS") {
+        let value: u64 = raw
+            .trim()
+            .parse()
+            .context("JITO_MIN_KEEP_LAMPORTS must be an integer")?;
+        if value == 0 {
+            anyhow::bail!("JITO_MIN_KEEP_LAMPORTS must be positive");
+        }
+        config.jito.min_keep_lamports = value;
+    }
+    if let Ok(raw) = std::env::var("JITO_MAX_TIP_SHARE_BPS") {
+        let value: u64 = raw
+            .trim()
+            .parse()
+            .context("JITO_MAX_TIP_SHARE_BPS must be an integer")?;
+        if value == 0 || value > 10_000 {
+            anyhow::bail!("JITO_MAX_TIP_SHARE_BPS must be in 1..=10000");
+        }
+        config.jito.max_tip_share_bps = config.jito.max_tip_share_bps.min(value);
+        if config.jito.tip_share_bps > config.jito.max_tip_share_bps {
+            anyhow::bail!("JITO_MAX_TIP_SHARE_BPS cannot be lower than JITO_TIP_SHARE_BPS");
+        }
+    } // Priority fee share override (legacy MAX_PRIORITY_FEE alias retained)
     if let Ok(raw) =
         std::env::var("MAX_PRIORITY_FEE_SHARE_BPS").or_else(|_| std::env::var("MAX_PRIORITY_FEE"))
     {
@@ -753,7 +775,7 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
             .trim()
             .parse()
             .context("MIN_NET_PROFIT_BPS must be an integer")?;
-        config.strategy.min_net_profit_bps = config.strategy.min_net_profit_bps.max(value);
+        config.strategy.min_net_profit_bps = value;
     }
     if let Ok(raw) = std::env::var("MAX_PRICE_IMPACT_BPS") {
         let value: u64 = raw
@@ -832,7 +854,9 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
 
     if config.strategy.use_flash_loan {
         use tracing::info;
-        info!("⚡ Flash Loan enabled — zero-risk atomic flash loan execution active");
+        info!(
+            "⚡ Flash Loan enabled — atomic borrow/repay path configured; risk gates still apply"
+        );
     }
 
     validate_live_freshness(&config, crate::live_execution_enabled())?;

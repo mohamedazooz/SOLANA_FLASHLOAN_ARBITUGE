@@ -29,6 +29,8 @@ pub struct QuoteRequest {
 /// `total_fee` is authoritative. Some venues expose only an aggregate rate in
 /// the quote state; their component fields remain zero rather than inventing
 /// an LP/protocol/fund allocation that was not decoded from the live config.
+/// These values are diagnostic only when `amount_out_raw` is used for PnL:
+/// swap output already reflects pool fees, so callers must not deduct them again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FeesBreakdown {
     pub lp_fee: u64,

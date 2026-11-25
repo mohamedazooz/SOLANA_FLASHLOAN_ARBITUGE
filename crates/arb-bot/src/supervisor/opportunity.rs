@@ -255,7 +255,12 @@ impl Supervisor {
             // Phase E: use measured CU if available, otherwise fall back to estimate
             let measured_cu = self.measured_cu.lock().get(&route_sig).copied();
             let base_cu = measured_cu.unwrap_or(estimated_cu);
-            let cu_limit = arb_tx::calculate_dynamic_cu_limit(base_cu);
+            // Official Solana guidance: simulate, then add 10% headroom.
+            // Until a route has a measured sample, retain the wider 15% estimate margin.
+            let cu_limit = match measured_cu {
+                Some(measured) => arb_tx::calculate_dynamic_cu_limit_with_buffer(measured, 1_000),
+                None => arb_tx::calculate_dynamic_cu_limit(estimated_cu),
+            };
             let desired_cu_price = {
                 let recent = self.recent_landed_cu.lock().clone();
                 self.tip_strategy.adaptive_cu_price(&recent)

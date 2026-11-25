@@ -10,7 +10,7 @@
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_math::clmm::{
-    ClmmTickMath, TickArrayFacade, TickFacade, quote_clmm_with_ticks_per_array_and_math,
+    ClmmTickMath, TickArrayFacade, TickFacade, compute_swap_with_ticks_per_array_and_math,
 };
 use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
 use std::time::Instant;
@@ -101,19 +101,20 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
         // 3. Compute CLMM swap step traversal with the Raydium tick-math regime.
         // Raydium's `tick_math` rounds differently from Orca's, so sharing the
         // Orca table would drift on every tick boundary.
-        let gross_out = quote_clmm_with_ticks_per_array_and_math(
-            input_net_into_pool,
+        let swap_quote = compute_swap_with_ticks_per_array_and_math(
             clmm_state.sqrt_price,
             clmm_state.tick_current,
             clmm_state.liquidity,
             clmm_state.tick_spacing,
             clmm_state.fee_rate,
+            input_net_into_pool,
             a_to_b,
             &arrays,
             RAYDIUM_CLMM_TICK_ARRAY_SIZE,
             ClmmTickMath::Raydium,
         )
         .map_err(|e| ArbError::CalculationError(format!("Raydium CLMM step swap failed: {e:?}")))?;
+        let gross_out = swap_quote.amount_out_received;
 
         if gross_out == 0 {
             return Err(ArbError::InsufficientLiquidity(
@@ -128,8 +129,7 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
         // 5. Slippage calculation
         let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
-        let fee_amount =
-            (input_net_into_pool as u128 * clmm_state.fee_rate as u128 / 1_000_000) as u64;
+        let fee_amount = swap_quote.fee_paid;
         let elapsed = start_time.elapsed().as_micros() as u64;
 
         Ok(QuoteResult {

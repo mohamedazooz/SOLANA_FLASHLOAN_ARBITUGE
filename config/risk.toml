@@ -14,13 +14,13 @@ min_landing_rate = 0.02             # 2% minimum historical landing rate
 max_attempts_per_slot = 3           # Max bundle attempts per slot
 cooldown_slots = 75                 # 75 slots (~30s) breaker cooldown window
 max_inflight_bundles = 2            # Max concurrent bundles per slot
-max_tip_spend_ratio = 0.7           # Tip / (tip + net) must not exceed 70%
+max_tip_spend_ratio = 0.10  # Tip / (tip + net) must not exceed 10%
 
 # [risk] Chronos EV gate configuration
 [risk.chronos]
 decay_lambda_per_sec = 3.0          # Hazard rate per second (λ)
 max_age_ms = 400                    # 1 Solana slot latency ceiling (400ms)
-min_ev_usd = 0.05                   # Minimum Expected Value in USD required for execution
+min_ev_usd = 0.01                   # Minimum Expected Value in USD required for execution
 failed_attempt_cost_lamports = 10000  # Conservative estimate of failed attempt overhead
 beta_risk_factor = 0.0005           # Hop execution risk penalty factor
 

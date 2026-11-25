@@ -636,7 +636,11 @@ mod tests {
 
     #[test]
     fn test_contention_aware_hurdle_allows_calm_dlmm_edge() {
-        let b = AdaptiveBidder::default();
+        let b = AdaptiveBidder::new(BidderConfig {
+            profit_floor: Lamports(30_000),
+            ..BidderConfig::default()
+        })
+        .unwrap();
         let ledger = LandingLedger::new();
         let edge = Lamports(23_000); // 23k lamports edge (like slot 465880662)
 
