@@ -223,3 +223,76 @@ fn versioned_mainnet_snapshot_has_coherent_slot_owners_and_vault_mints() {
         );
     }
 }
+
+/// The legacy arb-dex adapter is also fed the exact same captured account bytes.
+/// This prevents the ingest fixture from passing while a second decoder accepts
+/// truncated PoolState/AmmConfig layouts or disagrees on reserve accounting.
+#[test]
+fn mainnet_snapshot_is_accepted_consistently_by_legacy_arb_dex_path() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/raydium_cpmm_mainnet/sol_usdc_confirmed_2026-11-25.json"
+    ))
+    .unwrap();
+    let accounts = &fixture["accounts"];
+    let decode = |name: &str| {
+        BASE64_STANDARD
+            .decode(accounts[name]["data_base64"].as_str().unwrap())
+            .unwrap()
+    };
+    let pool_bytes = decode("pool");
+    let config_bytes = decode("amm_config");
+    let pool_id =
+        arb_types::PoolId(Pubkey::from_str(fixture["pool_address"].as_str().unwrap()).unwrap());
+
+    let decoded = arb_dex::decoders::DecodedRaydiumCpmmPool::decode(pool_id, &pool_bytes)
+        .expect("arb-dex full PoolState decoder accepts captured mainnet bytes");
+    assert_eq!(
+        decoded.amm_config,
+        Pubkey::from_str(accounts["amm_config"]["address"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        decoded.token_0_vault,
+        Pubkey::from_str(accounts["vault0"]["address"].as_str().unwrap()).unwrap()
+    );
+
+    let ingest_state = arb_ingest::decoders::decode_raydium_cpmm_pool_accounting(&pool_bytes)
+        .expect("canonical ingest decoder accepts the same snapshot");
+    assert_eq!(decoded.protocol_fees_token_0, ingest_state.protocol_fees[0]);
+    assert_eq!(decoded.protocol_fees_token_1, ingest_state.protocol_fees[1]);
+    assert_eq!(decoded.fund_fees_token_0, ingest_state.fund_fees[0]);
+    assert_eq!(decoded.fund_fees_token_1, ingest_state.fund_fees[1]);
+    assert_eq!(decoded.creator_fees_token_0, ingest_state.creator_fees[0]);
+    assert_eq!(decoded.creator_fees_token_1, ingest_state.creator_fees[1]);
+    assert!(!decoded.enable_creator_fee);
+    assert_eq!(decoded.creator_fee_on, 0);
+    let mut legacy = arb_dex::RaydiumCpmmPool::from_account(pool_id, &pool_bytes)
+        .expect("legacy arb-dex pool parser accepts captured mainnet bytes");
+    legacy
+        .apply_amm_config_data(&config_bytes)
+        .expect("legacy arb-dex AmmConfig parser accepts captured mainnet bytes");
+    assert_eq!(legacy.trade_fee_rate_ppm, 2_500);
+    assert_eq!(legacy.creator_fee_rate_ppm, 500);
+
+    let vault0 = decode("vault0");
+    let vault1 = decode("vault1");
+    let raw0 = u64::from_le_bytes(vault0[64..72].try_into().unwrap());
+    let raw1 = u64::from_le_bytes(vault1[64..72].try_into().unwrap());
+    legacy.update_reserves(raw0, raw1);
+    assert_eq!(
+        legacy.reserve_0,
+        u128::from(raw0 - legacy.protocol_fees_0 - legacy.fund_fees_0 - legacy.creator_fees_0)
+    );
+    assert_eq!(
+        legacy.reserve_1,
+        u128::from(raw1 - legacy.protocol_fees_1 - legacy.fund_fees_1 - legacy.creator_fees_1)
+    );
+
+    assert!(arb_dex::RaydiumCpmmPool::from_account(pool_id, &pool_bytes[..412]).is_err());
+    assert!(
+        arb_dex::decoders::DecodedRaydiumCpmmPool::decode(pool_id, &pool_bytes[..412]).is_err()
+    );
+    assert!(legacy.apply_amm_config_data(&config_bytes[..235]).is_err());
+    let mut invalid_config = config_bytes;
+    invalid_config[0] ^= 0xff;
+    assert!(legacy.apply_amm_config_data(&invalid_config).is_err());
+}

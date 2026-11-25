@@ -9,7 +9,7 @@ use arb_types::{
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
-pub const RAYDIUM_CPMM_POOL_MIN_SIZE: usize = 373;
+pub const RAYDIUM_CPMM_POOL_MIN_SIZE: usize = 637;
 pub const RAYDIUM_CPMM_FEE_DENOMINATOR: u128 = 1_000_000;
 
 #[derive(Debug, Clone)]
@@ -109,9 +109,11 @@ impl RaydiumCpmmPool {
     /// trade_fee_rate: offset 12..20 (u64 @ 1e6 ppm).
     /// creator_fee_rate: offset 108..116 (u64 @ 1e6 ppm).
     pub fn apply_amm_config_data(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() < 20 {
+        const AMM_CONFIG_LEN: usize = 236;
+        const AMM_CONFIG_DISCRIMINATOR: [u8; 8] = [0xda, 0xf4, 0x21, 0x68, 0xcb, 0xcb, 0x2b, 0x6f];
+        if data.len() < AMM_CONFIG_LEN || data.get(..8) != Some(&AMM_CONFIG_DISCRIMINATOR) {
             return Err(ArbError::DeserializationError(
-                "Raydium CPMM AmmConfig account truncated".into(),
+                "Raydium CPMM AmmConfig has invalid length or discriminator".into(),
             ));
         }
         let trade_fee = u64::from_le_bytes(
@@ -119,14 +121,20 @@ impl RaydiumCpmmPool {
                 .try_into()
                 .map_err(|_| ArbError::DeserializationError("bad amm_config trade fee".into()))?,
         );
-        if trade_fee > 100_000 {
+        if trade_fee == 0 || trade_fee > 100_000 {
             return Err(ArbError::InvalidInput(format!(
                 "Raydium CPMM AmmConfig trade_fee_rate {trade_fee} exceeds the program maximum 100,000 ppm"
             )));
         }
+        let protocol_fee = u64::from_le_bytes(data[20..28].try_into().unwrap());
+        let fund_fee = u64::from_le_bytes(data[28..36].try_into().unwrap());
+        if protocol_fee > 1_000_000 || fund_fee > 1_000_000 || protocol_fee + fund_fee > 1_000_000 {
+            return Err(ArbError::InvalidInput(
+                "Raydium CPMM AmmConfig protocol/fund fee allocation is invalid".into(),
+            ));
+        }
         self.trade_fee_rate_ppm = trade_fee;
-
-        if data.len() >= 116 {
+        {
             let creator_fee = u64::from_le_bytes(data[108..116].try_into().map_err(|_| {
                 ArbError::DeserializationError("bad amm_config creator fee".into())
             })?);
@@ -137,6 +145,7 @@ impl RaydiumCpmmPool {
             }
             self.creator_fee_rate_ppm = creator_fee;
         }
+        self.trade_fee_rate_ppm = trade_fee;
         self.amm_config_loaded = true;
         Ok(())
     }
@@ -267,20 +276,29 @@ impl AmmPool for RaydiumCpmmPool {
     }
 
     fn update_from_account(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() < RAYDIUM_CPMM_POOL_MIN_SIZE {
+        const POOL_STATE_DISCRIMINATOR: [u8; 8] = [247, 237, 227, 245, 215, 195, 222, 70];
+        if data.len() < RAYDIUM_CPMM_POOL_MIN_SIZE
+            || data.get(..8) != Some(&POOL_STATE_DISCRIMINATOR)
+        {
             return Err(ArbError::DeserializationError(format!(
-                "Raydium CPMM pool data {} < {}",
-                data.len(),
-                RAYDIUM_CPMM_POOL_MIN_SIZE
+                "Raydium CPMM PoolState has invalid length or discriminator ({} bytes)",
+                data.len()
             )));
         }
         let read_pk = |off: usize| -> Result<Pubkey> {
             let b: [u8; 32] = data[off..off + 32]
                 .try_into()
                 .map_err(|_| ArbError::DeserializationError("bad pubkey slice".into()))?;
-            Ok(Pubkey::new_from_array(b))
+            let key = Pubkey::new_from_array(b);
+            if key == Pubkey::default() {
+                return Err(ArbError::DeserializationError(format!(
+                    "Raydium CPMM PoolState has default pubkey at offset {off}"
+                )));
+            }
+            Ok(key)
         };
         let t2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default();
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default();
 
         self.amm_config = read_pk(8)?;
         self.token_0_vault = read_pk(72)?;
@@ -289,6 +307,11 @@ impl AmmPool for RaydiumCpmmPool {
         self.token_1_mint = MintId(read_pk(200)?);
         let p0 = read_pk(232)?;
         let p1 = read_pk(264)?;
+        if ![spl, t2022].contains(&p0) || ![spl, t2022].contains(&p1) {
+            return Err(ArbError::InvalidInput(
+                "Raydium CPMM has an unsupported token program id".into(),
+            ));
+        }
         self.token_0_program = if p0 == t2022 {
             TokenProgramKind::Token2022
         } else {
@@ -300,6 +323,16 @@ impl AmmPool for RaydiumCpmmPool {
             TokenProgramKind::SplToken
         };
         self.observation_key = read_pk(296)?;
+        if data[389] > 2 || data[390] > 1 {
+            return Err(ArbError::DeserializationError(
+                "Raydium CPMM PoolState has invalid creator-fee flags".into(),
+            ));
+        }
+        if data[331] > 18 || data[332] > 18 {
+            return Err(ArbError::DeserializationError(
+                "Raydium CPMM PoolState has invalid mint decimals".into(),
+            ));
+        }
         self.status = data[329];
         self.mint_0_decimals = data[331];
         self.mint_1_decimals = data[332];
@@ -403,6 +436,13 @@ mod tests {
     /// Minimal live-shaped CPMM `PoolState` (8-byte discriminator + 637 bytes).
     fn pool_state_bytes(creator_fee_on: u8, enable_creator_fee: bool) -> Vec<u8> {
         let mut data = vec![0u8; POOL_LEN];
+        data[0..8].copy_from_slice(&[247, 237, 227, 245, 215, 195, 222, 70]);
+        data[8..40].copy_from_slice(&[1u8; 32]);
+        data[40..72].copy_from_slice(&[2u8; 32]);
+        data[136..168].copy_from_slice(&[3u8; 32]);
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        data[232..264].copy_from_slice(spl.as_ref());
+        data[264..296].copy_from_slice(spl.as_ref());
         data[72..104].copy_from_slice(&[7u8; 32]); // token_0_vault
         data[104..136].copy_from_slice(&[8u8; 32]); // token_1_vault
         data[168..200].copy_from_slice(&[9u8; 32]); // token_0_mint
@@ -418,6 +458,7 @@ mod tests {
 
     fn amm_config_bytes(trade_fee: u64, creator_fee: u64) -> Vec<u8> {
         let mut data = vec![0u8; 236];
+        data[0..8].copy_from_slice(&[0xda, 0xf4, 0x21, 0x68, 0xcb, 0xcb, 0x2b, 0x6f]);
         data[12..20].copy_from_slice(&trade_fee.to_le_bytes());
         data[108..116].copy_from_slice(&creator_fee.to_le_bytes());
         data
@@ -489,10 +530,12 @@ mod tests {
 
     #[test]
     fn invalid_creator_fee_mode_fails_closed() {
-        let p = pool(3, true, 5_000);
-        assert!(p.quote(1_000_000, true).is_err());
+        assert!(RaydiumCpmmPool::from_account(
+            PoolId(Pubkey::new_unique()),
+            &pool_state_bytes(3, true),
+        )
+        .is_err());
     }
-
     #[test]
     fn out_of_range_config_fees_are_rejected_not_clamped() {
         let mut p =
