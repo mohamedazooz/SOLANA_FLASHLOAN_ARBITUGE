@@ -52,6 +52,7 @@ fn make_pump_fun_pool(
         clmm: None,
         dlmm: None,
         pump_fun: Some(pump_fun),
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: None,

@@ -939,6 +939,7 @@ mod tests {
             clmm: None,
             dlmm: Some(dlmm_state),
             pump_fun: None,
+            damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
             execution_accounts: Some(execution_accounts),

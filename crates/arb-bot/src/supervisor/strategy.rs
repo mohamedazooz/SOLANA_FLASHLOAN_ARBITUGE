@@ -792,6 +792,7 @@ mod rank_tests {
             clmm: None,
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
             execution_accounts: None,

@@ -116,10 +116,15 @@ fn create_protocol_test_pool(
         ),
         is_active,
         has_risky_token: false,
-        kind: protocol.family(),
+        kind: if protocol == DexProtocol::MeteoraDammV2 {
+            arb_types::PoolKind::Clmm
+        } else {
+            protocol.family()
+        },
         clmm,
         dlmm,
         pump_fun,
+        damm_v2: (protocol == DexProtocol::MeteoraDammV2).then(arb_types::DammV2State::default),
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: None,

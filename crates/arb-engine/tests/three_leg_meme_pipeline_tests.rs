@@ -146,6 +146,7 @@ fn make_dlmm_pool(
         clmm: None,
         dlmm: Some(dlmm_state),
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
         execution_accounts: Some(exec),

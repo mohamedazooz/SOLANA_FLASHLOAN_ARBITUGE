@@ -196,14 +196,22 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         Ok(QuoteResult {
             protocol: DexProtocol::RaydiumCpmm,
             pool_id: state.pool_id,
+            total_fee_mint: request.input_mint,
+            creator_fee_mint: if creator_fee_output > 0 {
+                request.output_mint
+            } else {
+                request.input_mint
+            },
             amount_in_raw: request.amount,
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
             fees_breakdown: FeesBreakdown {
                 lp_fee,
+                compounding_fee: 0,
                 protocol_fee,
                 fund_fee,
                 creator_fee,
+                referral_fee: 0,
                 dynamic_fee: 0,
                 // Input-side pool fees only (input mint raw units). When creator
                 // fee is charged on output, creator_fee is in output mint units.
@@ -286,14 +294,18 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         Ok(QuoteResult {
             protocol: DexProtocol::RaydiumCpmm,
             pool_id: state.pool_id,
+            total_fee_mint: request.input_mint,
+            creator_fee_mint: request.input_mint,
             amount_in_raw: req_in,
             amount_out_raw: request.amount,
             minimum_amount_out_raw: request.amount,
             fees_breakdown: FeesBreakdown {
                 lp_fee: 0,
+                compounding_fee: 0,
                 protocol_fee: 0,
                 fund_fee: 0,
                 creator_fee: 0,
+                referral_fee: 0,
                 dynamic_fee: 0,
                 total_fee,
             },

@@ -989,7 +989,7 @@ impl HeliusWsClient {
         }
     }
 
-    /// Queue a pool for targeted derived-account hydration (tick arrays /
+    /// Queue a pool for targeted dependency hydration (DAMM v2 Pool/Vault/Mint/Clock, tick arrays /
     /// bin arrays). Called from the WS update path when coverage fails; the
     /// hydration worker fetches ONLY the needed accounts (event-driven, not
     /// the blanket 750ms poll this replaces).
@@ -1270,6 +1270,115 @@ impl HeliusWsClient {
                         }
                     }
                 }
+                DexProtocol::MeteoraDammV2 => {
+                    // Refresh all Pool/Vault/Mint/Clock dependencies in one RPC
+                    // context whenever the pool account notification changes.
+                    let Ok(pool_decoder) =
+                        arb_dex::MeteoraDammV2Pool::from_account(pool_id, pool_bytes)
+                    else {
+                        continue;
+                    };
+                    let Ok(clock_key) =
+                        Pubkey::from_str("SysvarC1ock11111111111111111111111111111111")
+                    else {
+                        continue;
+                    };
+                    let keys = [
+                        pool_id.0,
+                        pool_decoder.token_a_vault,
+                        pool_decoder.token_b_vault,
+                        pool_decoder.token_a_mint.0,
+                        pool_decoder.token_b_mint.0,
+                        clock_key,
+                    ];
+                    let key_strings: Vec<String> = keys.iter().map(ToString::to_string).collect();
+                    let key_refs: Vec<&str> = key_strings.iter().map(String::as_str).collect();
+                    let Ok((accounts, rpc_context_slot)) = self
+                        .rpc_pool
+                        .get_multiple_accounts_with_slot(&key_refs)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let Some(slot) =
+                        validated_hydration_slot(rpc_context_slot, snap.slot, trigger_slot)
+                    else {
+                        continue;
+                    };
+                    let source_snapshot_unchanged = ingest
+                        .account_store()
+                        .get(&pool_id.0)
+                        .is_some_and(|current| {
+                            current.owner == snap.owner
+                                && current.slot == snap.slot
+                                && current.write_version == snap.write_version
+                                && current.provider_id == snap.provider_id
+                                && current.bank_id == snap.bank_id
+                                && current.generation == snap.generation
+                                && current.data.as_ref() == snap.data.as_ref()
+                        });
+                    if !source_snapshot_unchanged {
+                        continue;
+                    }
+                    let decoded_accounts: Option<Vec<(Vec<u8>, Pubkey)>> = accounts
+                        .iter()
+                        .map(|account| {
+                            let account = account.as_ref()?;
+                            let owner = Pubkey::from_str(account.get("owner")?.as_str()?).ok()?;
+                            let raw = account.get("data")?.get(0)?.as_str()?;
+                            let bytes =
+                                base64::engine::general_purpose::STANDARD.decode(raw).ok()?;
+                            Some((bytes, owner))
+                        })
+                        .collect();
+                    let Some(decoded) = decoded_accounts.filter(|accounts| accounts.len() == 6)
+                    else {
+                        continue;
+                    };
+                    let Some(mut refreshed) = crate::hydration::decode_damm_v2_coherent_pool_state(
+                        pool_id,
+                        slot,
+                        &decoded[0].0,
+                        decoded[0].1,
+                        keys[1],
+                        keys[2],
+                        keys[3],
+                        keys[4],
+                        &decoded[1].0,
+                        decoded[1].1,
+                        &decoded[2].0,
+                        decoded[2].1,
+                        &decoded[3].0,
+                        decoded[3].1,
+                        &decoded[4].0,
+                        decoded[4].1,
+                        &decoded[5].0,
+                        decoded[5].1,
+                    ) else {
+                        continue;
+                    };
+                    let Some(previous) = ingest.cache().get_pool(&pool_id) else {
+                        continue;
+                    };
+                    if slot < previous.last_update_slot {
+                        continue;
+                    }
+                    refreshed.write_version = if slot > previous.last_update_slot {
+                        1
+                    } else {
+                        previous.write_version.saturating_add(1)
+                    };
+                    refreshed.last_update_ms = now_ms;
+                    if matches!(ingest.apply_pool_update(refreshed), Ok(true)) {
+                        self.derived_covered
+                            .lock()
+                            .insert(pool_id, (Vec::new(), Instant::now()));
+                        debug!(
+                            "hydration: DAMM v2 {} refreshed Pool/Vault/Mint/Clock at coherent RPC slot {}",
+                            pool_id.0, slot
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -1445,6 +1554,25 @@ impl HeliusWsClient {
             DexProtocol::RaydiumClmm => {
                 // Do not promote catalog-fee CLMM state. The live AmmConfig and
                 // dynamic-fee configuration are not part of this coherent WS snapshot.
+            }
+            DexProtocol::MeteoraDammV2 => {
+                // Invalidate the previous immutable quote state immediately. The
+                // graph must not rank against an old fee/price snapshot while the
+                // same-context Pool/Vault/Mint/Clock refresh is in flight.
+                state.is_active = false;
+                if let Some(damm) = state.damm_v2.as_mut() {
+                    damm.account_graph_verified = false;
+                }
+                state.slot = update_slot;
+                state.write_version = if slot > state.last_update_slot {
+                    1
+                } else {
+                    state.write_version.saturating_add(1)
+                };
+                state.last_update_slot = slot;
+                state.last_update_ms = now_ms;
+                let _ = ingest.apply_pool_update(state);
+                self.queue_derived_hydration(pool_id, slot);
             }
             DexProtocol::PumpFun => {
                 let Ok(pump_state) =
@@ -2001,6 +2129,7 @@ mod tests {
             clmm: None,
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             token_programs: Default::default(),
             execution_accounts: None,
             transfer_fee_bps: 0,
@@ -2444,6 +2573,7 @@ mod tests {
             clmm: None,
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             token_programs: Default::default(),
             execution_accounts: None,
             transfer_fee_bps: 0,
