@@ -81,10 +81,10 @@ impl TransferFeeConfig {
 
         // target_net <= gross - min(ceil(gross * bps / 10_000), max_fee)
         // If capped by max_fee: gross = target_net + max_fee
-        let gross_if_capped = target_net.checked_add(self.maximum_fee)?;
-        let fee_at_capped = self.calculate_fee(gross_if_capped);
-        if fee_at_capped == self.maximum_fee {
-            return Some(gross_if_capped);
+        if let Some(gross_if_capped) = target_net.checked_add(self.maximum_fee) {
+            if self.calculate_fee(gross_if_capped) == self.maximum_fee {
+                return Some(gross_if_capped);
+            }
         }
 
         // Otherwise solve: target_net = gross - ceil(gross * bps / 10000)
@@ -267,6 +267,22 @@ mod tests {
         // Maximum fee cap:
         let large_amount = 100_000_000;
         assert_eq!(config.calculate_fee(large_amount), 10_000);
+    }
+
+    #[test]
+    fn gross_required_falls_back_when_maximum_fee_candidate_overflows() {
+        let config = TransferFeeConfig {
+            transfer_fee_basis_points: 100,
+            maximum_fee: u64::MAX,
+        };
+
+        let target_net = 10_000;
+        let gross = config
+            .calculate_gross_required(target_net)
+            .expect("uncapped gross remains representable");
+        assert_eq!(gross, 10_102);
+        assert_eq!(config.calculate_net_received(gross), target_net);
+        assert!(config.calculate_net_received(gross - 1) < target_net);
     }
 
     #[test]
