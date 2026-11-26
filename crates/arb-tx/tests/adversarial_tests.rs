@@ -73,6 +73,8 @@ fn mock_orca_whirlpool_exec_accounts() -> arb_types::PoolExecutionAccounts {
 fn create_2hop_opportunity(wsol: Pubkey, usdc: Pubkey, size_lamports: u64) -> ExecutionOpportunity {
     ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: RouteId(201),
         slot: Slot(1000),
         size_in: TokenAmount(size_lamports),
@@ -122,6 +124,8 @@ fn create_3hop_opportunity(
 ) -> ExecutionOpportunity {
     ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: RouteId(301),
         slot: Slot(1001),
         size_in: TokenAmount(size_lamports),

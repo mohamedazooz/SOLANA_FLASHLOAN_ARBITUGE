@@ -716,6 +716,8 @@ mod tests {
             ],
             expected_min_final_output: 1_001_000_000,
             hop_slippage_bps: 10,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
         };
         assert!(matches!(
             validate_cross_dex_opportunity(&opp),

@@ -47,6 +47,11 @@ pub mod flash;
 pub use flash::*;
 pub mod primitives;
 pub use primitives::*;
+// Keep the canonical graph/dispatch entry points explicit at the crate root.
+pub use primitives::ata::{
+    RouteAtaInstructionCounts, RouteAtaPlan, build_route_ata_plan, route_ata_instruction_counts,
+};
+pub use primitives::cu::estimate_route_cu_with_shape;
 pub mod protocols;
 pub use protocols::*;
 pub mod transport;
@@ -70,6 +75,30 @@ mod tests {
         let lim = calculate_dynamic_cu_limit(cu);
         assert_eq!(lim, cu + cu.saturating_mul(15).div_ceil(100));
         assert!(calculate_dynamic_cu_limit(u32::MAX) <= MAX_COMPUTE_UNIT_LIMIT);
+    }
+
+    #[test]
+    fn shape_aware_cu_estimate_counts_create_and_close_instructions_separately() {
+        let hops = [DexProtocol::MeteoraDlmm, DexProtocol::OrcaWhirlpool];
+        let no_ata = RouteAtaInstructionCounts::default();
+        let one_create = RouteAtaInstructionCounts {
+            unique_token_accounts: 1,
+            intermediate_accounts: 0,
+            idempotent_create_instructions: 1,
+            close_token_account_instructions: 0,
+        };
+        let one_close = RouteAtaInstructionCounts {
+            unique_token_accounts: 1,
+            intermediate_accounts: 0,
+            idempotent_create_instructions: 0,
+            close_token_account_instructions: 1,
+        };
+        let base = estimate_route_cu_with_shape(true, &hops, no_ata, 2, 2, 10);
+        let with_create = estimate_route_cu_with_shape(true, &hops, one_create, 2, 2, 10);
+        let with_close = estimate_route_cu_with_shape(true, &hops, one_close, 2, 2, 10);
+        assert_eq!(with_create - base, 20_000);
+        assert_eq!(with_close - base, 7_500);
+        assert!(estimate_route_cu_with_shape(true, &hops, no_ata, 6, 6, 10) > base);
     }
 
     #[test]
@@ -219,6 +248,8 @@ mod tests {
         let usdc = Pubkey::from_str(USDC_MINT).unwrap();
         let opp = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000),
@@ -416,6 +447,8 @@ mod tests {
         // 1. Route between permanent base assets (WSOL <-> USDC)
         let opp_base = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(50_000_000_000), // 50 SOL
@@ -480,6 +513,8 @@ mod tests {
         let intermediate_token = Pubkey::new_from_array([88; 32]);
         let opp_intermediate = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(2),
             slot: Slot(100),
             size_in: TokenAmount(50_000_000_000),
@@ -965,6 +1000,8 @@ mod tests {
 
         let opp = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000), // 1 SOL borrow
@@ -1078,6 +1115,8 @@ mod tests {
         // 1. Route: Pump.fun Buy -> Raydium Sell
         let opp1 = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(1),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000), // 1 SOL borrow
@@ -1136,6 +1175,8 @@ mod tests {
         // 2. Route: Raydium Buy -> Pump.fun Sell
         let opp2 = ExecutionOpportunity {
             hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(2),
             slot: Slot(100),
             size_in: TokenAmount(1_000_000_000),

@@ -238,17 +238,47 @@ impl Supervisor {
             // per-hop guess. The priority price is capped by a share of the
             // gross profit so it can never eat the edge.
             let hop_protocols: Vec<DexProtocol> = opp.hops.iter().map(|h| h.protocol).collect();
-            let route_sig = arb_engine::route_compute_signature(&opp.hops);
-            let estimated_cu = arb_tx::estimate_route_cu(
-                self.config.strategy.use_flash_loan,
-                &hop_protocols,
-                opp.hops.len().saturating_sub(1),
-            );
-            // Phase E: use measured CU if available, otherwise fall back to estimate
-            let measured_cu = self.measured_cu.lock().get(&route_sig).copied();
+            let ata_counts = match arb_tx::route_ata_instruction_counts(&opp.hops) {
+                Ok(counts) => counts,
+                Err(error) => {
+                    warn!("Rejecting route with inconsistent ATA/token-program shape: {error}");
+                    continue;
+                }
+            };
+            let route_sig = if opp.cu_shape_key.is_empty() {
+                arb_engine::route_compute_shape_signature(
+                    &opp.hops,
+                    opp.size_in.as_u64(),
+                    &opp.hop_inputs,
+                    opp.price_impact_bps,
+                )
+            } else {
+                opp.cu_shape_key.clone()
+            };
+            let estimated_cu = if opp.cu_estimate_units > 0 {
+                opp.cu_estimate_units
+            } else {
+                // Legacy/external opportunities lack quote-time traversal evidence.
+                arb_tx::estimate_route_cu_with_shape(
+                    self.config.strategy.use_flash_loan,
+                    &hop_protocols,
+                    ata_counts,
+                    0,
+                    0,
+                    0,
+                )
+            };
+            // Reuse only recent successful simulations for this exact route and
+            // amount shape. A different amount/impact/ATA layout falls back to
+            // the protocol-aware estimate; preflight simulation remains mandatory.
+            let measured_cu = self
+                .measured_cu
+                .lock()
+                .get(&route_sig)
+                .and_then(|measurement| measurement.conservative_units(opp.slot));
             let base_cu = measured_cu.unwrap_or(estimated_cu);
-            // Official Solana guidance: simulate, then add 10% headroom.
-            // Until a route has a measured sample, retain the wider 15% estimate margin.
+            // Solana priority fees use the requested CU limit, not consumed CU.
+            // Keep 10% headroom for a fresh measured shape and 15% for fallback.
             let cu_limit = match measured_cu {
                 Some(measured) => arb_tx::calculate_dynamic_cu_limit_with_buffer(measured, 1_000),
                 None => arb_tx::calculate_dynamic_cu_limit(estimated_cu),

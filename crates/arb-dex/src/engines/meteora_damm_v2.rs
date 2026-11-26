@@ -399,6 +399,7 @@ impl QuoteEngine for MeteoraDammV2QuoteEngine {
             quote_validity: true,
             computation_time_us,
             dlmm_bins_crossed: None,
+            clmm_steps_taken: None,
         })
     }
 

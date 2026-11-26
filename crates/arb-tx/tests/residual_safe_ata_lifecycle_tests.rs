@@ -107,6 +107,8 @@ fn make_intermediate_route(meme: Pubkey) -> ExecutionOpportunity {
         base_decimals: 9,
         price_impact_bps: Bps(10),
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         expected_min_final_output: 0,
         hops: vec![
             SwapHop {
@@ -358,6 +360,8 @@ fn f01_base_only_route_emits_no_closes_even_with_proven_list() {
         base_decimals: 9,
         price_impact_bps: Bps(10),
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         expected_min_final_output: 0,
         hops: vec![
             SwapHop {
@@ -479,6 +483,8 @@ fn f01_derive_swap_legs_rejects_invalid_slippage_fail_closed() {
         base_decimals: 9,
         price_impact_bps: Bps(0),
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         expected_min_final_output: 0,
         hops: vec![SwapHop {
             pool_id: PoolId::new([10; 32]),

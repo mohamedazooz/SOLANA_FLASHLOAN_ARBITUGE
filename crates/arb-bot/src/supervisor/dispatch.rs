@@ -1,5 +1,6 @@
 //! Mode-specific execution, preflight simulation, dispatch and settlement tracking.
 use super::*;
+use anyhow::Context;
 use arb_store::NetProvenance;
 use arb_types::{InflightStatus, SignedLamports};
 use base64::prelude::*;
@@ -57,7 +58,146 @@ fn signed_lamports(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
 
+/// Minimum payer balance after preserving the configured reserve and funding
+/// the transaction's temporary rent plus non-refundable network costs.
+fn required_live_payer_balance(
+    reserve_lamports: u64,
+    refundable_ata_rent_lamports: u64,
+    base_fee_lamports: u64,
+    priority_fee_lamports: u64,
+    jito_tip_lamports: u64,
+) -> Option<u64> {
+    [
+        reserve_lamports,
+        refundable_ata_rent_lamports,
+        base_fee_lamports,
+        priority_fee_lamports,
+        jito_tip_lamports,
+    ]
+    .into_iter()
+    .try_fold(0u64, u64::checked_add)
+}
+
 impl Supervisor {
+    /// Return the up-front refundable rent capital required for route ATAs
+    /// that do not exist yet. Runs only at LIVE pre-submit time, never in the
+    /// market-data or route-sizing hot path.
+    ///
+    /// Legacy SPL accounts use the canonical 165-byte layout and rent is read
+    /// from the active RPC. Missing Token-2022 ATAs fail closed because their
+    /// extension-dependent account length is not derivable from the route alone.
+    async fn route_missing_ata_rent_lamports(
+        &self,
+        payer: Pubkey,
+        hops: &[SwapHop],
+        current_slot: Slot,
+    ) -> anyhow::Result<u64> {
+        let plan = arb_tx::build_route_ata_plan(payer, hops)?;
+        let legacy_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)?;
+        let token_2022_program = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID)?;
+
+        let mut expected_accounts = Vec::with_capacity(plan.intermediate_atas.len() + 1);
+        expected_accounts.push((plan.wsol_ata, legacy_program));
+        expected_accounts.extend(
+            plan.intermediate_atas
+                .into_iter()
+                .map(|(_, address, token_program)| (address, token_program)),
+        );
+
+        let account_keys: Vec<String> = expected_accounts
+            .iter()
+            .map(|(address, _)| address.to_string())
+            .collect();
+        let account_key_refs: Vec<&str> = account_keys.iter().map(String::as_str).collect();
+
+        let (accounts, account_slots) = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.rpc_pool
+                .get_multiple_accounts_with_slots(&account_key_refs),
+        )
+        .await
+        .context("route ATA account lookup timed out")??;
+
+        if accounts.len() != expected_accounts.len()
+            || account_slots.len() != expected_accounts.len()
+        {
+            anyhow::bail!(
+                "route ATA RPC returned {} accounts and {} context slots for {} requested addresses",
+                accounts.len(),
+                account_slots.len(),
+                expected_accounts.len()
+            );
+        }
+
+        let mut missing_legacy_accounts = 0u64;
+        for (((address, expected_program), account), account_slot) in expected_accounts
+            .iter()
+            .zip(accounts.iter())
+            .zip(account_slots.iter())
+        {
+            if *account_slot == 0
+                || account_slot.saturating_add(self.config.strategy.max_state_age_slots)
+                    < current_slot.0
+            {
+                anyhow::bail!(
+                    "route ATA account snapshot for {address} is stale (RPC slot {account_slot}, current slot {})",
+                    current_slot.0
+                );
+            }
+            match account {
+                Some(info) => {
+                    let expected_owner = expected_program.to_string();
+                    let actual_owner = info.get("owner").and_then(serde_json::Value::as_str);
+                    if actual_owner != Some(expected_owner.as_str()) {
+                        anyhow::bail!(
+                            "route ATA {address} exists with unexpected token-program owner"
+                        );
+                    }
+                }
+                None if *expected_program == token_2022_program => {
+                    anyhow::bail!(
+                        "route requires creation of missing Token-2022 ATA {address}; extension-dependent account size is unknown"
+                    );
+                }
+                None if *expected_program == legacy_program => {
+                    missing_legacy_accounts = missing_legacy_accounts
+                        .checked_add(1)
+                        .context("missing ATA counter overflow")?;
+                }
+                None => {
+                    anyhow::bail!("route ATA {address} uses an unsupported token program");
+                }
+            }
+        }
+
+        if missing_legacy_accounts == 0 {
+            return Ok(0);
+        }
+
+        let minimum_balance = self
+            .legacy_token_account_rent
+            .get_or_try_init(|| async {
+                let response = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    self.rpc_pool.call(
+                        "getMinimumBalanceForRentExemption",
+                        serde_json::json!([165, {"commitment": "processed"}]),
+                    ),
+                )
+                .await
+                .context("legacy token-account rent lookup timed out")??;
+                response
+                    .as_u64()
+                    .filter(|rent| *rent > 0)
+                    .context("RPC returned an invalid legacy token-account rent minimum")
+            })
+            .await?;
+
+        minimum_balance
+            .checked_mul(missing_legacy_accounts)
+            .context("route ATA rent requirement overflowed u64")
+    }
+
     pub(super) async fn dispatch_opportunity(&self, context: DispatchContext<'_>) {
         let DispatchContext {
             opp,
@@ -323,9 +463,10 @@ impl Supervisor {
                     );
                     return;
                 }
-                // Cached reserve guard only: the wallet balance is refreshed by a
-                // background task in Supervisor::run. Never perform HTTP RPC in
-                // the dispatch hot path. A missing/stale snapshot fails closed.
+                // Wallet balance remains a background-refreshed cache. ATA
+                // existence/rent RPC is performed only in this final LIVE
+                // pre-submit guard, never in market-data capture or route sizing.
+                // A missing/stale balance snapshot fails closed.
                 let min_reserve_lamports = self.min_sol_reserve_lamports;
                 if min_reserve_lamports > 0 {
                     let current_balance = match self
@@ -363,15 +504,73 @@ impl Supervisor {
                             return;
                         }
                     };
-                    if current_balance < min_reserve_lamports {
+                    let ata_rent_lamports = match self
+                        .route_missing_ata_rent_lamports(payer, &opp.hops, current_slot)
+                        .await
+                    {
+                        Ok(rent) => rent,
+                        Err(error) => {
+                            let reason =
+                                format!("route ATA rent preflight failed closed: {error:#}");
+                            warn!("{reason}");
+                            self.record_rejected_opportunity(
+                                crate::telegram::RejectedTradeSummary {
+                                    route: route_label.to_string(),
+                                    gross_sol,
+                                    stage: "ATA Rent Preflight".to_string(),
+                                    reason: reason.clone(),
+                                    slot: current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    net_sol: Some(profit_sol),
+                                },
+                            );
+                            self.telegram
+                                .alert_opportunity_rejected(
+                                    route_label,
+                                    gross_sol,
+                                    "ATA Rent Preflight",
+                                    &reason,
+                                    current_slot.0,
+                                    pools_count,
+                                    loan_size_sol,
+                                    Some(profit_sol),
+                                )
+                                .await;
+                            return;
+                        }
+                    };
+                    let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+                    let required_balance = match required_live_payer_balance(
+                        min_reserve_lamports,
+                        ata_rent_lamports,
+                        BASE_FEE_LAMPORTS,
+                        priority_fee_lamports,
+                        tip.as_u64(),
+                    ) {
+                        Some(required) => required,
+                        None => {
+                            warn!(
+                                "reserve + refundable ATA rent + transaction fees overflowed; rejecting live dispatch"
+                            );
+                            return;
+                        }
+                    };
+                    let network_cost_lamports = BASE_FEE_LAMPORTS
+                        .checked_add(priority_fee_lamports)
+                        .and_then(|value| value.checked_add(tip.as_u64()))
+                        .unwrap_or(u64::MAX);
+                    if current_balance < required_balance {
                         let reason = format!(
-                            "wallet balance ({:.4} SOL) is below the configured safety reserve ({:.4} SOL)",
+                            "wallet balance ({:.4} SOL) is below required reserve ({:.4} SOL) + refundable ATA rent lock ({:.6} SOL) + base/priority fees and Jito tip ({:.6} SOL)",
                             current_balance as f64 / 1e9,
-                            min_reserve_lamports as f64 / 1e9
+                            min_reserve_lamports as f64 / 1e9,
+                            ata_rent_lamports as f64 / 1e9,
+                            network_cost_lamports as f64 / 1e9
                         );
                         warn!(
-                            "Safety Floor Active: cached wallet balance {} lamports is below {} lamports; skipping execution",
-                            current_balance, min_reserve_lamports
+                            "Safety Floor Active: cached wallet balance {} lamports is below reserve + refundable ATA rent + base/priority fees + tip {} lamports; skipping execution",
+                            current_balance, required_balance
                         );
                         self.record_rejected_opportunity(crate::telegram::RejectedTradeSummary {
                             route: route_label.to_string(),
@@ -560,7 +759,11 @@ impl Supervisor {
                                 sim_us, sim_res.units_consumed
                             );
                             if sim_res.status == arb_sim::SimulationStatus::Passed {
-                                self.record_measured_route_cu(route_sig, sim_res.units_consumed);
+                                self.record_measured_route_cu(
+                                    route_sig,
+                                    sim_res.units_consumed,
+                                    current_slot,
+                                );
                                 preflight_cu = Some(sim_res.units_consumed);
                             }
                             if sim_res.status != arb_sim::SimulationStatus::Passed {
@@ -639,7 +842,11 @@ impl Supervisor {
                                     }
                                     let units_consumed = fallback.units_consumed;
                                     if units_consumed > 0 {
-                                        self.record_measured_route_cu(route_sig, units_consumed);
+                                        self.record_measured_route_cu(
+                                            route_sig,
+                                            units_consumed,
+                                            current_slot,
+                                        );
                                         preflight_cu = Some(units_consumed);
                                     }
                                     info!(
@@ -1482,5 +1689,23 @@ impl Supervisor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod required_live_balance_tests {
+    use super::required_live_payer_balance;
+
+    #[test]
+    fn preserves_reserve_and_adds_refundable_rent_and_transaction_costs() {
+        assert_eq!(
+            required_live_payer_balance(1_000, 100, 5, 20, 50),
+            Some(1_175)
+        );
+    }
+
+    #[test]
+    fn balance_requirement_overflow_fails_closed() {
+        assert_eq!(required_live_payer_balance(u64::MAX, 1, 0, 0, 0), None);
     }
 }

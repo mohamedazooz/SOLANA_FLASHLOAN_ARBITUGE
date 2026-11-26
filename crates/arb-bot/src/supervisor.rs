@@ -146,7 +146,8 @@ pub struct Supervisor {
     /// jump past `ladder_growth × previous`, and a new window starts clean.
     previous_tips: parking_lot::Mutex<std::collections::HashMap<(u64, u32), Lamports>>,
     /// Measured CU consumption per route signature for actual CU tracking (Phase E).
-    measured_cu: Arc<parking_lot::Mutex<std::collections::HashMap<String, u32>>>,
+    measured_cu:
+        Arc<parking_lot::Mutex<std::collections::HashMap<String, arb_engine::CuMeasurement>>>,
     /// Dedicated fallback snapshot store for RPC-refreshed Kamino reserve & WSOL mint
     /// accounts so live WS provider invariants in `AccountSnapshotStore` remain intact.
     kamino_fallback_store: arb_ingest::AccountSnapshotStore,
@@ -156,6 +157,9 @@ pub struct Supervisor {
     tx_rpc: Arc<arb_ingest::TransactionRpcAdapter>,
     /// Parsed once at startup; dispatch never reads environment or calls RPC for this guard.
     min_sol_reserve_lamports: u64,
+    /// Rent-exempt minimum for a 165-byte legacy token account, queried from
+    /// the configured RPC once and reused; never used for Token-2022 accounts.
+    legacy_token_account_rent: tokio::sync::OnceCell<u64>,
     wallet_balance_cache: Arc<WalletBalanceCache>,
     pub recent_landed: Arc<parking_lot::Mutex<Vec<crate::telegram::TradeSummary>>>,
     pub recent_dropped: Arc<parking_lot::Mutex<Vec<crate::telegram::DroppedTradeSummary>>>,
@@ -553,6 +557,7 @@ impl Supervisor {
             }),
             tx_rpc,
             min_sol_reserve_lamports,
+            legacy_token_account_rent: tokio::sync::OnceCell::new(),
             wallet_balance_cache: Arc::new(WalletBalanceCache::default()),
             recent_landed: Arc::new(parking_lot::Mutex::new(Vec::new())),
             recent_dropped: Arc::new(parking_lot::Mutex::new(Vec::new())),
@@ -714,21 +719,36 @@ impl Supervisor {
         let _ = self.control.set(control);
     }
 
-    pub(super) fn record_measured_route_cu(&self, route_signature: &str, units_consumed: u64) {
+    pub(super) fn record_measured_route_cu(
+        &self,
+        route_signature: &str,
+        units_consumed: u64,
+        slot: Slot,
+    ) {
+        let Ok(units) = u32::try_from(units_consumed) else {
+            return;
+        };
+        if units == 0 {
+            return;
+        }
+
         let mut measured = self.measured_cu.lock();
         if !measured.contains_key(route_signature)
             && measured.len() >= MAX_MEASURED_CU_ROUTE_ENTRIES
         {
-            // This is a bounded hint cache, not durable telemetry. Evict one
-            // entry rather than allowing arbitrary route diversity to grow it.
-            if let Some(evicted) = measured.keys().next().cloned() {
+            // Deterministic oldest-slot eviction keeps this hint cache bounded.
+            if let Some(evicted) = measured
+                .iter()
+                .min_by_key(|(key, value)| (value.last_slot.0, key.as_str()))
+                .map(|(key, _)| key.clone())
+            {
                 measured.remove(&evicted);
             }
         }
-        measured.insert(
-            route_signature.to_owned(),
-            u32::try_from(units_consumed).unwrap_or(u32::MAX),
-        );
+        measured
+            .entry(route_signature.to_owned())
+            .or_default()
+            .record(units, slot);
     }
 
     pub(super) fn current_priority_fee_policy(&self) -> PriorityFeePolicy {

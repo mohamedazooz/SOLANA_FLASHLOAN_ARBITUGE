@@ -343,6 +343,8 @@ async fn test_matrix_01_supervisor_full_cross_dex_shadow_reconciliation() {
         base_decimals: 9,
         expected_min_final_output: expected_cpmm,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     assert!(is_cross_dex_opportunity(&opp));
@@ -482,6 +484,8 @@ async fn test_matrix_02_supervisor_unprofitable_candidate_rejected() {
         base_decimals: 9,
         expected_min_final_output: expected_cpmm,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let kamino = KaminoFlashParams::default_wsol();
@@ -613,6 +617,8 @@ async fn test_matrix_03_supervisor_missing_account_dependency_fails_closed() {
         base_decimals: 9,
         expected_min_final_output: expected_cpmm,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let kamino = KaminoFlashParams::default_wsol();
@@ -749,6 +755,8 @@ async fn test_matrix_04_supervisor_stale_account_snapshot_fails_closed() {
         base_decimals: 9,
         expected_min_final_output: expected_cpmm,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let kamino = KaminoFlashParams::default_wsol();
@@ -879,6 +887,8 @@ async fn test_matrix_05_supervisor_token2022_transfer_fee_fails_closed() {
         base_decimals: 9,
         expected_min_final_output: expected_cpmm,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let kamino = KaminoFlashParams::default_wsol();
@@ -971,6 +981,8 @@ async fn test_matrix_06_insufficient_kamino_liquidity_rejected() {
         base_decimals: 9,
         expected_min_final_output: 1_050_000_000,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let kamino = KaminoFlashParams::default_wsol();
@@ -1101,6 +1113,8 @@ async fn test_matrix_13_supervisor_single_route_attempt() {
         base_decimals: 9,
         expected_min_final_output: expected_cpmm,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let opps = vec![opp.clone()];

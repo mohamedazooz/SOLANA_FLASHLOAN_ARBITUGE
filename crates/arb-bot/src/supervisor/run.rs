@@ -458,6 +458,8 @@ impl Supervisor {
 
             opportunities.push(ExecutionOpportunity {
                 hop_slippage_bps: tuning.slippage_bps,
+                cu_estimate_units: 0,
+                cu_shape_key: String::new(),
                 route_id,
                 slot: current_slot,
                 size_in: TokenAmount(size_in),

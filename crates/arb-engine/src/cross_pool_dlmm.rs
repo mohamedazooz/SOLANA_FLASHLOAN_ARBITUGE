@@ -723,6 +723,10 @@ impl MarketGraph {
                             let impact = first_quote
                                 .price_impact_bps
                                 .max(second_quote.price_impact_bps);
+                            let bins_crossed = first_quote
+                                .discrete_bins_crossed
+                                .unwrap_or(0)
+                                .saturating_add(second_quote.discrete_bins_crossed.unwrap_or(0));
                             if let Some(opp) = self.make_economic_opportunity(
                                 base,
                                 current_slot,
@@ -731,6 +735,8 @@ impl MarketGraph {
                                 final_out,
                                 hop_inputs,
                                 impact,
+                                bins_crossed,
+                                0,
                                 hops,
                             ) {
                                 route_counter += 1;

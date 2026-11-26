@@ -126,15 +126,73 @@ pub fn estimate_route_cu(
     hops: &[arb_types::DexProtocol],
     ephemeral_atas: usize,
 ) -> u32 {
-    let base_overhead: u32 = 450; // ComputeBudget + tip
-    let flash_overhead: u32 = if has_flash_loan { 28_000 } else { 0 }; // borrow + repay
+    let intermediate_accounts = u16::try_from(ephemeral_atas).unwrap_or(u16::MAX);
+    let create_count = u16::try_from(ephemeral_atas.saturating_add(1)).unwrap_or(u16::MAX);
+    let counts = RouteAtaInstructionCounts {
+        unique_token_accounts: create_count,
+        intermediate_accounts,
+        idempotent_create_instructions: create_count,
+        close_token_account_instructions: 0,
+    };
+    estimate_route_cu_with_shape(has_flash_loan, hops, counts, 0, 0, 0)
+}
+
+/// Shape-aware CU estimate used by graph sizing and the final execution gate.
+/// Estimates remain provisional until measured for the exact same CU shape.
+pub fn estimate_route_cu_with_shape(
+    has_flash_loan: bool,
+    hops: &[arb_types::DexProtocol],
+    ata_counts: RouteAtaInstructionCounts,
+    dlmm_bins_crossed: u32,
+    clmm_steps_taken: u32,
+    required_accounts: u32,
+) -> u32 {
+    const ATA_CREATE_CU: u32 = 20_000;
+    const ATA_CLOSE_CU: u32 = 7_500;
+    const EXTRA_BIN_CU: u32 = 1_500;
+    const EXTRA_TICK_STEP_CU: u32 = 3_000;
+    const EXTRA_ACCOUNT_CU: u32 = 750;
+    const BASE_ACCOUNTS_PER_HOP: u32 = 5;
+
+    let base_overhead: u32 = 450;
+    let flash_overhead: u32 = if has_flash_loan { 28_000 } else { 0 };
     let swaps = hops.iter().fold(0u32, |total, protocol| {
         total.saturating_add(per_hop_cu(*protocol))
     });
-    let ata_count = u32::try_from(ephemeral_atas).unwrap_or(u32::MAX);
-    let atas = ata_count.saturating_mul(20_000); // create + close each
+    let creates =
+        u32::from(ata_counts.idempotent_create_instructions).saturating_mul(ATA_CREATE_CU);
+    let closes =
+        u32::from(ata_counts.close_token_account_instructions).saturating_mul(ATA_CLOSE_CU);
+    let dlmm_hops = u32::try_from(
+        hops.iter()
+            .filter(|p| **p == arb_types::DexProtocol::MeteoraDlmm)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let clmm_hops = u32::try_from(
+        hops.iter()
+            .filter(|p| {
+                matches!(
+                    p,
+                    arb_types::DexProtocol::OrcaWhirlpool | arb_types::DexProtocol::RaydiumClmm
+                )
+            })
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let extra_bins = dlmm_bins_crossed.saturating_sub(dlmm_hops);
+    let extra_steps = clmm_steps_taken.saturating_sub(clmm_hops);
+    let base_accounts = u32::try_from(hops.len())
+        .unwrap_or(u32::MAX)
+        .saturating_mul(BASE_ACCOUNTS_PER_HOP);
+    let extra_accounts = required_accounts.saturating_sub(base_accounts);
+
     base_overhead
         .saturating_add(flash_overhead)
         .saturating_add(swaps)
-        .saturating_add(atas)
+        .saturating_add(creates)
+        .saturating_add(closes)
+        .saturating_add(extra_bins.saturating_mul(EXTRA_BIN_CU))
+        .saturating_add(extra_steps.saturating_mul(EXTRA_TICK_STEP_CU))
+        .saturating_add(extra_accounts.saturating_mul(EXTRA_ACCOUNT_CU))
 }

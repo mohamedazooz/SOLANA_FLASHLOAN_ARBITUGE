@@ -552,6 +552,8 @@ impl BellmanFordEngine {
 
         Some(ExecutionOpportunity {
             hop_slippage_bps: config.hop_slippage_bps,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
             route_id: RouteId(route_counter),
             slot: current_slot,
             size_in: TokenAmount(best_size),

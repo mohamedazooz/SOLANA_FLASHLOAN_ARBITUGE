@@ -78,6 +78,8 @@ fn three_leg_opportunity(
 
     let opp = ExecutionOpportunity {
         hop_slippage_bps: slippage_bps,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: arb_types::RouteId(1),
         slot: Slot(1),
         size_in: TokenAmount(size_in),
@@ -212,6 +214,8 @@ fn min_out_exactly_equal_to_next_input_is_accepted() {
     };
     let opp = ExecutionOpportunity {
         hop_slippage_bps: 0, // no haircut: min_out == expected_out exactly
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: arb_types::RouteId(2),
         slot: Slot(1),
         size_in: TokenAmount(1_000),
@@ -259,6 +263,8 @@ fn next_input_above_previous_min_out_is_clamped() {
     };
     let opp = ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: arb_types::RouteId(3),
         slot: Slot(1),
         size_in: TokenAmount(1_000),
@@ -305,6 +311,8 @@ fn boundary_cases_fail_closed_or_round_conservatively() {
     };
     let zero_out = ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: arb_types::RouteId(4),
         slot: Slot(1),
         size_in: TokenAmount(1_000),
@@ -328,6 +336,8 @@ fn boundary_cases_fail_closed_or_round_conservatively() {
     // silently converted into a free option.
     let tiny = ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: arb_types::RouteId(5),
         slot: Slot(1),
         size_in: TokenAmount(50),
@@ -347,6 +357,8 @@ fn boundary_cases_fail_closed_or_round_conservatively() {
     // Profit floor arithmetic overflow must be rejected, never wrapped.
     let huge = ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: arb_types::RouteId(6),
         slot: Slot(1),
         size_in: TokenAmount(u64::MAX),

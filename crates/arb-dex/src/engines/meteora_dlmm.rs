@@ -493,6 +493,7 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
             quote_validity: true,
             computation_time_us: elapsed,
             dlmm_bins_crossed: Some(quote.bins_crossed),
+            clmm_steps_taken: None,
         })
     }
 
