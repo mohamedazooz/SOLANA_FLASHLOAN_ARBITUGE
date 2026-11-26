@@ -52,8 +52,6 @@ use crate::{
 use arb_types::TokenProgramKind;
 use solana_pubkey::Pubkey;
 use std::collections::BTreeMap;
-use std::str::FromStr;
-
 /// Errors raised while assembling the flash-funded route.
 #[derive(Debug, thiserror::Error)]
 pub enum FlashArbError {
@@ -203,7 +201,7 @@ impl FlashArbPoolLeg {
             user: *payer,
             token_x_program: self.token_x_program,
             token_y_program: self.token_y_program,
-            memo_program: Pubkey::from_str(MEMO_PROGRAM_ID_STR).expect("valid memo program"),
+            memo_program: Pubkey::from_str_const(MEMO_PROGRAM_ID_STR),
             event_authority: crate::derive_meteora_event_authority(),
             bin_arrays: self.bin_array_pdas.clone(),
         }
@@ -516,6 +514,7 @@ mod tests {
     use super::*;
     use crate::atomic_integrity::{ExecutionMode, verify_atomic_integrity};
     use arb_types::TokenProgramKind;
+    use std::str::FromStr;
 
     const WSOL: &str = "So11111111111111111111111111111111111111112";
     const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";

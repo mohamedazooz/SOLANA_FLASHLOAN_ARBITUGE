@@ -78,13 +78,17 @@ pub const FWOG_MINT: &str = "A8C3xuqscfmyLrte3VmTqrAq8kgMASius9AFNANwpump";
 pub const MOODENG_MINT: &str = "ED5nyyWEzpPPiWimP8vYm7sD7TD3LAt3Q3gRTWHzPJBY";
 
 /// Resolve the canonical WSOL mint Pubkey.
+/// Resolve the canonical WSOL mint Pubkey.
+///
+/// `from_str_const` evaluates the literal at compile time, so a malformed
+/// constant fails the build instead of panicking on the live path.
 pub fn wsol_mint() -> Pubkey {
-    Pubkey::from_str(WSOL_MINT).expect("Valid WSOL mint pubkey")
+    Pubkey::from_str_const(WSOL_MINT)
 }
 
 /// Resolve the canonical USDC mint Pubkey.
 pub fn usdc_mint() -> Pubkey {
-    Pubkey::from_str(USDC_MINT).expect("Valid USDC mint pubkey")
+    Pubkey::from_str_const(USDC_MINT)
 }
 
 // ============================================================================
