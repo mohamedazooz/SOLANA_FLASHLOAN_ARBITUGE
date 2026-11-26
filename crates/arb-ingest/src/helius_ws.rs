@@ -106,6 +106,9 @@ pub struct HeliusWsClient {
     endpoint_unsupported: AtomicBool,
     probe_confirmed: AtomicBool,
     slot_notify: Arc<Notify>,
+    /// Wakes the derived-account hydrator as soon as a WS update queues work.
+    /// The pending map coalesces repeated updates by pool before the worker drains it.
+    derived_hydration_notify: Arc<Notify>,
     /// Shared RPC pool for the startup seed and event-driven derived-account
     /// hydration (tick arrays / bin arrays). One pool per client, not per call.
     rpc_pool: crate::rpc_pool::RpcPool,
@@ -143,6 +146,7 @@ impl HeliusWsClient {
             endpoint_unsupported: AtomicBool::new(false),
             probe_confirmed: AtomicBool::new(false),
             slot_notify: Arc::new(Notify::new()),
+            derived_hydration_notify: Arc::new(Notify::new()),
             rpc_pool: crate::rpc_pool::RpcPool::from_env(),
             pending_derived: parking_lot::Mutex::new(HashMap::new()),
             derived_covered: parking_lot::Mutex::new(HashMap::new()),
@@ -662,13 +666,19 @@ impl HeliusWsClient {
             let hydration_client = Arc::clone(&self);
             let hydration_ingest = Arc::clone(&ingest);
             let hydration_cancel = cancel.clone();
+            let hydration_notify = Arc::clone(&self.derived_hydration_notify);
             tokio::spawn(async move {
-                let mut tick = tokio::time::interval(Duration::from_millis(500));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         _ = hydration_cancel.cancelled() => break,
-                        _ = tick.tick() => {
+                        _ = hydration_notify.notified() => {
+                            // Coalesce bursts from multiple pool updates into one drain.
+                            // This replaces the fixed 500ms polling delay without
+                            // generating one RPC batch per individual notification.
+                            tokio::select! {
+                                _ = hydration_cancel.cancelled() => break,
+                                _ = sleep(Duration::from_millis(50)) => {}
+                            }
                             hydration_client
                                 .hydrate_pending_derived(&hydration_ingest)
                                 .await;
@@ -751,8 +761,29 @@ impl HeliusWsClient {
                         // taken from one that can. Stable sort keeps discovery
                         // order inside each tier.
                         let mut raw = raw;
+                        let tracked_count = raw.len();
                         raw.sort_by_key(|acc| self.account_wsol_linkage(acc));
-                        raw.into_iter().take(max_ws_account_subs()).collect()
+                        let subscription_limit = max_ws_account_subs();
+                        let selected: VecDeque<Pubkey> =
+                            raw.into_iter().take(subscription_limit).collect();
+                        let deferred_count = tracked_count.saturating_sub(selected.len());
+                        if deferred_count > 0 {
+                            warn!(
+                                tracked_accounts = tracked_count,
+                                selected_accounts = selected.len(),
+                                deferred_accounts = deferred_count,
+                                subscription_limit,
+                                "WebSocket subscription budget leaves tracked accounts without live updates; freshness gates remain authoritative"
+                            );
+                        } else {
+                            info!(
+                                tracked_accounts = tracked_count,
+                                selected_accounts = selected.len(),
+                                subscription_limit,
+                                "WebSocket initial account subscription coverage"
+                            );
+                        }
+                        selected
                     };
                     // Remember every account included in this connection's initial
                     // snapshot. A concurrent registration can also enter the dynamic
@@ -1004,6 +1035,7 @@ impl HeliusWsClient {
         covered.insert(pool_id, (Vec::new(), Instant::now()));
         drop(covered);
         self.pending_derived.lock().insert(pool_id, slot);
+        self.derived_hydration_notify.notify_one();
     }
 
     /// Drain the hydration queue: fetch each queued pool's needed derived
@@ -2221,6 +2253,21 @@ mod tests {
         unsafe {
             std::env::remove_var("WS_MAX_ACCOUNT_SUBS");
         }
+    }
+
+    #[tokio::test]
+    async fn queue_derived_hydration_notifies_worker_without_polling() {
+        let client =
+            HeliusWsClient::new_with_options(vec!["wss://ws1.example.com".to_string()], false);
+        let pool_id = PoolId(Pubkey::new_unique());
+        let notified = client.derived_hydration_notify.notified();
+
+        client.queue_derived_hydration(pool_id, 77);
+
+        tokio::time::timeout(Duration::from_millis(100), notified)
+            .await
+            .expect("queueing derived hydration must wake the worker");
+        assert_eq!(client.pending_derived.lock().get(&pool_id), Some(&77));
     }
 
     #[test]
