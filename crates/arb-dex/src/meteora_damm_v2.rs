@@ -33,6 +33,9 @@ pub struct MeteoraDammV2Pool {
     pub sqrt_min_price_x64: u128,
     pub sqrt_max_price_x64: u128,
     pub activation_point: u64,
+    pub activation_type: u8,
+    pub fee_version: u8,
+    pub layout_version: u8,
     /// On-chain `Pool::pool_status`: 0 = Enable, 1 = Disable (official cp_amm
     /// `state/pool.rs`). Any other value is treated as disabled (fail-closed).
     pub pool_status: u8,
@@ -69,6 +72,9 @@ impl MeteoraDammV2Pool {
             sqrt_min_price_x64: 0,
             sqrt_max_price_x64: 0,
             activation_point: 0,
+            activation_type: 0,
+            fee_version: 0,
+            layout_version: 0,
             pool_status: 1,
             current_point: 0,
             fee_params: DammV2FeeParams::default(),
@@ -85,6 +91,67 @@ impl MeteoraDammV2Pool {
 
     /// Verified against the deployed cp_amm program layout
     /// (`programs/cp-amm/src/state/pool.rs`, checked 2026-11-20).
+    /// Supply a slot or Unix timestamp from a coherent provider snapshot.
+    /// Do not pass local wall-clock time for timestamp-activated pools.
+    pub fn set_current_point(&mut self, activation_type: u8, current_point: u64) {
+        if activation_type != self.activation_type {
+            self.fee_context_verified = false;
+            return;
+        }
+        self.current_point = current_point;
+        self.fee_context_verified = self.fee_snapshot_is_valid();
+    }
+
+    fn fee_snapshot_is_valid(&self) -> bool {
+        let mode = self.fee_params.fee_scheduler_mode;
+        let scheduler_valid = match mode {
+            0 | 1 => {
+                let configured = self.fee_params.period_frequency != 0
+                    || self.fee_params.number_of_period != 0
+                    || self.fee_params.reduction_factor != 0;
+                !configured
+                    || (self.fee_params.period_frequency > 0
+                        && self.fee_params.number_of_period > 0
+                        && self.fee_params.reduction_factor > 0)
+            }
+            2 => true,
+            3 | 4 => {
+                self.fee_params.number_of_period > 0
+                    && self.fee_params.sqrt_price_step_bps > 0
+                    && self.fee_params.scheduler_expiration_duration > 0
+                    && self.fee_params.reduction_factor > 0
+            }
+            _ => false,
+        };
+        let Some(fee_cap) = self.fee_params.max_fee_numerator() else {
+            return false;
+        };
+        let base_fee_valid = self
+            .fee_params
+            .min_base_fee_numerator()
+            .is_some_and(|min| min >= 100_000)
+            && u128::from(self.fee_params.cliff_fee_numerator) <= fee_cap;
+        let split_valid = self.fee_params.protocol_fee_percent <= 100
+            && self.fee_params.referral_fee_percent <= 100
+            && self.fee_params.compounding_fee_bps <= 10_000;
+        let dynamic_valid = !self.fee_params.dynamic_fee_initialized
+            || (self.fee_params.bin_step > 0
+                && self.fee_params.variable_fee_control > 0
+                && self.fee_params.max_volatility_accumulator > 0
+                && self.fee_params.volatility_accumulator
+                    <= u128::from(self.fee_params.max_volatility_accumulator));
+        scheduler_valid
+            && base_fee_valid
+            && split_valid
+            && dynamic_valid
+            && self.fee_version <= 1
+            && self.layout_version <= 1
+            && self.activation_type <= 1
+            && self.pool_status == 0
+            && self.sqrt_price_x64 > 0
+            && self.liquidity > 0
+            && (mode < 3 || self.fee_params.init_sqrt_price_x64 > 0)
+    }
     pub fn is_tradable(&self) -> bool {
         self.pool_status == 0
     }
@@ -112,9 +179,14 @@ impl AmmPool for MeteoraDammV2Pool {
     }
 
     fn fee_bps(&self) -> Option<u16> {
-        // The current adapter does not yet join the full official dynamic-fee
-        // state and current-point context. A boolean flag is not a fee snapshot.
-        None
+        if !self.fee_context_verified {
+            return None;
+        }
+        self.fee_params.fee_bps_at(
+            self.current_point,
+            self.activation_point,
+            self.sqrt_price_x64,
+        )
     }
 
     fn decimals(&self) -> (u8, u8) {
@@ -190,11 +262,43 @@ impl AmmPool for MeteoraDammV2Pool {
         // 482: token_a_flag (u8)
         // 483: token_b_flag (u8)
         // 484: collect_fee_mode (u8)
+        self.fee_params.protocol_fee_percent = data[48];
+        self.fee_params.referral_fee_percent = data[50];
+        self.fee_params.compounding_fee_bps = u16::from_le_bytes(data[54..56].try_into().unwrap());
         self.fee_params.cliff_fee_numerator = u64::from_le_bytes(data[8..16].try_into().unwrap());
         self.fee_params.fee_scheduler_mode = data[16];
         self.fee_params.number_of_period = u16::from_le_bytes(data[22..24].try_into().unwrap());
-        self.fee_params.period_frequency = u64::from_le_bytes(data[24..32].try_into().unwrap());
-        self.fee_params.reduction_factor = u64::from_le_bytes(data[32..40].try_into().unwrap());
+        match self.fee_params.fee_scheduler_mode {
+            0 | 1 => {
+                self.fee_params.period_frequency =
+                    u64::from_le_bytes(data[24..32].try_into().unwrap());
+                self.fee_params.reduction_factor =
+                    u64::from_le_bytes(data[32..40].try_into().unwrap());
+            }
+            2 => {
+                self.fee_params.period_frequency = 0;
+                self.fee_params.reduction_factor = 0;
+            }
+            3 | 4 => {
+                self.fee_params.sqrt_price_step_bps =
+                    u32::from_le_bytes(data[24..28].try_into().unwrap());
+                self.fee_params.scheduler_expiration_duration =
+                    u32::from_le_bytes(data[28..32].try_into().unwrap());
+                self.fee_params.reduction_factor =
+                    u64::from_le_bytes(data[32..40].try_into().unwrap());
+            }
+            _ => {}
+        }
+        // PoolFeesStruct::dynamic_fee begins at account offset 56.
+        self.fee_params.dynamic_fee_initialized = data[56] != 0;
+        self.fee_params.max_volatility_accumulator =
+            u32::from_le_bytes(data[64..68].try_into().unwrap());
+        self.fee_params.variable_fee_control = u32::from_le_bytes(data[68..72].try_into().unwrap());
+        self.fee_params.bin_step = u16::from_le_bytes(data[72..74].try_into().unwrap());
+        self.fee_params.volatility_accumulator =
+            u128::from_le_bytes(data[120..136].try_into().unwrap());
+        self.fee_params.init_sqrt_price_x64 =
+            u128::from_le_bytes(data[152..168].try_into().unwrap());
 
         self.token_a_mint = MintId(read_pk(168)?);
         self.token_b_mint = MintId(read_pk(200)?);
@@ -215,7 +319,11 @@ impl AmmPool for MeteoraDammV2Pool {
             )));
         }
         self.activation_point = u64::from_le_bytes(data[472..480].try_into().unwrap());
+        self.activation_type = data[480];
         self.pool_status = data[481];
+        self.fee_version = data[486];
+        self.layout_version = data[696];
+        self.fee_params.fee_version = self.fee_version;
 
         let flag_a = data[482];
         let flag_b = data[483];
@@ -238,7 +346,7 @@ impl AmmPool for MeteoraDammV2Pool {
 
     fn quote(&self, _amount_in: u64, _a_to_b: bool) -> Result<u64> {
         Err(ArbError::UnsupportedOperation(
-            "Meteora DAMM v2 adapter is quote-only until the full official PoolFeesStruct/dynamic-fee state, activation point, collect-fee mode, layout-version reserves, and epoch-aware mint context are joined"
+            "Meteora DAMM v2 adapter is quote-only until the full official PoolFeesStruct/dynamic-fee state, activation point plus a clock-matched current point, collect-fee mode, layout-version reserves, and epoch-aware mint context are joined"
                 .into(),
         ))
     }

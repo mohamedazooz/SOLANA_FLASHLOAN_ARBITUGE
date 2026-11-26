@@ -241,7 +241,10 @@ pub enum PoolExecutionAccounts {
         pool_token_y: Pubkey,
     },
     MeteoraDammV2 {
-        config: Pubkey,
+        #[serde(default)]
+        token_a_mint: Pubkey,
+        #[serde(default)]
+        token_b_mint: Pubkey,
         authority: Pubkey,
         vault_a: Pubkey,
         vault_b: Pubkey,

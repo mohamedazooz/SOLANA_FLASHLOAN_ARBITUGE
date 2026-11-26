@@ -1433,10 +1433,13 @@ impl MultiDexRegistry {
                         swap_version: arb_types::RaydiumV4SwapVersion::V2,
                     })
                 }
-                (DexProtocol::MeteoraDammV2, Some(d)) if d.len() >= 485 => {
+                (DexProtocol::MeteoraDammV2, Some(d))
+                    if d.len() >= arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE =>
+                {
+                    let token_a_mint = Pubkey::new_from_array(d[168..200].try_into().unwrap());
+                    let token_b_mint = Pubkey::new_from_array(d[200..232].try_into().unwrap());
                     let vault_a = Pubkey::new_from_array(d[232..264].try_into().unwrap());
                     let vault_b = Pubkey::new_from_array(d[264..296].try_into().unwrap());
-                    let config = Pubkey::new_from_array(d[296..328].try_into().unwrap());
                     let prog = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID)
                         .unwrap_or_default();
                     let authority = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_POOL_AUTHORITY)
@@ -1444,7 +1447,8 @@ impl MultiDexRegistry {
                     let (event_authority, _) =
                         Pubkey::find_program_address(&[b"__event_authority"], &prog);
                     Some(arb_types::PoolExecutionAccounts::MeteoraDammV2 {
-                        config,
+                        token_a_mint,
+                        token_b_mint,
                         authority,
                         vault_a,
                         vault_b,
