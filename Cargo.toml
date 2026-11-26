@@ -61,7 +61,6 @@ proptest = "1"
 criterion = "0.5"
 ruint = "1.12"
 solana-pubkey = "2.2"
-solami = { version = "0.1.58", features = ["full"] }
 
 [profile.release]
 opt-level = 3

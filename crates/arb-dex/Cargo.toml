@@ -10,12 +10,9 @@ arb-math = { path = "../arb-math" }
 arb-types = { path = "../arb-types" }
 ruint = { workspace = true }
 solana-pubkey = { workspace = true, features = ["curve25519"] }
-# Orca Whirlpools core (optional; cached in registry, compatible).
-orca_whirlpools_core = { version = "2.1.1", optional = true }
 
 [features]
 default = []
-orca-sdk = ["dep:orca_whirlpools_core"]
 
 [dev-dependencies]
 proptest = { workspace = true }
