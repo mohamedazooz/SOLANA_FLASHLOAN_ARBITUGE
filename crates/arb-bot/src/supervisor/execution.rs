@@ -1,6 +1,42 @@
 //! Transaction assembly, route resolution, and verified-input helpers.
 use super::*;
 
+fn verified_rpc_account_snapshot(
+    pubkey: Pubkey,
+    expected_owner: Pubkey,
+    context_slot: u64,
+    generation: u64,
+    account: &serde_json::Value,
+) -> Option<arb_ingest::AccountSnapshot> {
+    use base64::Engine as _;
+
+    if context_slot == 0 {
+        return None;
+    }
+    let owner = account.get("owner")?.as_str()?.parse::<Pubkey>().ok()?;
+    if owner != expected_owner {
+        return None;
+    }
+    let encoded = account.get("data")?.as_array()?.first()?.as_str()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+
+    Some(arb_ingest::AccountSnapshot {
+        pubkey,
+        owner,
+        slot: context_slot,
+        write_version: arb_ingest::next_pool_write_version(),
+        is_startup: true,
+        provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
+        bank_id: None,
+        generation,
+        data: std::sync::Arc::new(bytes),
+    })
+}
 impl Supervisor {
     /// Assemble native (Raydium / Orca / real-DLMM-fallback) arbitrage instructions.
     /// Encapsulates the guarded-flash, plain-flash, and non-flash native builders.
@@ -306,8 +342,10 @@ impl Supervisor {
         let primary_fresh = matches!(
             (store.get(&reserve), store.get(&base_mint.0)),
             (Some(r), Some(m))
-                if current_slot.0.saturating_sub(r.slot)
-                    <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
+                if r.slot <= current_slot.0
+                    && m.slot <= current_slot.0
+                    && current_slot.0.saturating_sub(r.slot)
+                        <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
                     && current_slot.0.saturating_sub(m.slot)
                         <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
         );
@@ -318,8 +356,10 @@ impl Supervisor {
                     self.kamino_fallback_store.get(&base_mint.0),
                 ),
                 (Some(r), Some(m))
-                    if current_slot.0.saturating_sub(r.slot)
-                        <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
+                    if r.slot <= current_slot.0
+                        && m.slot <= current_slot.0
+                        && current_slot.0.saturating_sub(r.slot)
+                            <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
                         && current_slot.0.saturating_sub(m.slot)
                             <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
             );
@@ -328,79 +368,52 @@ impl Supervisor {
         let mut eval_slot = current_slot;
 
         if !primary_fresh && !fallback_fresh {
-            let key1 = reserve.to_string();
-            let key2 = base_mint.0.to_string();
-            let keys = [key1.as_str(), key2.as_str()];
-            if let Ok((accounts, ctx_slot)) =
+            let reserve_key = reserve.to_string();
+            let mint_key = base_mint.0.to_string();
+            let keys = [reserve_key.as_str(), mint_key.as_str()];
+            if let Ok((accounts, context_slot)) =
                 self.rpc_pool.get_multiple_accounts_with_slot(&keys).await
             {
-                use base64::Engine;
                 let klend_owner = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID)?;
                 let token_owner = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)?;
-                let pkeys = [reserve, base_mint.0];
-                let default_owners = [klend_owner, token_owner];
-                let snap_slot = if ctx_slot > 0 {
-                    ctx_slot
-                } else {
-                    current_slot.0
-                };
-                let stream_gen = self.ingest.stream_generation();
-                let mut decoded_both = 0usize;
+                let account_keys = [reserve, base_mint.0];
+                let expected_owners = [klend_owner, token_owner];
 
-                for (i, acc_opt) in accounts.into_iter().enumerate() {
-                    let Some(acc_val) = acc_opt else { continue };
-                    let Some(b64_str) = acc_val
-                        .get("data")
-                        .and_then(|d| d.as_array())
-                        .and_then(|arr| arr.first())
-                        .and_then(|s| s.as_str())
-                    else {
-                        continue;
-                    };
-                    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str)
-                    else {
-                        continue;
-                    };
-                    let owner = acc_val
-                        .get("owner")
-                        .and_then(|o| o.as_str())
-                        .and_then(|s| Pubkey::from_str(s).ok())
-                        .unwrap_or(default_owners[i]);
-                    let data_arc = std::sync::Arc::new(bytes);
-                    let wv = arb_ingest::next_pool_write_version();
-
-                    self.kamino_fallback_store
-                        .apply(arb_ingest::AccountSnapshot {
-                            pubkey: pkeys[i],
-                            owner,
-                            slot: snap_slot,
-                            write_version: wv,
-                            is_startup: true,
-                            provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
-                            bank_id: None,
-                            generation: 0,
-                            data: std::sync::Arc::clone(&data_arc),
-                        });
-                    store.apply(arb_ingest::AccountSnapshot {
-                        pubkey: pkeys[i],
-                        owner,
-                        slot: snap_slot,
-                        write_version: wv,
-                        is_startup: true,
-                        provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
-                        bank_id: None,
-                        generation: stream_gen,
-                        data: data_arc,
-                    });
-                    decoded_both += 1;
-                }
-
-                if decoded_both == 2
-                    && current_slot.0.saturating_sub(snap_slot)
+                // Account RPC context is the only acceptable slot provenance.
+                // Never relabel a zero/unknown context as the current WS slot,
+                // and never infer owner from the address being requested.
+                if context_slot > 0
+                    && context_slot <= current_slot.0
+                    && current_slot.0.saturating_sub(context_slot)
                         <= arb_constants::KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS
+                    && accounts.len() == account_keys.len()
                 {
-                    use_fallback_store = true;
-                    eval_slot = Slot(current_slot.0.max(snap_slot));
+                    let generation = self.ingest.stream_generation();
+                    let updates = accounts
+                        .iter()
+                        .zip(account_keys)
+                        .zip(expected_owners)
+                        .map(|((account, pubkey), owner)| {
+                            account.as_ref().and_then(|account| {
+                                verified_rpc_account_snapshot(
+                                    pubkey,
+                                    owner,
+                                    context_slot,
+                                    generation,
+                                    account,
+                                )
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>();
+
+                    if let Some(updates) = updates {
+                        // Keep RPC fallback provenance isolated from the live
+                        // WebSocket journal. Publish the dependency set atomically.
+                        if self.kamino_fallback_store.apply_batch(updates) {
+                            use_fallback_store = true;
+                            eval_slot = current_slot;
+                        }
+                    }
                 }
             }
         }
@@ -464,4 +477,63 @@ pub(super) fn max_state_age_slots(
         })
         .max()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod verified_rpc_snapshot_tests {
+    use super::*;
+    use base64::Engine as _;
+
+    fn account(owner: Option<Pubkey>) -> serde_json::Value {
+        let mut value = serde_json::json!({
+            "data": [base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3]), "base64"]
+        });
+        if let Some(owner) = owner {
+            value["owner"] = serde_json::Value::String(owner.to_string());
+        }
+        value
+    }
+
+    #[test]
+    fn rpc_snapshot_rejects_zero_context_slot() {
+        let owner = Pubkey::new_unique();
+        assert!(
+            verified_rpc_account_snapshot(Pubkey::new_unique(), owner, 0, 1, &account(Some(owner)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn rpc_snapshot_rejects_missing_or_mismatched_owner() {
+        let expected = Pubkey::new_unique();
+        assert!(
+            verified_rpc_account_snapshot(Pubkey::new_unique(), expected, 100, 1, &account(None))
+                .is_none()
+        );
+        assert!(
+            verified_rpc_account_snapshot(
+                Pubkey::new_unique(),
+                expected,
+                100,
+                1,
+                &account(Some(Pubkey::new_unique()))
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn rpc_snapshot_preserves_actual_context_slot_and_owner() {
+        let expected = Pubkey::new_unique();
+        let key = Pubkey::new_unique();
+        let snapshot =
+            verified_rpc_account_snapshot(key, expected, 123_456, 7, &account(Some(expected)))
+                .expect("valid owner and nonzero RPC context must produce a snapshot");
+        assert_eq!(snapshot.pubkey, key);
+        assert_eq!(snapshot.owner, expected);
+        assert_eq!(snapshot.slot, 123_456);
+        assert_eq!(snapshot.generation, 7);
+        assert!(snapshot.is_startup);
+        assert_eq!(snapshot.provider_id, arb_ingest::HTTP_RPC_PROVIDER_ID);
+    }
 }

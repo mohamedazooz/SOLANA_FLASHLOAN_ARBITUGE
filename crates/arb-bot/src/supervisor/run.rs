@@ -1,5 +1,6 @@
 //! Main supervisor lifecycle and orchestration loop.
 use super::*;
+use arb_types::{Bps, RouteId};
 
 impl Supervisor {
     /// Accept only correctly owned legacy SPL Token WSOL accounts for bootstrap hydration.
@@ -73,28 +74,44 @@ impl Supervisor {
     /// when the snapshot is missing, stale beyond the state-age limit, owned by
     /// an unexpected program, or undecodable — never a guessed balance.
     pub fn kamino_available_flash_liquidity(&self, current_slot: Slot) -> Option<u64> {
-        let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).ok()?;
-        let snap = self.ingest.account_store().get(&supply_vault)?;
-        // The vault is rehydrated every ~30 seconds. Allow one missed refresh,
-        // not the multi-minute stale window that can materially overstate
-        // borrowable liquidity.
-        const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
-        if snap.slot > current_slot.0
-            || current_slot.0.saturating_sub(snap.slot) > MAX_SNAPSHOT_AGE_SLOTS
-        {
-            return None;
-        }
-        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok()?;
-        if snap.owner != spl {
-            return None;
-        }
-        let wsol = Pubkey::from_str(arb_tx::WSOL_MINT).ok()?;
-        arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &wsol).ok()
+        self.kamino_available_flash_liquidity_detailed(current_slot)
+            .ok()
     }
 
-    /// Discovery-time Jito tip estimate (fresh p50, bounded by the verified
-    /// ceiling). The 3-leg engine adds base fee and candidate-specific capped
-    /// priority fee itself; dispatch later re-evaluates the actual planned bid.
+    /// Detailed fail-closed result for diagnostics; callers must not turn any
+    /// error into an estimated or cached borrow amount.
+    pub fn kamino_available_flash_liquidity_detailed(
+        &self,
+        current_slot: Slot,
+    ) -> Result<u64, &'static str> {
+        let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT)
+            .map_err(|_| "configured Kamino WSOL supply-vault address is invalid")?;
+        let snap = self
+            .ingest
+            .account_store()
+            .get(&supply_vault)
+            .ok_or("supply-vault snapshot is missing from the live account store")?;
+
+        const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
+        if snap.slot > current_slot.0 {
+            return Err("supply-vault snapshot slot is ahead of the current stream slot");
+        }
+        let age = current_slot.0.saturating_sub(snap.slot);
+        if age > MAX_SNAPSHOT_AGE_SLOTS {
+            return Err("supply-vault snapshot is stale beyond the configured slot-age limit");
+        }
+
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)
+            .map_err(|_| "configured SPL Token program id is invalid")?;
+        if snap.owner != spl {
+            return Err("supply-vault account owner is not the SPL Token program");
+        }
+        let wsol =
+            Pubkey::from_str(arb_tx::WSOL_MINT).map_err(|_| "configured WSOL mint is invalid")?;
+        arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &wsol)
+            .map_err(|_| "supply-vault token account failed mint/layout validation")
+    }
+
     fn three_leg_network_cost_lamports(&self, tip_lamports: u64) -> u64 {
         self.jito_service
             .oracle()

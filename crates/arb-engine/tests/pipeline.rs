@@ -28,6 +28,8 @@ fn edge(id: u8, from: u8, to: u8, reserve_in: u128, reserve_out: u128) -> Market
         reserve_in,
         reserve_out,
         fee_bps: 25,
+        fee_numerator: 25,
+        fee_denominator: 10_000,
         raydium_cpmm_fee: None,
         clmm: None,
         dlmm: None,
@@ -83,8 +85,8 @@ fn config(min_profit_raw: u64, jito_tip: u64) -> EconomicConfig {
 /// The two pools of a 6% cross-pool spread, as graph input.
 fn spread_pools() -> [PoolState; 2] {
     [
-        pool(10, BASE, TOKEN, 1_000_000, 1_000_000),
-        pool(20, BASE, TOKEN, 1_060_000, 1_000_000),
+        pool(10, BASE, TOKEN, 100_000_000, 100_000_000),
+        pool(20, BASE, TOKEN, 106_000_000, 100_000_000),
     ]
 }
 
@@ -153,7 +155,9 @@ fn fees_turn_a_flat_market_into_a_zero_profit_cycle() {
 
 #[test]
 fn graph_detects_the_spread_and_reports_net_below_gross() {
-    let mut graph = MarketGraph::new(vec![mint(BASE)]).with_economic_config(config(0, 0));
+    let mut economics = config(0, 0);
+    economics.hop_slippage_bps = 0;
+    let mut graph = MarketGraph::new(vec![mint(BASE)]).with_economic_config(economics);
     graph.build_from_pools(&spread_pools());
 
     let opps = graph.find_base_cycles(Slot(1), 100_000);
@@ -214,6 +218,14 @@ fn sub_basis_point_fee_is_ceiled_in_every_poolstate_graph_projection() {
     p.protocol = DexProtocol::RaydiumCpmm;
     p.fee_numerator = 50;
     p.fee_denominator = 1_000_000;
+    p.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+        trade_fee_rate_ppm: 50,
+        creator_fee_rate_ppm: 0,
+        protocol_fee_rate: 120_000,
+        fund_fee_rate: 40_000,
+        enable_creator_fee: false,
+        creator_fee_on: 0,
+    });
     assert_eq!(p.fee_bps(), Some(1));
 
     let mut graph = MarketGraph::default();

@@ -77,13 +77,17 @@ Supervisor::strategy_cycle() [crates/arb-bot/src/supervisor/strategy.rs]
 │   └── clamp by kamino_available_flash_liquidity(current_slot)
 ├── filter fresh_pools (slot delta <= max_graph_age_slots)
 ├── graph.build_from_pools(&fresh_pools)
-├── Candidate Cycle Discovery:
-│   ├── graph.find_base_cycles_with_stats() [DFS direct base cycles]
-│   ├── graph.find_cross_pool_dlmm_cycles() [Two-pool DLMM direct arbitrage]
-│   ├── BellmanFordEngine::find_negative_cycles() [Multi-venue negative log cycles]
-│   └── graph.find_multi_hop_cycles() [3..5 hop DFS paths]
-├── merge and deduplicate opportunities
-└── process_opportunities().await
++-- Canonical Route Discovery:
+|   +-- graph.find_cycles_with_stats() [bounded simple-cycle scan, 2..4 production hops]
+|   +-- graph.find_cross_pool_dlmm_cycles() [venue-specific DLMM seed generation]
+|   |   +-- graph.evaluate_directed_route() [canonical exact re-quote, sizing and economics]
+|   +-- capture_three_leg_dlmm() [specialized chained-bin candidate generation]
+|   |   +-- verify Kamino WSOL supply-vault liquidity (fail closed)
+|   |   +-- verify payer WSOL + both intermediate ATA balances are zero
+|   |   +-- graph.evaluate_directed_route() [canonical exact re-quote, sizing and economics]
+|   +-- route_dedup::dedupe_best_by_route() [ordered route identity; retain best net]
+|   +-- rank_opportunities_cross_mint()
++-- process_opportunities().await
 ```
 
 ---

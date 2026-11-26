@@ -27,9 +27,15 @@
 //! - Token-program mismatch across hops sharing a mint ⇒ rejected.
 //! - Zero profitable directions is an acceptable, honest result.
 
-use arb_math::cpmm_price_impact_bps;
+use arb_math::{
+    cpmm_price_impact_bps,
+    economic::{
+        EconomicConfig, calculate_flash_fee_raw, calculate_net_profit_raw_signed,
+        slippage_haircut_min_final,
+    },
+};
 use arb_types::{
-    DexProtocol, ExecutionOpportunity, MintId, PoolId, PoolKind, RouteId, Slot, SwapHop,
+    DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolId, PoolKind, RouteId, Slot, SwapHop,
     TokenProgramKind,
 };
 use std::collections::{HashMap, HashSet};
@@ -311,6 +317,7 @@ fn optimize_size(
     hi: u64,
     cfg: &DlmmCrossPoolConfig,
     cap2: Option<u64>,
+    economics: &EconomicConfig,
 ) -> Option<(u64, u128, u128, u128)> {
     if lo == 0 || hi < lo {
         return None;
@@ -318,8 +325,29 @@ fn optimize_size(
 
     let eval_point = |size: u64| -> Option<(u64, u128, u128, i128)> {
         let (s, o1, fo) = two_hop_quote(e1, e2, size, cap2)?;
-        let p = (fo as i128).checked_sub(s as i128)?;
-        Some((s, o1, fo, p))
+        let final_out = u64::try_from(fo).ok()?;
+        let minimum_final =
+            slippage_haircut_min_final(final_out, 2, economics.hop_slippage_bps).ok()?;
+        let flash_fee = calculate_flash_fee_raw(s, economics.flash_loan_fee_sf).ok()?;
+        // DEX fees are already embedded in the exact bin-traversal outputs.
+        // Discovery has no verified per-route base/priority sample yet; Jito
+        // tip and the verified rational base conversion are still included.
+        let net = calculate_net_profit_raw_signed(
+            minimum_final,
+            s,
+            flash_fee,
+            0,
+            0,
+            0,
+            0,
+            Lamports(arb_constants::SOLANA_BASE_FEE_LAMPORTS),
+            Lamports::ZERO,
+            economics.jito_tip_lamports,
+            economics.lamports_to_base_mint_rate,
+            economics.lamports_to_base_rate_denom,
+        )
+        .ok()?;
+        Some((s, o1, fo, net))
     };
 
     let mut evaluated: Vec<(u64, u128, u128, i128)> = Vec::new();
@@ -453,6 +481,7 @@ fn evaluate_direction(
     r: &MarketEdge,
     cfg: &DlmmCrossPoolConfig,
     max_trade_size: u64,
+    economics: &EconomicConfig,
 ) -> Result<(u64, u128, u128, u128), CrossPoolRejectionReason> {
     if let Err(d) = dlmm_edge_ok(l) {
         return Err(CrossPoolRejectionReason::from_edge_detail(d));
@@ -493,9 +522,35 @@ fn evaluate_direction(
         };
     }
 
-    let Some((size, out1, final_out, gross)) = optimize_size(l, r, lo, hi, cfg, cap2) else {
+    let Some((size, out1, final_out, gross)) = optimize_size(l, r, lo, hi, cfg, cap2, economics)
+    else {
         return Err(CrossPoolRejectionReason::EdgeBelowHurdle);
     };
+
+    let final_out_u64 =
+        u64::try_from(final_out).map_err(|_| CrossPoolRejectionReason::EconomicGateRejected)?;
+    let minimum_final = slippage_haircut_min_final(final_out_u64, 2, economics.hop_slippage_bps)
+        .map_err(|_| CrossPoolRejectionReason::EconomicGateRejected)?;
+    let flash_fee = calculate_flash_fee_raw(size, economics.flash_loan_fee_sf)
+        .map_err(|_| CrossPoolRejectionReason::EconomicGateRejected)?;
+    let conservative_net = calculate_net_profit_raw_signed(
+        minimum_final,
+        size,
+        flash_fee,
+        0,
+        0,
+        0,
+        0,
+        Lamports(arb_constants::SOLANA_BASE_FEE_LAMPORTS),
+        Lamports::ZERO,
+        economics.jito_tip_lamports,
+        economics.lamports_to_base_mint_rate,
+        economics.lamports_to_base_rate_denom,
+    )
+    .map_err(|_| CrossPoolRejectionReason::EconomicGateRejected)?;
+    if conservative_net < i128::from(economics.min_profit_raw.as_u64()) {
+        return Err(CrossPoolRejectionReason::EconomicGateRejected);
+    }
 
     if final_out <= size as u128 || gross == 0 {
         return Err(CrossPoolRejectionReason::EdgeBelowHurdle);
@@ -558,6 +613,10 @@ impl MarketGraph {
             };
         }
 
+        // The economic configuration was checked above; use its verified
+        // fee, slippage and base-mint conversion for every size candidate.
+        let economics = self.economic_config.as_ref().expect("checked above");
+
         'anchors: for &base in &self.base_anchors {
             let leaving: Vec<MarketEdge> = self
                 .edges_by_from
@@ -607,7 +666,7 @@ impl MarketGraph {
                     }
 
                     let direction: u8 = if l.pool_id.0 < r.pool_id.0 { 1 } else { 2 };
-                    match evaluate_direction(l, r, cfg, max_trade_size) {
+                    match evaluate_direction(l, r, cfg, max_trade_size, economics) {
                         Ok((size, out1, final_out, _gross)) => {
                             let hops = vec![swap_hop_of(l), swap_hop_of(r)];
                             let hop_inputs = vec![size, conv_u64(out1), conv_u64(final_out)];
@@ -786,6 +845,8 @@ mod tests {
             reserve_in: 1_000_000_000,
             reserve_out: 1_000_000_000,
             fee_bps: 5,
+            fee_numerator: 5,
+            fee_denominator: 10_000,
             raydium_cpmm_fee: None,
             clmm: None,
             dlmm: Some(arb_types::DlmmState {

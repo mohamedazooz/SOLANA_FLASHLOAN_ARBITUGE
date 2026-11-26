@@ -483,9 +483,16 @@ impl RpcPool {
         Self::finish_from_env(endpoints)
     }
 
+    fn dedupe_urls(urls: Vec<String>) -> Vec<String> {
+        let mut seen = std::collections::HashSet::with_capacity(urls.len());
+        urls.into_iter()
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty() && seen.insert(url.clone()))
+            .collect()
+    }
     pub fn from_env() -> Self {
         dotenvy::dotenv().ok();
-        let endpoints = Self::collect_rpc_urls(|k| std::env::var(k).ok());
+        let endpoints = Self::dedupe_urls(Self::collect_rpc_urls(|k| std::env::var(k).ok()));
         Self::finish_from_env(endpoints)
     }
 
@@ -710,7 +717,21 @@ impl RpcPool {
     pub fn redacted_hosts(&self) -> Vec<String> {
         self.endpoints
             .iter()
-            .map(|u| u.split('/').nth(2).unwrap_or("unknown").to_string())
+            .map(|url| {
+                let authority = url
+                    .split_once("://")
+                    .map(|(_, remainder)| remainder)
+                    .unwrap_or(url.as_str())
+                    .split(['/', '?', '#'])
+                    .next()
+                    .unwrap_or("unknown");
+                authority
+                    .rsplit('@')
+                    .next()
+                    .filter(|host| !host.is_empty())
+                    .unwrap_or("unknown")
+                    .to_string()
+            })
             .collect()
     }
 
@@ -1808,12 +1829,36 @@ mod tests {
         let pool = RpcPool::new(vec![
             "https://mainnet.helius-rpc.com/?api-key=secret-123".to_string(),
             "https://solana-mainnet.g.alchemy.com/v2/alch_secret".to_string(),
+            "https://rpc.fra.shyft.to?api_key=must-not-leak".to_string(),
+            "https://user:pass@rpc.example.net:443?token=hidden".to_string(),
         ]);
+        let hosts = pool.redacted_hosts();
         assert_eq!(
-            pool.redacted_hosts(),
+            hosts,
             vec![
                 "mainnet.helius-rpc.com".to_string(),
                 "solana-mainnet.g.alchemy.com".to_string(),
+                "rpc.fra.shyft.to".to_string(),
+                "rpc.example.net:443".to_string(),
+            ]
+        );
+        assert!(
+            hosts
+                .iter()
+                .all(|host| !host.contains("api_key") && !host.contains("hidden"))
+        );
+
+        assert_eq!(
+            RpcPool::dedupe_urls(vec![
+                "https://one.example".into(),
+                "https://one.example".into(),
+                "https://one.example/?api-key=other".into(),
+                "https://two.example".into(),
+            ]),
+            vec![
+                "https://one.example".to_string(),
+                "https://one.example/?api-key=other".to_string(),
+                "https://two.example".to_string(),
             ]
         );
     }
