@@ -45,6 +45,7 @@ fn make_pump_fun_pool(
         reserve_out: v_token as u128,
         fee_numerator: 125, // documented 1.25% SOL bonding-curve fee
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active,
         has_risky_token: false,
         kind: PoolKind::Cpmm,

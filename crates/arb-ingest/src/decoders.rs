@@ -116,6 +116,25 @@ pub struct RaydiumCpmmPoolAccounting {
     pub swap_enabled: bool,
 }
 
+impl RaydiumCpmmPoolAccounting {
+    /// Verify catalog membership but always return the protocol's canonical
+    /// token-0/token-1 order. `creator_fee_on` is defined in this exact order.
+    pub fn canonical_orientation(
+        &self,
+        catalog_base: Pubkey,
+        catalog_quote: Pubkey,
+    ) -> Option<(Pubkey, Pubkey, u8, u8)> {
+        let matches = (catalog_base == self.token_0_mint && catalog_quote == self.token_1_mint)
+            || (catalog_base == self.token_1_mint && catalog_quote == self.token_0_mint);
+        matches.then_some((
+            self.token_0_mint,
+            self.token_1_mint,
+            self.mint_0_decimals,
+            self.mint_1_decimals,
+        ))
+    }
+}
+
 /// Live fee parameters from the Raydium CPMM AmmConfig account.
 /// All rates use the protocol's 1_000_000 denominator; do not normalize to
 /// integer basis points before quoting (sub-bps tiers are valid).
@@ -1610,6 +1629,39 @@ mod tests {
     use super::*;
     use crate::registry::{MultiDexRegistry, RegisteredPool};
     use crate::rpc_pool::RpcPool;
+
+    #[test]
+    fn cpmm_catalog_inversion_never_inverts_protocol_fee_direction() {
+        let token_0 = Pubkey::new_unique();
+        let token_1 = Pubkey::new_unique();
+        let accounting = RaydiumCpmmPoolAccounting {
+            amm_config: Pubkey::new_unique(),
+            token_0_vault: Pubkey::new_unique(),
+            token_1_vault: Pubkey::new_unique(),
+            token_0_mint: token_0,
+            token_1_mint: token_1,
+            token_0_program: Pubkey::new_unique(),
+            token_1_program: Pubkey::new_unique(),
+            mint_0_decimals: 9,
+            mint_1_decimals: 6,
+            protocol_fees: [0; 2],
+            fund_fees: [0; 2],
+            creator_fees: [0; 2],
+            creator_fee_on: 1,
+            enable_creator_fee: true,
+            swap_enabled: true,
+        };
+
+        let canonical = accounting.canonical_orientation(token_0, token_1).unwrap();
+        let inverted_catalog = accounting.canonical_orientation(token_1, token_0).unwrap();
+        assert_eq!(canonical, inverted_catalog);
+        assert_eq!(canonical, (token_0, token_1, 9, 6));
+        assert!(
+            accounting
+                .canonical_orientation(Pubkey::new_unique(), token_1)
+                .is_none()
+        );
+    }
 
     /// Decode a u64 token amount from an SPL token account JSON value.
     /// SPL token accounts store the amount as a little-endian u64 at byte offset 64,

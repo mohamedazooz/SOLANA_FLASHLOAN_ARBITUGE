@@ -981,15 +981,21 @@ impl MultiDexRegistry {
                     );
                     continue;
                 }
-                // Creator fees may be charged on either the input or output
-                // side. Until the protocol-native fee-side quote is wired into
-                // this PoolState model, do not publish a potentially optimistic
-                // quote for enabled creator-fee pools.
-                if accounting.enable_creator_fee && fees.creator_fee_rate > 0 {
-                    debug!(
-                        "Raydium CPMM {} creator fee is enabled but not modeled; skipping",
-                        p.pool_id
-                    );
+                if fees.trade_fee_rate == 0
+                    || fees
+                        .trade_fee_rate
+                        .checked_add(if accounting.enable_creator_fee {
+                            fees.creator_fee_rate
+                        } else {
+                            0
+                        })
+                        .is_none_or(|r| r >= 1_000_000)
+                    || fees
+                        .protocol_fee_rate
+                        .checked_add(fees.fund_fee_rate)
+                        .is_none_or(|r| r > 1_000_000)
+                {
+                    debug!("Raydium CPMM {} fee schedule invalid; skipping", p.pool_id);
                     continue;
                 }
             }
@@ -1076,24 +1082,11 @@ impl MultiDexRegistry {
                 let Some(accounting) = cpmm_accounting else {
                     continue;
                 };
-                if p.base_mint.0 == accounting.token_0_mint
-                    && p.quote_mint.0 == accounting.token_1_mint
+                if let Some((mint_0, mint_1, decimals_0, decimals_1)) =
+                    accounting.canonical_orientation(p.base_mint.0, p.quote_mint.0)
                 {
-                    (
-                        MintId(accounting.token_0_mint),
-                        MintId(accounting.token_1_mint),
-                        accounting.mint_0_decimals,
-                        accounting.mint_1_decimals,
-                    )
-                } else if p.base_mint.0 == accounting.token_1_mint
-                    && p.quote_mint.0 == accounting.token_0_mint
-                {
-                    (
-                        MintId(accounting.token_1_mint),
-                        MintId(accounting.token_0_mint),
-                        accounting.mint_1_decimals,
-                        accounting.mint_0_decimals,
-                    )
+                    // creator_fee_on and reserve orientation both use token0/token1.
+                    (MintId(mint_0), MintId(mint_1), decimals_0, decimals_1)
                 } else {
                     debug!(
                         "Raydium CPMM {} catalog mints do not match on-chain token0/token1; skipping",
@@ -1221,10 +1214,12 @@ impl MultiDexRegistry {
                         );
                         continue;
                     };
-                    if p.base_mint.0 == accounting.token_0_mint {
+                    // Reserves follow the same canonical token0/token1 order as
+                    // state_base/state_quote and creator_fee_on direction mapping.
+                    if p.base_mint.0 == accounting.token_0_mint
+                        || p.base_mint.0 == accounting.token_1_mint
+                    {
                         (u128::from(net_0), u128::from(net_1))
-                    } else if p.base_mint.0 == accounting.token_1_mint {
-                        (u128::from(net_1), u128::from(net_0))
                     } else {
                         continue;
                     }
@@ -1570,6 +1565,20 @@ impl MultiDexRegistry {
                 reserve_out,
                 fee_numerator,
                 fee_denominator,
+                raydium_cpmm_fee: if p.protocol == DexProtocol::RaydiumCpmm {
+                    let accounting = cpmm_accounting.expect("CPMM accounting validated above");
+                    let fees = cpmm_fee_config.expect("CPMM fee config validated above");
+                    Some(arb_types::RaydiumCpmmFeeState {
+                        trade_fee_rate_ppm: fees.trade_fee_rate,
+                        creator_fee_rate_ppm: fees.creator_fee_rate,
+                        protocol_fee_rate: fees.protocol_fee_rate,
+                        fund_fee_rate: fees.fund_fee_rate,
+                        enable_creator_fee: accounting.enable_creator_fee,
+                        creator_fee_on: accounting.creator_fee_on,
+                    })
+                } else {
+                    None
+                },
                 is_active: true,
                 has_risky_token: false,
                 last_update_slot: state_slot.0,

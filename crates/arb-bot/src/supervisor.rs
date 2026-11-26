@@ -9,7 +9,6 @@ use anyhow::Result;
 use arb_engine::MarketGraph;
 use arb_ingest::IngestClient;
 use arb_land::{BidderConfig, JitoLander, TipStrategy};
-use arb_math::economic::calculate_net_profit_raw;
 use arb_math::{RttTracker, SlotClock};
 use arb_risk::{CircuitBreaker, KillSwitch, RiskGate, RiskLimits};
 use arb_sim::{ForensicBundle, ForkSimulator, HopProvenance, Simulator};
@@ -1603,6 +1602,7 @@ mod tests {
             reserve_out: 1,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: arb_types::PoolKind::Cpmm,

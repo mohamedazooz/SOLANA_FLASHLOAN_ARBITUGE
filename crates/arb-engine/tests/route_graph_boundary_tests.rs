@@ -26,6 +26,7 @@ fn make_pool(id: u8, a: MintId, b: MintId, r_a: u128, r_b: u128) -> PoolState {
         reserve_out: r_b,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Cpmm,

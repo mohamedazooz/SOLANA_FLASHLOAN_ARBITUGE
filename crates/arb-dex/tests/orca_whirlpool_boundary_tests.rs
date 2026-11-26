@@ -41,6 +41,7 @@ fn make_whirlpool_pool(
         reserve_out: 10_000_000_000,
         fee_numerator: fee_rate as u64,
         fee_denominator: 1_000_000,
+        raydium_cpmm_fee: None,
         is_active,
         has_risky_token: false,
         kind: PoolKind::Clmm,

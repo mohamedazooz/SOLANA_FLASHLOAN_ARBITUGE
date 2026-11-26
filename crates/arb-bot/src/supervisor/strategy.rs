@@ -889,6 +889,7 @@ mod rank_tests {
             reserve_out,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: arb_types::PoolKind::Cpmm,

@@ -70,7 +70,7 @@ pub use units::{net_lamports_equiv, wsol_mint_pubkey};
 use arb_math::{
     DlmmBin as ArbDlmmBin, DlmmPoolState,
     clmm::ClmmTickMath,
-    cpmm_out, cpmm_price_impact_bps,
+    cpmm_out, cpmm_out_upfront_fee_ceil, cpmm_price_impact_bps,
     economic::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
         slippage_haircut_min_final,
@@ -146,7 +146,52 @@ fn quote_pool_with_dlmm_cache(
     dlmm_cache: Option<&DlmmQuoteCache>,
 ) -> u128 {
     match kind {
-        PoolKind::Cpmm => cpmm_out(dx, x, y, gamma).unwrap_or(0),
+        PoolKind::Cpmm => {
+            if let Some(e) = edge
+                && e.protocol == DexProtocol::RaydiumCpmm
+            {
+                let Some(fees) = e.raydium_cpmm_fee else {
+                    return 0;
+                };
+                if !fees.is_valid() {
+                    return 0;
+                }
+                let a_to_b = e.pool_base == e.from_mint;
+                let creator_rate = fees.effective_creator_fee_rate();
+                let creator_on_input = match fees.creator_fee_on_input(a_to_b) {
+                    Some(value) => value,
+                    None => return 0,
+                };
+                let input_fee_rate = fees.trade_fee_rate_ppm.checked_add(if creator_on_input {
+                    creator_rate
+                } else {
+                    0
+                });
+                let Some(input_fee_rate) = input_fee_rate else {
+                    return 0;
+                };
+                let Some(swapped) =
+                    cpmm_out_upfront_fee_ceil(dx, x, y, u128::from(input_fee_rate), 1_000_000)
+                else {
+                    return 0;
+                };
+                let swapped = u128::from(swapped);
+                if creator_rate == 0 || creator_on_input {
+                    swapped
+                } else {
+                    let Some(creator_fee) = swapped
+                        .checked_mul(u128::from(creator_rate))
+                        .and_then(|v| v.checked_add(999_999))
+                        .map(|v| v / 1_000_000)
+                    else {
+                        return 0;
+                    };
+                    swapped.saturating_sub(creator_fee)
+                }
+            } else {
+                cpmm_out(dx, x, y, gamma).unwrap_or(0)
+            }
+        }
         PoolKind::Clmm => {
             if let Some(e) = edge {
                 if let Some(c) = &e.clmm {
@@ -156,10 +201,18 @@ fn quote_pool_with_dlmm_cache(
                         if gamma > 10_000 {
                             return 0;
                         }
-                        let fee_rate_u128 = (10_000u128 - gamma) * 100;
-                        let Ok(fee_rate) = u16::try_from(fee_rate_u128) else {
-                            return 0;
+                        let fee_rate = if e.protocol == DexProtocol::OrcaWhirlpool {
+                            c.fee_rate
+                        } else {
+                            let fee_rate_u128 = (10_000u128 - gamma) * 100;
+                            let Ok(rate) = u16::try_from(fee_rate_u128) else {
+                                return 0;
+                            };
+                            rate
                         };
+                        if fee_rate == 0 {
+                            return 0;
+                        }
                         let Ok(amount) = u64::try_from(dx) else {
                             return 0;
                         };
@@ -182,7 +235,19 @@ fn quote_pool_with_dlmm_cache(
                                     .collect(),
                             })
                             .collect();
-                        let quote = if e.protocol == DexProtocol::RaydiumClmm {
+                        let quote = if e.protocol == DexProtocol::OrcaWhirlpool {
+                            arb_math::compute_whirlpool_swap(
+                                c.sqrt_price,
+                                c.tick_current,
+                                c.liquidity,
+                                c.tick_spacing,
+                                fee_rate,
+                                amount,
+                                a_to_b,
+                                &arrays,
+                            )
+                            .map(|q| q.amount_out_received)
+                        } else if e.protocol == DexProtocol::RaydiumClmm {
                             quote_clmm_with_ticks_per_array_and_math(
                                 amount,
                                 c.sqrt_price,
@@ -272,6 +337,7 @@ pub fn cycle_profit_at(path: &[&MarketEdge], d: u64) -> u64 {
             reserve_out: e.reserve_out,
             fee_numerator: e.fee_bps as u64,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: e.raydium_cpmm_fee,
             is_active: true,
             has_risky_token: false,
             kind: e.kind,
@@ -315,6 +381,8 @@ pub struct MarketEdge {
     pub reserve_in: u128,
     pub reserve_out: u128,
     pub fee_bps: u16,
+    /// Exact Raydium CPMM fee schedule, including creator-fee side routing.
+    pub raydium_cpmm_fee: Option<arb_types::RaydiumCpmmFeeState>,
     /// Concentrated-liquidity state (CLMM). None for CPMM/DLMM.
     pub clmm: Option<arb_types::ClmmState>,
     /// Discrete-bin state (DLMM). None for CPMM/CLMM.
@@ -350,18 +418,44 @@ pub struct MarketGraph {
 /// - `gross_profitable > 0 && gate_rejected > 0`: cycles existed but the
 ///   economic gate (flash fee, min profit, Jito tip) rejected them —
 ///   tuning/observability problem, NOT a market absence.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedHopDiagnostic {
+    pub pool_id: PoolId,
+    pub protocol: DexProtocol,
+    pub kind: PoolKind,
+    pub from_mint: MintId,
+    pub to_mint: MintId,
+    /// Informational pool fee tier; already reflected in the quoted output.
+    pub fee_bps: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectedCycleDiagnostic {
+    pub route_id: u32,
+    pub base_mint: MintId,
+    pub borrow_amount_raw: u64,
+    pub expected_final_amount_raw: u64,
+    pub gross_profit_raw: u64,
+    /// Amount at each route boundary: borrow input followed by each hop output.
+    pub hop_amounts_raw: Vec<u64>,
+    pub hops: Vec<RejectedHopDiagnostic>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BaseCycleScanStats {
     pub base_anchors: usize,
     pub two_hop_gross_profitable: u64,
     pub three_hop_gross_profitable: u64,
     pub gate_rejected: u64,
     pub opportunities: u64,
+    /// Best strictly-positive-gross sample per rejected concrete route.
+    /// Diagnostic only; these samples are not executable opportunities.
+    pub rejected_cycles: Vec<RejectedCycleDiagnostic>,
 }
 
 struct RouteOptimizationOutcome {
     opportunity: Option<ExecutionOpportunity>,
-    had_gross_profitable_sample: bool,
+    gross_profitable_sample: Option<(u64, u64, Vec<u64>)>,
 }
 
 impl MarketGraph {
@@ -539,7 +633,7 @@ impl MarketGraph {
         }
         boundary_seeds.push(upper);
 
-        let had_gross_profitable_sample = std::cell::Cell::new(false);
+        let best_gross_sample = std::cell::RefCell::new(None::<(u64, u64, Vec<u64>)>);
         let result = route_sizing::optimize_bounded_non_monotonic(
             upper,
             32,
@@ -553,7 +647,17 @@ impl MarketGraph {
                 if final_out <= u128::from(size_in) {
                     return None;
                 }
-                had_gross_profitable_sample.set(true);
+                let gross = u64::try_from(final_out - u128::from(size_in)).ok()?;
+                let replace = best_gross_sample
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|(_, best, _)| gross > *best);
+                if replace {
+                    let mut amounts = Vec::with_capacity(hop_inputs.len() + 1);
+                    amounts.push(size_in);
+                    amounts.extend(hop_inputs.iter().copied());
+                    *best_gross_sample.borrow_mut() = Some((size_in, gross, amounts));
+                }
 
                 let first = edges.first()?;
                 let impact = cpmm_price_impact_bps(
@@ -597,7 +701,7 @@ impl MarketGraph {
         });
         Some(RouteOptimizationOutcome {
             opportunity,
-            had_gross_profitable_sample: had_gross_profitable_sample.get(),
+            gross_profitable_sample: best_gross_sample.borrow().clone(),
         })
     }
 
@@ -695,6 +799,7 @@ impl MarketGraph {
                     reserve_in: p.reserve_in,
                     reserve_out: p.reserve_out,
                     fee_bps: fee,
+                    raydium_cpmm_fee: p.raydium_cpmm_fee,
                     clmm: p.clmm.clone(),
                     dlmm: p.dlmm.clone(),
                     pump_fun: p.pump_fun.clone(),
@@ -719,6 +824,7 @@ impl MarketGraph {
                     reserve_in: p.reserve_out,
                     reserve_out: p.reserve_in,
                     fee_bps: fee,
+                    raydium_cpmm_fee: p.raydium_cpmm_fee,
                     clmm: p.clmm.clone(),
                     dlmm: p.dlmm.clone(),
                     pump_fun: p.pump_fun.clone(),
@@ -863,6 +969,7 @@ impl MarketGraph {
                     if e2.to_mint == base && e1.pool_id != e2.pool_id {
                         let route_id = RouteId(route_counter);
                         let route_edges = [e1, e2];
+                        route_counter = route_counter.saturating_add(1);
                         if let Some(outcome) = self.optimize_route_candidate(
                             base,
                             current_slot,
@@ -870,14 +977,38 @@ impl MarketGraph {
                             max_trade_size,
                             &route_edges,
                         ) {
-                            if outcome.had_gross_profitable_sample {
+                            if outcome.gross_profitable_sample.is_some() {
                                 stats.two_hop_gross_profitable += 1;
                             }
                             if let Some(opportunity) = outcome.opportunity {
                                 opportunities.push(opportunity);
-                                route_counter = route_counter.saturating_add(1);
-                            } else if outcome.had_gross_profitable_sample {
+                            } else if let Some((
+                                borrow_amount_raw,
+                                gross_profit_raw,
+                                hop_amounts_raw,
+                            )) = outcome.gross_profitable_sample
+                            {
                                 stats.gate_rejected += 1;
+                                stats.rejected_cycles.push(RejectedCycleDiagnostic {
+                                    route_id: route_id.0,
+                                    base_mint: base,
+                                    borrow_amount_raw,
+                                    expected_final_amount_raw: borrow_amount_raw
+                                        .saturating_add(gross_profit_raw),
+                                    gross_profit_raw,
+                                    hop_amounts_raw,
+                                    hops: route_edges
+                                        .iter()
+                                        .map(|edge| RejectedHopDiagnostic {
+                                            pool_id: edge.pool_id,
+                                            protocol: edge.protocol,
+                                            kind: edge.kind,
+                                            from_mint: edge.from_mint,
+                                            to_mint: edge.to_mint,
+                                            fee_bps: edge.fee_bps,
+                                        })
+                                        .collect(),
+                                });
                             }
                         }
                         continue;
@@ -906,6 +1037,7 @@ impl MarketGraph {
 
                         let route_id = RouteId(route_counter);
                         let route_edges = [e1, e2, e3];
+                        route_counter = route_counter.saturating_add(1);
                         if let Some(outcome) = self.optimize_route_candidate(
                             base,
                             current_slot,
@@ -913,14 +1045,38 @@ impl MarketGraph {
                             max_trade_size,
                             &route_edges,
                         ) {
-                            if outcome.had_gross_profitable_sample {
+                            if outcome.gross_profitable_sample.is_some() {
                                 stats.three_hop_gross_profitable += 1;
                             }
                             if let Some(opportunity) = outcome.opportunity {
                                 opportunities.push(opportunity);
-                                route_counter = route_counter.saturating_add(1);
-                            } else if outcome.had_gross_profitable_sample {
+                            } else if let Some((
+                                borrow_amount_raw,
+                                gross_profit_raw,
+                                hop_amounts_raw,
+                            )) = outcome.gross_profitable_sample
+                            {
                                 stats.gate_rejected += 1;
+                                stats.rejected_cycles.push(RejectedCycleDiagnostic {
+                                    route_id: route_id.0,
+                                    base_mint: base,
+                                    borrow_amount_raw,
+                                    expected_final_amount_raw: borrow_amount_raw
+                                        .saturating_add(gross_profit_raw),
+                                    gross_profit_raw,
+                                    hop_amounts_raw,
+                                    hops: route_edges
+                                        .iter()
+                                        .map(|edge| RejectedHopDiagnostic {
+                                            pool_id: edge.pool_id,
+                                            protocol: edge.protocol,
+                                            kind: edge.kind,
+                                            from_mint: edge.from_mint,
+                                            to_mint: edge.to_mint,
+                                            fee_bps: edge.fee_bps,
+                                        })
+                                        .collect(),
+                                });
                             }
                         }
                     }
@@ -1112,6 +1268,7 @@ mod tests {
             reserve_out: 2_000_000,
             fee_numerator: 2_500,
             fee_denominator: 1_000_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Clmm,
@@ -1147,6 +1304,7 @@ mod tests {
             reserve_in: 1_000_000_000_000,
             reserve_out: 1_000_000,
             fee_bps: 25,
+            raydium_cpmm_fee: None,
             clmm: Some(arb_types::ClmmState {
                 sqrt_price: 1u128 << 64,
                 liquidity: 1_000_000_000_000,
@@ -1196,6 +1354,7 @@ mod tests {
             reserve_out: r_out,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             last_update_slot: 0,

@@ -218,6 +218,7 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
                 input_transfer_fee,
                 input_net_into_pool,
                 output_gross_from_pool: gross_out,
+                output_curve_reserve_debit: gross_out,
                 output_transfer_fee,
                 output_net_to_next_hop,
             },

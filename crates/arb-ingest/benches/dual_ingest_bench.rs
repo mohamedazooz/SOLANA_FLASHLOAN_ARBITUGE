@@ -29,6 +29,7 @@ fn make_pool(index: usize) -> PoolState {
         reserve_out: 1_000_000_000u128,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: arb_types::PoolKind::Cpmm,

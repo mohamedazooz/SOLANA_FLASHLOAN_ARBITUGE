@@ -26,11 +26,12 @@ pub struct QuoteRequest {
 }
 
 /// Detailed protocol fee breakdown for transparency and accounting.
-/// `total_fee` is authoritative. Some venues expose only an aggregate rate in
-/// the quote state; their component fields remain zero rather than inventing
-/// an LP/protocol/fund allocation that was not decoded from the live config.
-/// These values are diagnostic only when `amount_out_raw` is used for PnL:
+/// Fee components are diagnostic only when `amount_out_raw` is used for PnL:
 /// swap output already reflects pool fees, so callers must not deduct them again.
+/// `total_fee` is denominated in input-mint raw units. For Raydium CPMM,
+/// `creator_fee` is denominated in the input mint when charged on input and in
+/// the output mint when the pool's creator_fee_on mode charges output. Trade
+/// fee splits are decoded from the live AmmConfig; never infer them from catalog bps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FeesBreakdown {
     pub lp_fee: u64,

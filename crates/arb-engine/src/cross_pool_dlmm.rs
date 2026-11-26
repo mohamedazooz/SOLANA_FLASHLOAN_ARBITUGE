@@ -786,6 +786,7 @@ mod tests {
             reserve_in: 1_000_000_000,
             reserve_out: 1_000_000_000,
             fee_bps: 5,
+            raydium_cpmm_fee: None,
             clmm: None,
             dlmm: Some(arb_types::DlmmState {
                 active_bin_id: active_id,

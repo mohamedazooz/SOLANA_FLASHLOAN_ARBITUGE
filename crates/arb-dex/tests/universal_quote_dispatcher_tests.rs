@@ -23,8 +23,26 @@ fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintI
         decimals_b: 9,
         reserve_in: 2_000_000_000,
         reserve_out: 40_000_000_000,
-        fee_numerator: 25,
-        fee_denominator: 10_000,
+        fee_numerator: if protocol == DexProtocol::RaydiumCpmm {
+            2_500
+        } else {
+            25
+        },
+        fee_denominator: if protocol == DexProtocol::RaydiumCpmm {
+            1_000_000
+        } else {
+            10_000
+        },
+        raydium_cpmm_fee: (protocol == DexProtocol::RaydiumCpmm).then_some(
+            arb_types::RaydiumCpmmFeeState {
+                trade_fee_rate_ppm: 2_500,
+                creator_fee_rate_ppm: 0,
+                protocol_fee_rate: 120_000,
+                fund_fee_rate: 40_000,
+                enable_creator_fee: false,
+                creator_fee_on: 0,
+            },
+        ),
         is_active,
         has_risky_token: false,
         kind: protocol.family(),

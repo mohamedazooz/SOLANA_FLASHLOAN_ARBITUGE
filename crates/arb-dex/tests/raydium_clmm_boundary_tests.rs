@@ -43,6 +43,7 @@ fn make_clmm_pool(
         reserve_out: 10_000_000_000,
         fee_numerator: 2500,
         fee_denominator: 1_000_000,
+        raydium_cpmm_fee: None,
         is_active,
         has_risky_token: false,
         kind: PoolKind::Clmm,

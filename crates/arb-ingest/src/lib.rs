@@ -869,6 +869,7 @@ mod tests {
             reserve_out: 200_000,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             transfer_fee_bps: 0,

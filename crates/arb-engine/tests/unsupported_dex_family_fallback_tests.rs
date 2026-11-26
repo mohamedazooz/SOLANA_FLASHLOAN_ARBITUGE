@@ -23,6 +23,7 @@ fn pool(protocol: DexProtocol) -> PoolState {
         reserve_out: 40_000_000_000,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: protocol.family(),

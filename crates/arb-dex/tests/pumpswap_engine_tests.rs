@@ -30,6 +30,7 @@ fn create_sample_pumpswap_pool(is_active: bool) -> (PoolState, MintId, MintId) {
         reserve_out: 50_000_000_000, // Quote token reserve (e.g. 50 SOL)
         fee_numerator: 3_000,
         fee_denominator: 1_000_000,
+        raydium_cpmm_fee: None,
         is_active,
         has_risky_token: false,
         kind: PoolKind::Cpmm,

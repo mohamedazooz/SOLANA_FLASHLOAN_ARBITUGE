@@ -30,6 +30,14 @@ fn make_cpmm_pool(
         reserve_out,
         fee_numerator: trade_fee_rate,
         fee_denominator: 1_000_000,
+        raydium_cpmm_fee: Some(arb_types::RaydiumCpmmFeeState {
+            trade_fee_rate_ppm: trade_fee_rate,
+            creator_fee_rate_ppm: 0,
+            protocol_fee_rate: 120_000,
+            fund_fee_rate: 40_000,
+            enable_creator_fee: false,
+            creator_fee_on: 0,
+        }),
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Cpmm,
@@ -244,4 +252,118 @@ fn test_cpmm_quote_engine_disabled_pool_fails_closed() {
         }
         other => panic!("expected PoolDisabled, got {:?}", other),
     }
+}
+
+#[test]
+fn creator_fee_matches_pool_mode_for_both_swap_directions() {
+    let engine = RaydiumCpmmQuoteEngine::new();
+    let amount = 1_000_000;
+
+    for (mode, a_to_b, expected_input_side) in [
+        (0u8, true, true),
+        (0u8, false, true),
+        (1u8, true, true),
+        (1u8, false, false),
+        (2u8, true, false),
+        (2u8, false, true),
+    ] {
+        let (mut pool, base, quote) = make_cpmm_pool(10_000_000_000, 20_000_000_000, 2_500);
+        pool.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+            trade_fee_rate_ppm: 2_500,
+            creator_fee_rate_ppm: 500,
+            protocol_fee_rate: 120_000,
+            fund_fee_rate: 40_000,
+            enable_creator_fee: true,
+            creator_fee_on: mode,
+        });
+        let (input_mint, output_mint) = if a_to_b { (base, quote) } else { (quote, base) };
+        let request = QuoteRequest {
+            input_mint,
+            output_mint,
+            amount,
+            slippage_bps: 50,
+            input_transfer_fee_config: None,
+            output_transfer_fee_config: None,
+        };
+        let result = engine
+            .quote_exact_in(&pool, &request)
+            .expect("creator-fee quote");
+        assert!(
+            result.fees_breakdown.creator_fee > 0,
+            "mode={mode} a_to_b={a_to_b}"
+        );
+        assert_eq!(
+            result.fees_breakdown.total_fee,
+            if expected_input_side { 3_000 } else { 2_500 },
+            "input-side fee total must include creator fee only when the mode charges input"
+        );
+        assert_eq!(
+            result.fees_breakdown.lp_fee
+                + result.fees_breakdown.protocol_fee
+                + result.fees_breakdown.fund_fee,
+            2_500,
+            "protocol/fund splits are derived from trade fee only"
+        );
+        if expected_input_side {
+            assert_eq!(
+                result.transfer_fee_breakdown.output_curve_reserve_debit,
+                result.transfer_fee_breakdown.output_gross_from_pool,
+                "input-side creator fee does not change the output reserve debit"
+            );
+        } else {
+            assert!(
+                result.transfer_fee_breakdown.output_curve_reserve_debit
+                    > result.transfer_fee_breakdown.output_gross_from_pool,
+                "output-side creator fee remains in the vault and must be excluded from curve reserves"
+            );
+        }
+        assert_eq!(
+            result.fees_breakdown.creator_fee,
+            if expected_input_side {
+                500
+            } else {
+                let (reserve_in, reserve_out) = if a_to_b {
+                    (10_000_000_000, 20_000_000_000)
+                } else {
+                    (20_000_000_000, 10_000_000_000)
+                };
+                let gross = arb_math::cpmm::cpmm_out_upfront_fee_ceil(
+                    amount as u128,
+                    reserve_in,
+                    reserve_out,
+                    2_500,
+                    1_000_000,
+                )
+                .unwrap();
+                u64::try_from((gross as u128 * 500).div_ceil(1_000_000)).unwrap()
+            },
+            "creator fee must use the correct side and protocol rounding"
+        );
+    }
+}
+
+#[test]
+fn creator_fee_exact_out_fails_closed_until_inverse_fee_path_is_supported() {
+    let engine = RaydiumCpmmQuoteEngine::new();
+    let (mut pool, base, quote) = make_cpmm_pool(10_000_000_000, 20_000_000_000, 2_500);
+    pool.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+        trade_fee_rate_ppm: 2_500,
+        creator_fee_rate_ppm: 500,
+        protocol_fee_rate: 120_000,
+        fund_fee_rate: 40_000,
+        enable_creator_fee: true,
+        creator_fee_on: 0,
+    });
+    let request = QuoteRequest {
+        input_mint: base,
+        output_mint: quote,
+        amount: 1_000_000,
+        slippage_bps: 50,
+        input_transfer_fee_config: None,
+        output_transfer_fee_config: None,
+    };
+    assert!(matches!(
+        engine.quote_exact_out(&pool, &request),
+        Err(ArbError::UnsupportedOperation(_))
+    ));
 }

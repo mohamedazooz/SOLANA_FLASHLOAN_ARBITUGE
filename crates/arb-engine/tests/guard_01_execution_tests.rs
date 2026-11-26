@@ -33,6 +33,7 @@ fn test_pool(
         reserve_out,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         last_update_slot: slot,

@@ -44,8 +44,16 @@ fn cpmm_pool(id: u8, a: MintId, b: MintId, reserve_out: u128) -> arb_types::Pool
         decimals_b: 9,
         reserve_in: 10_000_000_000,
         reserve_out,
-        fee_numerator: 25,
-        fee_denominator: 10_000,
+        fee_numerator: 2_500,
+        fee_denominator: 1_000_000,
+        raydium_cpmm_fee: Some(arb_types::RaydiumCpmmFeeState {
+            trade_fee_rate_ppm: 2_500,
+            creator_fee_rate_ppm: 0,
+            protocol_fee_rate: 120_000,
+            fund_fee_rate: 40_000,
+            enable_creator_fee: false,
+            creator_fee_on: 0,
+        }),
         is_active: true,
         has_risky_token: false,
         kind: arb_types::PoolKind::Cpmm,
@@ -74,6 +82,7 @@ fn v4_pool(id: u8, a: MintId, b: MintId, reserve_out: u128) -> arb_types::PoolSt
         reserve_out,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: arb_types::PoolKind::Cpmm,
@@ -194,6 +203,7 @@ fn orca_clmm_pool(id: u8, a: MintId, b: MintId) -> PoolState {
         reserve_out: 1_000_000_000_000,
         fee_numerator: 30,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Clmm,
@@ -275,9 +285,15 @@ fn per_pool_fee_determines_route_preference_between_parallel_pools() {
     let ma = meme_a_mint();
     let mb = meme_b_mint();
     let mut cheap = cpmm_pool(2, ma, mb, 10_000_000_000);
-    cheap.fee_numerator = 25;
+    cheap.fee_numerator = 2_500;
+    cheap.raydium_cpmm_fee.as_mut().unwrap().trade_fee_rate_ppm = 2_500;
     let mut expensive = cpmm_pool(5, ma, mb, 10_000_000_000);
-    expensive.fee_numerator = 200;
+    expensive.fee_numerator = 20_000;
+    expensive
+        .raydium_cpmm_fee
+        .as_mut()
+        .unwrap()
+        .trade_fee_rate_ppm = 20_000;
     let pools = vec![
         make_dlmm_pool(1, -100, 10, 100, wsol, ma, 10_u128.pow(12)),
         cheap,
@@ -310,7 +326,8 @@ fn hop_quotes_charge_each_pool_own_fee() {
     let wsol = wsol_mint();
     let ma = meme_a_mint();
     let mut cheap = cpmm_pool(2, wsol, ma, 10_000_000_000);
-    cheap.fee_numerator = 100;
+    cheap.fee_numerator = 10_000;
+    cheap.raydium_cpmm_fee.as_mut().unwrap().trade_fee_rate_ppm = 10_000;
     let q = quote_hop(&mut cheap, 10_000_000, true).expect("CPMM quote");
     let expected = 10_000_000u64 * 100 / 10_000;
     assert_eq!(

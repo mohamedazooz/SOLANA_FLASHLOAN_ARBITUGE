@@ -354,6 +354,7 @@ mod tests {
             reserve_out: 50_000_000_000,
             fee_numerator: 20,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Dlmm,
