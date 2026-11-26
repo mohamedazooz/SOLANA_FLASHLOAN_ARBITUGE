@@ -60,6 +60,7 @@ fn mock_pool(id: &str, active_id: i32, x_reserve: u128, y_reserve: u128) -> Pool
         clmm: None,
         dlmm: Some(dlmm),
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [
             arb_types::TokenProgramKind::SplToken,

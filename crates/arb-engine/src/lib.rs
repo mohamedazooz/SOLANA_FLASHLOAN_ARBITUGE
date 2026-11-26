@@ -164,6 +164,18 @@ fn quote_pool_with_dlmm_cache(
         }
         PoolKind::Clmm => {
             if let Some(e) = edge {
+                if e.protocol == DexProtocol::MeteoraDammV2 {
+                    let Ok(amount_in) = u64::try_from(dx) else {
+                        return 0;
+                    };
+                    let pool = e.to_pool_state();
+                    let a_to_b = e.pool_base == e.from_mint;
+                    return crate::adapters::quote_via_dispatcher(&pool, amount_in, a_to_b)
+                        .map(|quote| u128::from(quote.amount_out_raw))
+                        .unwrap_or(0);
+                }
+            }
+            if let Some(e) = edge {
                 if let Some(c) = &e.clmm {
                     if c.liquidity > 0 && c.sqrt_price > 0 && !c.tick_arrays.is_empty() {
                         // Reject invalid fee metadata and values outside the quote
@@ -337,6 +349,7 @@ pub struct MarketEdge {
     pub dlmm: Option<arb_types::DlmmState>,
     /// Pump.fun bonding curve state. None for other protocols.
     pub pump_fun: Option<arb_types::PumpFunState>,
+    pub damm_v2: Option<arb_types::DammV2State>,
     /// Token-2022 transfer fee in bps.
     pub transfer_fee_bps: u16,
     /// Token programs for (from_mint, to_mint).
@@ -352,7 +365,8 @@ impl MarketEdge {
         PoolState {
             pool_id: self.pool_id,
             protocol: self.protocol,
-            slot: Slot(0),
+            // DAMM v2 needs the exact same-context Clock slot after graph projection.
+            slot: Slot(self.damm_v2.as_ref().map_or(0, |damm| damm.clock_slot)),
             write_version: 0,
             base_mint: self.pool_base,
             quote_mint: self.pool_quote,
@@ -380,6 +394,7 @@ impl MarketEdge {
             clmm: self.clmm.clone(),
             dlmm: self.dlmm.clone(),
             pump_fun: self.pump_fun.clone(),
+            damm_v2: self.damm_v2.clone(),
             transfer_fee_bps: self.transfer_fee_bps,
             token_programs: self.token_programs,
             execution_accounts: self.execution_accounts.clone(),
@@ -413,6 +428,8 @@ pub struct PoolGraphBuildStats {
     pub excluded_unmodeled_transfer_fee: usize,
     pub excluded_invalid_fee: usize,
     pub excluded_unsupported_protocol: usize,
+    /// Quote-only protocols intentionally kept out of executable cycle discovery.
+    pub excluded_quote_only: usize,
 }
 /// Per-tick scan telemetry for the canonical cycle search.
 ///
@@ -786,6 +803,13 @@ impl MarketGraph {
         };
 
         for p in pools {
+            if p.protocol == DexProtocol::MeteoraDammV2 {
+                // It can be priced by the specialized dispatcher, but exact deployed swap
+                // account/min-out/rounding parity is not yet proven. Never issue an
+                // ExecutionOpportunity for this quote-only venue.
+                stats.excluded_quote_only += 1;
+                continue;
+            }
             if !p.is_active {
                 stats.excluded_inactive += 1;
                 continue;
@@ -863,6 +887,7 @@ impl MarketGraph {
                     clmm: p.clmm.clone(),
                     dlmm: p.dlmm.clone(),
                     pump_fun: p.pump_fun.clone(),
+                    damm_v2: p.damm_v2.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
                     token_programs: p.token_programs,
                     execution_accounts: p.execution_accounts.clone(),
@@ -888,6 +913,7 @@ impl MarketGraph {
                     clmm: p.clmm.clone(),
                     dlmm: p.dlmm.clone(),
                     pump_fun: p.pump_fun.clone(),
+                    damm_v2: p.damm_v2.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
                     token_programs: [p.token_programs[1], p.token_programs[0]],
                     execution_accounts: p.execution_accounts.clone(),
@@ -1245,6 +1271,162 @@ impl MarketGraph {
 mod tests {
     use super::*;
 
+    fn make_damm_pool_state(collect_fee_mode: u8) -> PoolState {
+        let pool_id = PoolId::new([70; 32]);
+        let mint_a = MintId::new([71; 32]);
+        let mint_b = MintId::new([72; 32]);
+        let authority = solana_pubkey::Pubkey::new_from_array([73; 32]);
+        let vault_a = solana_pubkey::Pubkey::new_from_array([74; 32]);
+        let vault_b = solana_pubkey::Pubkey::new_from_array([75; 32]);
+        let event_authority = solana_pubkey::Pubkey::new_from_array([76; 32]);
+        let compounding = collect_fee_mode == 2;
+        let state = arb_types::DammV2State {
+            pool_status: 0,
+            fee_version: 0,
+            layout_version: if compounding { 1 } else { 0 },
+            collect_fee_mode,
+            activation_type: 1,
+            activation_point: 1_800_000_000,
+            current_point: 1_800_000_100,
+            current_timestamp: 1_800_000_100,
+            clock_slot: 55,
+            clock_epoch: 1097,
+            sqrt_price_x64: 1u128 << 64,
+            liquidity: 1_000_000_000_000,
+            sqrt_min_price_x64: 1u128 << 63,
+            sqrt_max_price_x64: 1u128 << 65,
+            token_a_amount: if compounding { Some(10_000_000) } else { None },
+            token_b_amount: if compounding { Some(20_000_000) } else { None },
+            cliff_fee_numerator: 100_000,
+            fee_scheduler_mode: 2,
+            protocol_fee_percent: 10,
+            referral_fee_percent: 25,
+            compounding_fee_bps: 2000,
+            account_graph_verified: true,
+            ..Default::default()
+        };
+        PoolState {
+            pool_id,
+            protocol: DexProtocol::MeteoraDammV2,
+            slot: Slot(55),
+            write_version: 1,
+            base_mint: mint_a,
+            quote_mint: mint_b,
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: if compounding {
+                10_000_000
+            } else {
+                1_000_000_000_000
+            },
+            reserve_out: if compounding {
+                20_000_000
+            } else {
+                1_000_000_000_000
+            },
+            fee_numerator: 100_000,
+            fee_denominator: 1_000_000_000,
+            raydium_cpmm_fee: None,
+            is_active: true,
+            has_risky_token: false,
+            kind: if compounding {
+                PoolKind::Cpmm
+            } else {
+                PoolKind::Clmm
+            },
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: Some(state),
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken; 2],
+            execution_accounts: Some(PoolExecutionAccounts::MeteoraDammV2 {
+                token_a_mint: mint_a.0,
+                token_b_mint: mint_b.0,
+                authority,
+                vault_a,
+                vault_b,
+                event_authority,
+            }),
+            last_update_slot: 55,
+            last_update_ms: 1,
+        }
+    }
+
+    fn edge_from_damm_pool(pool: &PoolState, reverse: bool) -> MarketEdge {
+        let (from_mint, to_mint, reserve_in, reserve_out) = if reverse {
+            (
+                pool.quote_mint,
+                pool.base_mint,
+                pool.reserve_out,
+                pool.reserve_in,
+            )
+        } else {
+            (
+                pool.base_mint,
+                pool.quote_mint,
+                pool.reserve_in,
+                pool.reserve_out,
+            )
+        };
+        MarketEdge {
+            pool_id: pool.pool_id,
+            protocol: pool.protocol,
+            kind: pool.kind,
+            from_mint,
+            to_mint,
+            pool_base: pool.base_mint,
+            pool_quote: pool.quote_mint,
+            reserve_in,
+            reserve_out,
+            fee_bps: pool.fee_bps().unwrap(),
+            fee_numerator: pool.fee_numerator,
+            fee_denominator: pool.fee_denominator,
+            raydium_cpmm_fee: None,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: pool.damm_v2.clone(),
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken; 2],
+            execution_accounts: pool.execution_accounts.clone(),
+            active_bin_id: None,
+        }
+    }
+
+    #[test]
+    fn market_edge_quote_uses_damm_v2_adapter_for_both_curve_types_and_directions() {
+        for mode in [0u8, 2u8] {
+            let state = make_damm_pool_state(mode);
+            let kind = state.kind;
+            for reverse in [false, true] {
+                let edge = edge_from_damm_pool(&state, reverse);
+                let output = quote_pool(
+                    kind,
+                    100_000,
+                    edge.reserve_in,
+                    edge.reserve_out,
+                    9_970,
+                    Some(&edge),
+                );
+                assert!(
+                    output > 0,
+                    "DAMM v2 mode={mode} reverse={reverse} should quote through the universal dispatcher"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn production_cycle_graph_keeps_damm_v2_quote_only_until_execution_parity() {
+        let state = make_damm_pool_state(0);
+        let mut graph = MarketGraph::new(vec![state.base_mint]);
+        let stats = graph.build_from_pools(&[state]);
+        assert_eq!(stats.pools_seen, 1);
+        assert_eq!(stats.excluded_quote_only, 1);
+        assert_eq!(stats.pools_indexed, 0);
+        assert!(graph.edges_by_from.is_empty());
+    }
     fn test_config() -> EconomicConfig {
         EconomicConfig {
             flash_loan_fee_sf: 0,
@@ -1300,7 +1482,8 @@ mod tests {
             .collect::<Vec<_>>();
         let mut graph = MarketGraph::default();
         let stats = graph.build_from_pools(&pools);
-        assert_eq!(stats.excluded_unsupported_protocol, protocols.len());
+        assert_eq!(stats.excluded_unsupported_protocol, protocols.len() - 1);
+        assert_eq!(stats.excluded_quote_only, 1);
         assert!(graph.edges_by_from.is_empty());
     }
 
@@ -1328,6 +1511,7 @@ mod tests {
             clmm: Some(arb_types::ClmmState::default()),
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
             execution_accounts: None,
@@ -1379,6 +1563,7 @@ mod tests {
             }),
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
             execution_accounts: None,
@@ -1418,6 +1603,7 @@ mod tests {
             clmm: None,
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
             execution_accounts: None,

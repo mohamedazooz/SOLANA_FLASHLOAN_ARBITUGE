@@ -33,6 +33,7 @@ fn make_pool(id: u8, a: MintId, b: MintId, r_a: u128, r_b: u128) -> PoolState {
         clmm: None,
         dlmm: None,
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: None,

@@ -59,6 +59,14 @@ pub struct DammV2FeeParams {
     pub max_volatility_accumulator: u32,
     pub bin_step: u16,
     pub volatility_accumulator: u128,
+    /// Dynamic-fee decay and reference state copied from PoolFeesStruct.
+    pub filter_period: u16,
+    pub decay_period: u16,
+    pub dynamic_reduction_factor: u16,
+    pub last_update_timestamp: u64,
+    pub bin_step_u128: u128,
+    pub sqrt_price_reference: u128,
+    pub volatility_reference: u128,
     /// Collection mode: 0 BothToken, 1 OnlyB, 2 Compounding.
     pub collect_fee_mode: u8,
 }
@@ -231,6 +239,16 @@ impl DammV2FeeParams {
         Some(fee)
     }
 
+    /// Public exact base-fee numerator used by quote engines to report the
+    /// variable-fee component separately without changing total fee rounding.
+    pub fn base_fee_numerator_at(
+        &self,
+        current_point: u64,
+        activation_point: u64,
+        current_sqrt_price_x64: u128,
+    ) -> Option<u128> {
+        self.base_fee_numerator(current_point, activation_point, current_sqrt_price_x64)
+    }
     /// Minimum base fee after the full configured schedule has elapsed.
     pub fn min_base_fee_numerator(&self) -> Option<u64> {
         let periods = self.number_of_period;

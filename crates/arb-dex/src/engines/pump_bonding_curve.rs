@@ -202,14 +202,18 @@ impl QuoteEngine for PumpBondingCurveQuoteEngine {
         Ok(QuoteResult {
             protocol: DexProtocol::PumpFun,
             pool_id: state.pool_id,
+            total_fee_mint: request.input_mint,
+            creator_fee_mint: request.input_mint,
             amount_in_raw: request.amount,
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
             fees_breakdown: FeesBreakdown {
                 lp_fee: 0,
+                compounding_fee: 0,
                 protocol_fee: 0,
                 fund_fee: 0,
                 creator_fee: 0,
+                referral_fee: 0,
                 dynamic_fee: 0,
                 total_fee: trade_fee,
             },
