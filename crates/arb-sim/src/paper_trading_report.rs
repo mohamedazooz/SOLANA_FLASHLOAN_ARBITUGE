@@ -96,6 +96,12 @@ pub struct PaperTradingReport {
     pub pnl: PnlStats,
     /// Rejection reasons with occurrence counts, descending.
     pub rejection_reasons: Vec<(String, usize)>,
+    /// Typed opportunity-stage distribution (canonical labels, ascending
+    /// proof order). Derived via [`CandidateOpportunityRecord::stage`];
+    /// `SHADOW_VALIDATED` / `MAINNET_VERIFIED` appear only when explicitly
+    /// recorded, never derived.
+    #[serde(default)]
+    pub stage_counts: Vec<(String, usize)>,
     pub confidence: ConfidenceAssessment,
 }
 
@@ -229,6 +235,20 @@ pub fn build_report(records: &[CandidateOpportunityRecord], now_unix: u64) -> Pa
     let mut reasons: Vec<(String, usize)> = rejection_reasons.into_iter().collect();
     reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
+    let mut stage_counter: HashMap<String, usize> = HashMap::new();
+    for rec in records {
+        *stage_counter
+            .entry(rec.stage().label().to_string())
+            .or_insert(0) += 1;
+    }
+    let stage_counts: Vec<(String, usize)> = arb_types::OPPORTUNITY_STAGES
+        .iter()
+        .filter_map(|s| {
+            let label = s.label().to_string();
+            stage_counter.remove(&label).map(|n| (label, n))
+        })
+        .collect();
+
     let statistically_meaningful = records.len() >= MIN_SIGNIFICANT_SAMPLE;
     let note = if records.is_empty() {
         "No recorded candidates: no economic evidence exists yet.".to_string()
@@ -255,6 +275,7 @@ pub fn build_report(records: &[CandidateOpportunityRecord], now_unix: u64) -> Pa
         decay,
         pnl,
         rejection_reasons: reasons,
+        stage_counts,
         confidence: ConfidenceAssessment {
             sample_size: records.len(),
             min_significant_sample: MIN_SIGNIFICANT_SAMPLE,
@@ -284,6 +305,13 @@ pub fn render_markdown(r: &PaperTradingReport) -> String {
         r.counts.simulation_failed
     ));
     s.push_str(&format!("| - stale quote | {} |\n", r.counts.stale_quote));
+    s.push_str("\n## Qualification stages (typed)\n\n| Stage | Count |\n|---|\n");
+    for (stage, count) in &r.stage_counts {
+        s.push_str(&format!("| {} | {} |\n", stage, count));
+    }
+    if r.stage_counts.is_empty() {
+        s.push_str("| (none) | 0 |\n");
+    }
     s.push_str("\n## Quote accuracy (deterministic replay)\n\n");
     s.push_str(&format!(
         "- Replayed: {} · Reproduced exactly: {} · Rate: {} bps\n",
@@ -378,7 +406,7 @@ mod tests {
             pool_b_id: Pubkey::new_unique(),
             pool_a_slot: 100,
             pool_b_slot: 100,
-            quote_slot: 101,
+            quote_slot: 100,
             pool_a_state: test_pool_state(),
             pool_b_state: test_pool_state(),
             direction: "DirectionA".to_string(),
@@ -399,6 +427,7 @@ mod tests {
             best_observed_net_profit: None,
             rejection_reason: None,
             status: status.to_string(),
+            builder_succeeded: true,
         }
     }
 
@@ -464,6 +493,43 @@ mod tests {
         assert_eq!(r.decay.still_alive_at_end, 1);
         assert_eq!(r.decay.median_lifetime_ms, 500);
         assert_eq!(r.decay.p90_lifetime_ms, 900);
+    }
+
+    #[test]
+    fn stage_counts_follow_evidence_gated_derivation() {
+        let records = vec![
+            // Fully proven positive: SIMULATED.
+            base_record("a", "VERIFIED_PROFITABLE", 15_000),
+            // Successful simulation of a LOSING trade: QUOTE_VALID, never
+            // ECONOMICALLY_POSITIVE / SIMULATED.
+            base_record("b", "SIMULATED_SUCCESS_NEGATIVE_EDGE", -3_000),
+            // Zero net: economics unproven → QUOTE_VALID.
+            base_record("c", "REJECTED_SIM_FAIL", 0),
+            // Stale: freshness failed → DISCOVERED.
+            {
+                let mut rec = base_record("d", "STALE_QUOTE", 0);
+                rec.quote_freshness_cleared = false;
+                rec
+            },
+            // Slot-inconsistent snapshots: DISCOVERED despite positive net.
+            {
+                let mut rec = base_record("e", "VERIFIED_PROFITABLE", 9_000);
+                rec.pool_b_slot = 101;
+                rec
+            },
+        ];
+        let r = build_report(&records, 42);
+        assert_eq!(
+            r.stage_counts,
+            vec![
+                ("DISCOVERED".to_string(), 2),
+                ("QUOTE_VALID".to_string(), 2),
+                ("SIMULATED".to_string(), 1),
+            ]
+        );
+        let md = render_markdown(&r);
+        assert!(md.contains("## Qualification stages (typed)"));
+        assert!(md.contains("| QUOTE_VALID | 2 |"));
     }
 
     #[test]

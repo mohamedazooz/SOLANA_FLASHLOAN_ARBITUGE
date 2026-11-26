@@ -75,6 +75,19 @@
 5. **`DEFAULT_MIN_PROFIT_LAMPORTS = 10_000`** is small by design (per task: small targets allowed). Must not be silently raised to hide missing opportunities.
 6. **`ARB_EXECUTOR_PROGRAM_ID = "ArbExec111…"`** is a placeholder, not a deployed program. Must not be enabled (EXEC-F-2026-11-22-N1).
 7. **`DEFAULT_MAINNET_ALT_KEY = "ALT111…"`** is a placeholder ALT. V0 compilation must verify warmup against the real on-chain ALT.
+8. **`DEFAULT_FLASH_LOAN_FEE_BPS = 30` and `DEFAULT_RAYDIUM_FEE_BPS = 25` in `crates/arb-math/src/pump_fun_raydium.rs`** — fixed bps fee defaults that violate the no-fixed-fee rule. **Verified test-only:** grep across `crates/` shows zero production callers; the constants are consumed exclusively by that file's `#[cfg(test)]` module. Quarantine verified; if the pump_fun_raydium path is ever productized, these MUST be replaced by reserve/config-decoded values before any live wiring.
+9. **Legacy `PumpFunRaydiumArbitrageBuilder` (`crates/arb-tx/src/protocols/pump_fun_raydium.rs`)** — carries hardcoded Jito tip / priority-fee defaults. **Verified zero production callers** (no imports from `arb-bot`, `arb-land`, or `supervisor/`). Dead code from the safety standpoint; must not be wired into the canonical builder chain (`arb-tx/src/primitives/builder.rs`) without adopting the unified fee ledger and policy-driven tip/fee inputs.
+10. **Referral fee (Kamino)** — verified structurally zero in production: all flash builders pass `referrer_account`/`referrer_token_state` = `None` and upstream klend (`686913ee`) puts the referral share INSIDE the single flash fee (`protocol + referral == fee`). Differential proof: `crates/arb-math/tests/kamino_klend_differential.rs`.
+
+## 5.1 Evidence-gated opportunity stages (related hardening)
+
+Stage promotion is no longer inferable from free-form status strings alone.
+`arb-types/src/opportunity_stage.rs` now requires explicit evidence for every
+stage above `DISCOVERED` (quote completeness, freshness, same-slot
+consistency, positive integer net profit, builder success proof, simulation
+SUCCESS outcome, and dedicated proof structures for the shadow/mainnet
+tiers). This closes the class of bugs where a stale quote or a failed
+simulation could be reported at a profitable-looking stage.
 
 ## 6. Hardcoded fee assumptions found & resolved (historical)
 
