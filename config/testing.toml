@@ -43,7 +43,8 @@ min_net_profit_abs = 10000
 min_net_profit_bps = 1
 max_price_impact_bps = 40
 max_state_age_slots = 2
-graph_max_age_slots = 8
+# Keep graph discovery freshness no wider than the quote/state freshness window.
+graph_max_age_slots = 2
 use_flash_loan = true
 max_pools = 1000
 discovery_refresh_secs = 15

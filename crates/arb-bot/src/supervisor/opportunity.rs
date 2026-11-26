@@ -1392,7 +1392,10 @@ impl Supervisor {
                                 "1" | "true" | "yes" | "on"
                             )
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                    // Match the final dispatch gate: compile direct V1 only when
+                    // the exact configured HTTP endpoint is explicitly allowlisted.
+                    && self.rpc_pool.has_v1_rpc_allowlist();
                 // The public Jito sendBundle documentation does not promise
                 // V1 ingress on every Block Engine path. Keep it disabled until
                 // this exact endpoint/region has passed a controlled V1 canary.

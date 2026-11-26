@@ -238,6 +238,9 @@ pub struct WalletConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct StrategyConfig {
+    /// Configured monitoring/watchlist mints. The active flash-loan graph is
+    /// currently anchored to the WSOL Kamino reserve; this list does not create
+    /// additional independent flash-loan anchors.
     pub base_tokens: Vec<String>,
     pub min_net_profit_abs: u64,
     pub min_net_profit_bps: u64,
