@@ -111,10 +111,14 @@ pub enum CrossDexFlashArbError {
     SameDexPlatform,
     #[error("zero borrow amount")]
     ZeroBorrowAmount,
+    #[error("repayment calculation overflowed u64: borrow={borrow}, fee={fee}")]
+    ArithmeticOverflow { borrow: u64, fee: u64 },
     #[error("flash repayment {repay} does not cover borrow {borrow} + fee {fee}")]
     InsufficientRepayment { borrow: u64, repay: u64, fee: u64 },
     #[error("route does not close: expected {expected}, got {actual}")]
     NonClosingRoute { expected: String, actual: String },
+    #[error("closing token program mismatch: expected {expected}, got {actual}")]
+    ClosingTokenProgramMismatch { expected: String, actual: String },
     #[error("mint chain mismatch between leg {leg} and leg {next_leg}")]
     MintChainMismatch { leg: usize, next_leg: usize },
     #[error("leg {leg} minimum output {min_out} is below required {required}")]
@@ -167,10 +171,15 @@ pub struct CrossDexFlashArbitrageTx {
 }
 
 impl CrossDexFlashArbParams {
-    /// Calculate the repayment amount (principal + fee)
+    /// Calculate the repayment amount (`principal + fee`), failing closed on `u64` overflow.
     #[inline]
-    pub fn repay_amount(&self) -> u64 {
-        self.borrow_amount.saturating_add(self.flash_fee)
+    pub fn repay_amount(&self) -> Result<u64, CrossDexFlashArbError> {
+        self.borrow_amount.checked_add(self.flash_fee).ok_or(
+            CrossDexFlashArbError::ArithmeticOverflow {
+                borrow: self.borrow_amount,
+                fee: self.flash_fee,
+            },
+        )
     }
 
     /// Validate the cross-DEX arbitrage parameters
@@ -185,9 +194,15 @@ impl CrossDexFlashArbParams {
             return Err(CrossDexFlashArbError::ZeroBorrowAmount);
         }
 
-        // Check repayment coverage
-        let repay = self.repay_amount();
-        if repay < self.borrow_amount.saturating_add(self.flash_fee) {
+        // Check repayment coverage without saturating overflow masking
+        let repay = self.repay_amount()?;
+        let expected_min_repay = self.borrow_amount.checked_add(self.flash_fee).ok_or(
+            CrossDexFlashArbError::ArithmeticOverflow {
+                borrow: self.borrow_amount,
+                fee: self.flash_fee,
+            },
+        )?;
+        if repay < expected_min_repay {
             return Err(CrossDexFlashArbError::InsufficientRepayment {
                 borrow: self.borrow_amount,
                 repay,
@@ -202,13 +217,21 @@ impl CrossDexFlashArbParams {
             return Err(CrossDexFlashArbError::SameDexPlatform);
         }
 
-        // Check closing route
-        let first_mint = self.legs[0].token_in;
-        let last_mint = self.legs.last().unwrap().token_out;
+        // Check closing route (mint + token program parity)
+        let first_leg = &self.legs[0];
+        let last_leg = self.legs.last().unwrap();
+        let first_mint = first_leg.token_in;
+        let last_mint = last_leg.token_out;
         if first_mint != last_mint {
             return Err(CrossDexFlashArbError::NonClosingRoute {
                 expected: first_mint.to_string(),
                 actual: last_mint.to_string(),
+            });
+        }
+        if first_leg.token_in_program != last_leg.token_out_program {
+            return Err(CrossDexFlashArbError::ClosingTokenProgramMismatch {
+                expected: first_leg.token_in_program.to_string(),
+                actual: last_leg.token_out_program.to_string(),
             });
         }
 
@@ -307,13 +330,21 @@ pub fn validate_cross_dex_opportunity(
     if unique_platforms.len() < 2 {
         return Err(CrossDexFlashArbError::SameDexPlatform);
     }
-    // Route must close
-    let first_mint = opp.hops.first().unwrap().mint_in;
-    let last_mint = opp.hops.last().unwrap().mint_out;
+    // Route must close (mint + token program parity)
+    let first_hop = opp.hops.first().unwrap();
+    let last_hop = opp.hops.last().unwrap();
+    let first_mint = first_hop.mint_in;
+    let last_mint = last_hop.mint_out;
     if first_mint != last_mint {
         return Err(CrossDexFlashArbError::NonClosingRoute {
             expected: first_mint.0.to_string(),
             actual: last_mint.0.to_string(),
+        });
+    }
+    if first_hop.token_programs[0] != last_hop.token_programs[1] {
+        return Err(CrossDexFlashArbError::ClosingTokenProgramMismatch {
+            expected: format!("{:?}", first_hop.token_programs[0]),
+            actual: format!("{:?}", last_hop.token_programs[1]),
         });
     }
     // Mint chaining
@@ -542,5 +573,153 @@ mod tests {
 
         let result = params.validate();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn repay_amount_rejects_u64_overflow() {
+        let mint_a = Pubkey::new_unique();
+        let params = CrossDexFlashArbParams {
+            payer: Pubkey::new_unique(),
+            kamino: KaminoFlashParams::default_wsol(),
+            borrow_amount: u64::MAX - 5,
+            flash_fee: 10,
+            legs: vec![
+                CrossDexSwapLeg {
+                    dex_platform: DexPlatform::MeteoraDlmm,
+                    pool_address: Pubkey::new_unique(),
+                    token_in: Pubkey::from_str(WSOL_MINT).unwrap(),
+                    token_out: mint_a,
+                    token_in_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
+                    token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
+                    amount_in: u64::MAX - 5,
+                    min_amount_out: 100,
+                    swap_for_y: true,
+                    additional_accounts: vec![],
+                },
+                CrossDexSwapLeg {
+                    dex_platform: DexPlatform::RaydiumClmm,
+                    pool_address: Pubkey::new_unique(),
+                    token_in: mint_a,
+                    token_out: Pubkey::from_str(WSOL_MINT).unwrap(),
+                    token_in_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
+                    token_out_program: Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap(),
+                    amount_in: 100,
+                    min_amount_out: u64::MAX,
+                    swap_for_y: true,
+                    additional_accounts: vec![],
+                },
+            ],
+            cu_limit: 300_000,
+            priority_fee_micro_lamports: 1,
+            jito_tip_account: Pubkey::new_unique(),
+            jito_tip_lamports: 0,
+            recent_blockhash: [0; 32],
+            v1_transport_supported: true,
+        };
+        assert!(matches!(
+            params.repay_amount(),
+            Err(CrossDexFlashArbError::ArithmeticOverflow { .. })
+        ));
+        assert!(matches!(
+            params.validate(),
+            Err(CrossDexFlashArbError::ArithmeticOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_closing_token_program_mismatch() {
+        let mint_a = Pubkey::new_unique();
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let t22 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        let params = CrossDexFlashArbParams {
+            payer: Pubkey::new_unique(),
+            kamino: KaminoFlashParams::default_wsol(),
+            borrow_amount: 1_000_000_000,
+            flash_fee: 1_000,
+            legs: vec![
+                CrossDexSwapLeg {
+                    dex_platform: DexPlatform::MeteoraDlmm,
+                    pool_address: Pubkey::new_unique(),
+                    token_in: Pubkey::from_str(WSOL_MINT).unwrap(),
+                    token_out: mint_a,
+                    token_in_program: spl,
+                    token_out_program: spl,
+                    amount_in: 1_000_000_000,
+                    min_amount_out: 900_000_000,
+                    swap_for_y: true,
+                    additional_accounts: vec![],
+                },
+                CrossDexSwapLeg {
+                    dex_platform: DexPlatform::RaydiumClmm,
+                    pool_address: Pubkey::new_unique(),
+                    token_in: mint_a,
+                    token_out: Pubkey::from_str(WSOL_MINT).unwrap(),
+                    token_in_program: spl,
+                    token_out_program: t22,
+                    amount_in: 900_000_000,
+                    min_amount_out: 1_001_000_000,
+                    swap_for_y: true,
+                    additional_accounts: vec![],
+                },
+            ],
+            cu_limit: 300_000,
+            priority_fee_micro_lamports: 1,
+            jito_tip_account: Pubkey::new_unique(),
+            jito_tip_lamports: 0,
+            recent_blockhash: [0; 32],
+            v1_transport_supported: true,
+        };
+        assert!(matches!(
+            params.validate(),
+            Err(CrossDexFlashArbError::ClosingTokenProgramMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_cross_dex_opportunity_rejects_closing_token_program_mismatch() {
+        use arb_types::{Bps, MintId, PoolId, RouteId, Slot, SwapHop, TokenProgramKind};
+        let wsol = MintId(Pubkey::from_str(WSOL_MINT).unwrap());
+        let mid = MintId(Pubkey::new_unique());
+        let opp = ExecutionOpportunity {
+            route_id: RouteId(1),
+            slot: Slot(1),
+            size_in: TokenAmount(1_000_000_000),
+            expected_out: TokenAmount(1_001_000_000),
+            hop_inputs: vec![1_000_000_000, 900_000_000, 1_001_000_000],
+            gross_profit: Lamports(1_000_000),
+            net_profit: Lamports(900_000),
+            base_decimals: 9,
+            price_impact_bps: Bps(10),
+            hops: vec![
+                SwapHop {
+                    pool_id: PoolId(Pubkey::new_unique()),
+                    protocol: DexProtocol::MeteoraDlmm,
+                    mint_in: wsol,
+                    mint_out: mid,
+                    fee_bps: 25,
+                    active_bin_id: Some(0),
+                    token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+                    trade_intent: Default::default(),
+                    execution_accounts: None,
+                },
+                SwapHop {
+                    pool_id: PoolId(Pubkey::new_unique()),
+                    protocol: DexProtocol::RaydiumCpmm,
+                    mint_in: mid,
+                    mint_out: wsol,
+                    fee_bps: 25,
+                    active_bin_id: None,
+                    token_programs: [TokenProgramKind::SplToken, TokenProgramKind::Token2022],
+                    trade_intent: Default::default(),
+                    execution_accounts: None,
+                },
+            ],
+            expected_min_final_output: 1_001_000_000,
+            hop_slippage_bps: 10,
+        };
+        assert!(matches!(
+            validate_cross_dex_opportunity(&opp),
+            Err(CrossDexFlashArbError::ClosingTokenProgramMismatch { .. })
+        ));
     }
 }

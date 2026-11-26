@@ -15,7 +15,9 @@ use arb_constants::{
     TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, USDC_MINT, WSOL_MINT,
 };
 use arb_dex::{PumpSwapFeeConfig, PumpSwapPool, PumpSwapPoolHeader};
-use arb_types::{ArbError, DexProtocol, MintId, PoolId, PoolKind, PoolState, Result, Slot};
+use arb_types::{
+    ArbError, DexProtocol, MintId, PoolId, PoolKind, PoolState, Result, Slot, TokenProgramKind,
+};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -258,6 +260,10 @@ pub struct PumpSwapJoinedState {
     pub base_decimals: u8,
     pub quote_decimals: u8,
     pub base_mint_supply: u64,
+    /// Verified token program owning `header.base_mint` and `header.base_vault`.
+    pub base_token_program: TokenProgramKind,
+    /// Verified token program owning `header.quote_mint` and `header.quote_vault`.
+    pub quote_token_program: TokenProgramKind,
     /// Raw, owner- and PDA-verified Pump Fees FeeConfig snapshot.
     /// A dedicated IDL decoder must turn this into `PumpSwapFeeConfig`.
     pub fee_config_account: AccountSnapshot,
@@ -494,6 +500,17 @@ pub fn join_pump_swap_state(
         ));
     }
 
+    let base_token_program_kind = if base_token_program == token_2022_program {
+        TokenProgramKind::Token2022
+    } else {
+        TokenProgramKind::SplToken
+    };
+    let quote_token_program_kind = if quote_token_program == token_2022_program {
+        TokenProgramKind::Token2022
+    } else {
+        TokenProgramKind::SplToken
+    };
+
     Ok(PumpSwapJoinedState {
         pool_key,
         slot: pool.slot,
@@ -503,6 +520,8 @@ pub fn join_pump_swap_state(
         base_decimals,
         quote_decimals,
         base_mint_supply,
+        base_token_program: base_token_program_kind,
+        quote_token_program: quote_token_program_kind,
         fee_config_account: fee_config,
         fee_config_bump: expected_fee_config_bump,
         global_config_account: global_config,
@@ -703,7 +722,7 @@ impl crate::IngestClient {
                 clmm: None,
                 dlmm: None,
                 pump_fun: None,
-                token_programs: Default::default(),
+                token_programs: [joined.base_token_program, joined.quote_token_program],
                 execution_accounts,
                 transfer_fee_bps: 0,
                 last_update_slot: joined.slot,

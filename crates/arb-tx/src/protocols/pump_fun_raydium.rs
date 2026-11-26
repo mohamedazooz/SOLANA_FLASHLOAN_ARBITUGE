@@ -10,12 +10,12 @@ use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
 use crate::{
-    CompiledInstruction, PumpFunAccounts, RaydiumCpmmAccounts, RaydiumV4Accounts, WSOL_MINT,
-    build_close_token_account, build_compute_unit_limit, build_compute_unit_price,
+    CompiledInstruction, PumpFunAccounts, RaydiumCpmmAccounts, RaydiumV4Accounts, TOKEN_PROGRAM_ID,
+    WSOL_MINT, build_close_token_account, build_compute_unit_limit, build_compute_unit_price,
     build_create_ata_idempotent, build_marked_jito_tip_instruction,
     build_pump_fun_swap_instruction, build_raydium_cpmm_swap_instruction,
     build_raydium_v4_swap_instruction_18, build_sync_native, build_system_transfer,
-    get_associated_token_address,
+    get_associated_token_address_with_program_id,
 };
 #[cfg(test)]
 use crate::{KeypairSigner, TxBuilder, validate_jito_bundle};
@@ -173,10 +173,13 @@ impl PumpFunRaydiumArbitrageBuilder {
         ixs.push(build_compute_unit_price(self.priority_fee_microlamports));
 
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap_or_default();
+        let spl_token = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap_or_default();
         // This legacy Pump.fun/Raydium V4 builder is SPL Token-only; it does
         // not carry a mint-owner program selection for the meme token.
-        let user_wsol = get_associated_token_address(&self.payer, &wsol);
-        let user_meme = get_associated_token_address(&self.payer, &self.meme_mint);
+        let user_wsol =
+            get_associated_token_address_with_program_id(&self.payer, &wsol, &spl_token);
+        let user_meme =
+            get_associated_token_address_with_program_id(&self.payer, &self.meme_mint, &spl_token);
 
         // Ensure user has meme ATA idempotently
         ixs.push(build_create_ata_idempotent(
@@ -191,11 +194,12 @@ impl PumpFunRaydiumArbitrageBuilder {
             self.payer, self.payer, wsol, user_wsol,
         ));
 
-        let intermediate_amount = if self.intermediate_amount > 0 {
-            self.intermediate_amount
-        } else {
-            1 // fallback minimal slippage bound if not explicitly quoted
-        };
+        if self.intermediate_amount == 0 {
+            bail!(
+                "intermediate_amount must be greater than zero (zero slippage protection forbidden)"
+            );
+        }
+        let intermediate_amount = self.intermediate_amount;
 
         // 2. Swaps depending on direction
         if self.is_buy_pump_first {
@@ -542,5 +546,15 @@ mod tests {
                 limit: 1232
             })
         ));
+    }
+
+    #[test]
+    fn test_zero_intermediate_amount_fails_closed() {
+        let builder = PumpFunRaydiumArbitrageBuilder::new()
+            .with_payer(Pubkey::new_unique())
+            .with_mints(Pubkey::new_unique(), Pubkey::new_unique())
+            .with_amounts(1_000_000_000, 1_050_000_000);
+        let err = builder.build_instructions().unwrap_err();
+        assert!(err.to_string().contains("intermediate_amount"));
     }
 }

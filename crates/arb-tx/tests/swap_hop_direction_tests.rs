@@ -588,3 +588,60 @@ fn damm_v2_foreign_mints_fail_closed() {
         "{err}"
     );
 }
+
+/// Regression: Raydium CLMM sqrt_price_limit_x64 must stay strictly within
+/// MIN_SQRT_PRICE_X64..MAX_SQRT_PRICE_X64 directional bounds even on
+/// decimal-skewed swaps rather than computing a broken output/input ratio.
+#[test]
+fn raydium_clmm_sqrt_price_limit_uses_directional_bounds() {
+    let m0 = Pubkey::new_unique();
+    let m1 = Pubkey::new_unique();
+    let exec = raydium_clmm_exec(m0, vec![Pubkey::new_unique()]);
+
+    let hop_zfo = hop(
+        Pubkey::new_unique(),
+        DexProtocol::RaydiumClmm,
+        m0,
+        m1,
+        Some(exec.clone()),
+    );
+    let ix_zfo = build_swap_hop_instruction(&hop_zfo, Pubkey::new_unique(), 1_000_000_000, 50_000)
+        .expect("zero_for_one CLMM hop must build");
+    let limit_zfo = u128::from_le_bytes(ix_zfo.data[24..40].try_into().unwrap());
+    assert_eq!(limit_zfo, arb_constants::CLMM_MIN_SQRT_PRICE_X64 + 1);
+
+    let hop_ofz = hop(
+        Pubkey::new_unique(),
+        DexProtocol::RaydiumClmm,
+        m1,
+        m0,
+        Some(exec),
+    );
+    let ix_ofz = build_swap_hop_instruction(&hop_ofz, Pubkey::new_unique(), 50_000, 1_000_000_000)
+        .expect("one_for_zero CLMM hop must build");
+    let limit_ofz = u128::from_le_bytes(ix_ofz.data[24..40].try_into().unwrap());
+    assert_eq!(
+        limit_ofz,
+        arb_constants::RAYDIUM_CLMM_MAX_SQRT_PRICE_X64 - 1
+    );
+}
+
+/// Regression: PumpFun builder rejects Token-2022 hops fail closed until create_v2/V3
+/// token-program-aware execution support is proven.
+#[test]
+fn pump_fun_token2022_fails_closed() {
+    let mut swap = hop(
+        Pubkey::new_unique(),
+        DexProtocol::PumpFun,
+        Pubkey::from_str(arb_constants::WSOL_MINT).unwrap(),
+        Pubkey::new_unique(),
+        None,
+    );
+    swap.token_programs = [
+        arb_types::TokenProgramKind::SplToken,
+        arb_types::TokenProgramKind::Token2022,
+    ];
+    let err = build_swap_hop_instruction(&swap, Pubkey::new_unique(), 1_000_000, 500_000)
+        .expect_err("Token-2022 PumpFun swap must fail closed");
+    assert!(err.to_string().contains("SPL Token"));
+}
