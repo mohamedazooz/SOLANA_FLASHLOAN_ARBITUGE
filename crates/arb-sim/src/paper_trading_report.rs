@@ -96,6 +96,12 @@ pub struct PaperTradingReport {
     pub pnl: PnlStats,
     /// Rejection reasons with occurrence counts, descending.
     pub rejection_reasons: Vec<(String, usize)>,
+    /// Typed opportunity-stage distribution (canonical labels, ascending
+    /// proof order). Derived via [`CandidateOpportunityRecord::stage`];
+    /// `SHADOW_VALIDATED` / `MAINNET_VERIFIED` appear only when explicitly
+    /// recorded, never derived.
+    #[serde(default)]
+    pub stage_counts: Vec<(String, usize)>,
     pub confidence: ConfidenceAssessment,
 }
 
@@ -229,6 +235,20 @@ pub fn build_report(records: &[CandidateOpportunityRecord], now_unix: u64) -> Pa
     let mut reasons: Vec<(String, usize)> = rejection_reasons.into_iter().collect();
     reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
+    let mut stage_counter: HashMap<String, usize> = HashMap::new();
+    for rec in records {
+        *stage_counter
+            .entry(rec.stage().label().to_string())
+            .or_insert(0) += 1;
+    }
+    let stage_counts: Vec<(String, usize)> = arb_types::OPPORTUNITY_STAGES
+        .iter()
+        .filter_map(|s| {
+            let label = s.label().to_string();
+            stage_counter.remove(&label).map(|n| (label, n))
+        })
+        .collect();
+
     let statistically_meaningful = records.len() >= MIN_SIGNIFICANT_SAMPLE;
     let note = if records.is_empty() {
         "No recorded candidates: no economic evidence exists yet.".to_string()
@@ -255,6 +275,7 @@ pub fn build_report(records: &[CandidateOpportunityRecord], now_unix: u64) -> Pa
         decay,
         pnl,
         rejection_reasons: reasons,
+        stage_counts,
         confidence: ConfidenceAssessment {
             sample_size: records.len(),
             min_significant_sample: MIN_SIGNIFICANT_SAMPLE,
@@ -284,6 +305,13 @@ pub fn render_markdown(r: &PaperTradingReport) -> String {
         r.counts.simulation_failed
     ));
     s.push_str(&format!("| - stale quote | {} |\n", r.counts.stale_quote));
+    s.push_str("\n## Qualification stages (typed)\n\n| Stage | Count |\n|---|\n");
+    for (stage, count) in &r.stage_counts {
+        s.push_str(&format!("| {} | {} |\n", stage, count));
+    }
+    if r.stage_counts.is_empty() {
+        s.push_str("| (none) | 0 |\n");
+    }
     s.push_str("\n## Quote accuracy (deterministic replay)\n\n");
     s.push_str(&format!(
         "- Replayed: {} · Reproduced exactly: {} · Rate: {} bps\n",

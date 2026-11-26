@@ -8,6 +8,7 @@ pub mod dex;
 pub mod dimensional;
 pub mod error;
 pub mod execution;
+pub mod opportunity_stage;
 pub mod pool;
 pub mod primitives;
 
@@ -15,6 +16,7 @@ pub use currency::*;
 pub use dex::*;
 pub use error::*;
 pub use execution::*;
+pub use opportunity_stage::*;
 pub use pool::*;
 pub use primitives::*;
 

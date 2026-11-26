@@ -47,6 +47,39 @@ pub struct CandidateOpportunityRecord {
     pub status: String,
 }
 
+impl CandidateOpportunityRecord {
+    /// Typed qualification stage derived conservatively from the record's own
+    /// fields. This is the canonical answer to "what has been proven about
+    /// this candidate"; the free-form `status` string remains only for
+    /// historical compatibility.
+    ///
+    /// Semantics:
+    /// - no hop output ⇒ `Discovered`;
+    /// - non-positive net profit ⇒ `QuoteValid` (economics NOT proven);
+    /// - positive net profit without a preflight ⇒ `EconomicallyPositive`;
+    /// - successful preflight ⇒ `Simulated` (the ladder's progression order
+    ///   is NOT a logical implication: a negative-edge successful simulation
+    ///   reports `Simulated` while its economics stay unproven);
+    /// - `ShadowValidated` / `MainnetVerified` are NEVER derived here because
+    ///   quote fields alone cannot prove continuity checks or settled
+    ///   balance deltas.
+    pub fn stage(&self) -> arb_types::OpportunityStage {
+        use arb_types::OpportunityStage;
+
+        if self.hop1_quote_out == 0 || self.hop2_final_out == 0 {
+            return OpportunityStage::Discovered;
+        }
+        if self.simulation_success {
+            return OpportunityStage::Simulated;
+        }
+        if self.net_profit_quote_raw > 0 {
+            OpportunityStage::EconomicallyPositive
+        } else {
+            OpportunityStage::QuoteValid
+        }
+    }
+}
+
 pub struct OpportunityHistoryRecorder {
     log_dir: PathBuf,
 }
@@ -133,5 +166,170 @@ impl OpportunityHistoryRecorder {
         } else {
             Ok(false)
         }
+    }
+}
+
+#[cfg(test)]
+mod stage_derivation_tests {
+    use super::*;
+    use arb_types::{
+        DexProtocol, MintId, OpportunityStage, PoolId, PoolKind, Slot, TokenProgramKind,
+    };
+
+    fn test_pool_state() -> PoolState {
+        PoolState {
+            pool_id: PoolId(Pubkey::new_unique()),
+            protocol: DexProtocol::MeteoraDlmm,
+            slot: Slot(1),
+            write_version: 1,
+            base_mint: MintId(Pubkey::new_unique()),
+            quote_mint: MintId(Pubkey::new_unique()),
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 50_000_000_000,
+            reserve_out: 50_000_000_000,
+            fee_numerator: 20,
+            fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Dlmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: None,
+            transfer_fee_bps: 0,
+            token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            execution_accounts: None,
+            last_update_slot: 1,
+            last_update_ms: 0,
+        }
+    }
+
+    fn base_record() -> CandidateOpportunityRecord {
+        CandidateOpportunityRecord {
+            candidate_id: "test-candidate".to_string(),
+            detection_timestamp_ms: 0,
+            pool_a_id: Pubkey::new_unique(),
+            pool_b_id: Pubkey::new_unique(),
+            pool_a_slot: 1,
+            pool_b_slot: 1,
+            quote_slot: 1,
+            pool_a_state: test_pool_state(),
+            pool_b_state: test_pool_state(),
+            direction: "DirectionA".to_string(),
+            trade_size_in: 1_000,
+            hop1_quote_out: 0,
+            hop2_final_out: 0,
+            fee_items: vec![],
+            gross_profit_quote_raw: 0,
+            total_execution_cost_quote_raw: 0,
+            net_profit_quote_raw: 0,
+            net_profit_bps: 0,
+            simulation_success: false,
+            simulation_slot: None,
+            simulation_latency_ms: 0,
+            quote_freshness_cleared: false,
+            disappearance_time_ms: None,
+            candidate_lifetime_ms: None,
+            best_observed_net_profit: None,
+            rejection_reason: None,
+            status: String::new(),
+        }
+    }
+
+    #[test]
+    fn no_hop_output_is_discovered() {
+        let mut r = base_record();
+        r.hop1_quote_out = 0;
+        r.hop2_final_out = 500;
+        assert_eq!(r.stage(), OpportunityStage::Discovered);
+        r.hop1_quote_out = 500;
+        r.hop2_final_out = 0;
+        assert_eq!(r.stage(), OpportunityStage::Discovered);
+    }
+
+    #[test]
+    fn non_positive_net_profit_never_reaches_economic_stage() {
+        let mut r = base_record();
+        r.hop1_quote_out = 900;
+        r.hop2_final_out = 990;
+        r.net_profit_quote_raw = 0;
+        assert_eq!(r.stage(), OpportunityStage::QuoteValid);
+        r.net_profit_quote_raw = -5;
+        assert_eq!(r.stage(), OpportunityStage::QuoteValid);
+    }
+
+    #[test]
+    fn positive_net_without_preflight_is_economically_positive() {
+        let mut r = base_record();
+        r.hop1_quote_out = 900;
+        r.hop2_final_out = 1_100;
+        r.net_profit_quote_raw = 100;
+        assert_eq!(r.stage(), OpportunityStage::EconomicallyPositive);
+    }
+
+    #[test]
+    fn failed_simulation_does_not_claim_simulated_stage() {
+        let mut r = base_record();
+        r.hop1_quote_out = 900;
+        r.hop2_final_out = 1_100;
+        r.net_profit_quote_raw = 100;
+        r.simulation_success = false;
+        r.simulation_slot = Some(2);
+        r.simulation_latency_ms = 25;
+        r.rejection_reason = Some("SimulationFailed".to_string());
+        r.status = "REJECTED_SIM_FAIL".to_string();
+        assert_eq!(r.stage(), OpportunityStage::EconomicallyPositive);
+        assert_eq!(
+            OpportunityStage::from_legacy_status(&r.status),
+            Some(OpportunityStage::Simulated)
+        );
+    }
+
+    #[test]
+    fn successful_simulation_is_simulated_never_higher() {
+        let mut r = base_record();
+        r.hop1_quote_out = 900;
+        r.hop2_final_out = 1_100;
+        r.net_profit_quote_raw = 100;
+        r.simulation_success = true;
+        r.simulation_slot = Some(2);
+        r.simulation_latency_ms = 25;
+        r.status = "VERIFIED_PROFITABLE".to_string();
+        assert_eq!(r.stage(), OpportunityStage::Simulated);
+        assert!(r.stage() < OpportunityStage::ShadowValidated);
+        assert!(r.stage() < OpportunityStage::MainnetVerified);
+    }
+
+    #[test]
+    fn negative_edge_successful_simulation_reports_simulated() {
+        let mut r = base_record();
+        r.hop1_quote_out = 900;
+        r.hop2_final_out = 850;
+        r.net_profit_quote_raw = -50;
+        r.simulation_success = true;
+        r.simulation_slot = Some(2);
+        r.simulation_latency_ms = 30;
+        r.status = "SIMULATED_SUCCESS_NEGATIVE_EDGE".to_string();
+        assert_eq!(r.stage(), OpportunityStage::Simulated);
+    }
+
+    #[test]
+    fn legacy_jsonl_records_without_stage_field_still_deserialize() {
+        let mut r = base_record();
+        r.hop1_quote_out = 900;
+        r.hop2_final_out = 1_100;
+        r.net_profit_quote_raw = 100;
+        r.simulation_success = true;
+        let mut json = serde_json::to_string(&r).expect("serialize");
+        assert!(
+            !json.contains("stage"),
+            "record schema must not embed a stage field"
+        );
+        let repaired = json.replace("\"status\":\"\"", "\"status\":\"VERIFIED_PROFITABLE\"");
+        json = repaired;
+        let parsed: CandidateOpportunityRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.stage(), OpportunityStage::Simulated);
     }
 }
