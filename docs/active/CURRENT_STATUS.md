@@ -1,9 +1,15 @@
 # Current Verified Status
 
-**Authoritative Git Baseline**: Commit `1ff841a` on `main` (merge of PR #164, 2026-11-25)
-**Current Branch**: `fix/deep-quote-accounting-hardening-20261125` (pushed to `origin`; fee-audit implementation commit `db3f26b`; not merged)
-**CI Status**: Vercel status check succeeded for fee-audit commit `db3f26b`; no GitHub Actions workflow run is attached to the branch push.
-**Compilation Baseline**: Latest full local workspace run: 1,805 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass.
+**Authoritative Git Baseline**: Commit `2ed2261` on `main` (merge of PR #168, 2026-11-26)
+**Current Branch**: `main` (PRs #165, #166, #167, #168 all merged)
+**CI Status**: GitHub Actions green on both latest main merges — `Merge pull request #168` (2026-11-26T14:37:44Z) and `Merge pull request #167` (2026-11-26T13:17:38Z): format/check/test/clippy, gitleaks, cargo-deny, web build, webhook service, and Vercel all pass.
+**Compilation Baseline**: Latest full local workspace run (post-#167 cleanup, toolchain 1.99.1): 1,814 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass. Targeted post-#168 scanner checks also pass locally: `route_graph_boundary_tests` (5 passed), `canonical_route_scanner_reports_candidate_budget_exhaustion`, `market_graph_excludes_quote_only_protocols_instead_of_using_cpmm_math`.
+
+## Merged on 2026-11-26 — PRs #167 and #168
+
+- **PR #167 (dead-code & dead-dependency cleanup)**: removed verified-unused dependencies (`arb-engine/tokio`, `arb-config/{serde_json,tracing}`, `arb-idl-gen/tempfile`; dev-deps `arb-config/proptest`, `arb-tx/solana-signer`, `arb-ingest/{arb-engine,criterion}`, `arb-idl-gen/arb-constants`) and dead no-op optional features (`arb-dex/orca-sdk`, `arb-land/jito`, `arb-ingest/yellowstone` and `solami` plus the workspace-level `solami` entry). Deleted the stale diverged duplicate `tools/arb-idl-gen` and tracked runtime artifacts at the repo root. `Cargo.lock` pruned by ~3,050 lines (aya/ebpf, tonic/prost, aws-lc chains). Zero behavior change; all quality gates identical before/after. NOTE for Phase 4: `yellowstone-grpc-client` and `solami` must be re-added together with their actual feature-gated client code when that work lands.
+- **PR #168 (unified route discovery & protocol-aware pricing)**: production route discovery now goes through the bounded `MarketGraph::find_cycles_with_stats` planner (candidate budget `MAX_ROUTE_CANDIDATES_PER_TICK = 4096`, observable truncation); DLMM cross-pool and 3-leg generators feed re-quoted, re-sized, economically gated candidates into the same canonical evaluator; Kamino RPC fallback rejects future-slot snapshots (`r.slot <= current_slot` added) and verifies account owner on HTTP-fetched snapshots.
+- **Open evidence gap after #168**: no tick-latency measurement of the 4096-candidate worst case has been recorded yet; `latency_bench` and the read-only mainnet validator require live RPC egress plus `.env` credentials, which were unavailable in the environment where this refresh was written. The 2026-11-25 validation figures below remain the latest live-mainnet evidence and must be superseded by a fresh shadow/read-only run on `2ed2261` or later before any live-execution discussion.
 
 ## Local Hardening in Progress — 2026-11-25
 
