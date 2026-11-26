@@ -222,6 +222,7 @@ impl Supervisor {
         {
             let mut graph = self.graph.lock();
             graph.set_economic_config(economic_config);
+            graph.set_priority_fee_policy(self.current_priority_fee_policy());
         }
 
         // HTTP catalog discovery is config-gated (strategy.http_discovery_enabled,

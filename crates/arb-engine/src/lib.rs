@@ -68,14 +68,13 @@ pub mod units;
 pub use units::{net_lamports_equiv, wsol_mint_pubkey};
 
 use arb_math::{
-    DlmmBin as ArbDlmmBin, DlmmPoolState,
-    clmm::ClmmTickMath,
-    cpmm_out, cpmm_price_impact_bps,
+    ClmmTickMath, DlmmBin as ArbDlmmBin, DlmmPoolState, TickArrayFacade, TickFacade, cpmm_out,
+    cpmm_price_impact_bps,
     economic::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
         slippage_haircut_min_final,
     },
-    quote_clmm, quote_clmm_with_ticks_per_array_and_math, quote_dlmm_view,
+    quote_clmm_with_ticks_per_array_and_math,
 };
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolExecutionAccounts, PoolId,
@@ -102,6 +101,30 @@ pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPO
 type DlmmQuoteComponents = (DlmmPoolState, Vec<ArbDlmmBin>);
 type DlmmQuoteCache = HashMap<PoolId, Option<DlmmQuoteComponents>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolQuote {
+    pub amount_out: u128,
+    pub price_impact_bps: Bps,
+    /// DLMM discrete boundary count; None for continuous-curve venues.
+    pub discrete_bins_crossed: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RouteQuoteLadder {
+    amounts: Vec<u64>,
+    /// Compounded, fee-excluded impact across every hop in the route.
+    route_price_impact_bps: Bps,
+}
+
+/// Compose per-hop curve-impact ratios. Per-hop impact is rounded up and the
+/// retained spot ratio is rounded down, so risk is never understated by bps
+/// truncation. All arithmetic remains integer-only.
+fn compose_route_price_impact(retained_spot_bps: u128, hop_impact: Bps) -> u128 {
+    let hop_retained_bps = 10_000u128.saturating_sub(u128::from(hop_impact.0));
+    let numerator = retained_spot_bps.saturating_mul(hop_retained_bps);
+    (numerator / 10_000).min(10_000)
+}
+
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteComponents> {
     if edge.protocol != DexProtocol::MeteoraDlmm
         || edge.transfer_fee_bps != 0
@@ -119,11 +142,24 @@ pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteCompon
     MeteoraDlmmQuoteEngine::build_dlmm_math_state_from_parts(dlmm, edge.pool_id).ok()
 }
 
-/// Profit (output - input) for a cycle at a given input size d (P1 #11: golden-section target).
+/// Checked exact-in quote for one pool hop.
 ///
-/// Returns `0` (not an error) when the pool cannot be priced honestly — callers
-/// treat zero output as "not profitable" and reject the route. This is fail-closed:
-/// CLMM/DLMM pools never fall back to the constant-product formula.
+/// Returns None when the pool cannot be priced honestly. Concentrated and
+/// discrete-liquidity venues never fall back to constant-product math.
+pub fn quote_pool_detailed(
+    kind: PoolKind,
+    dx: u128,
+    x: u128,
+    y: u128,
+    gamma: u128,
+    edge: Option<&MarketEdge>,
+) -> Option<PoolQuote> {
+    let quote = quote_pool_with_dlmm_cache(kind, dx, x, y, gamma, edge, None)?;
+    (quote.amount_out > 0).then_some(quote)
+}
+
+/// Backwards-compatible amount-only API. New route discovery code must prefer
+/// quote_pool_detailed so a rejected/invalid quote cannot be confused with dust.
 pub fn quote_pool(
     kind: PoolKind,
     dx: u128,
@@ -132,12 +168,13 @@ pub fn quote_pool(
     gamma: u128,
     edge: Option<&MarketEdge>,
 ) -> u128 {
-    quote_pool_with_dlmm_cache(kind, dx, x, y, gamma, edge, None)
+    quote_pool_detailed(kind, dx, x, y, gamma, edge)
+        .map(|quote| quote.amount_out)
+        .unwrap_or(0)
 }
 
-/// Internal quote path that reuses validated DLMM math state across every
-/// sizing sample for one immutable route snapshot. `Some(cache)` also caches
-/// invalid snapshots as `None`, avoiding repeated 600+ bin validation work.
+/// The only route-sizing quote interface. Each executable protocol keeps its
+/// own mathematical adapter; the graph only carries output and curve impact.
 fn quote_pool_with_dlmm_cache(
     kind: PoolKind,
     dx: u128,
@@ -146,150 +183,118 @@ fn quote_pool_with_dlmm_cache(
     gamma: u128,
     edge: Option<&MarketEdge>,
     dlmm_cache: Option<&DlmmQuoteCache>,
-) -> u128 {
+) -> Option<PoolQuote> {
     match kind {
         PoolKind::Cpmm => {
             if let Some(edge) = edge {
-                let Ok(amount_in) = u64::try_from(dx) else {
-                    return 0;
-                };
+                let amount_in = u64::try_from(dx).ok()?;
                 let pool = edge.to_pool_state();
                 let a_to_b = edge.pool_base == edge.from_mint;
-                crate::adapters::quote_via_dispatcher(&pool, amount_in, a_to_b)
-                    .map(|quote| u128::from(quote.amount_out_raw))
-                    .unwrap_or(0)
+                let quote = crate::adapters::quote_via_dispatcher(&pool, amount_in, a_to_b).ok()?;
+                Some(PoolQuote {
+                    amount_out: u128::from(quote.amount_out_raw),
+                    price_impact_bps: quote.price_impact,
+                    discrete_bins_crossed: None,
+                })
             } else {
-                cpmm_out(dx, x, y, gamma).unwrap_or(0)
+                Some(PoolQuote {
+                    amount_out: cpmm_out(dx, x, y, gamma)?,
+                    price_impact_bps: cpmm_price_impact_bps(dx, x, y, 10_000),
+                    discrete_bins_crossed: None,
+                })
             }
         }
         PoolKind::Clmm => {
-            if let Some(e) = edge {
-                if e.protocol == DexProtocol::MeteoraDammV2 {
-                    let Ok(amount_in) = u64::try_from(dx) else {
-                        return 0;
-                    };
-                    let pool = e.to_pool_state();
-                    let a_to_b = e.pool_base == e.from_mint;
-                    return crate::adapters::quote_via_dispatcher(&pool, amount_in, a_to_b)
-                        .map(|quote| u128::from(quote.amount_out_raw))
-                        .unwrap_or(0);
+            let edge = edge?;
+            let amount_in = u64::try_from(dx).ok()?;
+            let a_to_b = edge.pool_base == edge.from_mint;
+
+            // Raydium CLMM remains quote-only discovery: its protocol-native
+            // 60*tick_spacing arrays are not Whirlpool's 88-tick arrays and
+            // its live execution capability remains disabled. Preserve the
+            // verified quote for cycle discovery, but use an unknown-impact
+            // sentinel so the candidate cannot pass the production risk gate.
+            if edge.protocol == DexProtocol::RaydiumClmm {
+                let state = edge.clmm.as_ref()?;
+                if state.liquidity == 0
+                    || state.sqrt_price == 0
+                    || state.tick_arrays.is_empty()
+                    || gamma > 10_000
+                {
+                    return None;
                 }
-            }
-            if let Some(e) = edge {
-                if let Some(c) = &e.clmm {
-                    if c.liquidity > 0 && c.sqrt_price > 0 && !c.tick_arrays.is_empty() {
-                        // Reject invalid fee metadata and values outside the quote
-                        // engine's integer domain; never clamp into a different quote.
-                        if gamma > 10_000 {
-                            return 0;
-                        }
-                        let fee_rate = if e.protocol == DexProtocol::OrcaWhirlpool {
-                            c.fee_rate
-                        } else {
-                            let fee_rate_u128 = (10_000u128 - gamma) * 100;
-                            let Ok(rate) = u16::try_from(fee_rate_u128) else {
-                                return 0;
-                            };
-                            rate
-                        };
-                        if fee_rate == 0 {
-                            return 0;
-                        }
-                        let Ok(amount) = u64::try_from(dx) else {
-                            return 0;
-                        };
-                        let a_to_b = e.pool_base == e.from_mint;
-                        let arrays: Vec<arb_math::clmm::TickArrayFacade> = c
-                            .tick_arrays
+                let fee_rate =
+                    u16::try_from(10_000u128.checked_sub(gamma)?.checked_mul(100)?).ok()?;
+                if fee_rate == 0 {
+                    return None;
+                }
+                let arrays: Vec<TickArrayFacade> = state
+                    .tick_arrays
+                    .iter()
+                    .map(|array| TickArrayFacade {
+                        start_tick_index: array.start_tick_index,
+                        ticks: array
+                            .ticks
                             .iter()
-                            .map(|ta| arb_math::clmm::TickArrayFacade {
-                                start_tick_index: ta.start_tick_index,
-                                ticks: ta
-                                    .ticks
-                                    .iter()
-                                    .map(|t| arb_math::clmm::TickFacade {
-                                        tick_index: t.tick_index,
-                                        initialized: t.initialized,
-                                        liquidity_net: t.liquidity_net,
-                                        liquidity_gross: 0,
-                                        limit_order_unfilled: t.limit_order_unfilled,
-                                    })
-                                    .collect(),
+                            .map(|tick| TickFacade {
+                                tick_index: tick.tick_index,
+                                initialized: tick.initialized,
+                                liquidity_net: tick.liquidity_net,
+                                liquidity_gross: 0,
+                                limit_order_unfilled: tick.limit_order_unfilled,
                             })
-                            .collect();
-                        let quote = if e.protocol == DexProtocol::OrcaWhirlpool {
-                            arb_math::compute_whirlpool_swap(
-                                c.sqrt_price,
-                                c.tick_current,
-                                c.liquidity,
-                                c.tick_spacing,
-                                fee_rate,
-                                amount,
-                                a_to_b,
-                                &arrays,
-                            )
-                            .map(|q| q.amount_out_received)
-                        } else if e.protocol == DexProtocol::RaydiumClmm {
-                            quote_clmm_with_ticks_per_array_and_math(
-                                amount,
-                                c.sqrt_price,
-                                c.tick_current,
-                                c.liquidity,
-                                c.tick_spacing,
-                                fee_rate,
-                                a_to_b,
-                                &arrays,
-                                arb_math::clmm::RAYDIUM_CLMM_TICK_ARRAY_SIZE,
-                                ClmmTickMath::Raydium,
-                            )
-                        } else {
-                            quote_clmm(
-                                amount,
-                                c.sqrt_price,
-                                c.tick_current,
-                                c.liquidity,
-                                c.tick_spacing,
-                                fee_rate,
-                                a_to_b,
-                                &arrays,
-                            )
-                        };
-                        if let Ok(out) = quote {
-                            return out as u128;
-                        }
-                    }
-                }
+                            .collect(),
+                    })
+                    .collect();
+                let amount_out = quote_clmm_with_ticks_per_array_and_math(
+                    amount_in,
+                    state.sqrt_price,
+                    state.tick_current,
+                    state.liquidity,
+                    state.tick_spacing,
+                    fee_rate,
+                    a_to_b,
+                    &arrays,
+                    arb_math::clmm::RAYDIUM_CLMM_TICK_ARRAY_SIZE,
+                    ClmmTickMath::Raydium,
+                )
+                .ok()?;
+                return Some(PoolQuote {
+                    amount_out: u128::from(amount_out),
+                    price_impact_bps: Bps(10_000),
+                    discrete_bins_crossed: None,
+                });
             }
-            // Fail-closed: Never fall back to constant-product for CLMM
-            0
+
+            let pool = edge.to_pool_state();
+            let quote = crate::adapters::quote_via_dispatcher(&pool, amount_in, a_to_b).ok()?;
+            Some(PoolQuote {
+                amount_out: u128::from(quote.amount_out_raw),
+                price_impact_bps: quote.price_impact,
+                discrete_bins_crossed: None,
+            })
         }
         PoolKind::Dlmm => {
-            if let Some(e) = edge {
-                let quote_components = |pool: &DlmmPoolState, bins: &[ArbDlmmBin]| {
-                    if bins.is_empty() {
-                        return None;
-                    }
-                    let amount = u64::try_from(dx).ok()?;
-                    let a_to_b = e.pool_base == e.from_mint;
-                    let quote = quote_dlmm_view(pool, bins, amount, a_to_b, None).ok()?;
-                    arb_math::dlmm::validate_swap_depth(quote.bins_crossed)
-                        .ok()
-                        .map(|()| quote.amount_out as u128)
-                };
-                let output = match dlmm_cache {
-                    Some(cache) => cache
-                        .get(&e.pool_id)
-                        .and_then(Option::as_ref)
-                        .and_then(|(pool, bins)| quote_components(pool, bins)),
-                    None => dlmm_quote_components(e)
-                        .and_then(|(pool, bins)| quote_components(&pool, &bins)),
-                };
-                if let Some(output) = output {
-                    return output;
+            let edge = edge?;
+            let amount = u64::try_from(dx).ok()?;
+            let a_to_b = edge.pool_base == edge.from_mint;
+            let quote = match dlmm_cache {
+                Some(cache) => {
+                    let (pool, bins) = cache.get(&edge.pool_id)?.as_ref()?;
+                    MeteoraDlmmQuoteEngine::quote_exact_in_from_view(pool, bins, amount, a_to_b)
+                        .ok()?
                 }
-            }
-            // Fail-closed: Never fall back to linear/CPMM for DLMM
-            0
+                None => {
+                    let (pool, bins) = dlmm_quote_components(edge)?;
+                    MeteoraDlmmQuoteEngine::quote_exact_in_from_view(&pool, &bins, amount, a_to_b)
+                        .ok()?
+                }
+            };
+            Some(PoolQuote {
+                amount_out: u128::from(quote.amount_out),
+                price_impact_bps: quote.price_impact_bps,
+                discrete_bins_crossed: Some(quote.bins_crossed),
+            })
         }
     }
 }
@@ -412,6 +417,56 @@ pub struct MarketGraph {
     /// Authoritative economic configuration. When `None` the graph cannot price
     /// opportunities and `find_base_cycles` returns empty (fail closed).
     pub economic_config: Option<EconomicConfig>,
+    /// Dynamic CU-price policy shared with the final supervisor profitability gate.
+    pub priority_fee_policy: Option<PriorityFeePolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PriorityFeePolicy {
+    pub desired_cu_price_micro_lamports: u64,
+    pub max_share_bps: u64,
+    pub has_flash_loan: bool,
+    /// Previously measured CU keyed by the same ordered route signature used
+    /// by dispatch telemetry and the final Supervisor profitability gate.
+    pub measured_route_cu: HashMap<String, u32>,
+}
+
+impl PriorityFeePolicy {
+    /// Conservative quote-time priority fee estimate using the same route CU
+    /// model, profit cap, and lamport rounding as transaction construction.
+    pub fn estimate_lamports(
+        &self,
+        gross_profit_lamports: u64,
+        protocols: &[DexProtocol],
+        intermediate_atas: usize,
+        route_signature: &str,
+    ) -> u64 {
+        let estimated_cu =
+            arb_tx::estimate_route_cu(self.has_flash_loan, protocols, intermediate_atas);
+        let cu_limit = match self.measured_route_cu.get(route_signature) {
+            Some(measured) => arb_tx::calculate_dynamic_cu_limit_with_buffer(*measured, 1_000),
+            None => arb_tx::calculate_dynamic_cu_limit(estimated_cu),
+        };
+        let cu_price = arb_tx::cap_cu_price_by_profit(
+            gross_profit_lamports,
+            cu_limit,
+            self.desired_cu_price_micro_lamports,
+            self.max_share_bps,
+        );
+        arb_tx::priority_fee_lamports(cu_price, cu_limit)
+    }
+}
+
+/// Stable ordered route key shared by graph sizing, CU telemetry and final
+/// execution gating. Changing hop order or pool identity changes the key.
+pub fn route_compute_signature(hops: &[SwapHop]) -> String {
+    format!(
+        "cu:{}",
+        hops.iter()
+            .map(|hop| format!("{}-{:?}", hop.pool_id.0, hop.protocol))
+            .collect::<Vec<_>>()
+            .join("_")
+    )
 }
 
 /// Why pool states did or did not enter the candidate topology.
@@ -490,6 +545,7 @@ impl MarketGraph {
             edges_by_from: HashMap::new(),
             base_anchors,
             economic_config: None,
+            priority_fee_policy: None,
         }
     }
 
@@ -505,6 +561,10 @@ impl MarketGraph {
     /// rebuilding the graph).
     pub fn set_economic_config(&mut self, config: EconomicConfig) {
         self.economic_config = Some(config);
+    }
+
+    pub fn set_priority_fee_policy(&mut self, policy: PriorityFeePolicy) {
+        self.priority_fee_policy = Some(policy);
     }
 
     /// Minimum acceptable profit in base-mint raw units, or 0 if unconfigured.
@@ -544,6 +604,29 @@ impl MarketGraph {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        let gross_profit_raw = final_out_u64.checked_sub(size_in)?;
+        let gross_profit_lamports = base_raw_to_lamports(
+            TokenAmount(gross_profit_raw),
+            config.lamports_to_base_mint_rate,
+            config.lamports_to_base_rate_denom,
+        )
+        .ok()?
+        .0;
+        let priority_fee_lamports = self
+            .priority_fee_policy
+            .as_ref()
+            .map(|policy| {
+                let protocols: Vec<DexProtocol> = hops.iter().map(|hop| hop.protocol).collect();
+                let route_signature = route_compute_signature(&hops);
+                policy.estimate_lamports(
+                    gross_profit_lamports,
+                    &protocols,
+                    hops.len().saturating_sub(1),
+                    &route_signature,
+                )
+            })
+            .unwrap_or(0);
+
         let quote = build_economic_quote(
             base_mint,
             config.base_decimals,
@@ -556,7 +639,7 @@ impl MarketGraph {
             TokenAmount(0),
             TokenAmount(0),
             Lamports(arb_constants::SOLANA_BASE_FEE_LAMPORTS),
-            Lamports::ZERO,
+            Lamports(priority_fee_lamports),
             config.jito_tip_lamports,
             config.lamports_to_base_mint_rate,
             config.lamports_to_base_rate_denom,
@@ -657,6 +740,89 @@ impl MarketGraph {
         if upper == 0 {
             return None;
         }
+
+        // Capacity estimates are conservative on pool-side amounts and may
+        // omit input-side swap fees. If the upper endpoint is not exactly
+        // executable, locate a valid point with bounded geometric probes,
+        // then binary-search the highest fully quoted route input.
+        if Self::quote_route_input_ladder(edges, upper, &capacities, Some(&dlmm_cache)).is_none() {
+            let mut probe = 1u64;
+            let mut first_feasible = None;
+            loop {
+                if Self::quote_route_input_ladder(edges, probe, &capacities, Some(&dlmm_cache))
+                    .is_some()
+                {
+                    first_feasible = Some(probe);
+                    break;
+                }
+                if probe >= upper {
+                    break;
+                }
+                probe = probe.saturating_mul(2).min(upper);
+            }
+            let mut low = first_feasible?;
+            let mut high = upper;
+            while low < high {
+                let mid = low + (high - low).div_ceil(2);
+                if Self::quote_route_input_ladder(edges, mid, &capacities, Some(&dlmm_cache))
+                    .is_some()
+                {
+                    low = mid;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            upper = low;
+        }
+
+        // Sparse, quote-verified DLMM transition seeds. One seed is added for
+        // the first bin boundary on each of up to two DLMM hops. If there is
+        // only one DLMM hop, spend the second seed on its midpoint transition.
+        // The exact candidate is always re-quoted through every route hop.
+        let dlmm_hops: Vec<(usize, usize)> = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, edge)| edge.kind == PoolKind::Dlmm)
+            .filter_map(|(index, edge)| {
+                let bins = dlmm_cache.get(&edge.pool_id)?.as_ref()?.1.len();
+                (bins > 1).then_some((index, bins))
+            })
+            .collect();
+        let mut added_dlmm_boundaries = 0usize;
+        for (hop_index, _) in &dlmm_hops {
+            if added_dlmm_boundaries >= 2 {
+                break;
+            }
+            if let Some(size) =
+                Self::route_input_for_dlmm_crossing(edges, upper, *hop_index, 1, &dlmm_cache)
+            {
+                boundary_seeds.extend([
+                    size.saturating_sub(1),
+                    size,
+                    size.saturating_add(1).min(upper),
+                ]);
+                added_dlmm_boundaries += 1;
+            }
+        }
+        if added_dlmm_boundaries < 2 && dlmm_hops.len() == 1 {
+            let (hop_index, bins) = dlmm_hops[0];
+            let midpoint_crossing = u32::try_from((bins.saturating_sub(1) / 2).max(1)).ok()?;
+            if midpoint_crossing > 1
+                && let Some(size) = Self::route_input_for_dlmm_crossing(
+                    edges,
+                    upper,
+                    hop_index,
+                    midpoint_crossing,
+                    &dlmm_cache,
+                )
+            {
+                boundary_seeds.extend([
+                    size.saturating_sub(1),
+                    size,
+                    size.saturating_add(1).min(upper),
+                ]);
+            }
+        }
         boundary_seeds.push(upper);
 
         let best_gross_sample = std::cell::RefCell::new(None::<(u64, u64, Vec<u64>)>);
@@ -667,9 +833,10 @@ impl MarketGraph {
             8,
             &boundary_seeds,
             |size_in| {
-                let hop_inputs =
+                let route_quote =
                     Self::quote_route_input_ladder(edges, size_in, &capacities, Some(&dlmm_cache))?;
-                let final_out = u128::from(*hop_inputs.last()?);
+                let final_out = u128::from(*route_quote.amounts.last()?);
+                let hop_inputs = route_quote.amounts;
                 if final_out <= u128::from(size_in) {
                     return None;
                 }
@@ -685,13 +852,7 @@ impl MarketGraph {
                     *best_gross_sample.borrow_mut() = Some((size_in, gross, amounts));
                 }
 
-                let first = edges.first()?;
-                let impact = cpmm_price_impact_bps(
-                    u128::from(size_in),
-                    first.reserve_in,
-                    first.reserve_out,
-                    10_000u128.saturating_sub(u128::from(first.fee_bps)),
-                );
+                let impact = route_quote.route_price_impact_bps;
                 let hops = edges
                     .iter()
                     .map(|edge| SwapHop {
@@ -731,6 +892,59 @@ impl MarketGraph {
         })
     }
 
+    fn route_input_for_dlmm_crossing(
+        edges: &[&MarketEdge],
+        upper: u64,
+        hop_index: usize,
+        target_crossings: u32,
+        dlmm_cache: &DlmmQuoteCache,
+    ) -> Option<u64> {
+        let edge = *edges.get(hop_index)?;
+        if edge.kind != PoolKind::Dlmm || target_crossings == 0 {
+            return None;
+        }
+
+        // The crossed-bin count is monotone in exact-in input over a fixed
+        // immutable snapshot. Binary search the first input that crosses the
+        // requested boundary; quote errors count as not having crossed it.
+        let crosses = |size_in: u64| -> bool {
+            let Some(amount_before) =
+                Self::amount_before_hop(edges, size_in, hop_index, Some(dlmm_cache))
+            else {
+                return false;
+            };
+            let Ok(amount_before) = u64::try_from(amount_before) else {
+                return false;
+            };
+            quote_pool_with_dlmm_cache(
+                PoolKind::Dlmm,
+                u128::from(amount_before),
+                edge.reserve_in,
+                edge.reserve_out,
+                10_000u128.saturating_sub(u128::from(edge.fee_bps)),
+                Some(edge),
+                Some(dlmm_cache),
+            )
+            .and_then(|quote| quote.discrete_bins_crossed)
+            .is_some_and(|count| count >= target_crossings)
+        };
+
+        if !crosses(upper) {
+            return None;
+        }
+        let mut low = 1u64;
+        let mut high = upper;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            if crosses(mid) {
+                high = mid;
+            } else {
+                low = mid + 1;
+            }
+        }
+        Some(low)
+    }
+
     fn amount_before_hop(
         edges: &[&MarketEdge],
         size_in: u64,
@@ -748,7 +962,8 @@ impl MarketGraph {
                 gamma,
                 Some(edge),
                 dlmm_cache,
-            );
+            )?
+            .amount_out;
         }
         Some(amount)
     }
@@ -760,9 +975,10 @@ impl MarketGraph {
         size_in: u64,
         capacities: &[Option<u64>],
         dlmm_cache: Option<&DlmmQuoteCache>,
-    ) -> Option<Vec<u64>> {
+    ) -> Option<RouteQuoteLadder> {
         let mut amount = u128::from(size_in);
         let mut ladder = Vec::with_capacity(edges.len() + 1);
+        let mut retained_spot_bps = 10_000u128;
         ladder.push(size_in);
 
         for (index, edge) in edges.iter().enumerate() {
@@ -776,7 +992,7 @@ impl MarketGraph {
                 return None;
             }
             let gamma = 10_000u128.saturating_sub(u128::from(edge.fee_bps));
-            amount = quote_pool_with_dlmm_cache(
+            let quote = quote_pool_with_dlmm_cache(
                 edge.kind,
                 amount,
                 edge.reserve_in,
@@ -784,13 +1000,22 @@ impl MarketGraph {
                 gamma,
                 Some(edge),
                 dlmm_cache,
-            );
-            if amount == 0 {
+            )?;
+            if quote.amount_out == 0 {
                 return None;
             }
+            retained_spot_bps =
+                compose_route_price_impact(retained_spot_bps, quote.price_impact_bps);
+            amount = quote.amount_out;
             ladder.push(u64::try_from(amount).ok()?);
         }
-        Some(ladder)
+        Some(RouteQuoteLadder {
+            amounts: ladder,
+            route_price_impact_bps: Bps(u16::try_from(
+                10_000u128.saturating_sub(retained_spot_bps),
+            )
+            .unwrap_or(10_000)),
+        })
     }
 
     /// Rebuild the route graph from the one verified pool snapshot for this slot.
@@ -1269,6 +1494,102 @@ impl MarketGraph {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn route_price_impact_compounds_each_hop_conservatively() {
+        let retained = compose_route_price_impact(10_000, Bps(30));
+        let retained = compose_route_price_impact(retained, Bps(30));
+        assert_eq!(10_000u128 - retained, 60);
+
+        let retained = compose_route_price_impact(10_000, Bps(10_000));
+        assert_eq!(retained, 0);
+        let retained = compose_route_price_impact(10_000, Bps(0));
+        assert_eq!(retained, 10_000);
+    }
+
+    #[test]
+    fn detailed_quote_reports_curve_impact_and_rejects_invalid_output() {
+        let quote = quote_pool_detailed(PoolKind::Cpmm, 1_000, 100_000, 100_000, 9_900, None)
+            .expect("valid CPMM quote");
+        assert!(quote.amount_out > 0);
+        assert!(quote.price_impact_bps.0 > 0);
+        assert!(quote.discrete_bins_crossed.is_none());
+
+        assert!(quote_pool_detailed(PoolKind::Cpmm, 0, 100_000, 100_000, 9_900, None).is_none());
+    }
+
+    #[test]
+    fn priority_fee_policy_uses_route_compute_estimate_and_profit_cap() {
+        let policy = PriorityFeePolicy {
+            desired_cu_price_micro_lamports: 10_000_000,
+            max_share_bps: 500,
+            has_flash_loan: true,
+            measured_route_cu: HashMap::new(),
+        };
+        let protocols = [DexProtocol::OrcaWhirlpool, DexProtocol::MeteoraDlmm];
+        let fee = policy.estimate_lamports(1_000_000, &protocols, 1, "unmeasured-route");
+        assert!(fee > 0);
+        assert!(
+            fee <= 50_000,
+            "priority fee exceeded its 5% profit share: {fee}"
+        );
+        assert_eq!(
+            policy.estimate_lamports(0, &protocols, 1, "unmeasured-route"),
+            0
+        );
+    }
+
+    #[test]
+    fn priority_fee_policy_reuses_measured_route_compute_limit() {
+        let route = "cu:pool-a-OrcaWhirlpool_pool-b-MeteoraDlmm";
+        let mut measured_route_cu = HashMap::new();
+        measured_route_cu.insert(route.to_string(), 510_000);
+        let policy = PriorityFeePolicy {
+            desired_cu_price_micro_lamports: 10_000,
+            max_share_bps: 500,
+            has_flash_loan: true,
+            measured_route_cu,
+        };
+        let protocols = [DexProtocol::OrcaWhirlpool, DexProtocol::MeteoraDlmm];
+        let gross_profit = 2_000_000u64;
+        let cu_limit = arb_tx::calculate_dynamic_cu_limit_with_buffer(510_000, 1_000);
+        let cu_price = arb_tx::cap_cu_price_by_profit(
+            gross_profit,
+            cu_limit,
+            policy.desired_cu_price_micro_lamports,
+            policy.max_share_bps,
+        );
+        let expected = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+
+        assert_eq!(
+            policy.estimate_lamports(gross_profit, &protocols, 1, route),
+            expected,
+        );
+        assert_ne!(
+            policy.estimate_lamports(gross_profit, &protocols, 1, "different-route"),
+            expected,
+            "different routes must not reuse this route's measured CU"
+        );
+    }
+
+    #[test]
+    fn priority_fee_policy_zero_share_never_bids() {
+        let policy = PriorityFeePolicy {
+            desired_cu_price_micro_lamports: u64::MAX,
+            max_share_bps: 0,
+            has_flash_loan: true,
+            measured_route_cu: HashMap::new(),
+        };
+        assert_eq!(
+            policy.estimate_lamports(
+                1_000_000,
+                &[DexProtocol::MeteoraDlmm],
+                0,
+                "unmeasured-route",
+            ),
+            0,
+        );
+    }
+
     use super::*;
 
     fn make_damm_pool_state(collect_fee_mode: u8) -> PoolState {

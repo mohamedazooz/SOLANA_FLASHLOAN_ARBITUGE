@@ -6,7 +6,7 @@ use crate::telegram::TelegramNotifier;
 use crate::verified_config::VerifiedQuoteInputs;
 use crate::{BotMode, health_monitor::HealthMonitor};
 use anyhow::Result;
-use arb_engine::MarketGraph;
+use arb_engine::{MarketGraph, PriorityFeePolicy};
 use arb_ingest::IngestClient;
 use arb_land::{BidderConfig, JitoLander, TipStrategy};
 use arb_math::{RttTracker, SlotClock};
@@ -42,6 +42,9 @@ use execution::max_state_age_slots;
 /// Solana base transaction fee per signature, lamports (versioned & legacy).
 /// Re-exported from canonical `arb_constants::SOLANA_BASE_FEE_LAMPORTS`.
 pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
+/// Bound the measured route-CU cache so cloning a policy snapshot stays cheap
+/// on the 2-vCPU/4-GB deployment target.
+const MAX_MEASURED_CU_ROUTE_ENTRIES: usize = 512;
 
 type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
 type RecentPriorityMarketCu = Arc<parking_lot::Mutex<Option<(Vec<u64>, Instant)>>>;
@@ -709,6 +712,48 @@ impl Supervisor {
     /// Attaches the shared control service (called once from main before run).
     pub fn attach_control(&self, control: Arc<crate::control_service::ControlService>) {
         let _ = self.control.set(control);
+    }
+
+    pub(super) fn record_measured_route_cu(&self, route_signature: &str, units_consumed: u64) {
+        let mut measured = self.measured_cu.lock();
+        if !measured.contains_key(route_signature)
+            && measured.len() >= MAX_MEASURED_CU_ROUTE_ENTRIES
+        {
+            // This is a bounded hint cache, not durable telemetry. Evict one
+            // entry rather than allowing arbitrary route diversity to grow it.
+            if let Some(evicted) = measured.keys().next().cloned() {
+                measured.remove(&evicted);
+            }
+        }
+        measured.insert(
+            route_signature.to_owned(),
+            u32::try_from(units_consumed).unwrap_or(u32::MAX),
+        );
+    }
+
+    pub(super) fn current_priority_fee_policy(&self) -> PriorityFeePolicy {
+        let landed = self.recent_landed_cu.lock().clone();
+        let fresh_market = {
+            let market = self.recent_priority_market_cu.lock();
+            market
+                .as_ref()
+                .filter(|(_, sampled_at)| sampled_at.elapsed() <= Duration::from_secs(12))
+                .map(|(samples, _)| samples.clone())
+                .unwrap_or_default()
+        };
+        let desired_cu_price = self
+            .tip_strategy
+            .adaptive_cu_price_with_market(&landed, &fresh_market);
+        let base_share = self.config.strategy.priority_fee_base_share_bps;
+        let max_share = self.config.strategy.priority_fee_max_share_bps;
+        let max_share_bps = ((base_share as f64 * self.jito_service.competition_factor()) as u64)
+            .clamp(base_share, max_share);
+        PriorityFeePolicy {
+            desired_cu_price_micro_lamports: desired_cu_price,
+            max_share_bps,
+            has_flash_loan: self.config.strategy.use_flash_loan,
+            measured_route_cu: self.measured_cu.lock().clone(),
+        }
     }
 
     fn control(&self) -> Option<&Arc<crate::control_service::ControlService>> {
