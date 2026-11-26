@@ -221,7 +221,7 @@ fn test_three_pool_route_token2022_transfer_fees() {
     let mint_token2022 = Pubkey::new_unique();
     let mint_c = Pubkey::new_unique();
 
-    let pool_1 = make_cpmm_pool(
+    let mut pool_1 = make_cpmm_pool(
         Pubkey::new_unique(),
         mint_sol,
         mint_token2022,
@@ -229,8 +229,9 @@ fn test_three_pool_route_token2022_transfer_fees() {
         100_000_000_000,
         0,
     );
+    pool_1.token_programs = [TokenProgramKind::SplToken, TokenProgramKind::Token2022];
 
-    let pool_2 = make_cpmm_pool(
+    let mut pool_2 = make_cpmm_pool(
         Pubkey::new_unique(),
         mint_token2022,
         mint_c,
@@ -238,6 +239,7 @@ fn test_three_pool_route_token2022_transfer_fees() {
         100_000_000_000,
         0,
     );
+    pool_2.token_programs = [TokenProgramKind::Token2022, TokenProgramKind::SplToken];
 
     let pool_3 = make_cpmm_pool(
         Pubkey::new_unique(),

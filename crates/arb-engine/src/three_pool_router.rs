@@ -356,67 +356,31 @@ impl KaminoBorrowOptimizer {
             return None;
         }
 
-        // 2. Golden Section Search for optimal input amount
-        const PHI_INV: f64 = 0.618033988749895; // (sqrt(5) - 1) / 2
-        let mut a = min_borrow as f64;
-        let mut b = max_borrow as f64;
-
-        let mut c = b - PHI_INV * (b - a);
-        let mut d = a + PHI_INV * (b - a);
-
-        let eval = |size: u64| -> i64 {
-            match self.router.simulate_route(
-                hops,
-                size,
-                flash_fee_bps,
-                priority_fee_lamports,
-                tip_share_bps,
-            ) {
-                Ok(q) => {
-                    // This is a route-level estimate, not a serialized message.
-                    // Exact packet/MTU validation belongs to the transaction builder.
-                    q.net_profit_lamports
+        // 2. Integer non-monotonic multi-basin search for optimal input amount
+        let best = crate::route_sizing::optimize_bounded_non_monotonic(
+            max_borrow,
+            24,
+            4,
+            10,
+            &[min_borrow],
+            |size| {
+                if size < min_borrow {
+                    return None;
                 }
-                Err(_) => i64::MIN,
-            }
-        };
-
-        let mut profit_c = eval(c as u64);
-        let mut profit_d = eval(d as u64);
-
-        // Run 16 iterations of golden-section search (~1e-4 relative tolerance)
-        for _ in 0..16 {
-            if (b - a) < 100_000.0 {
-                // Converged to within 0.0001 SOL
-                break;
-            }
-
-            if profit_c > profit_d {
-                b = d;
-                d = c;
-                profit_d = profit_c;
-                c = b - PHI_INV * (b - a);
-                profit_c = eval(c as u64);
-            } else {
-                a = c;
-                c = d;
-                profit_c = profit_d;
-                d = a + PHI_INV * (b - a);
-                profit_d = eval(d as u64);
-            }
-        }
-
-        let best_size = ((a + b) / 2.0) as u64;
-        let final_quote = self
-            .router
-            .simulate_route(
-                hops,
-                best_size,
-                flash_fee_bps,
-                priority_fee_lamports,
-                tip_share_bps,
-            )
-            .ok()?;
+                let q = self
+                    .router
+                    .simulate_route(
+                        hops,
+                        size,
+                        flash_fee_bps,
+                        priority_fee_lamports,
+                        tip_share_bps,
+                    )
+                    .ok()?;
+                Some((q.clone(), i128::from(q.net_profit_lamports)))
+            },
+        )?;
+        let final_quote = best.candidate;
 
         if final_quote.is_profitable {
             Some(final_quote)

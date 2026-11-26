@@ -475,13 +475,16 @@ fn transaction_is_borrow_swaps_repay_in_one_atomic_unit() {
         params.borrow_amount
     );
 
+    let repay_amount = params
+        .repay_amount()
+        .expect("repay_amount must not overflow");
     let verification = verify_atomic_integrity(
         ExecutionMode::SingleTransaction,
         &ixs,
         Some(borrow_idx),
         Some(repay_idx),
         params.borrow_amount,
-        params.repay_amount(),
+        repay_amount,
         params.flash_fee,
     )
     .unwrap();

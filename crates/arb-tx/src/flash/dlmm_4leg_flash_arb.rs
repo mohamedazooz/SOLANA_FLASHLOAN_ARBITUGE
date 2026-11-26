@@ -43,12 +43,16 @@ pub enum FlashArb4LegError {
     PoolsNotDistinct,
     #[error("zero borrow amount")]
     ZeroBorrowAmount,
+    #[error("repayment calculation overflowed u64: borrow={borrow}, fee={fee}")]
+    ArithmeticOverflow { borrow: u64, fee: u64 },
     #[error("flash repayment {repay} does not cover borrow {borrow} + fee {fee}")]
     InsufficientRepayment { borrow: u64, repay: u64, fee: u64 },
     #[error("mint chain mismatch: {detail}")]
     MintChainMismatch { detail: String },
     #[error("route does not return to the flash mint {expected}, got {actual}")]
     NonClosingRoute { expected: String, actual: String },
+    #[error("closing token program mismatch: expected {expected}, got {actual}")]
+    ClosingTokenProgramMismatch { expected: String, actual: String },
     #[error("leg {leg} minimum output {min_out} is below the required {required}")]
     LegOutputBelowRequired {
         leg: usize,
@@ -233,10 +237,15 @@ pub struct FlashArb4LegParams {
 }
 
 impl FlashArb4LegParams {
-    /// Amount that must be repaid: principal plus the flash fee.
+    /// Amount that must be repaid: principal plus the flash fee, failing closed on `u64` overflow.
     #[inline]
-    pub fn repay_amount(&self) -> u64 {
-        self.borrow_amount.saturating_add(self.flash_fee)
+    pub fn repay_amount(&self) -> Result<u64, FlashArb4LegError> {
+        self.borrow_amount.checked_add(self.flash_fee).ok_or(
+            FlashArb4LegError::ArithmeticOverflow {
+                borrow: self.borrow_amount,
+                fee: self.flash_fee,
+            },
+        )
     }
 }
 
@@ -304,8 +313,14 @@ pub fn assemble_flash_funded_four_pool(
     }
 
     // Invariant 3: repayment covers principal + fee
-    let repay_amount = params.repay_amount();
-    if repay_amount < params.borrow_amount.saturating_add(params.flash_fee) {
+    let repay_amount = params.repay_amount()?;
+    let expected_min_repay = params.borrow_amount.checked_add(params.flash_fee).ok_or(
+        FlashArb4LegError::ArithmeticOverflow {
+            borrow: params.borrow_amount,
+            fee: params.flash_fee,
+        },
+    )?;
+    if repay_amount < expected_min_repay {
         return Err(FlashArb4LegError::InsufficientRepayment {
             borrow: params.borrow_amount,
             repay: repay_amount,
@@ -319,11 +334,17 @@ pub fn assemble_flash_funded_four_pool(
     let mint_c = params.leg_3.token_out();
     let final_mint = params.leg_4.token_out();
 
-    // Invariant 4: closing route (flash mint in, flash mint out)
+    // Invariant 4: closing route (flash mint + token program match)
     if final_mint != flash_mint {
         return Err(FlashArb4LegError::NonClosingRoute {
             expected: flash_mint.to_string(),
             actual: final_mint.to_string(),
+        });
+    }
+    if params.leg_1.token_in_program() != params.leg_4.token_out_program() {
+        return Err(FlashArb4LegError::ClosingTokenProgramMismatch {
+            expected: params.leg_1.token_in_program().to_string(),
+            actual: params.leg_4.token_out_program().to_string(),
         });
     }
 
@@ -625,7 +646,125 @@ mod tests {
             v1_transport_supported: true,
         };
 
-        assert_eq!(params.repay_amount(), 1_000_001_000);
+        assert_eq!(params.repay_amount().unwrap(), 1_000_001_000);
+    }
+
+    #[test]
+    fn test_4leg_repay_amount_rejects_u64_overflow() {
+        let mut params = FlashArb4LegParams {
+            payer: Pubkey::new_unique(),
+            kamino: KaminoFlashParams::default_wsol(),
+            borrow_amount: u64::MAX - 5,
+            flash_fee: 10,
+            leg_1: FlashArb4LegPoolLeg {
+                lb_pair: Pubkey::new_unique(),
+                reserve_x: Pubkey::new_unique(),
+                reserve_y: Pubkey::new_unique(),
+                token_x_mint: Pubkey::new_unique(),
+                token_y_mint: Pubkey::new_unique(),
+                oracle: Pubkey::new_unique(),
+                token_x_program: Pubkey::new_unique(),
+                token_y_program: Pubkey::new_unique(),
+                swap_for_y: true,
+                amount_in: u64::MAX - 5,
+                min_amount_out: 100,
+                bin_array_pdas: vec![],
+                bitmap_extension: None,
+                host_fee_in: None,
+            },
+            leg_2: FlashArb4LegPoolLeg {
+                lb_pair: Pubkey::new_unique(),
+                reserve_x: Pubkey::new_unique(),
+                reserve_y: Pubkey::new_unique(),
+                token_x_mint: Pubkey::new_unique(),
+                token_y_mint: Pubkey::new_unique(),
+                oracle: Pubkey::new_unique(),
+                token_x_program: Pubkey::new_unique(),
+                token_y_program: Pubkey::new_unique(),
+                swap_for_y: true,
+                amount_in: 100,
+                min_amount_out: 100,
+                bin_array_pdas: vec![],
+                bitmap_extension: None,
+                host_fee_in: None,
+            },
+            leg_3: FlashArb4LegPoolLeg {
+                lb_pair: Pubkey::new_unique(),
+                reserve_x: Pubkey::new_unique(),
+                reserve_y: Pubkey::new_unique(),
+                token_x_mint: Pubkey::new_unique(),
+                token_y_mint: Pubkey::new_unique(),
+                oracle: Pubkey::new_unique(),
+                token_x_program: Pubkey::new_unique(),
+                token_y_program: Pubkey::new_unique(),
+                swap_for_y: true,
+                amount_in: 100,
+                min_amount_out: 100,
+                bin_array_pdas: vec![],
+                bitmap_extension: None,
+                host_fee_in: None,
+            },
+            leg_4: FlashArb4LegPoolLeg {
+                lb_pair: Pubkey::new_unique(),
+                reserve_x: Pubkey::new_unique(),
+                reserve_y: Pubkey::new_unique(),
+                token_x_mint: Pubkey::new_unique(),
+                token_y_mint: Pubkey::new_unique(),
+                oracle: Pubkey::new_unique(),
+                token_x_program: Pubkey::new_unique(),
+                token_y_program: Pubkey::new_unique(),
+                swap_for_y: true,
+                amount_in: 100,
+                min_amount_out: u64::MAX,
+                bin_array_pdas: vec![],
+                bitmap_extension: None,
+                host_fee_in: None,
+            },
+            cu_limit: 300_000,
+            priority_fee_micro_lamports: 1,
+            loaded_accounts_data_size_limit: Some(256_000),
+            jito_tip_account: Pubkey::new_unique(),
+            jito_tip_lamports: 0,
+            recent_blockhash: [0; 32],
+            v1_transport_supported: true,
+        };
+        assert!(matches!(
+            params.repay_amount(),
+            Err(FlashArb4LegError::ArithmeticOverflow { .. })
+        ));
+        assert!(matches!(
+            assemble_flash_funded_four_pool(&params),
+            Err(FlashArb4LegError::ArithmeticOverflow { .. })
+        ));
+        // Also cover closing token program mismatch in 4-leg validation
+        let flash_mint = Pubkey::new_unique();
+        let m1 = Pubkey::new_unique();
+        let m2 = Pubkey::new_unique();
+        let m3 = Pubkey::new_unique();
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let t22 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        params.borrow_amount = 1_000_000;
+        params.flash_fee = 100;
+        params.leg_1.token_x_mint = flash_mint;
+        params.leg_1.token_y_mint = m1;
+        params.leg_1.token_x_program = spl;
+        params.leg_1.token_y_program = spl;
+        params.leg_2.token_x_mint = m1;
+        params.leg_2.token_y_mint = m2;
+        params.leg_2.token_x_program = spl;
+        params.leg_2.token_y_program = spl;
+        params.leg_3.token_x_mint = m2;
+        params.leg_3.token_y_mint = m3;
+        params.leg_3.token_x_program = spl;
+        params.leg_3.token_y_program = spl;
+        params.leg_4.token_x_mint = m3;
+        params.leg_4.token_y_mint = flash_mint;
+        params.leg_4.token_x_program = spl;
+        params.leg_4.token_y_program = t22;
+        assert!(matches!(
+            assemble_flash_funded_four_pool(&params),
+            Err(FlashArb4LegError::ClosingTokenProgramMismatch { .. })
+        ));
     }
 
     #[test]

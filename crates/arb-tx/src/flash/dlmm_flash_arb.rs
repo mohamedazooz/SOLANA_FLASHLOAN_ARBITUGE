@@ -61,12 +61,16 @@ pub enum FlashArbError {
     SamePool,
     #[error("zero borrow amount")]
     ZeroBorrowAmount,
+    #[error("repayment calculation overflowed u64: borrow={borrow}, fee={fee}")]
+    ArithmeticOverflow { borrow: u64, fee: u64 },
     #[error("flash repayment {repay} does not cover borrow {borrow} + fee {fee}")]
     InsufficientRepayment { borrow: u64, repay: u64, fee: u64 },
     #[error("pool A output mint {a} does not match pool B input mint {b}")]
     MintChainMismatch { a: String, b: String },
     #[error("route does not return to the flash mint {expected}, got {actual}")]
     NonClosingRoute { expected: String, actual: String },
+    #[error("closing token program mismatch: expected {expected}, got {actual}")]
+    ClosingTokenProgramMismatch { expected: String, actual: String },
     #[error("pool B minimum output {min_out} is below the repayment {repay}")]
     FinalOutputBelowRepayment { min_out: u64, repay: u64 },
     #[error("atomicity check failed: {0}")]
@@ -229,10 +233,15 @@ pub struct FlashArbParams {
 }
 
 impl FlashArbParams {
-    /// Amount that must be repaid: principal plus the flash fee.
+    /// Amount that must be repaid: principal plus the flash fee, failing closed on `u64` overflow.
     #[inline]
-    pub fn repay_amount(&self) -> u64 {
-        self.borrow_amount.saturating_add(self.flash_fee)
+    pub fn repay_amount(&self) -> Result<u64, FlashArbError> {
+        self.borrow_amount
+            .checked_add(self.flash_fee)
+            .ok_or(FlashArbError::ArithmeticOverflow {
+                borrow: self.borrow_amount,
+                fee: self.flash_fee,
+            })
     }
 }
 
@@ -285,8 +294,14 @@ pub fn assemble_flash_funded_two_pool(
         return Err(FlashArbError::ZeroBorrowAmount);
     }
     // ── Invariant 3: repayment covers principal + fee ──
-    let repay_amount = params.repay_amount();
-    if repay_amount < params.borrow_amount.saturating_add(params.flash_fee) {
+    let repay_amount = params.repay_amount()?;
+    let expected_min_repay = params.borrow_amount.checked_add(params.flash_fee).ok_or(
+        FlashArbError::ArithmeticOverflow {
+            borrow: params.borrow_amount,
+            fee: params.flash_fee,
+        },
+    )?;
+    if repay_amount < expected_min_repay {
         return Err(FlashArbError::InsufficientRepayment {
             borrow: params.borrow_amount,
             repay: repay_amount,
@@ -298,11 +313,17 @@ pub fn assemble_flash_funded_two_pool(
     let mid_mint = params.leg_a.token_out();
     let final_mint = params.leg_b.token_out();
 
-    // ── Invariant 4: closing route (flash mint in, flash mint out) ──
+    // ── Invariant 4: closing route (flash mint + token program match) ──
     if final_mint != flash_mint {
         return Err(FlashArbError::NonClosingRoute {
             expected: flash_mint.to_string(),
             actual: final_mint.to_string(),
+        });
+    }
+    if params.leg_a.token_in_program() != params.leg_b.token_out_program() {
+        return Err(FlashArbError::ClosingTokenProgramMismatch {
+            expected: params.leg_a.token_in_program().to_string(),
+            actual: params.leg_b.token_out_program().to_string(),
         });
     }
     // ── Invariant 5: mint chaining between the legs ──
@@ -606,7 +627,7 @@ mod tests {
     #[test]
     fn layout_is_borrow_swaps_repay() {
         let mut p = params();
-        p.leg_b.min_amount_out = p.repay_amount();
+        p.leg_b.min_amount_out = p.repay_amount().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&p).unwrap();
         assert_eq!(ixs.len(), 8);
         assert_eq!(borrow_idx, 4);
@@ -623,7 +644,7 @@ mod tests {
     #[test]
     fn atomicity_verification_passes() {
         let mut p = params();
-        p.leg_b.min_amount_out = p.repay_amount();
+        p.leg_b.min_amount_out = p.repay_amount().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&p).unwrap();
         let v = verify_atomic_integrity(
             ExecutionMode::SingleTransaction,
@@ -631,7 +652,7 @@ mod tests {
             Some(borrow_idx),
             Some(repay_idx),
             p.borrow_amount,
-            p.repay_amount(),
+            p.repay_amount().unwrap(),
             p.flash_fee,
         )
         .unwrap();
@@ -647,7 +668,7 @@ mod tests {
         p.leg_b = leg(pool_b(), usdc(), wsol(), true);
         p.leg_a.min_amount_out = 1_000_000;
         p.leg_b.amount_in = 1_000_000;
-        p.leg_b.min_amount_out = p.repay_amount();
+        p.leg_b.min_amount_out = p.repay_amount().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&p).unwrap();
         assert_eq!(borrow_idx, 4);
         assert_eq!(repay_idx, 7);
@@ -657,7 +678,7 @@ mod tests {
     #[test]
     fn v0_size_estimate_is_below_the_packet_limit_with_a_table() {
         let mut p = params();
-        p.leg_b.min_amount_out = p.repay_amount();
+        p.leg_b.min_amount_out = p.repay_amount().unwrap();
         let (ixs, _, _) = assemble_flash_funded_two_pool(&p).unwrap();
         let mut addrs: Vec<Pubkey> = Vec::new();
         for ix in &ixs {
@@ -670,5 +691,31 @@ mod tests {
         let table = AddressLookupTable::new(Pubkey::new_unique(), addrs);
         let size = estimate_v0_transaction_size(&ixs, &[table]);
         assert!(size < arb_constants::SOLANA_PACKET_MTU_LIMIT, "size={size}");
+    }
+
+    #[test]
+    fn repay_amount_rejects_u64_overflow() {
+        let mut p = params();
+        p.borrow_amount = u64::MAX - 5;
+        p.flash_fee = 10;
+        assert!(matches!(
+            p.repay_amount(),
+            Err(FlashArbError::ArithmeticOverflow { .. })
+        ));
+        assert!(matches!(
+            assemble_flash_funded_two_pool(&p),
+            Err(FlashArbError::ArithmeticOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn closing_token_program_mismatch_is_rejected() {
+        let mut p = params();
+        p.leg_b.token_x_program = TokenProgramKind::Token2022.program_id();
+        p.leg_b.min_amount_out = p.repay_amount().unwrap();
+        assert!(matches!(
+            assemble_flash_funded_two_pool(&p),
+            Err(FlashArbError::ClosingTokenProgramMismatch { .. })
+        ));
     }
 }

@@ -292,6 +292,8 @@ fn global_config_buy_and_sell_disable_bits_are_directional() {
         base_decimals: 6,
         quote_decimals: 9,
         base_mint_supply: 1_000_000,
+        base_token_program: arb_types::TokenProgramKind::SplToken,
+        quote_token_program: arb_types::TokenProgramKind::SplToken,
         fee_config_account: AccountSnapshot {
             pubkey: Pubkey::new_unique(),
             owner: Pubkey::new_unique(),
@@ -397,4 +399,89 @@ fn rejects_cross_slot_pool_vault_join() {
     );
     let err = join_pump_swap_state(&store, pool_key, fee_config_key).unwrap_err();
     assert!(err.to_string().contains("pool/vault slot mismatch"));
+}
+
+#[test]
+fn preserves_verified_token_2022_program_on_extensionless_mint() {
+    let store = AccountSnapshotStore::default();
+    let pump_swap_program = parse_program_id(PUMP_SWAP_PROGRAM_ID).unwrap();
+    let token_2022_program = parse_program_id(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+    let spl_program = parse_program_id(TOKEN_PROGRAM_ID).unwrap();
+    let pool_creator = Pubkey::new_unique();
+    let base_mint = Pubkey::new_unique();
+    let quote_mint = parse_program_id(arb_constants::WSOL_MINT).unwrap();
+    let index_seed = 0u16.to_le_bytes();
+    let (pool_key, pool_bump) = Pubkey::find_program_address(
+        &[
+            b"pool",
+            &index_seed,
+            pool_creator.as_ref(),
+            base_mint.as_ref(),
+            quote_mint.as_ref(),
+        ],
+        &pump_swap_program,
+    );
+    let associated_program = parse_program_id(ASSOCIATED_TOKEN_PROGRAM_ID).unwrap();
+    let base_vault = associated_token_address(
+        &pool_key,
+        &base_mint,
+        &token_2022_program,
+        &associated_program,
+    );
+    let quote_vault =
+        associated_token_address(&pool_key, &quote_mint, &spl_program, &associated_program);
+    let mut pool_data = vec![0u8; 271];
+    pool_data[..8].copy_from_slice(&arb_constants::PUMP_SWAP_POOL_DISCRIMINATOR);
+    pool_data[8] = pool_bump;
+    pool_data[9..11].copy_from_slice(&index_seed);
+    pool_data[11..43].copy_from_slice(pool_creator.as_ref());
+    pool_data[43..75].copy_from_slice(base_mint.as_ref());
+    pool_data[75..107].copy_from_slice(quote_mint.as_ref());
+    pool_data[139..171].copy_from_slice(base_vault.as_ref());
+    pool_data[171..203].copy_from_slice(quote_vault.as_ref());
+    let pump_fees_program = parse_program_id(PUMP_FEES_PROGRAM_ID).unwrap();
+    let (fee_config_key, fee_bump) = Pubkey::find_program_address(
+        &[b"fee_config", pump_swap_program.as_ref()],
+        &pump_fees_program,
+    );
+    put_snapshot(&store, pool_key, pump_swap_program, 500, pool_data);
+    put_snapshot(
+        &store,
+        base_vault,
+        token_2022_program,
+        500,
+        token_account(base_mint, pool_key, 5_000_000),
+    );
+    put_snapshot(
+        &store,
+        quote_vault,
+        spl_program,
+        500,
+        token_account(quote_mint, pool_key, 10_000_000),
+    );
+    put_snapshot(&store, base_mint, token_2022_program, 500, mint_account(6));
+    put_snapshot(&store, quote_mint, spl_program, 500, mint_account(9));
+    let mut fee_data = vec![0u8; 65];
+    fee_data[..8].copy_from_slice(&PUMP_FEES_FEE_CONFIG_DISCRIMINATOR);
+    fee_data[8] = fee_bump;
+    put_snapshot(&store, fee_config_key, pump_fees_program, 500, fee_data);
+    let global_config_key = parse_program_id(PUMP_SWAP_GLOBAL_CONFIG).unwrap();
+    let mut global_data = vec![0u8; 949];
+    global_data[..8].copy_from_slice(&PUMP_SWAP_GLOBAL_CONFIG_DISCRIMINATOR);
+    put_snapshot(
+        &store,
+        global_config_key,
+        pump_swap_program,
+        500,
+        global_data,
+    );
+    let joined = join_pump_swap_state(&store, pool_key, fee_config_key).unwrap();
+    assert_eq!(
+        joined.base_token_program,
+        arb_types::TokenProgramKind::Token2022
+    );
+    assert_eq!(
+        joined.quote_token_program,
+        arb_types::TokenProgramKind::SplToken
+    );
 }

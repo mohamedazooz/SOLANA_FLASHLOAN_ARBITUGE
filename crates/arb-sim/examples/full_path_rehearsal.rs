@@ -877,13 +877,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&params)?;
+    let repay_amount = params.repay_amount()?;
     let verification = verify_atomic_integrity(
         ExecutionMode::SingleTransaction,
         &ixs,
         Some(borrow_idx),
         Some(repay_idx),
         params.borrow_amount,
-        params.repay_amount(),
+        repay_amount,
         params.flash_fee,
     )?;
     println!(
@@ -931,7 +932,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ixs.len(),
         borrow_idx,
         repay_idx,
-        params.repay_amount()
+        repay_amount
     );
 
     let flash_mint = route.flash_mint.0;

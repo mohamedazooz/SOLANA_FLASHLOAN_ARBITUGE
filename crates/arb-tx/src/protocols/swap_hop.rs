@@ -558,17 +558,14 @@ pub fn build_swap_hop_instruction(
                 )
             };
 
-            const Q64: u128 = 1u128 << 64;
-            let sqrt_price_limit = if amount_in > 0 && min_amount_out > 0 {
-                if zero_for_one {
-                    (u128::from(min_amount_out) * Q64) / u128::from(amount_in)
-                } else {
-                    (u128::from(amount_in) * Q64) / u128::from(min_amount_out)
-                }
-            } else if zero_for_one {
-                4_295_048_016u128
+            // `sqrt_price_limit_x64` is a Q64.64 SQUARE-ROOT price bound, never a raw
+            // token output/input ratio. Exact-input slippage is enforced by
+            // `other_amount_threshold = min_amount_out`, so pass the official
+            // directional program envelope (`> MIN_SQRT_PRICE_X64` / `< MAX_SQRT_PRICE_X64`).
+            let sqrt_price_limit = if zero_for_one {
+                arb_constants::CLMM_MIN_SQRT_PRICE_X64 + 1
             } else {
-                79_226_673_515_401_499_993_453_864_427u128
+                arb_constants::RAYDIUM_CLMM_MAX_SQRT_PRICE_X64 - 1
             };
             build_raydium_clmm_swap_instruction(
                 &accounts,
@@ -579,6 +576,13 @@ pub fn build_swap_hop_instruction(
             )
         }
         DexProtocol::PumpFun => {
+            if hop.token_programs[0] != arb_types::TokenProgramKind::SplToken
+                || hop.token_programs[1] != arb_types::TokenProgramKind::SplToken
+            {
+                return Err(TxError::InstructionError(
+                    "PumpFun swap builder only supports SPL Token accounts (Token-2022 create_v2 unsupported)".into(),
+                ));
+            }
             let wsol = Pubkey::from_str(WSOL_MINT).unwrap_or_default();
             let is_buy = hop.mint_in.0 == wsol;
             let meme_mint = if is_buy {
