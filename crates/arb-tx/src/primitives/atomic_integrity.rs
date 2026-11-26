@@ -1,14 +1,7 @@
-//! Phase 16.3 — Atomic Transaction Integrity.
-//!
-//! Verifies that arbitrage execution is truly atomic: either all required
-//! operations execute and satisfy economic constraints, or the entire
-//! transaction reverts.
-//!
-//! Key distinction: Jito bundles and Solana transactions have different
-//! atomicity guarantees. A Jito bundle is NOT an atomic transaction — individual
-//! transactions within a bundle can land independently. This module models
-//! them separately and rejects execution strategies where atomicity cannot
-//! be guaranteed.
+//! Jito guarantees that a submitted bundle of up to five transactions executes
+//! sequentially and all-or-nothing in one slot. This is bundle-level atomicity;
+//! flash-loan borrow and repay instructions must still remain in the same Solana
+//! transaction because this verifier receives one transaction instruction list.
 
 use crate::{
     COMPUTE_BUDGET_PROGRAM_ID, CompiledInstruction, TxError, build_kamino_flash_borrow,
@@ -44,34 +37,34 @@ pub enum TransactionFormat {
 ///
 /// # Atomicity Guarantees
 ///
-/// * `SingleTransaction`: All instructions execute atomically within one
+/// * SingleTransaction: All instructions execute atomically within one
 ///   Solana transaction. If any instruction fails, the entire transaction
-///   reverts. This provides full atomicity.
+///   reverts.
 ///
-/// * `JitoBundle`: A bundle of up to 5 transactions submitted to Jito block
-///   engine. Each transaction in the bundle is independent — they can land
-///   in different slots or not at all. There is NO cross-transaction
-///   atomicity. A multi-leg arbitrage split across bundle transactions is
-///   NOT atomic and must be rejected.
+/// * JitoBundle: Up to five transactions execute sequentially and all-or-nothing
+///   in one slot. Flash-loan borrow and repay must still remain in the same
+///   Solana transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionMode {
     /// Single Solana transaction — full atomicity.
     SingleTransaction,
-    /// Jito bundle — no cross-transaction atomicity.
+    /// Jito bundle — up to five sequential transactions, all-or-nothing.
     JitoBundle,
 }
 
 impl ExecutionMode {
     /// True when this mode provides atomic execution guarantees.
     pub fn is_atomic(self) -> bool {
-        matches!(self, Self::SingleTransaction)
+        matches!(self, Self::SingleTransaction | Self::JitoBundle)
     }
 
     /// Human-readable description of atomicity guarantees.
     pub fn atomicity_description(self) -> &'static str {
         match self {
             Self::SingleTransaction => "All instructions revert together on failure",
-            Self::JitoBundle => "Each transaction lands independently — no atomicity",
+            Self::JitoBundle => {
+                "Up to five transactions execute sequentially, all-or-nothing, in one slot"
+            }
         }
     }
 }
@@ -95,8 +88,8 @@ pub struct AtomicityVerification {
 ///
 /// # Enforced checks
 ///
-/// 1. Execution mode is `SingleTransaction` (a Jito bundle is rejected as
-///    non-atomic).
+/// 1. Execution mode is SingleTransaction or JitoBundle. The instruction list
+///    passed here is one Solana transaction; borrow and repay must be in it.
 /// 2. The instruction list is non-empty.
 /// 3. Flash loan borrow and repay are both present, and borrow precedes repay.
 /// 4. Repayment amount >= borrow amount + fee.
@@ -151,15 +144,15 @@ pub fn verify_atomic_integrity_for_format(
     flash_fee: u64,
     format: Option<TransactionFormat>,
 ) -> Result<AtomicityVerification, TxError> {
-    // Jito bundles do not provide atomicity — reject multi-leg arbitrage.
+    // Both a Solana transaction and a Jito bundle are atomic. This verifier
+    // receives one transaction instruction list, so borrow and repay must
+    // remain in that same transaction even when it is sent inside a bundle.
     if !mode.is_atomic() {
         return Ok(AtomicityVerification {
             is_atomic: false,
             mode,
             rejection_reason: Some(
-                "Jito bundle transactions land independently — multi-leg arbitrage \
-                 is not atomic across bundle transactions"
-                    .to_string(),
+                "Execution mode does not provide atomic execution guarantees".to_string(),
             ),
             instruction_count: instructions.len(),
             account_count: count_unique_accounts(instructions),
@@ -594,15 +587,12 @@ mod tests {
     }
 
     #[test]
-    fn test_jito_bundle_is_not_atomic() {
+    fn test_jito_bundle_is_atomic() {
         let ixs = test_instructions();
         let result =
             verify_atomic_integrity(ExecutionMode::JitoBundle, &ixs, None, None, 0, 0, 0).unwrap();
-        assert!(!result.is_atomic, "Jito bundle should not be atomic");
-        assert!(
-            result.rejection_reason.is_some(),
-            "should have a rejection reason"
-        );
+        assert!(result.is_atomic, "Jito bundle is atomic all-or-nothing");
+        assert!(result.rejection_reason.is_none());
     }
 
     #[test]
@@ -852,7 +842,7 @@ mod tests {
         );
         assert_eq!(
             ExecutionMode::JitoBundle.atomicity_description(),
-            "Each transaction lands independently — no atomicity"
+            "Up to five transactions execute sequentially, all-or-nothing, in one slot"
         );
     }
 

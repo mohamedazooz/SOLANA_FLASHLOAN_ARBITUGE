@@ -4,13 +4,16 @@
 //! the leading fields and does not yet join the complete fee/config/mint context.
 //! In particular Pool::whitelisted_vault at offset 296 is not a swap config account.
 
-use arb_dex::meteora_damm_v2::{METEORA_DAMM_V2_POOL_MIN_SIZE, MeteoraDammV2Pool};
+use arb_dex::meteora_damm_v2::{
+    DammV2ClockSnapshot, METEORA_DAMM_V2_POOL_MIN_SIZE, MeteoraDammV2Pool,
+};
 use arb_dex::traits::AmmPool;
 use arb_types::{ArbError, DexProtocol, PoolId};
 use solana_pubkey::Pubkey;
 
 fn pool_bytes(status: u8) -> Vec<u8> {
     let mut data = vec![0u8; METEORA_DAMM_V2_POOL_MIN_SIZE];
+    data[..8].copy_from_slice(&arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_DISCRIMINATOR);
     data[360..376].copy_from_slice(&1_000_000u128.to_le_bytes());
     data[456..472].copy_from_slice(&(1u128 << 64).to_le_bytes());
     data[481] = status;
@@ -139,4 +142,100 @@ fn unknown_fee_mode_never_becomes_a_verified_fee_snapshot() {
     pool.set_current_point(0, 10);
     assert!(!pool.fee_context_verified);
     assert!(pool.fee_bps().is_none());
+}
+#[test]
+fn layout_v1_compounding_uses_tracked_token_amounts() {
+    let mut data = pool_bytes(0);
+    data[8..16].copy_from_slice(&100_000u64.to_le_bytes());
+    data[484] = 2; // CollectFeeMode::Compounding
+    data[486] = 1; // fee version V1
+    data[680..688].copy_from_slice(&10_000_000u64.to_le_bytes());
+    data[688..696].copy_from_slice(&20_000_000u64.to_le_bytes());
+    data[696] = 1; // LayoutVersion::V1
+
+    let mut pool = pool_with(&data);
+    assert_eq!(pool.token_a_amount, Some(10_000_000));
+    assert_eq!(pool.token_b_amount, Some(20_000_000));
+    assert_eq!(pool.reserves(), (10_000_000, 20_000_000));
+
+    pool.set_current_point(0, 0);
+    assert!(pool.fee_context_verified);
+    let expected = arb_math::quote_damm_v2_compounding_exact_in(
+        1_000_000, true, 10_000_000, 20_000_000, 100_000, false,
+    )
+    .unwrap();
+    assert_eq!(
+        pool.quote_exact_in_verified(1_000_000, true).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn layout_v0_compounding_is_not_priced_from_concentrated_fields() {
+    let mut data = pool_bytes(0);
+    data[8..16].copy_from_slice(&100_000u64.to_le_bytes());
+    data[484] = 2;
+    data[486] = 1;
+    data[696] = 0;
+
+    let mut pool = pool_with(&data);
+    assert_eq!(pool.token_a_amount, None);
+    assert_eq!(pool.token_b_amount, None);
+    assert_eq!(pool.reserves(), (0, 0));
+    pool.set_current_point(0, 0);
+    assert!(!pool.fee_context_verified);
+    assert!(pool.quote_exact_in_verified(1_000, true).is_err());
+}
+#[test]
+fn clock_snapshot_binds_slot_activation_to_same_context() {
+    let mut data = pool_bytes(0);
+    data[8..16].copy_from_slice(&100_000u64.to_le_bytes());
+    data[480] = 0;
+    let mut pool = pool_with(&data);
+    let mut clock_data = vec![0u8; 40];
+    clock_data[0..8].copy_from_slice(&500u64.to_le_bytes());
+    clock_data[16..24].copy_from_slice(&42u64.to_le_bytes());
+    clock_data[32..40].copy_from_slice(&1_800_000_000i64.to_le_bytes());
+    let clock = DammV2ClockSnapshot::decode(&clock_data, 500).unwrap();
+    assert!(pool.set_clock_snapshot(clock, 500));
+    assert_eq!(pool.current_point, 500);
+    assert_eq!(clock.epoch, 42);
+    assert!(!pool.set_clock_snapshot(clock, 499));
+    assert!(!pool.fee_context_verified);
+}
+
+#[test]
+fn timestamp_activation_uses_clock_unix_timestamp_not_local_time() {
+    let mut data = pool_bytes(0);
+    data[8..16].copy_from_slice(&100_000u64.to_le_bytes());
+    data[480] = 1;
+    let mut pool = pool_with(&data);
+    let mut clock_data = vec![0u8; 40];
+    clock_data[0..8].copy_from_slice(&900u64.to_le_bytes());
+    clock_data[32..40].copy_from_slice(&1_800_000_123i64.to_le_bytes());
+    let clock = DammV2ClockSnapshot::decode(&clock_data, 900).unwrap();
+    assert!(pool.set_clock_snapshot(clock, 900));
+    assert_eq!(pool.current_point, 1_800_000_123);
+}
+
+#[test]
+fn negative_clock_timestamp_is_not_accepted_for_timestamp_activation() {
+    let mut data = pool_bytes(0);
+    data[8..16].copy_from_slice(&100_000u64.to_le_bytes());
+    data[480] = 1;
+    let mut pool = pool_with(&data);
+    let mut clock_data = vec![0u8; 40];
+    clock_data[0..8].copy_from_slice(&900u64.to_le_bytes());
+    clock_data[32..40].copy_from_slice(&(-1i64).to_le_bytes());
+    let clock = DammV2ClockSnapshot::decode(&clock_data, 900).unwrap();
+    assert!(!pool.set_clock_snapshot(clock, 900));
+}
+#[test]
+fn from_account_rejects_wrong_anchor_discriminator() {
+    let mut data = pool_bytes(0);
+    data[0] ^= 0xff;
+    assert!(matches!(
+        MeteoraDammV2Pool::from_account(PoolId(Pubkey::new_unique()), &data),
+        Err(ArbError::DeserializationError(_))
+    ));
 }

@@ -66,7 +66,8 @@ pub use clmm::{
 pub use cpmm::*;
 pub use damm_v2::{
     DAMM_V2_FEE_DENOMINATOR, DammV2BaseFeeMode, DammV2FeeBreakdown, DammV2FeeParams,
-    damm_v2_virtual_reserves, quote_damm_v2_exact_in,
+    damm_v2_virtual_reserves, quote_damm_v2_compounding_exact_in, quote_damm_v2_exact_in,
+    quote_damm_v2_exact_in_with_fee_mode,
 };
 pub use dbc::*;
 pub use dlmm::{

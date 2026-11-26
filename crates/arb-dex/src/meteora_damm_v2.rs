@@ -13,7 +13,37 @@ use std::str::FromStr;
 
 // Anchor discriminator (8) + official Pool::INIT_SPACE (1,104).
 pub const METEORA_DAMM_V2_POOL_MIN_SIZE: usize = 8 + 1_104;
+/// Anchor discriminator for account:Pool (SHA-256 prefix).
+pub const METEORA_DAMM_V2_POOL_DISCRIMINATOR: [u8; 8] =
+    [0xf1, 0x9a, 0x6d, 0x04, 0x11, 0xb1, 0x6d, 0xbc];
 
+/// Clock sysvar values decoded from the same getMultipleAccounts context as the pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DammV2ClockSnapshot {
+    pub context_slot: u64,
+    pub slot: u64,
+    pub epoch: u64,
+    pub unix_timestamp: i64,
+}
+
+impl DammV2ClockSnapshot {
+    /// Solana Clock layout: slot @0, epoch_start_timestamp @8, epoch @16,
+    /// leader_schedule_epoch @24, unix_timestamp @32.
+    pub fn decode(data: &[u8], context_slot: u64) -> Option<Self> {
+        if data.len() < 40 || context_slot == 0 {
+            return None;
+        }
+        let slot = u64::from_le_bytes(data.get(0..8)?.try_into().ok()?);
+        let epoch = u64::from_le_bytes(data.get(16..24)?.try_into().ok()?);
+        let unix_timestamp = i64::from_le_bytes(data.get(32..40)?.try_into().ok()?);
+        (slot > 0).then_some(Self {
+            context_slot,
+            slot,
+            epoch,
+            unix_timestamp,
+        })
+    }
+}
 #[derive(Debug, Clone)]
 pub struct MeteoraDammV2Pool {
     pub pool_id: PoolId,
@@ -36,6 +66,9 @@ pub struct MeteoraDammV2Pool {
     pub activation_type: u8,
     pub fee_version: u8,
     pub layout_version: u8,
+    /// V1-only tracked compounding reserves; V0 does not carry these counters.
+    pub token_a_amount: Option<u64>,
+    pub token_b_amount: Option<u64>,
     /// On-chain `Pool::pool_status`: 0 = Enable, 1 = Disable (official cp_amm
     /// `state/pool.rs`). Any other value is treated as disabled (fail-closed).
     pub pool_status: u8,
@@ -75,6 +108,8 @@ impl MeteoraDammV2Pool {
             activation_type: 0,
             fee_version: 0,
             layout_version: 0,
+            token_a_amount: None,
+            token_b_amount: None,
             pool_status: 1,
             current_point: 0,
             fee_params: DammV2FeeParams::default(),
@@ -93,6 +128,37 @@ impl MeteoraDammV2Pool {
     /// (`programs/cp-amm/src/state/pool.rs`, checked 2026-11-20).
     /// Supply a slot or Unix timestamp from a coherent provider snapshot.
     /// Do not pass local wall-clock time for timestamp-activated pools.
+    /// Bind the fee scheduler to a real Clock sysvar snapshot fetched in the
+    /// same RPC context as this pool. Timestamp activation never uses local time.
+    pub fn set_clock_snapshot(
+        &mut self,
+        clock: DammV2ClockSnapshot,
+        pool_context_slot: u64,
+    ) -> bool {
+        if pool_context_slot == 0
+            || clock.context_slot != pool_context_slot
+            || clock.slot != pool_context_slot
+        {
+            self.fee_context_verified = false;
+            return false;
+        }
+        let current_point = match self.activation_type {
+            0 => clock.slot,
+            1 => match u64::try_from(clock.unix_timestamp) {
+                Ok(timestamp) if timestamp > 0 => timestamp,
+                _ => {
+                    self.fee_context_verified = false;
+                    return false;
+                }
+            },
+            _ => {
+                self.fee_context_verified = false;
+                return false;
+            }
+        };
+        self.set_current_point(self.activation_type, current_point);
+        self.fee_context_verified
+    }
     pub fn set_current_point(&mut self, activation_type: u8, current_point: u64) {
         if activation_type != self.activation_type {
             self.fee_context_verified = false;
@@ -151,6 +217,74 @@ impl MeteoraDammV2Pool {
             && self.sqrt_price_x64 > 0
             && self.liquidity > 0
             && (mode < 3 || self.fee_params.init_sqrt_price_x64 > 0)
+            && (self.fee_params.collect_fee_mode != 2
+                || (self.layout_version == 1
+                    && self.token_a_amount.is_some()
+                    && self.token_b_amount.is_some()))
+    }
+    /// Exact-in quote requiring a Clock-matched fee context. Token-2022 remains
+    /// fail-closed until epoch-aware fees and hook accounts are fully resolved.
+    pub fn quote_exact_in_verified(&self, amount_in: u64, a_to_b: bool) -> Result<u64> {
+        if !self.fee_context_verified || !self.is_tradable() {
+            return Err(ArbError::IncompleteState(
+                "DAMM v2 quote requires an enabled pool and verified current-point fee snapshot"
+                    .into(),
+            ));
+        }
+        if self.has_risky
+            || self.token_a_program != TokenProgramKind::SplToken
+            || self.token_b_program != TokenProgramKind::SplToken
+        {
+            return Err(ArbError::UnsupportedOperation(
+                "DAMM v2 Token-2022 requires epoch-aware transfer-fee and transfer-hook context"
+                    .into(),
+            ));
+        }
+        let fee = self
+            .fee_params
+            .effective_fee_numerator_at(
+                self.current_point,
+                self.activation_point,
+                self.sqrt_price_x64,
+            )
+            .ok_or_else(|| ArbError::IncompleteState("DAMM v2 fee schedule is invalid".into()))?;
+        let fees_on_input = self.fee_params.fees_on_input(a_to_b).ok_or_else(|| {
+            ArbError::UnsupportedOperation("unsupported DAMM v2 collect-fee mode".into())
+        })?;
+        let output = if self.fee_params.collect_fee_mode == 2 {
+            if self.layout_version != 1 {
+                return Err(ArbError::UnsupportedOperation(
+                    "DAMM v2 Compounding requires LayoutVersion::V1 tracked reserves".into(),
+                ));
+            }
+            arb_math::quote_damm_v2_compounding_exact_in(
+                amount_in,
+                a_to_b,
+                self.token_a_amount
+                    .ok_or_else(|| ArbError::IncompleteState("missing V1 token A amount".into()))?,
+                self.token_b_amount
+                    .ok_or_else(|| ArbError::IncompleteState("missing V1 token B amount".into()))?,
+                fee,
+                fees_on_input,
+            )
+        } else {
+            arb_math::quote_damm_v2_exact_in_with_fee_mode(
+                amount_in,
+                a_to_b,
+                self.sqrt_price_x64,
+                self.liquidity,
+                self.sqrt_min_price_x64,
+                self.sqrt_max_price_x64,
+                fee,
+                fees_on_input,
+            )
+        }
+        .ok_or_else(|| {
+            ArbError::CalculationError(
+                "DAMM v2 exact-in quote overflowed or crossed a price-range boundary".into(),
+            )
+        })?;
+        Ok(output)
     }
     pub fn is_tradable(&self) -> bool {
         self.pool_status == 0
@@ -175,6 +309,16 @@ impl AmmPool for MeteoraDammV2Pool {
     }
 
     fn reserves(&self) -> (u128, u128) {
+        if self.fee_params.collect_fee_mode == 2 {
+            return match (
+                self.layout_version,
+                self.token_a_amount,
+                self.token_b_amount,
+            ) {
+                (1, Some(a), Some(b)) => (u128::from(a), u128::from(b)),
+                _ => (0, 0),
+            };
+        }
         damm_v2_virtual_reserves(self.sqrt_price_x64, self.liquidity)
     }
 
@@ -232,6 +376,11 @@ impl AmmPool for MeteoraDammV2Pool {
                 data.len(),
                 METEORA_DAMM_V2_POOL_MIN_SIZE
             )));
+        }
+        if data.get(..8) != Some(METEORA_DAMM_V2_POOL_DISCRIMINATOR.as_slice()) {
+            return Err(ArbError::DeserializationError(
+                "Meteora DAMM v2 Pool discriminator mismatch".into(),
+            ));
         }
         let read_pk = |off: usize| -> Result<Pubkey> {
             let b: [u8; 32] = data[off..off + 32]
@@ -323,6 +472,13 @@ impl AmmPool for MeteoraDammV2Pool {
         self.pool_status = data[481];
         self.fee_version = data[486];
         self.layout_version = data[696];
+        if self.layout_version == 1 {
+            self.token_a_amount = Some(u64::from_le_bytes(data[680..688].try_into().unwrap()));
+            self.token_b_amount = Some(u64::from_le_bytes(data[688..696].try_into().unwrap()));
+        } else {
+            self.token_a_amount = None;
+            self.token_b_amount = None;
+        }
         self.fee_params.fee_version = self.fee_version;
 
         let flag_a = data[482];

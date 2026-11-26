@@ -31,7 +31,8 @@ fn launchlab_token_2022_never_becomes_quote_or_execution_ready_without_hook_supp
 
 #[test]
 fn all_four_unsupported_venues_fail_closed_in_direct_pool_adapters() {
-    let damm_bytes = vec![0u8; arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE];
+    let mut damm_bytes = vec![0u8; arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE];
+    damm_bytes[..8].copy_from_slice(&arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_DISCRIMINATOR);
     let damm = MeteoraDammV2Pool::from_account(PoolId::new([1; 32]), &damm_bytes)
         .expect("well-sized DAMM pool prefix should decode");
 
