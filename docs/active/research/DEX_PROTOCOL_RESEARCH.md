@@ -22,7 +22,18 @@
 | Raydium CPMM | ✅ | ✅ | ✅ | n/a | 2-pool atomic tests |
 | Raydium AMM v4 | ✅ | ✅ basic | ✅ | n/a | oldest curve; quote parity breadth thin |
 | Orca Whirlpool | ✅ | ✅ | ✅ | n/a | tick-array fixture corrected |
-| Pump.fun / PumpSwap | ✅ | ✅ | ✅ | n/a | promotion guards active |
+| Pump.fun / PumpSwap | ✅ | ✅ (PumpSwap only; PumpFun fails closed) | ⚠️ (`swap_hop` CLMM & PumpFun gaps) | n/a | See `DEX_SUPPORT_MATRIX.md`; PumpSwap `PUMP_CASHBACK_README` requires cashback accumulator ATA remaining accounts when `is_cashback_coin = true`; Pump.fun `create_v2` deploys Token-2022 mints |
+
+## 2026-11-26 Protocol Verification Addendum
+
+- **PumpSwap & Pump.fun (`pump-fun/pump-public-docs`, `PUMP_CASHBACK_README.md`)**:
+  - Pump.fun `create_v2` creates **Token-2022** mints (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`) and supports `mayhemMode` / `cashback` flags. Bonding-curve `sell` on cashback coins requires the writable `user_volume_accumulator` PDA at `remaining_accounts[0]`.
+  - PumpSwap AMM (`buy`/`sell` on cashback coins) requires the quote WSOL ATA of `user_volume_accumulator` (`remaining_accounts[0]`, and `user_volume_accumulator` PDA at `[1]` on sells).
+  - PumpSwap pool decode must also handle negative `virtual_quote_reserves` (`i128`) and preserve decoded `base_token_program` / `quote_token_program` into execution (`PUMPSWAP-01`).
+- **Raydium CLMM (`raydium-io/raydium-clmm`, `tick_math.rs`, `swap.rs`)**:
+  - `MIN_SQRT_PRICE_X64 = 4295048016`, `MAX_SQRT_PRICE_X64 = 79226673521066979257578248091`. `sqrt_price_limit_x64` is a Q64.64 square-root price bound (or `0` for unbounded), checked strictly against current sqrt price and `MIN/MAX`, never a raw `amount_out / amount_in` ratio (`SWAP-01`).
+- **Meteora DLMM (`MeteoraAg/dlmm-sdk`)**:
+  - `swap2` encodes Token-2022 Transfer Hook extra-account metas via `RemainingAccountsInfo` (`getExtraAccountMetasForTransferHook`); mints with Transfer Hooks must remain rejected fail-closed unless hook metas are explicitly resolved (`TOKEN-003`).
 
 Status sources: `COMPONENT_STATUS.md`, `CURRENT_STATUS.md` (matrix), `QUOTE_PARITY_REPORT.md`.
 
