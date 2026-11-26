@@ -511,6 +511,77 @@ impl RaydiumCpmmFeeState {
     }
 }
 
+/// Fully decoded Meteora DAMM v2 quote state. Values are copied from the
+/// Pool account and a Clock sysvar fetched in one coherent RPC context.
+/// collect_fee_mode == 2 uses tracked V1 reserves; all other modes use
+/// concentrated-liquidity sqrt-price/liquidity math.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DammV2State {
+    pub pool_status: u8,
+    pub fee_version: u8,
+    pub layout_version: u8,
+    pub collect_fee_mode: u8,
+    pub activation_type: u8,
+    pub activation_point: u64,
+    pub current_point: u64,
+    pub current_timestamp: u64,
+    pub clock_slot: u64,
+    pub clock_epoch: u64,
+    pub sqrt_price_x64: u128,
+    pub liquidity: u128,
+    pub sqrt_min_price_x64: u128,
+    pub sqrt_max_price_x64: u128,
+    pub token_a_amount: Option<u64>,
+    pub token_b_amount: Option<u64>,
+    pub cliff_fee_numerator: u64,
+    pub fee_scheduler_mode: u8,
+    pub number_of_period: u16,
+    pub period_frequency: u64,
+    pub reduction_factor: u64,
+    pub sqrt_price_step_bps: u32,
+    pub scheduler_expiration_duration: u32,
+    pub init_sqrt_price_x64: u128,
+    pub protocol_fee_percent: u8,
+    pub referral_fee_percent: u8,
+    pub compounding_fee_bps: u16,
+    pub dynamic_fee_initialized: bool,
+    pub max_volatility_accumulator: u32,
+    pub variable_fee_control: u32,
+    pub bin_step: u16,
+    pub filter_period: u16,
+    pub decay_period: u16,
+    pub dynamic_reduction_factor: u16,
+    pub last_update_timestamp: u64,
+    pub bin_step_u128: u128,
+    pub sqrt_price_reference: u128,
+    pub volatility_accumulator: u128,
+    pub volatility_reference: u128,
+    /// True only when Pool, both vaults, both mints and Clock were owner- and
+    /// mint-validated from one getMultipleAccounts context.
+    pub account_graph_verified: bool,
+}
+
+impl DammV2State {
+    pub fn is_compounding(&self) -> bool {
+        self.collect_fee_mode == 2
+    }
+
+    pub fn fee_context_matches(&self, pool_slot: u64) -> bool {
+        self.account_graph_verified
+            && pool_slot > 0
+            && self.clock_slot == pool_slot
+            && self.pool_status == 0
+            && self.activation_type <= 1
+            && self.layout_version <= 1
+            && self.fee_version <= 1
+            && self.current_point > 0
+            && (!self.is_compounding()
+                || (self.layout_version == 1
+                    && self.token_a_amount.is_some_and(|v| v > 0)
+                    && self.token_b_amount.is_some_and(|v| v > 0)))
+    }
+}
+
 /// Canonical pool state across all DEX protocols.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolState {
@@ -554,6 +625,9 @@ pub struct PoolState {
     /// Pump.fun bonding curve state. None for other protocols.
     #[serde(default)]
     pub pump_fun: Option<PumpFunState>,
+    /// DAMM v2 uses its own scheduler, fee mode and curve state.
+    #[serde(default)]
+    pub damm_v2: Option<DammV2State>,
     /// Token-2022 transfer fee applied to every swap through this pool, in
     /// basis points. 0 when the mints are legacy SPL Token.
     #[serde(default)]

@@ -146,6 +146,8 @@ impl QuoteEngine for PumpSwapQuoteEngine {
         Ok(QuoteResult {
             protocol: DexProtocol::PumpSwap,
             pool_id: state.pool_id,
+            total_fee_mint: request.input_mint,
+            creator_fee_mint: request.input_mint,
             amount_in_raw: request.amount,
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
@@ -153,9 +155,11 @@ impl QuoteEngine for PumpSwapQuoteEngine {
             // component allocation is not available here. Do not invent an 80/20 split.
             fees_breakdown: FeesBreakdown {
                 lp_fee: 0,
+                compounding_fee: 0,
                 protocol_fee: 0,
                 fund_fee: 0,
                 creator_fee: 0,
+                referral_fee: 0,
                 dynamic_fee: 0,
                 total_fee: fee_u64,
             },

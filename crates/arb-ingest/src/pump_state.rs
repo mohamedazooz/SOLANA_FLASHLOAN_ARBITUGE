@@ -722,6 +722,7 @@ impl crate::IngestClient {
                 clmm: None,
                 dlmm: None,
                 pump_fun: None,
+                damm_v2: None,
                 token_programs: [joined.base_token_program, joined.quote_token_program],
                 execution_accounts,
                 transfer_fee_bps: 0,

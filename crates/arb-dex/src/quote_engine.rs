@@ -26,18 +26,23 @@ pub struct QuoteRequest {
 }
 
 /// Detailed protocol fee breakdown for transparency and accounting.
-/// Fee components are diagnostic only when `amount_out_raw` is used for PnL:
-/// swap output already reflects pool fees, so callers must not deduct them again.
-/// `total_fee` is denominated in input-mint raw units. For Raydium CPMM,
-/// `creator_fee` is denominated in the input mint when charged on input and in
-/// the output mint when the pool's creator_fee_on mode charges output. Trade
-/// fee splits are decoded from the live AmmConfig; never infer them from catalog bps.
+/// lp_fee, compounding_fee, protocol_fee, fund_fee and referral_fee partition
+/// total_fee and use QuoteResult::total_fee_mint. dynamic_fee is a diagnostic
+/// subset of total_fee, not an extra charge. creator_fee is reported separately
+/// and uses QuoteResult::creator_fee_mint: Raydium CPMM may collect it on the
+/// output token even when the trade fee is charged on input. Never add raw
+/// amounts across different mints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FeesBreakdown {
+    /// LP claiming share, excluding the separately tracked compounding share.
     pub lp_fee: u64,
+    /// Share added to the DAMM v2 compounded token B reserve.
+    pub compounding_fee: u64,
     pub protocol_fee: u64,
     pub fund_fee: u64,
     pub creator_fee: u64,
+    /// Referral allocation; a subset of the charged pool fee.
+    pub referral_fee: u64,
     pub dynamic_fee: u64,
     pub total_fee: u64,
 }
@@ -47,6 +52,10 @@ pub struct FeesBreakdown {
 pub struct QuoteResult {
     pub protocol: DexProtocol,
     pub pool_id: PoolId,
+    /// Raw-unit denomination of fees_breakdown.total_fee.
+    pub total_fee_mint: MintId,
+    /// Raw-unit denomination of fees_breakdown.creator_fee.
+    pub creator_fee_mint: MintId,
     pub amount_in_raw: u64,
     pub amount_out_raw: u64,
     pub minimum_amount_out_raw: u64,
@@ -123,7 +132,22 @@ impl QuoteRequest {
                 )));
             }
         }
-        if state.kind != state.protocol.family() {
+        let family_matches = if state.protocol == DexProtocol::MeteoraDammV2 {
+            // Missing protocol state must reach its specialized adapter so it
+            // can report IncompleteState/UnsupportedOperation. Never route it
+            // through a generic CPMM or CLMM fallback.
+            state.damm_v2.as_ref().is_none_or(|damm| {
+                state.kind
+                    == if damm.is_compounding() {
+                        arb_types::PoolKind::Cpmm
+                    } else {
+                        arb_types::PoolKind::Clmm
+                    }
+            })
+        } else {
+            state.kind == state.protocol.family()
+        };
+        if !family_matches {
             return Err(ArbError::InvalidInput(format!(
                 "pool {} protocol {:?} conflicts with pricing family {:?}",
                 state.pool_id.0, state.protocol, state.kind

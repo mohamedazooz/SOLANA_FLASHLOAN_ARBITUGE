@@ -108,6 +108,7 @@ fn make_test_dlmm_pool(pool_byte: u8, mint_x_byte: u8, mint_y_byte: u8) -> PoolS
         clmm: None,
         dlmm: Some(dlmm_state),
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
         execution_accounts: Some(exec),

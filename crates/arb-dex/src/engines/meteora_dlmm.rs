@@ -442,6 +442,8 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
         Ok(QuoteResult {
             protocol: DexProtocol::MeteoraDlmm,
             pool_id: state.pool_id,
+            total_fee_mint: request.input_mint,
+            creator_fee_mint: request.input_mint,
             amount_in_raw: request.amount,
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
@@ -450,9 +452,11 @@ impl QuoteEngine for MeteoraDlmmQuoteEngine {
                     .fee_amount
                     .checked_sub(quote.protocol_fee)
                     .ok_or(ArbError::Overflow)?,
+                compounding_fee: 0,
                 protocol_fee: quote.protocol_fee,
                 fund_fee: 0,
                 creator_fee: 0,
+                referral_fee: 0,
                 dynamic_fee: quote.fee_amount, // Dlmm fee is dynamic
                 total_fee: quote.fee_amount,
             },
@@ -534,6 +538,7 @@ mod bitmap_extension_tests {
                 ..Default::default()
             }),
             pump_fun: None,
+            damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [arb_types::TokenProgramKind::SplToken; 2],
             execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {

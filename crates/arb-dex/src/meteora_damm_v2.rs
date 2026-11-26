@@ -73,6 +73,9 @@ pub struct MeteoraDammV2Pool {
     /// `state/pool.rs`). Any other value is treated as disabled (fail-closed).
     pub pool_status: u8,
     pub current_point: u64,
+    pub current_timestamp: u64,
+    pub current_context_slot: u64,
+    pub current_epoch: u64,
     pub fee_params: DammV2FeeParams,
     /// False until the complete current fee context (including dynamic-fee
     /// config and current slot/timestamp) has been joined from its source accounts.
@@ -112,6 +115,9 @@ impl MeteoraDammV2Pool {
             token_b_amount: None,
             pool_status: 1,
             current_point: 0,
+            current_timestamp: 0,
+            current_context_slot: 0,
+            current_epoch: 0,
             fee_params: DammV2FeeParams::default(),
             fee_context_verified: false,
             decimals_a: 0,
@@ -142,6 +148,15 @@ impl MeteoraDammV2Pool {
             self.fee_context_verified = false;
             return false;
         }
+        self.current_context_slot = clock.context_slot;
+        self.current_epoch = clock.epoch;
+        self.current_timestamp = match u64::try_from(clock.unix_timestamp) {
+            Ok(timestamp) if timestamp > 0 => timestamp,
+            _ => {
+                self.fee_context_verified = false;
+                return false;
+            }
+        };
         let current_point = match self.activation_type {
             0 => clock.slot,
             1 => match u64::try_from(clock.unix_timestamp) {
@@ -202,9 +217,14 @@ impl MeteoraDammV2Pool {
             && self.fee_params.compounding_fee_bps <= 10_000;
         let dynamic_valid = !self.fee_params.dynamic_fee_initialized
             || (self.fee_params.bin_step > 0
-                && self.fee_params.variable_fee_control > 0
                 && self.fee_params.max_volatility_accumulator > 0
                 && self.fee_params.volatility_accumulator
+                    <= u128::from(self.fee_params.max_volatility_accumulator)
+                && self.fee_params.filter_period < self.fee_params.decay_period
+                && self.fee_params.dynamic_reduction_factor <= 10_000
+                && self.fee_params.bin_step_u128 > 0
+                && self.fee_params.sqrt_price_reference > 0
+                && self.fee_params.volatility_reference
                     <= u128::from(self.fee_params.max_volatility_accumulator));
         scheduler_valid
             && base_fee_valid
@@ -221,6 +241,51 @@ impl MeteoraDammV2Pool {
                 || (self.layout_version == 1
                     && self.token_a_amount.is_some()
                     && self.token_b_amount.is_some()))
+    }
+    /// Copy verified Pool/fee/Clock data into the canonical cross-crate quote state.
+    pub fn to_quote_state(&self, account_graph_verified: bool) -> arb_types::DammV2State {
+        arb_types::DammV2State {
+            pool_status: self.pool_status,
+            fee_version: self.fee_version,
+            layout_version: self.layout_version,
+            collect_fee_mode: self.fee_params.collect_fee_mode,
+            activation_type: self.activation_type,
+            activation_point: self.activation_point,
+            current_point: self.current_point,
+            current_timestamp: self.current_timestamp,
+            clock_slot: self.current_context_slot,
+            clock_epoch: self.current_epoch,
+            sqrt_price_x64: self.sqrt_price_x64,
+            liquidity: self.liquidity,
+            sqrt_min_price_x64: self.sqrt_min_price_x64,
+            sqrt_max_price_x64: self.sqrt_max_price_x64,
+            token_a_amount: self.token_a_amount,
+            token_b_amount: self.token_b_amount,
+            cliff_fee_numerator: self.fee_params.cliff_fee_numerator,
+            fee_scheduler_mode: self.fee_params.fee_scheduler_mode,
+            number_of_period: self.fee_params.number_of_period,
+            period_frequency: self.fee_params.period_frequency,
+            reduction_factor: self.fee_params.reduction_factor,
+            sqrt_price_step_bps: self.fee_params.sqrt_price_step_bps,
+            scheduler_expiration_duration: self.fee_params.scheduler_expiration_duration,
+            init_sqrt_price_x64: self.fee_params.init_sqrt_price_x64,
+            protocol_fee_percent: self.fee_params.protocol_fee_percent,
+            referral_fee_percent: self.fee_params.referral_fee_percent,
+            compounding_fee_bps: self.fee_params.compounding_fee_bps,
+            dynamic_fee_initialized: self.fee_params.dynamic_fee_initialized,
+            max_volatility_accumulator: self.fee_params.max_volatility_accumulator,
+            variable_fee_control: self.fee_params.variable_fee_control,
+            bin_step: self.fee_params.bin_step,
+            filter_period: self.fee_params.filter_period,
+            decay_period: self.fee_params.decay_period,
+            dynamic_reduction_factor: self.fee_params.dynamic_reduction_factor,
+            last_update_timestamp: self.fee_params.last_update_timestamp,
+            bin_step_u128: self.fee_params.bin_step_u128,
+            sqrt_price_reference: self.fee_params.sqrt_price_reference,
+            volatility_accumulator: self.fee_params.volatility_accumulator,
+            volatility_reference: self.fee_params.volatility_reference,
+            account_graph_verified: account_graph_verified && self.fee_context_verified,
+        }
     }
     /// Exact-in quote requiring a Clock-matched fee context. Token-2022 remains
     /// fail-closed until epoch-aware fees and hook accounts are fully resolved.
@@ -444,6 +509,15 @@ impl AmmPool for MeteoraDammV2Pool {
             u32::from_le_bytes(data[64..68].try_into().unwrap());
         self.fee_params.variable_fee_control = u32::from_le_bytes(data[68..72].try_into().unwrap());
         self.fee_params.bin_step = u16::from_le_bytes(data[72..74].try_into().unwrap());
+        self.fee_params.filter_period = u16::from_le_bytes(data[74..76].try_into().unwrap());
+        self.fee_params.decay_period = u16::from_le_bytes(data[76..78].try_into().unwrap());
+        self.fee_params.dynamic_reduction_factor =
+            u16::from_le_bytes(data[78..80].try_into().unwrap());
+        self.fee_params.last_update_timestamp =
+            u64::from_le_bytes(data[80..88].try_into().unwrap());
+        self.fee_params.bin_step_u128 = u128::from_le_bytes(data[88..104].try_into().unwrap());
+        self.fee_params.sqrt_price_reference =
+            u128::from_le_bytes(data[104..120].try_into().unwrap());
         self.fee_params.volatility_accumulator =
             u128::from_le_bytes(data[120..136].try_into().unwrap());
         self.fee_params.init_sqrt_price_x64 =

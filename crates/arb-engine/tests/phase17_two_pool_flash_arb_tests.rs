@@ -104,6 +104,7 @@ fn make_pool(
         clmm: None,
         dlmm: Some(dlmm),
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
