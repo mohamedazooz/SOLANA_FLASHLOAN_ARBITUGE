@@ -117,7 +117,10 @@ fn test_pumpswap_boundary_zero_reserves_fails_closed() {
 #[test]
 fn test_pumpswap_boundary_token_2022_100_percent_transfer_fee() {
     let engine = PumpSwapQuoteEngine::new();
-    let (pool, base, quote) = make_pumpswap_pool(10_000_000_000, 10_000_000_000, true);
+    let (mut pool, base, quote) = make_pumpswap_pool(10_000_000_000, 10_000_000_000, true);
+    // This fixture exercises Token-2022 transfer-fee exhaustion, so its input
+    // mint must be marked as Token-2022 instead of inheriting the legacy SPL default.
+    pool.token_programs[0] = TokenProgramKind::Token2022;
 
     let fee_config_100_percent = TransferFeeConfig {
         transfer_fee_basis_points: 10_000, // 100% fee
