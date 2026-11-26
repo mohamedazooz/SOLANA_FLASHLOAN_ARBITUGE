@@ -105,6 +105,8 @@ fn create_test_dlmm_cpmm_opportunity(
         base_decimals: 9,
         expected_min_final_output: expected_cpmm_out,
         hop_slippage_bps: 10,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
     };
 
     let kamino_params = KaminoFlashParams::default_wsol();

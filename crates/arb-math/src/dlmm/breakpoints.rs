@@ -172,8 +172,14 @@ pub fn dlmm_breakpoint_seed_sizes(
     seeds.sort_unstable();
     seeds.dedup();
 
-    if max_seeds == 0 || seeds.len() <= max_seeds {
+    if max_seeds == 0 {
+        return Vec::new();
+    }
+    if seeds.len() <= max_seeds {
         return seeds;
+    }
+    if max_seeds == 1 {
+        return seeds.get(seeds.len() / 2).copied().into_iter().collect();
     }
 
     let last = seeds.len() - 1;
@@ -188,4 +194,18 @@ pub fn dlmm_breakpoint_seed_sizes(
         sampled.push(seeds[last]);
     }
     sampled
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::dlmm_breakpoint_seed_sizes;
+
+    #[test]
+    fn one_seed_budget_selects_the_middle_without_dividing_by_zero() {
+        assert_eq!(
+            dlmm_breakpoint_seed_sizes(&[10, 20, 30, 40, 50], 1, 100, 1),
+            vec![30]
+        );
+        assert!(dlmm_breakpoint_seed_sizes(&[10, 20], 1, 100, 0).is_empty());
+    }
 }

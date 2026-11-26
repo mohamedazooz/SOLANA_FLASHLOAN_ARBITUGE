@@ -776,6 +776,13 @@ pub struct ExecutionOpportunity {
     /// config before dispatch so config is the single source of truth.
     #[serde(default = "default_hop_slippage_bps")]
     pub hop_slippage_bps: u64,
+    /// Quote-time CU estimate including exact DLMM/CLMM traversal counts.
+    /// Zero identifies an older/external opportunity requiring fallback estimation.
+    #[serde(default)]
+    pub cu_estimate_units: u32,
+    /// Stable route/amount/impact/traversal signature for measured-CU cache reuse.
+    #[serde(default)]
+    pub cu_shape_key: String,
 }
 
 /// Canonical representation of a single swap leg within a multi-hop execution plan.

@@ -71,6 +71,8 @@ pub struct QuoteResult {
     pub computation_time_us: u64,
     /// Exact DLMM bin traversal count; `None` for non-DLMM protocols.
     pub dlmm_bins_crossed: Option<u32>,
+    /// Exact CLMM swap-step traversal count; None for non-CLMM protocols.
+    pub clmm_steps_taken: Option<u32>,
 }
 
 impl QuoteRequest {

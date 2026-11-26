@@ -235,6 +235,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             quote_validity: true,
             computation_time_us: elapsed,
             dlmm_bins_crossed: None,
+            clmm_steps_taken: None,
         })
     }
 
@@ -332,6 +333,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             quote_validity: true,
             computation_time_us: 1,
             dlmm_bins_crossed: None,
+            clmm_steps_taken: None,
         })
     }
 }

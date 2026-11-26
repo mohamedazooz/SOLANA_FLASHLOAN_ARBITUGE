@@ -471,6 +471,8 @@ fn intermediate_mints_empty_for_two_hop() {
     };
     let opp = ExecutionOpportunity {
         hop_slippage_bps: arb_types::DEFAULT_HOP_SLIPPAGE_BPS,
+        cu_estimate_units: 0,
+        cu_shape_key: String::new(),
         route_id: RouteId(1),
         slot: Slot(1),
         size_in: TokenAmount(1),

@@ -475,9 +475,9 @@ impl TxBuilder {
         ixs.push(build_compute_unit_limit(cu_limit));
         ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
+        let ata_plan = build_route_ata_plan(payer, &opportunity.hops)?;
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
-        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
-        let user_wsol_ata = get_associated_token_address(&payer, &wsol);
+        let user_wsol_ata = ata_plan.wsol_ata;
         let mut resolved_params = kamino_params.clone();
         if resolved_params.user_destination_liquidity == Pubkey::default()
             || resolved_params.user_destination_liquidity == wsol
@@ -493,25 +493,9 @@ impl TxBuilder {
             user_wsol_ata,
         ));
 
-        // Identify any intermediate tokens needing ephemeral ATAs. Each mint's
-        // ATA MUST be derived and created under its own token program: hops
-        // carry `token_programs` for `(mint_in, mint_out)`, and deriving a
-        // Token-2022 ATA with the legacy SPL program produces a wrong PDA.
-        let mut intermediate_atas: Vec<(Pubkey, Pubkey, Pubkey)> = Vec::new();
-        for hop in &opportunity.hops {
-            for (mint, program) in [
-                (hop.mint_in.0, hop.token_programs[0].program_id()),
-                (hop.mint_out.0, hop.token_programs[1].program_id()),
-            ] {
-                if mint != wsol
-                    && mint != usdc
-                    && !intermediate_atas.iter().any(|(m, _, _)| *m == mint)
-                {
-                    let ata = get_associated_token_address_with_program_id(&payer, &mint, &program);
-                    intermediate_atas.push((mint, ata, program));
-                }
-            }
-        }
+        // Use the same deterministic ATA plan used by the candidate CU model.
+        // Each mint's ATA is derived with its own verified token program.
+        let intermediate_atas = ata_plan.intermediate_atas;
 
         // Ephemeral ATA Creation (Idempotent: zero failure if already exists)
         for (mint, ata, program) in &intermediate_atas {

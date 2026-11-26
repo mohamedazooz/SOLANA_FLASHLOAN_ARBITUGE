@@ -230,6 +230,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
             quote_validity: true,
             computation_time_us: elapsed,
             dlmm_bins_crossed: None,
+            clmm_steps_taken: Some(u32::try_from(swap_quote.steps_taken).unwrap_or(u32::MAX)),
         })
     }
 

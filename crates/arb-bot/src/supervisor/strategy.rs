@@ -698,6 +698,8 @@ mod rank_tests {
             hops: vec![hop(base, wsol)],
             expected_min_final_output: 0,
             hop_slippage_bps: 0,
+            cu_estimate_units: 0,
+            cu_shape_key: String::new(),
         }
     }
 

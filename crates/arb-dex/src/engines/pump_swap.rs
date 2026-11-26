@@ -181,6 +181,7 @@ impl QuoteEngine for PumpSwapQuoteEngine {
             quote_validity: true,
             computation_time_us: elapsed,
             dlmm_bins_crossed: None,
+            clmm_steps_taken: None,
         })
     }
 
