@@ -2,6 +2,27 @@
 
 use crate::*;
 
+fn resolve_damm_v2_direction(
+    mint_in: Pubkey,
+    mint_out: Pubkey,
+    token_a_mint: Pubkey,
+    token_b_mint: Pubkey,
+) -> Option<bool> {
+    if token_a_mint == Pubkey::default()
+        || token_b_mint == Pubkey::default()
+        || token_a_mint == token_b_mint
+    {
+        return None;
+    }
+    if mint_in == token_a_mint && mint_out == token_b_mint {
+        Some(true)
+    } else if mint_in == token_b_mint && mint_out == token_a_mint {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// Build genuine DEX swap instruction based on protocol hop with complete accounts matrix.
 pub fn build_swap_hop_instruction(
     hop: &SwapHop,
@@ -570,13 +591,25 @@ pub fn build_swap_hop_instruction(
         }
         DexProtocol::MeteoraDammV2 => {
             if let Some(arb_types::PoolExecutionAccounts::MeteoraDammV2 {
-                config: _,
+                token_a_mint: pool_token_a_mint,
+                token_b_mint: pool_token_b_mint,
                 authority,
                 vault_a,
                 vault_b,
                 event_authority,
-            }) = hop.execution_accounts
+            }) = exec_accounts
             {
+                let Some(a_to_b) = resolve_damm_v2_direction(
+                    hop.mint_in.0,
+                    hop.mint_out.0,
+                    *pool_token_a_mint,
+                    *pool_token_b_mint,
+                ) else {
+                    return Err(TxError::InvalidExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: "Meteora DAMM v2 hop mints do not match the pool on-chain token A/B mint order".into(),
+                    });
+                };
                 let program_id = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID)
                     .map_err(|e| TxError::Serialization(e.to_string()))?;
                 let user_source = get_associated_token_address_with_program_id(
@@ -589,28 +622,6 @@ pub fn build_swap_hop_instruction(
                     &hop.mint_out.0,
                     &token_program_out,
                 );
-                let a_to_b = hop.mint_in.0.to_bytes() < hop.mint_out.0.to_bytes();
-                let (token_a_mint, token_b_mint) = if a_to_b {
-                    (hop.mint_in.0, hop.mint_out.0)
-                } else {
-                    (hop.mint_out.0, hop.mint_in.0)
-                };
-                let token_program_in = match hop.token_programs[0] {
-                    arb_types::TokenProgramKind::Token2022 => {
-                        Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
-                    }
-                    arb_types::TokenProgramKind::SplToken => {
-                        Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
-                    }
-                };
-                let token_program_out = match hop.token_programs[1] {
-                    arb_types::TokenProgramKind::Token2022 => {
-                        Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap_or_default()
-                    }
-                    arb_types::TokenProgramKind::SplToken => {
-                        Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap_or_default()
-                    }
-                };
                 let (token_a_program, token_b_program) = if a_to_b {
                     (token_program_in, token_program_out)
                 } else {
@@ -618,26 +629,26 @@ pub fn build_swap_hop_instruction(
                 };
 
                 let mut data = Vec::with_capacity(25);
-                data.extend_from_slice(&arb_constants::METEORA_DAMM_V2_SWAP2_DISCRIMINATOR); // swap2 discriminator
+                data.extend_from_slice(&arb_constants::METEORA_DAMM_V2_SWAP2_DISCRIMINATOR);
                 data.extend_from_slice(&amount_in.to_le_bytes());
                 data.extend_from_slice(&min_amount_out.to_le_bytes());
                 data.push(0u8); // swap_mode: ExactIn
 
-                // Canonical 14-account Swap2 layout matching official cp-amm IDL:
+                // Canonical Swap2 account order; token A/B remain pool-fixed.
                 let accounts_meta = vec![
-                    AccountMeta::new_readonly(authority, false),
+                    AccountMeta::new_readonly(*authority, false),
                     AccountMeta::new(hop.pool_id.0, false),
                     AccountMeta::new(user_source, false),
                     AccountMeta::new(user_destination, false),
-                    AccountMeta::new(vault_a, false),
-                    AccountMeta::new(vault_b, false),
-                    AccountMeta::new_readonly(token_a_mint, false),
-                    AccountMeta::new_readonly(token_b_mint, false),
+                    AccountMeta::new(*vault_a, false),
+                    AccountMeta::new(*vault_b, false),
+                    AccountMeta::new_readonly(*pool_token_a_mint, false),
+                    AccountMeta::new_readonly(*pool_token_b_mint, false),
                     AccountMeta::new_readonly(user_authority, true),
                     AccountMeta::new_readonly(token_a_program, false),
                     AccountMeta::new_readonly(token_b_program, false),
-                    AccountMeta::new_readonly(program_id, false), // referral sentinel
-                    AccountMeta::new_readonly(event_authority, false),
+                    AccountMeta::new_readonly(program_id, false), // no referral
+                    AccountMeta::new_readonly(*event_authority, false),
                     AccountMeta::new_readonly(program_id, false),
                 ];
                 Ok(CompiledInstruction {
@@ -646,9 +657,10 @@ pub fn build_swap_hop_instruction(
                     data,
                 })
             } else {
-                Err(TxError::Serialization(
-                    "Meteora DAMM v2 missing execution accounts".into(),
-                ))
+                Err(TxError::MissingExecutionAccounts {
+                    pool_id: hop.pool_id.0,
+                    reason: "Meteora DAMM v2 execution accounts are missing".into(),
+                })
             }
         }
         DexProtocol::RaydiumLaunchLab => {

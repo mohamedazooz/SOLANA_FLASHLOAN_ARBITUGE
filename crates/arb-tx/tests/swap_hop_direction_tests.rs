@@ -350,6 +350,16 @@ fn raydium_v4_missing_exec_accounts_fail_closed_no_hardcoded_fallback() {
     }
 }
 
+fn damm_v2_exec(token_a_mint: Pubkey, token_b_mint: Pubkey) -> PoolExecutionAccounts {
+    PoolExecutionAccounts::MeteoraDammV2 {
+        token_a_mint,
+        token_b_mint,
+        authority: Pubkey::new_unique(),
+        vault_a: Pubkey::new_unique(),
+        vault_b: Pubkey::new_unique(),
+        event_authority: Pubkey::new_unique(),
+    }
+}
 /// Regression: DLMM Y->X hop must pass the pool's on-chain token_x/token_y in
 /// the fixed x/y slots (instruction account indices 6/7), not mint_in/mint_out.
 #[test]
@@ -483,5 +493,98 @@ fn dlmm_forward_hop_maps_programs_to_pool_xy_slots() {
     assert_eq!(
         ix.accounts[12].pubkey, spl,
         "slot 12 must be token_y_program (SPL)"
+    );
+}
+/// DAMM v2 A/B order is the order stored in Pool, not lexicographic mint order.
+#[test]
+fn damm_v2_a_to_b_uses_pool_mint_order_even_when_a_is_lexicographically_greater() {
+    let mut a_bytes = Pubkey::new_unique().to_bytes();
+    a_bytes[0] = 0xff;
+    let mut b_bytes = Pubkey::new_unique().to_bytes();
+    b_bytes[0] = 0x00;
+    let token_a = Pubkey::new_from_array(a_bytes);
+    let token_b = Pubkey::new_from_array(b_bytes);
+    let vault_a = Pubkey::new_unique();
+    let vault_b = Pubkey::new_unique();
+    let exec = PoolExecutionAccounts::MeteoraDammV2 {
+        token_a_mint: token_a,
+        token_b_mint: token_b,
+        authority: Pubkey::new_unique(),
+        vault_a,
+        vault_b,
+        event_authority: Pubkey::new_unique(),
+    };
+    let user = Pubkey::new_unique();
+    let swap = hop(
+        Pubkey::new_unique(),
+        DexProtocol::MeteoraDammV2,
+        token_a,
+        token_b,
+        Some(exec),
+    );
+    let ix = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
+        .expect("DAMM v2 A-to-B hop must build");
+    let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+    assert_eq!(ix.accounts[4].pubkey, vault_a);
+    assert_eq!(ix.accounts[5].pubkey, vault_b);
+    assert_eq!(ix.accounts[6].pubkey, token_a);
+    assert_eq!(ix.accounts[7].pubkey, token_b);
+    assert_eq!(ix.accounts[9].pubkey, spl);
+    assert_eq!(ix.accounts[10].pubkey, spl);
+    assert_eq!(
+        ix.accounts[2].pubkey,
+        get_associated_token_address_with_program_id(&user, &token_a, &spl)
+    );
+    assert_eq!(
+        ix.accounts[3].pubkey,
+        get_associated_token_address_with_program_id(&user, &token_b, &spl)
+    );
+}
+/// Reverse DAMM v2 direction still keeps pool A/B mints and vaults in fixed slots.
+#[test]
+fn damm_v2_b_to_a_keeps_fixed_pool_mint_and_vault_slots() {
+    let token_a = Pubkey::new_unique();
+    let token_b = Pubkey::new_unique();
+    let exec = damm_v2_exec(token_a, token_b);
+    let user = Pubkey::new_unique();
+    let swap = hop(
+        Pubkey::new_unique(),
+        DexProtocol::MeteoraDammV2,
+        token_b,
+        token_a,
+        Some(exec),
+    );
+    let ix = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
+        .expect("DAMM v2 B-to-A hop must build");
+    let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+    assert_eq!(ix.accounts[6].pubkey, token_a);
+    assert_eq!(ix.accounts[7].pubkey, token_b);
+    assert_eq!(
+        ix.accounts[2].pubkey,
+        get_associated_token_address_with_program_id(&user, &token_b, &spl)
+    );
+    assert_eq!(
+        ix.accounts[3].pubkey,
+        get_associated_token_address_with_program_id(&user, &token_a, &spl)
+    );
+}
+
+/// A hop with mints not matching the pool must never infer A/B from sorting.
+#[test]
+fn damm_v2_foreign_mints_fail_closed() {
+    let token_a = Pubkey::new_unique();
+    let token_b = Pubkey::new_unique();
+    let swap = hop(
+        Pubkey::new_unique(),
+        DexProtocol::MeteoraDammV2,
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Some(damm_v2_exec(token_a, token_b)),
+    );
+    let err = build_swap_hop_instruction(&swap, Pubkey::new_unique(), 1_000_000, 900_000)
+        .expect_err("foreign DAMM v2 mints must be rejected");
+    assert!(
+        matches!(err, TxError::InvalidExecutionAccounts { .. }),
+        "{err}"
     );
 }
