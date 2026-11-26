@@ -50,48 +50,37 @@ pub struct ExecutionCosts {
 
 impl ExecutionCosts {
     /// Total non-rent execution costs, each counted exactly once, returned in
-    /// BASE-MINT raw units (MATH-04). The lamports-denominated costs (base
-    /// signature fee, priority fee, Jito tip) are summed first and converted
-    /// ONCE through the explicit rational rate `rate_num / rate_denom` — the
-    /// identical conversion `build_economic_quote` applies — then added to the
-    /// token-denominated costs with checked arithmetic. For a WSOL base mint
-    /// the rate is exactly 1/1 and the conversion is an identity. Fails closed
-    /// on overflow (FIN-06): never saturates a loss into a smaller one.
+    /// BASE-MINT raw units (MATH-04). Each lamport-denominated liability (base
+    /// signature fee, priority fee and Jito tip) is converted independently
+    /// with the canonical ceiling-rounding helper, matching `build_economic_quote`.
+    /// Converted liabilities are then added to token-denominated costs with
+    /// checked arithmetic. WSOL uses the identity rate 1/1. Fails closed on
+    /// overflow (FIN-06): never saturates a loss into a smaller one.
     pub fn total_non_rent_base(
         &self,
         lamports_to_base_rate_num: u128,
         lamports_to_base_rate_denom: u128,
     ) -> Result<u128> {
-        let lamports = self
-            .base_transaction_fee_lamports
-            .checked_add(self.priority_fee_lamports)
-            .and_then(|v| v.checked_add(self.jito_tip_lamports))
+        let extra_token_costs = self
+            .token_extension_fees_raw
+            .checked_add(self.slippage_cost_raw)
+            .ok_or(ArbError::Overflow)?
+            .checked_add(self.conversion_costs_raw)
+            .ok_or(ArbError::Overflow)?
+            .checked_add(self.other_execution_costs_raw)
             .ok_or(ArbError::Overflow)?;
-        let lamports_base = crate::economic::lamports_to_base_raw(
-            Lamports(lamports),
+        crate::economic::total_execution_costs_base_raw(
+            u64::try_from(self.flash_loan_fees_raw).map_err(|_| ArbError::Overflow)?,
+            u64::try_from(self.dex_fees_raw).map_err(|_| ArbError::Overflow)?,
+            u64::try_from(self.transfer_fees_raw).map_err(|_| ArbError::Overflow)?,
+            0,
+            u64::try_from(extra_token_costs).map_err(|_| ArbError::Overflow)?,
+            Lamports(self.base_transaction_fee_lamports),
+            Lamports(self.priority_fee_lamports),
+            Lamports(self.jito_tip_lamports),
             lamports_to_base_rate_num,
             lamports_to_base_rate_denom,
-        )?;
-        let lamports_i = i128::try_from(lamports_base).map_err(|_| ArbError::Overflow)?;
-        let dex = i128::try_from(self.dex_fees_raw).map_err(|_| ArbError::Overflow)?;
-        let flash = i128::try_from(self.flash_loan_fees_raw).map_err(|_| ArbError::Overflow)?;
-        let transfer = i128::try_from(self.transfer_fees_raw).map_err(|_| ArbError::Overflow)?;
-        let ext = i128::try_from(self.token_extension_fees_raw).map_err(|_| ArbError::Overflow)?;
-        let slip = i128::try_from(self.slippage_cost_raw).map_err(|_| ArbError::Overflow)?;
-        let conv = i128::try_from(self.conversion_costs_raw).map_err(|_| ArbError::Overflow)?;
-        let other =
-            i128::try_from(self.other_execution_costs_raw).map_err(|_| ArbError::Overflow)?;
-        let token_side: i128 = 0i128
-            .checked_add(dex)
-            .and_then(|v| v.checked_add(flash))
-            .and_then(|v| v.checked_add(lamports_i))
-            .and_then(|v| v.checked_add(transfer))
-            .and_then(|v| v.checked_add(ext))
-            .and_then(|v| v.checked_add(slip))
-            .and_then(|v| v.checked_add(conv))
-            .and_then(|v| v.checked_add(other))
-            .ok_or(ArbError::Overflow)?;
-        u128::try_from(token_side).map_err(|_| ArbError::Overflow)
+        )
     }
 
     /// Total costs including rent deposits, in BASE-MINT raw units.
@@ -164,15 +153,6 @@ pub struct UnifiedEconomicResult {
     pub source_slot: Slot,
     /// Economic calculation version.
     pub calculation_version: u32,
-}
-
-fn signed_difference(lhs: U256, rhs: U256) -> Result<i128> {
-    if lhs >= rhs {
-        i128::try_from(lhs - rhs).map_err(|_| ArbError::Overflow)
-    } else {
-        let magnitude = i128::try_from(rhs - lhs).map_err(|_| ArbError::Overflow)?;
-        magnitude.checked_neg().ok_or(ArbError::Overflow)
-    }
 }
 
 /// Configuration for unified economic evaluation.
@@ -274,60 +254,67 @@ impl UnifiedEconomicCalculator {
             ));
         }
 
-        let borrow = U256::from(borrow_amount_raw);
-        let expected = U256::from(expected_final_output_raw);
-        let minimum = U256::from(minimum_final_output_raw);
-        let total_costs = U256::from(costs.total_non_rent_base(
+        // Adapt the legacy category-rich cost structure into the canonical
+        // EconomicQuote. PnL and fee denomination are computed only in
+        // economic.rs; this integration layer derives ROI/risk limits only.
+        let extra_token_costs = costs
+            .token_extension_fees_raw
+            .checked_add(costs.slippage_cost_raw)
+            .ok_or(ArbError::Overflow)?
+            .checked_add(costs.conversion_costs_raw)
+            .ok_or(ArbError::Overflow)?
+            .checked_add(costs.other_execution_costs_raw)
+            .ok_or(ArbError::Overflow)?;
+        let quote = crate::economic::build_economic_quote(
+            base_mint,
+            base_decimals,
+            arb_types::TokenAmount(borrow_amount_raw),
+            arb_types::TokenAmount(expected_final_output_raw),
+            arb_types::TokenAmount(minimum_final_output_raw),
+            arb_types::TokenAmount(
+                u64::try_from(costs.flash_loan_fees_raw).map_err(|_| ArbError::Overflow)?,
+            ),
+            arb_types::TokenAmount(
+                u64::try_from(costs.dex_fees_raw).map_err(|_| ArbError::Overflow)?,
+            ),
+            arb_types::TokenAmount(
+                u64::try_from(costs.transfer_fees_raw).map_err(|_| ArbError::Overflow)?,
+            ),
+            arb_types::TokenAmount(0), // account-creation raw cost is absent from this compatibility model
+            arb_types::TokenAmount(
+                u64::try_from(extra_token_costs).map_err(|_| ArbError::Overflow)?,
+            ),
+            Lamports(costs.base_transaction_fee_lamports),
+            Lamports(costs.priority_fee_lamports),
+            Lamports(costs.jito_tip_lamports),
             self.config.lamports_to_base_rate_num,
             self.config.lamports_to_base_rate_den,
-        )?);
+            arb_types::TokenAmount(self.config.min_profit_raw),
+            source_slot,
+            0, // integration calculator does not own a quote timestamp
+        )?;
 
-        // Gross profit = expected output − borrow principal.
-        let gross_signed = if expected >= borrow {
-            i128::try_from(expected - borrow).map_err(|_| ArbError::Overflow)?
-        } else {
-            -i128::try_from(borrow - expected).map_err(|_| ArbError::Overflow)?
-        };
-        let gross_profit_raw = if gross_signed > 0 {
-            gross_signed as u64
-        } else {
-            0
-        };
-
-        // Net profit = gross profit − total costs (counted exactly once).
-        let net_signed = if gross_signed >= 0 {
-            let gross_u = U256::from(gross_signed as u128);
-            match gross_u.checked_sub(total_costs) {
-                Some(diff) => i128::try_from(diff).map_err(|_| ArbError::Overflow)?,
-                None => {
-                    let loss = total_costs.checked_sub(gross_u).ok_or(ArbError::Overflow)?;
-                    -i128::try_from(loss).map_err(|_| ArbError::Overflow)?
-                }
-            }
-        } else {
-            let loss = U256::from((-gross_signed) as u128);
-            let total_loss = loss.checked_add(total_costs).ok_or(ArbError::Overflow)?;
-            -i128::try_from(total_loss).map_err(|_| ArbError::Overflow)?
-        };
-
-        let net_profit_raw = if net_signed > 0 { net_signed as u64 } else { 0 };
-
-        // Minimum-out economics are the authoritative execution safety floor.
-        let minimum_gross_signed = signed_difference(minimum, borrow)?;
-        let minimum_net_signed = if minimum_gross_signed >= 0 {
-            signed_difference(U256::from(minimum_gross_signed as u128), total_costs)?
-        } else {
-            let loss = U256::from(minimum_gross_signed.unsigned_abs());
-            let total_loss = loss.checked_add(total_costs).ok_or(ArbError::Overflow)?;
-            -i128::try_from(total_loss).map_err(|_| ArbError::Overflow)?
-        };
+        let gross_signed = quote.gross_profit_signed_raw;
+        let net_signed = quote.expected_net_profit_signed_raw;
+        let minimum_net_signed = quote.minimum_net_profit_signed_raw;
+        let gross_profit_raw = quote.gross_profit_raw.as_u64();
+        let net_profit_raw = quote.net_profit_raw.as_u64();
         let minimum_net_profit_raw = if minimum_net_signed > 0 {
             u64::try_from(minimum_net_signed).map_err(|_| ArbError::Overflow)?
         } else {
             0
         };
+        let total_costs_raw = u128::try_from(
+            gross_signed
+                .checked_sub(net_signed)
+                .ok_or(ArbError::Overflow)?,
+        )
+        .map_err(|_| ArbError::Overflow)?;
+        let borrow = U256::from(borrow_amount_raw);
+        let minimum_gross_signed = i128::from(minimum_final_output_raw)
+            .checked_sub(i128::from(borrow_amount_raw))
+            .ok_or(ArbError::Overflow)?;
 
-        // Net ROI = net_profit / borrow_principal × 10_000 bps.
         let net_roi_bps = if borrow_amount_raw > 0 && net_signed > 0 {
             let roi = U256::from(net_signed as u128)
                 .checked_mul(U256::from(10_000u128))
@@ -441,10 +428,7 @@ impl UnifiedEconomicCalculator {
             minimum_final_output_raw,
             gross_profit_raw,
             gross_profit_signed: gross_signed,
-            total_costs_raw: costs.total_non_rent_base(
-                self.config.lamports_to_base_rate_num,
-                self.config.lamports_to_base_rate_den,
-            )?,
+            total_costs_raw,
             net_profit_raw,
             net_profit_signed: net_signed,
             minimum_net_profit_signed: minimum_net_signed,
@@ -848,6 +832,138 @@ mod tests {
         assert_eq!(result.minimum_net_profit_signed, 72_500);
         assert_eq!(result.execution_risk_reserve_raw, 725);
         assert_eq!(result.conservative_net_profit_raw, 71_775);
+    }
+
+    #[test]
+    fn canonical_cost_rollup_rounds_each_lamport_liability_up() {
+        let costs = ExecutionCosts {
+            base_transaction_fee_lamports: 1,
+            priority_fee_lamports: 1,
+            jito_tip_lamports: 1,
+            ..ExecutionCosts::default()
+        };
+        // Each 1-lamport liability converts to ceil(1/3) = 1 base raw unit.
+        // Summing lamports first would incorrectly convert 3/3 to just 1.
+        assert_eq!(costs.total_non_rent_base(1, 3).unwrap(), 3);
+        assert_eq!(
+            crate::economic::total_execution_costs_base_raw(
+                0,
+                0,
+                0,
+                0,
+                0,
+                Lamports(1),
+                Lamports(1),
+                Lamports(1),
+                1,
+                3,
+            )
+            .unwrap(),
+            3,
+        );
+    }
+
+    #[test]
+    fn unified_adapter_uses_canonical_usdc_costs_and_pnl() {
+        let config = UnifiedEconomicConfig {
+            lamports_to_base_rate_num: 180_000_000,
+            lamports_to_base_rate_den: 1_000_000_000,
+            ..test_config()
+        };
+        let costs = ExecutionCosts {
+            dex_fees_raw: 1_000,
+            flash_loan_fees_raw: 500,
+            base_transaction_fee_lamports: 500_000_000,
+            priority_fee_lamports: 100_000_000,
+            jito_tip_lamports: 100_000_000,
+            transfer_fees_raw: 2_000,
+            token_extension_fees_raw: 3_000,
+            slippage_cost_raw: 0,
+            conversion_costs_raw: 0,
+            other_execution_costs_raw: 1_000,
+            rent_deposit_lamports: 0,
+        };
+        let calc = UnifiedEconomicCalculator::new(config);
+        let usdc = MintId(solana_pubkey::Pubkey::from_str_const(
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        ));
+        let result = calc
+            .evaluate(
+                usdc,
+                6,
+                1_000_000_000,
+                1_200_000_000,
+                1_150_000_000,
+                &costs,
+                Slot(500),
+            )
+            .unwrap();
+
+        // 0.5 SOL base fee = 90m raw USDC; priority = 18m; tip = 18m.
+        // Token liabilities = 7,500 raw. Each SOL cost is converted once,
+        // independently and rounded up, matching economic.rs.
+        assert_eq!(result.gross_profit_signed, 200_000_000);
+        assert_eq!(result.total_costs_raw, 126_007_500);
+        assert_eq!(result.net_profit_signed, 73_992_500);
+        assert_eq!(result.minimum_net_profit_signed, 23_992_500);
+        assert_eq!(result.minimum_net_profit_raw, 23_992_500);
+    }
+
+    #[test]
+    fn build_quote_and_signed_profit_share_identical_cost_semantics() {
+        let quote = crate::economic::build_economic_quote(
+            test_mint(),
+            9,
+            arb_types::TokenAmount(1_000_000),
+            arb_types::TokenAmount(1_100_000),
+            arb_types::TokenAmount(1_050_000),
+            arb_types::TokenAmount(500),
+            arb_types::TokenAmount(1_000),
+            arb_types::TokenAmount(2_000),
+            arb_types::TokenAmount(0),
+            arb_types::TokenAmount(3_000),
+            Lamports(1),
+            Lamports(1),
+            Lamports(1),
+            1,
+            3,
+            arb_types::TokenAmount(0),
+            Slot(77),
+            0,
+        )
+        .unwrap();
+        let expected = crate::economic::calculate_net_profit_raw_signed(
+            1_100_000,
+            1_000_000,
+            500,
+            1_000,
+            2_000,
+            0,
+            3_000,
+            Lamports(1),
+            Lamports(1),
+            Lamports(1),
+            1,
+            3,
+        )
+        .unwrap();
+        let minimum = crate::economic::calculate_net_profit_raw_signed(
+            1_050_000,
+            1_000_000,
+            500,
+            1_000,
+            2_000,
+            0,
+            3_000,
+            Lamports(1),
+            Lamports(1),
+            Lamports(1),
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(quote.expected_net_profit_signed_raw, expected);
+        assert_eq!(quote.minimum_net_profit_signed_raw, minimum);
     }
 
     #[test]
