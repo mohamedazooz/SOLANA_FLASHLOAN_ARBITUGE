@@ -44,6 +44,7 @@ fn make_cpmm_pool(
         clmm: None,
         dlmm: None,
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: None,
@@ -292,6 +293,16 @@ fn creator_fee_matches_pool_mode_for_both_swap_directions() {
             result.fees_breakdown.creator_fee > 0,
             "mode={mode} a_to_b={a_to_b}"
         );
+        assert_eq!(
+            result.creator_fee_mint,
+            if expected_input_side {
+                input_mint
+            } else {
+                output_mint
+            },
+            "creator fee denomination must follow the actual collection side"
+        );
+        assert_eq!(result.total_fee_mint, input_mint);
         assert_eq!(
             result.fees_breakdown.total_fee,
             if expected_input_side { 3_000 } else { 2_500 },

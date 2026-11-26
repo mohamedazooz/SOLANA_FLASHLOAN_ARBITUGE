@@ -879,6 +879,7 @@ mod tests {
             clmm: None,
             dlmm: None,
             pump_fun: None,
+            damm_v2: None,
             token_programs: Default::default(),
             execution_accounts: None,
         }

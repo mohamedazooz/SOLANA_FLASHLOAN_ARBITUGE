@@ -96,7 +96,14 @@ fn decodes_market_cap_exponential_and_dynamic_fee_snapshot_fields() {
     data[56] = 1;
     data[68..72].copy_from_slice(&100_000u32.to_le_bytes());
     data[72..74].copy_from_slice(&10u16.to_le_bytes());
+    data[74..76].copy_from_slice(&30u16.to_le_bytes());
+    data[76..78].copy_from_slice(&60u16.to_le_bytes());
+    data[78..80].copy_from_slice(&1_000u16.to_le_bytes());
+    data[80..88].copy_from_slice(&1_000u64.to_le_bytes());
+    data[88..104].copy_from_slice(&1u128.to_le_bytes());
+    data[104..120].copy_from_slice(&(1u128 << 64).to_le_bytes());
     data[120..136].copy_from_slice(&100u128.to_le_bytes());
+    data[136..152].copy_from_slice(&100u128.to_le_bytes());
     data[152..168].copy_from_slice(&(1u128 << 64).to_le_bytes());
     data[480] = 1;
     data[486] = 1;

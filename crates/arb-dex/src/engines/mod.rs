@@ -1,5 +1,6 @@
 //! Protocol Quote Engines Module.
 
+pub mod meteora_damm_v2;
 pub mod meteora_dlmm;
 pub mod orca_whirlpool;
 pub mod pump_bonding_curve;
@@ -8,6 +9,7 @@ pub mod raydium_clmm;
 pub mod raydium_cpmm;
 pub mod raydium_v4;
 
+pub use meteora_damm_v2::MeteoraDammV2QuoteEngine;
 pub use meteora_dlmm::MeteoraDlmmQuoteEngine;
 pub use orca_whirlpool::OrcaWhirlpoolQuoteEngine;
 pub use pump_bonding_curve::PumpBondingCurveQuoteEngine;
@@ -23,6 +25,7 @@ use arb_types::{ArbError, DexProtocol, PoolState, Result};
 #[derive(Debug, Default, Clone)]
 pub struct UniversalQuoteDispatcher {
     pub dlmm: MeteoraDlmmQuoteEngine,
+    pub damm_v2: MeteoraDammV2QuoteEngine,
     pub cpmm: RaydiumCpmmQuoteEngine,
     pub raydium_v4: RaydiumAmmV4QuoteEngine,
     pub raydium_clmm: RaydiumClmmQuoteEngine,
@@ -47,7 +50,7 @@ impl UniversalQuoteDispatcher {
             DexProtocol::OrcaWhirlpool => self.orca.quote_exact_in(state, request),
             DexProtocol::PumpFun => self.pump_curve.quote_exact_in(state, request),
             DexProtocol::PumpSwap => self.pump_swap.quote_exact_in(state, request),
-            DexProtocol::MeteoraDammV2 => Err(ArbError::UnsupportedOperation("Meteora DAMM v2 needs its dynamic-fee/current-point snapshot; PoolState alone is insufficient".into())),
+            DexProtocol::MeteoraDammV2 => self.damm_v2.quote_exact_in(state, request),
             DexProtocol::MeteoraDbc => Err(ArbError::UnsupportedOperation("Meteora DBC needs its piecewise bonding-curve segments; PoolState alone is insufficient".into())),
             DexProtocol::RaydiumLaunchLab => Err(ArbError::UnsupportedOperation("Raydium LaunchLab needs virtual/real reserves and a verified PlatformConfig fee; PoolState alone is insufficient".into())),
         }

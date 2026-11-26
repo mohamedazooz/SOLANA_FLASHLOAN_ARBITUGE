@@ -49,6 +49,7 @@ fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintI
         clmm: None,
         dlmm: None,
         pump_fun: None,
+        damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
         execution_accounts: None,
@@ -142,8 +143,15 @@ fn incomplete_protocol_specific_states_fail_closed_instead_of_using_cpmm_fallbac
     for protocol in protocols {
         let (pool, base, quote) = create_test_pool(protocol, true);
         let result = dispatcher.quote_exact_in(&pool, &request(base, quote, 10_000_000));
+        let rejected = match protocol {
+            DexProtocol::MeteoraDammV2 => matches!(
+                result,
+                Err(ArbError::IncompleteState(_)) | Err(ArbError::UnsupportedOperation(_))
+            ),
+            _ => matches!(result, Err(ArbError::UnsupportedOperation(_))),
+        };
         assert!(
-            matches!(result, Err(ArbError::UnsupportedOperation(_))),
+            rejected,
             "{protocol:?} must refuse an incomplete protocol-specific state: {result:?}"
         );
     }

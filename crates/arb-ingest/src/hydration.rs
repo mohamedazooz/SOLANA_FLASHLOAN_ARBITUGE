@@ -8,6 +8,184 @@ use solana_pubkey::Pubkey;
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, warn};
 
+const SOLANA_CLOCK_SYSVAR_ADDRESS: &str = "SysvarC1ock11111111111111111111111111111111";
+const SOLANA_SYSVAR_OWNER_ADDRESS: &str = "Sysvar1111111111111111111111111111111111111";
+
+/// DAMM v2 Pool, both vaults, both mints and Clock must share one RPC context.
+fn coherent_damm_v2_snapshot_slot(context_slot: u64, slots: [Option<u64>; 6]) -> Option<u64> {
+    if context_slot > 0 && slots.iter().all(|slot| *slot == Some(context_slot)) {
+        Some(context_slot)
+    } else {
+        None
+    }
+}
+
+/// Build a DAMM v2 quote state only from a complete same-context Pool + vaults
+/// + mints + Clock snapshot. Shared by HTTP hydration and WebSocket refresh.
+pub(crate) fn decode_damm_v2_coherent_pool_state(
+    pool_id: PoolId,
+    context_slot: u64,
+    pool_bytes: &[u8],
+    pool_owner: Pubkey,
+    vault_a_address: Pubkey,
+    vault_b_address: Pubkey,
+    mint_a_address: Pubkey,
+    mint_b_address: Pubkey,
+    vault_a_bytes: &[u8],
+    vault_a_owner: Pubkey,
+    vault_b_bytes: &[u8],
+    vault_b_owner: Pubkey,
+    mint_a_bytes: &[u8],
+    mint_a_owner: Pubkey,
+    mint_b_bytes: &[u8],
+    mint_b_owner: Pubkey,
+    clock_bytes: &[u8],
+    clock_owner: Pubkey,
+) -> Option<PoolState> {
+    let damm_program = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID).ok()?;
+    let spl_token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok()?;
+    let token_2022_program = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).ok()?;
+    let pool_authority = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_POOL_AUTHORITY).ok()?;
+    let expected_clock_owner = Pubkey::from_str(SOLANA_SYSVAR_OWNER_ADDRESS).ok()?;
+
+    if context_slot == 0
+        || pool_owner != damm_program
+        || clock_owner != expected_clock_owner
+        || clock_bytes.len() != 40
+    {
+        return None;
+    }
+
+    let mut pool = arb_dex::MeteoraDammV2Pool::from_account(pool_id, pool_bytes).ok()?;
+    if pool.authority != pool_authority
+        || pool.token_a_vault != vault_a_address
+        || pool.token_b_vault != vault_b_address
+        || pool.token_a_mint.0 != mint_a_address
+        || pool.token_b_mint.0 != mint_b_address
+    {
+        return None;
+    }
+
+    let expected_a_program = match pool.token_a_program {
+        arb_types::TokenProgramKind::SplToken => spl_token_program,
+        arb_types::TokenProgramKind::Token2022 => token_2022_program,
+    };
+    let expected_b_program = match pool.token_b_program {
+        arb_types::TokenProgramKind::SplToken => spl_token_program,
+        arb_types::TokenProgramKind::Token2022 => token_2022_program,
+    };
+    if mint_a_owner != expected_a_program
+        || mint_b_owner != expected_b_program
+        || vault_a_owner != expected_a_program
+        || vault_b_owner != expected_b_program
+    {
+        return None;
+    }
+
+    let mint_decimals = |bytes: &[u8]| -> Option<u8> {
+        if bytes.len() < 82 {
+            return None;
+        }
+        if bytes.len() > 82 && (bytes.len() < 166 || bytes[165] != 1) {
+            return None;
+        }
+        Some(bytes[44])
+    };
+    let decimals_a = mint_decimals(mint_a_bytes)?;
+    let decimals_b = mint_decimals(mint_b_bytes)?;
+
+    let vault_amount = |bytes: &[u8], expected_mint: Pubkey| -> Option<u64> {
+        if bytes.len() < 72 || bytes[0..32] != expected_mint.to_bytes() {
+            return None;
+        }
+        let authority = Pubkey::new_from_array(bytes[32..64].try_into().ok()?);
+        if authority != pool.authority {
+            return None;
+        }
+        Some(u64::from_le_bytes(bytes[64..72].try_into().ok()?))
+    };
+    let vault_a_amount = vault_amount(vault_a_bytes, pool.token_a_mint.0)?;
+    let vault_b_amount = vault_amount(vault_b_bytes, pool.token_b_mint.0)?;
+    if vault_a_amount == 0 || vault_b_amount == 0 {
+        return None;
+    }
+
+    pool.has_risky = (pool.token_a_program == arb_types::TokenProgramKind::Token2022
+        && arb_dex::token2022_has_risky_extension(mint_a_bytes))
+        || (pool.token_b_program == arb_types::TokenProgramKind::Token2022
+            && arb_dex::token2022_has_risky_extension(mint_b_bytes));
+
+    let clock = arb_dex::DammV2ClockSnapshot::decode(clock_bytes, context_slot)?;
+    if !pool.set_clock_snapshot(clock, context_slot) || !pool.is_tradable() {
+        return None;
+    }
+    let fee_numerator = u64::try_from(pool.fee_params.effective_fee_numerator_at(
+        pool.current_point,
+        pool.activation_point,
+        pool.sqrt_price_x64,
+    )?)
+    .ok()?;
+
+    // Compounding uses tracked V1 counters, never physical vault balances.
+    let (reserve_a, reserve_b) = if pool.fee_params.collect_fee_mode == 2 {
+        if pool.layout_version != 1 {
+            return None;
+        }
+        (
+            u128::from(pool.token_a_amount?),
+            u128::from(pool.token_b_amount?),
+        )
+    } else {
+        arb_math::damm_v2_virtual_reserves(pool.sqrt_price_x64, pool.liquidity)
+    };
+    if reserve_a == 0 || reserve_b == 0 {
+        return None;
+    }
+
+    let damm_quote_state = pool.to_quote_state(true);
+    if !damm_quote_state.account_graph_verified {
+        return None;
+    }
+    let execution_accounts = arb_types::PoolExecutionAccounts::MeteoraDammV2 {
+        token_a_mint: pool.token_a_mint.0,
+        token_b_mint: pool.token_b_mint.0,
+        authority: pool.authority,
+        vault_a: pool.token_a_vault,
+        vault_b: pool.token_b_vault,
+        event_authority: pool.event_authority,
+    };
+    Some(PoolState {
+        pool_id,
+        protocol: DexProtocol::MeteoraDammV2,
+        slot: Slot(context_slot),
+        write_version: 0,
+        base_mint: pool.token_a_mint,
+        quote_mint: pool.token_b_mint,
+        decimals_a,
+        decimals_b,
+        reserve_in: reserve_a,
+        reserve_out: reserve_b,
+        fee_numerator,
+        fee_denominator: 1_000_000_000,
+        raydium_cpmm_fee: None,
+        is_active: true,
+        has_risky_token: pool.has_risky,
+        kind: if pool.fee_params.collect_fee_mode == 2 {
+            arb_types::PoolKind::Cpmm
+        } else {
+            arb_types::PoolKind::Clmm
+        },
+        clmm: None,
+        dlmm: None,
+        pump_fun: None,
+        damm_v2: Some(damm_quote_state),
+        transfer_fee_bps: 0,
+        token_programs: [pool.token_a_program, pool.token_b_program],
+        execution_accounts: Some(execution_accounts),
+        last_update_slot: context_slot,
+        last_update_ms: 0,
+    })
+}
 /// CPMM pool, both vaults and AmmConfig must be read from one identical RPC
 /// context slot. Mixing snapshots can combine pre-swap counters with
 /// post-swap vault balances and create a false curve reserve.
@@ -297,6 +475,142 @@ impl MultiDexRegistry {
             max_observed_slot = max_observed_slot.max(coherent_slot);
         }
 
+        // 2d. Refresh every DAMM v2 dependency set in one getMultipleAccounts
+        // request context: Pool + vault A/B + mint A/B + Clock. The earlier
+        // pool discovery read is never promoted as a quote snapshot.
+        let damm_program = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID).ok();
+        let clock_sysvar = Pubkey::from_str(SOLANA_CLOCK_SYSVAR_ADDRESS).ok();
+        let damm_candidates: Vec<_> = self
+            .pools
+            .iter()
+            .filter(|p| p.protocol == DexProtocol::MeteoraDammV2)
+            .filter_map(|p| {
+                let (pool_slot, bytes) = pool_data_map.get(&p.pool_id.0)?;
+                if bytes.len() < arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE
+                    || pool_owner_map.get(&p.pool_id.0) != damm_program.as_ref()
+                    || *pool_slot == 0
+                {
+                    return None;
+                }
+                let pool = arb_dex::MeteoraDammV2Pool::from_account(p.pool_id, bytes).ok()?;
+                let clock = clock_sysvar?;
+                Some((
+                    p.pool_id,
+                    [
+                        p.pool_id.0,
+                        pool.token_a_vault,
+                        pool.token_b_vault,
+                        pool.token_a_mint.0,
+                        pool.token_b_mint.0,
+                        clock,
+                    ],
+                ))
+            })
+            .collect();
+
+        let mut damm_v2_pool_states: std::collections::HashMap<PoolId, PoolState> =
+            std::collections::HashMap::new();
+        for group in damm_candidates.chunks(16) {
+            let mut keys = Vec::with_capacity(group.len() * 6);
+            for (_, group_keys) in group {
+                for key in group_keys {
+                    if !keys.contains(key) {
+                        keys.push(*key);
+                    }
+                }
+            }
+            let mut coherent_data = std::collections::HashMap::new();
+            let mut coherent_owners = std::collections::HashMap::new();
+            let coherent_slot = Self::batch_fetch_accounts(
+                &self.rpc,
+                &keys,
+                &mut coherent_data,
+                Some(&mut coherent_owners),
+            )
+            .await;
+            if coherent_slot == 0 {
+                debug!(
+                    "Meteora DAMM v2 coherent dependency refresh failed for group of {} pools",
+                    group.len()
+                );
+                continue;
+            }
+            for (pool_id, group_keys) in group {
+                let required = *group_keys;
+                let dependency_slots =
+                    required.map(|key| coherent_data.get(&key).map(|(slot, _)| *slot));
+                if coherent_damm_v2_snapshot_slot(coherent_slot, dependency_slots)
+                    != Some(coherent_slot)
+                {
+                    debug!("Meteora DAMM v2 {pool_id} dependencies not coherent at context slot");
+                    continue;
+                }
+                let Some((_, pool_bytes)) = coherent_data.get(&required[0]) else {
+                    continue;
+                };
+                let Some(pool_owner) = coherent_owners.get(&required[0]) else {
+                    continue;
+                };
+                let Some((_, vault_a_bytes)) = coherent_data.get(&required[1]) else {
+                    continue;
+                };
+                let Some(vault_a_owner) = coherent_owners.get(&required[1]) else {
+                    continue;
+                };
+                let Some((_, vault_b_bytes)) = coherent_data.get(&required[2]) else {
+                    continue;
+                };
+                let Some(vault_b_owner) = coherent_owners.get(&required[2]) else {
+                    continue;
+                };
+                let Some((_, mint_a_bytes)) = coherent_data.get(&required[3]) else {
+                    continue;
+                };
+                let Some(mint_a_owner) = coherent_owners.get(&required[3]) else {
+                    continue;
+                };
+                let Some((_, mint_b_bytes)) = coherent_data.get(&required[4]) else {
+                    continue;
+                };
+                let Some(mint_b_owner) = coherent_owners.get(&required[4]) else {
+                    continue;
+                };
+                let Some((_, clock_bytes)) = coherent_data.get(&required[5]) else {
+                    continue;
+                };
+                let Some(clock_owner) = coherent_owners.get(&required[5]) else {
+                    continue;
+                };
+
+                let Some(state) = decode_damm_v2_coherent_pool_state(
+                    *pool_id,
+                    coherent_slot,
+                    pool_bytes,
+                    *pool_owner,
+                    required[1],
+                    required[2],
+                    required[3],
+                    required[4],
+                    vault_a_bytes,
+                    *vault_a_owner,
+                    vault_b_bytes,
+                    *vault_b_owner,
+                    mint_a_bytes,
+                    *mint_a_owner,
+                    mint_b_bytes,
+                    *mint_b_owner,
+                    clock_bytes,
+                    *clock_owner,
+                ) else {
+                    debug!(
+                        "Meteora DAMM v2 {pool_id} full coherent account graph validation failed"
+                    );
+                    continue;
+                };
+                damm_v2_pool_states.insert(*pool_id, state);
+            }
+            max_observed_slot = max_observed_slot.max(coherent_slot);
+        }
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
         let mut derived_pubkeys: Vec<Pubkey> = Vec::new();
         for p in &self.pools {
@@ -851,6 +1165,17 @@ impl MultiDexRegistry {
         .unwrap_or(u64::MAX);
 
         for p in &self.pools {
+            if p.protocol == DexProtocol::MeteoraDammV2 {
+                if let Some(state) = damm_v2_pool_states.remove(&p.pool_id) {
+                    states.push(state);
+                } else {
+                    debug!(
+                        "Meteora DAMM v2 {} omitted: no complete same-context Pool/Vault/Mint/Clock state",
+                        p.pool_id
+                    );
+                }
+                continue;
+            }
             let (base_bal, quote_bal) = if matches!(
                 p.protocol,
                 DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm
@@ -1581,6 +1906,7 @@ impl MultiDexRegistry {
                 clmm,
                 dlmm,
                 pump_fun: pump_state,
+                damm_v2: None,
                 token_programs: Default::default(),
                 execution_accounts,
                 transfer_fee_bps: 0,
@@ -1613,5 +1939,184 @@ mod cpmm_snapshot_slot_tests {
             coherent_cpmm_snapshot_slot(Some(42), Some(42), None, Some(42)),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod damm_v2_coherent_account_graph_tests {
+    use super::decode_damm_v2_coherent_pool_state;
+    use arb_types::{DexProtocol, PoolId, PoolKind};
+    use solana_pubkey::Pubkey;
+    use std::str::FromStr;
+
+    struct Fixture {
+        pool_id: PoolId,
+        pool: Vec<u8>,
+        vault_a: Vec<u8>,
+        vault_b: Vec<u8>,
+        mint_a: Vec<u8>,
+        mint_b: Vec<u8>,
+        clock: Vec<u8>,
+        pool_owner: Pubkey,
+        vault_a_address: Pubkey,
+        vault_b_address: Pubkey,
+        mint_a_address: Pubkey,
+        mint_b_address: Pubkey,
+        token_owner: Pubkey,
+        clock_owner: Pubkey,
+    }
+
+    fn fixture() -> Fixture {
+        let pool_id = PoolId(Pubkey::new_unique());
+        let mint_a_key = Pubkey::new_unique();
+        let mint_b_key = Pubkey::new_unique();
+        let vault_a_key = Pubkey::new_unique();
+        let vault_b_key = Pubkey::new_unique();
+        let mut pool = vec![0u8; arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE];
+        pool[..8].copy_from_slice(&arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_DISCRIMINATOR);
+        pool[8..16].copy_from_slice(&100_000u64.to_le_bytes());
+        pool[16] = 2; // RateLimiter/deprecated fixed cliff fee
+        pool[48] = 10; // protocol percentage
+        pool[50] = 0; // no referral account
+        pool[54..56].copy_from_slice(&2_000u16.to_le_bytes());
+        pool[168..200].copy_from_slice(mint_a_key.as_ref());
+        pool[200..232].copy_from_slice(mint_b_key.as_ref());
+        pool[232..264].copy_from_slice(vault_a_key.as_ref());
+        pool[264..296].copy_from_slice(vault_b_key.as_ref());
+        pool[360..376].copy_from_slice(&1_000_000_000_000u128.to_le_bytes());
+        pool[424..440].copy_from_slice(&(1u128 << 63).to_le_bytes());
+        pool[440..456].copy_from_slice(&(1u128 << 65).to_le_bytes());
+        pool[456..472].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        pool[472..480].copy_from_slice(&1u64.to_le_bytes());
+        pool[480] = 1; // Unix timestamp activation
+        pool[481] = 0; // pool enabled
+        pool[482] = 0; // Token A uses SPL Token
+        pool[483] = 0; // Token B uses SPL Token
+        pool[484] = 0; // BothToken
+        pool[486] = 0; // fee version V0
+        pool[696] = 0; // layout V0 is valid for concentrated liquidity
+
+        let pool_decoder = arb_dex::MeteoraDammV2Pool::from_account(pool_id, &pool).unwrap();
+        let token_owner = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let pool_owner = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID).unwrap();
+        let clock_owner = Pubkey::from_str(super::SOLANA_SYSVAR_OWNER_ADDRESS).unwrap();
+
+        let mut vault_a = vec![0u8; 165];
+        vault_a[..32].copy_from_slice(mint_a_key.as_ref());
+        vault_a[32..64].copy_from_slice(pool_decoder.authority.as_ref());
+        vault_a[64..72].copy_from_slice(&2_000_000_000u64.to_le_bytes());
+        let mut vault_b = vec![0u8; 165];
+        vault_b[..32].copy_from_slice(mint_b_key.as_ref());
+        vault_b[32..64].copy_from_slice(pool_decoder.authority.as_ref());
+        vault_b[64..72].copy_from_slice(&3_000_000u64.to_le_bytes());
+
+        let mut mint_a = vec![0u8; 82];
+        mint_a[44] = 9;
+        let mut mint_b = vec![0u8; 82];
+        mint_b[44] = 6;
+
+        let mut clock = vec![0u8; 40];
+        clock[0..8].copy_from_slice(&777u64.to_le_bytes());
+        clock[16..24].copy_from_slice(&1_097u64.to_le_bytes());
+        clock[32..40].copy_from_slice(&1_800_000_100i64.to_le_bytes());
+
+        Fixture {
+            pool_id,
+            pool,
+            vault_a,
+            vault_b,
+            mint_a,
+            mint_b,
+            clock,
+            pool_owner,
+            vault_a_address: vault_a_key,
+            vault_b_address: vault_b_key,
+            mint_a_address: mint_a_key,
+            mint_b_address: mint_b_key,
+            token_owner,
+            clock_owner,
+        }
+    }
+
+    fn decode(f: &Fixture) -> Option<arb_types::PoolState> {
+        decode_damm_v2_coherent_pool_state(
+            f.pool_id,
+            777,
+            &f.pool,
+            f.pool_owner,
+            f.vault_a_address,
+            f.vault_b_address,
+            f.mint_a_address,
+            f.mint_b_address,
+            &f.vault_a,
+            f.token_owner,
+            &f.vault_b,
+            f.token_owner,
+            &f.mint_a,
+            f.token_owner,
+            &f.mint_b,
+            f.token_owner,
+            &f.clock,
+            f.clock_owner,
+        )
+    }
+
+    #[test]
+    fn accepts_complete_same_context_pool_vault_mint_clock_graph() {
+        let f = fixture();
+        let state = decode(&f).expect("complete verified account graph must decode");
+        assert_eq!(state.protocol, DexProtocol::MeteoraDammV2);
+        assert_eq!(state.kind, PoolKind::Clmm);
+        assert_eq!(state.slot.0, 777);
+        assert_eq!(state.decimals_a, 9);
+        assert_eq!(state.decimals_b, 6);
+        assert!(state.is_active);
+        let damm = state.damm_v2.as_ref().unwrap();
+        assert!(damm.account_graph_verified);
+        assert_eq!(damm.clock_slot, 777);
+        assert_eq!(damm.clock_epoch, 1_097);
+    }
+
+    #[test]
+    fn rejects_pool_or_clock_owner_mismatch() {
+        let mut f = fixture();
+        f.pool_owner = Pubkey::new_unique();
+        assert!(decode(&f).is_none());
+
+        let mut f = fixture();
+        f.clock_owner = Pubkey::new_unique();
+        assert!(decode(&f).is_none());
+    }
+
+    #[test]
+    fn rejects_vault_mint_or_authority_mismatch() {
+        let mut f = fixture();
+        f.vault_a[0..32].copy_from_slice(Pubkey::new_unique().as_ref());
+        assert!(decode(&f).is_none());
+
+        let mut f = fixture();
+        f.vault_b[32..64].copy_from_slice(Pubkey::new_unique().as_ref());
+        assert!(decode(&f).is_none());
+    }
+
+    #[test]
+    fn rejects_dependency_addresses_that_do_not_match_current_pool_bytes() {
+        let mut f = fixture();
+        f.pool[232..264].copy_from_slice(Pubkey::new_unique().as_ref());
+        assert!(decode(&f).is_none());
+
+        let mut f = fixture();
+        f.pool[200..232].copy_from_slice(Pubkey::new_unique().as_ref());
+        assert!(decode(&f).is_none());
+    }
+    #[test]
+    fn rejects_clock_slot_mismatch_and_disabled_pool() {
+        let mut f = fixture();
+        f.clock[0..8].copy_from_slice(&778u64.to_le_bytes());
+        assert!(decode(&f).is_none());
+
+        let mut f = fixture();
+        f.pool[481] = 1;
+        assert!(decode(&f).is_none());
     }
 }
