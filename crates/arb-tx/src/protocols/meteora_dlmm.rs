@@ -554,7 +554,7 @@ mod tests {
             user: test_user(),
             token_x_program: Pubkey::from_str(SPL_TOKEN_PROGRAM_ID_STR).unwrap(),
             token_y_program: Pubkey::from_str(TOKEN_2022_PROGRAM_ID_STR).unwrap(),
-            memo_program: Pubkey::from_str(MEMO_PROGRAM_ID_STR).unwrap(),
+            memo_program: Pubkey::from_str_const(MEMO_PROGRAM_ID_STR),
             event_authority: Pubkey::from_str("D1ZN9Wj1fRSUQfCjhvnu1hqDMT7hzjzBBpi12nVniYD6")
                 .unwrap(),
             bin_arrays: vec![],
