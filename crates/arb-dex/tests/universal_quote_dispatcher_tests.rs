@@ -6,6 +6,7 @@
 
 use arb_dex::engines::UniversalQuoteDispatcher;
 use arb_dex::quote_engine::QuoteRequest;
+use arb_dex::token2022::TransferFeeConfig;
 use arb_types::{ArbError, DexProtocol, MintId, PoolId, PoolState, Slot, TokenProgramKind};
 use solana_pubkey::Pubkey;
 
@@ -147,6 +148,55 @@ fn incomplete_protocol_specific_states_fail_closed_instead_of_using_cpmm_fallbac
             "{protocol:?} must refuse an incomplete protocol-specific state: {result:?}"
         );
     }
+}
+
+#[test]
+fn transfer_fee_schedules_must_match_the_actual_mint_token_program_and_direction() {
+    let dispatcher = UniversalQuoteDispatcher::new();
+    let (mut pool, base, quote) = create_test_pool(DexProtocol::RaydiumV4, true);
+    let fee = TransferFeeConfig {
+        transfer_fee_basis_points: 1_000,
+        maximum_fee: 500,
+    };
+
+    // A Token-2022 fee schedule must never be applied to a legacy SPL input mint.
+    let mut spl_input = request(base, quote, 100_000);
+    spl_input.input_transfer_fee_config = Some(fee);
+    assert!(matches!(
+        dispatcher.quote_exact_in(&pool, &spl_input),
+        Err(ArbError::InvalidInput(_))
+    ));
+
+    // Nor may a Token-2022 schedule be silently applied to a legacy SPL output mint.
+    let mut spl_output = request(base, quote, 100_000);
+    spl_output.output_transfer_fee_config = Some(fee);
+    assert!(matches!(
+        dispatcher.quote_exact_in(&pool, &spl_output),
+        Err(ArbError::InvalidInput(_))
+    ));
+
+    // The input-side schedule is mandatory for a Token-2022 base mint and is
+    // accepted only when attached to the matching input side.
+    pool.token_programs = [TokenProgramKind::Token2022, TokenProgramKind::SplToken];
+    let missing_input_schedule = request(base, quote, 100_000);
+    assert!(matches!(
+        dispatcher.quote_exact_in(&pool, &missing_input_schedule),
+        Err(ArbError::IncompleteState(_))
+    ));
+    let mut valid_input_schedule = request(base, quote, 100_000);
+    valid_input_schedule.input_transfer_fee_config = Some(fee);
+    assert!(valid_input_schedule.validate(&pool).is_ok());
+
+    // Reverse direction: the Token-2022 quote mint is now the output mint.
+    pool.token_programs = [TokenProgramKind::SplToken, TokenProgramKind::Token2022];
+    let missing_output_schedule = request(base, quote, 100_000);
+    assert!(matches!(
+        dispatcher.quote_exact_in(&pool, &missing_output_schedule),
+        Err(ArbError::IncompleteState(_))
+    ));
+    let mut valid_output_schedule = request(base, quote, 100_000);
+    valid_output_schedule.output_transfer_fee_config = Some(fee);
+    assert!(valid_output_schedule.validate(&pool).is_ok());
 }
 
 #[test]

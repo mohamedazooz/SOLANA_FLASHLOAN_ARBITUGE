@@ -115,12 +115,18 @@ impl QuoteRequest {
             ("input", input_index, self.input_transfer_fee_config),
             ("output", output_index, self.output_transfer_fee_config),
         ] {
-            if state.token_programs[token_index] == TokenProgramKind::Token2022
-                && fee_config.is_none()
-            {
-                return Err(ArbError::IncompleteState(format!(
-                    "{side} Token-2022 mint has no verified current-epoch transfer-fee configuration"
-                )));
+            match (state.token_programs[token_index], fee_config) {
+                (TokenProgramKind::Token2022, None) => {
+                    return Err(ArbError::IncompleteState(format!(
+                        "{side} Token-2022 mint has no verified current-epoch transfer-fee configuration"
+                    )));
+                }
+                (TokenProgramKind::SplToken, Some(_)) => {
+                    return Err(ArbError::InvalidInput(format!(
+                        "{side} legacy SPL Token mint must not carry a Token-2022 transfer-fee configuration"
+                    )));
+                }
+                _ => {}
             }
         }
         if state.kind != state.protocol.family() {
