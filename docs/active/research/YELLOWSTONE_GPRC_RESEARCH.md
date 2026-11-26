@@ -25,7 +25,7 @@
 
 ## Existing implementation
 
-`crates/arb-ingest/Cargo.toml:41` — `yellowstone-grpc-client = "17.0.0"` behind the `yellowstone` feature; client integration pending (Phase 4 in regression roadmap; CURRENT_STATUS marks it Not Wired).
+`yellowstone-grpc-client` (latest crates.io release **v17.0.0**, [rpcpool/yellowstone-grpc](https://github.com/rpcpool/yellowstone-grpc)) was pruned from `crates/arb-ingest/Cargo.toml` in PR #167 (`2026-11-26`) because the feature-gated client code had not been wired yet. Re-adding the dependency must land alongside the actual client, stream normalization, and replay-retention verification.
 
 ## Recommendation (REC)
 
