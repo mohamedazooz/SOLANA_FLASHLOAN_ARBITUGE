@@ -350,7 +350,11 @@ pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuo
 /// Build the one authoritative exact-in quote used by route planning and adapters.
 /// Token-2022 schedules are intentionally not synthesized here: this compatibility
 /// route API has no verified mint/epoch context and therefore fails closed.
-fn quote_via_dispatcher(pool: &PoolState, amount_in: u64, a_to_b: bool) -> Result<QuoteResult> {
+pub(crate) fn quote_via_dispatcher(
+    pool: &PoolState,
+    amount_in: u64,
+    a_to_b: bool,
+) -> Result<QuoteResult> {
     let (input_mint, output_mint) = if a_to_b {
         (pool.base_mint, pool.quote_mint)
     } else {

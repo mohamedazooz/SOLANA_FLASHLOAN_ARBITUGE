@@ -15,8 +15,8 @@ use arb_sim::{ForensicBundle, ForkSimulator, HopProvenance, Simulator};
 use arb_store::{AttemptRecord, PostgresStore, SqliteStore, Store};
 use arb_tx::{KaminoFlashParams, KeypairSigner, TxBuilder};
 use arb_types::{
-    Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolState, RouteId, SignedLamports,
-    Slot, SwapHop, TipDecision, TokenAmount,
+    DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolState, SignedLamports, Slot, SwapHop,
+    TipDecision, TokenAmount,
 };
 use solana_pubkey::Pubkey;
 use std::path::PathBuf;

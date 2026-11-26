@@ -52,6 +52,10 @@ pub struct BfEdge {
     pub reserve_in: u128,
     pub reserve_out: u128,
     pub fee_bps: u16,
+    pub fee_numerator: u64,
+    pub fee_denominator: u64,
+    /// Exact Raydium CPMM dynamic/creator fee metadata used by the quote adapter.
+    pub raydium_cpmm_fee: Option<arb_types::RaydiumCpmmFeeState>,
     /// -ln(rate × gamma) — negative when the edge is favourable (output > input)
     pub weight: f64,
     pub clmm: Option<arb_types::ClmmState>,
@@ -89,6 +93,9 @@ impl BfEdge {
             reserve_in: p.reserve_in,
             reserve_out: p.reserve_out,
             fee_bps: fee,
+            fee_numerator: p.fee_numerator,
+            fee_denominator: p.fee_denominator,
+            raydium_cpmm_fee: p.raydium_cpmm_fee,
             weight,
             clmm: p.clmm.clone(),
             dlmm: p.dlmm.clone(),
@@ -112,7 +119,9 @@ impl BfEdge {
             reserve_in: self.reserve_in,
             reserve_out: self.reserve_out,
             fee_bps: self.fee_bps,
-            raydium_cpmm_fee: None,
+            fee_numerator: self.fee_numerator,
+            fee_denominator: self.fee_denominator,
+            raydium_cpmm_fee: self.raydium_cpmm_fee,
             clmm: self.clmm.clone(),
             dlmm: self.dlmm.clone(),
             pump_fun: self.pump_fun.clone(),
@@ -196,6 +205,9 @@ impl BellmanFordEngine {
                 reserve_in: p.reserve_out,
                 reserve_out: p.reserve_in,
                 fee_bps: fee,
+                fee_numerator: p.fee_numerator,
+                fee_denominator: p.fee_denominator,
+                raydium_cpmm_fee: p.raydium_cpmm_fee,
                 weight: rev_weight,
                 clmm: p.clmm.clone(),
                 dlmm: p.dlmm.clone(),
@@ -367,11 +379,14 @@ impl BellmanFordEngine {
                 continue;
             }
 
-            // Rotate cycle so that if WSOL or USDC is present, borrow starts and ends with it
-            if let Some(pos) = cycle_edges.iter().position(|e| {
-                e.from_mint.0 == arb_constants::wsol_mint()
-                    || e.from_mint.0 == arb_constants::usdc_mint()
-            }) {
+            // Kamino's configured flash reserve and transaction builders use
+            // WSOL raw units. A USDC-anchored candidate would otherwise receive
+            // a WSOL-sized amount interpreted as USDC raw units. Reject cycles
+            // that cannot be rotated to a WSOL borrow/repay anchor.
+            if let Some(pos) = cycle_edges
+                .iter()
+                .position(|e| e.from_mint.0 == arb_constants::wsol_mint())
+            {
                 cycle_edges.rotate_left(pos);
             }
 

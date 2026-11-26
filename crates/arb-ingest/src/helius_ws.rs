@@ -49,6 +49,14 @@ const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 /// and the worker fails over. Treating these as soft warnings strands the bot
 /// on a blind endpoint forever (measured live: 0 account updates, SOL/USD
 /// reference never resolved, graph sizing permanently skipped).
+fn validated_hydration_slot(
+    context_slot: u64,
+    snapshot_slot: u64,
+    trigger_slot: u64,
+) -> Option<u64> {
+    (context_slot > 0 && context_slot >= snapshot_slot.max(trigger_slot)).then_some(context_slot)
+}
+
 fn max_ws_account_subs() -> usize {
     std::env::var("WS_MAX_ACCOUNT_SUBS")
         .ok()
@@ -76,6 +84,9 @@ pub struct HeliusWsClient {
     pub is_connected: Arc<AtomicBool>,
     tracked_accounts: parking_lot::RwLock<HashMap<Pubkey, Pubkey>>, // account -> expected owner
     tracked_order: parking_lot::RwLock<Vec<Pubkey>>,
+    /// Accounts registered while a WS connection is active; drained by the stream loop.
+    pending_dynamic_subscriptions: parking_lot::Mutex<VecDeque<Pubkey>>,
+    dynamic_subscribe_notify: Arc<Notify>,
     registered_pools: parking_lot::RwLock<HashMap<PoolId, RegisteredPool>>,
     vault_to_pools: parking_lot::RwLock<HashMap<Pubkey, Vec<(PoolId, bool)>>>,
     req_to_account: parking_lot::RwLock<HashMap<u64, Pubkey>>,
@@ -120,6 +131,8 @@ impl HeliusWsClient {
             is_connected: Arc::new(AtomicBool::new(false)),
             tracked_accounts: parking_lot::RwLock::new(HashMap::new()),
             tracked_order: parking_lot::RwLock::new(Vec::new()),
+            pending_dynamic_subscriptions: parking_lot::Mutex::new(VecDeque::new()),
+            dynamic_subscribe_notify: Arc::new(Notify::new()),
             registered_pools: parking_lot::RwLock::new(HashMap::new()),
             vault_to_pools: parking_lot::RwLock::new(HashMap::new()),
             req_to_account: parking_lot::RwLock::new(HashMap::new()),
@@ -316,9 +329,21 @@ impl HeliusWsClient {
     }
 
     pub fn track_account(&self, pubkey: Pubkey, expected_owner: Pubkey) {
-        let mut tracked = self.tracked_accounts.write();
-        if tracked.insert(pubkey, expected_owner).is_none() {
-            self.tracked_order.write().push(pubkey);
+        let inserted = {
+            let mut tracked = self.tracked_accounts.write();
+            if tracked.insert(pubkey, expected_owner).is_none() {
+                self.tracked_order.write().push(pubkey);
+                true
+            } else {
+                false
+            }
+        };
+
+        // Startup registrations are picked up by the initial subscription list.
+        // Only accounts added to an already-connected stream need the dynamic queue.
+        if inserted && self.is_connected.load(Ordering::Acquire) {
+            self.pending_dynamic_subscriptions.lock().push_back(pubkey);
+            self.dynamic_subscribe_notify.notify_one();
         }
     }
 
@@ -561,6 +586,8 @@ impl HeliusWsClient {
         self.ws_backoffs.write().remove(&idx);
         self.req_to_account.write().clear();
         self.sub_to_account.write().clear();
+        arb_metrics::set_ws_subscriptions_active(0);
+        self.pending_dynamic_subscriptions.lock().clear();
         self.account_sub_limited.store(false, Ordering::Release);
         self.endpoint_unsupported.store(false, Ordering::Release);
         self.probe_confirmed.store(false, Ordering::Release);
@@ -727,6 +754,11 @@ impl HeliusWsClient {
                         raw.sort_by_key(|acc| self.account_wsol_linkage(acc));
                         raw.into_iter().take(max_ws_account_subs()).collect()
                     };
+                    // Remember every account included in this connection's initial
+                    // snapshot. A concurrent registration can also enter the dynamic
+                    // queue; this set prevents that race from creating duplicate subs.
+                    let mut queued_or_subscribed: std::collections::HashSet<Pubkey> =
+                        pending_subs.iter().copied().collect();
                     let mut next_req_id = 100u64;
                     let probe_sent_at = if let Some(first_acc) = pending_subs.pop_front() {
                         let frame = self.build_account_sub_frame(next_req_id, first_acc);
@@ -743,6 +775,48 @@ impl HeliusWsClient {
                     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
                     loop {
+                        // Newly discovered pools are subscribed on the existing
+                        // socket once the provider has acknowledged the probe.
+                        // The account cap counts requested/active accounts, not
+                        // duplicate request+subscription map entries.
+                        if self.probe_confirmed.load(Ordering::Acquire)
+                            && !self.account_sub_limited.load(Ordering::Acquire)
+                        {
+                            let requested = self.req_to_account.read().len();
+                            let active = self.sub_to_account.read().len();
+                            let reserved = requested.max(active).saturating_add(pending_subs.len());
+                            let remaining = max_ws_account_subs().saturating_sub(reserved);
+                            if remaining > 0 {
+                                let mut to_send = Vec::new();
+                                {
+                                    let mut pending = self.pending_dynamic_subscriptions.lock();
+                                    while to_send.len() < remaining {
+                                        let Some(acc) = pending.pop_front() else {
+                                            break;
+                                        };
+                                        if queued_or_subscribed.insert(acc) {
+                                            to_send.push(acc);
+                                        }
+                                    }
+                                }
+                                let mut send_failed = false;
+                                for acc in to_send {
+                                    let frame = self.build_account_sub_frame(next_req_id, acc);
+                                    next_req_id = next_req_id.saturating_add(1);
+                                    if let Err(error) = ws_stream.send(frame).await {
+                                        warn!(
+                                            "WebSocket dynamic accountSubscribe send failed: {error}; reconnecting"
+                                        );
+                                        send_failed = true;
+                                        break;
+                                    }
+                                }
+                                if send_failed {
+                                    break;
+                                }
+                            }
+                        }
+
                         if self.account_sub_limited.load(Ordering::Acquire) {
                             pending_subs.clear();
                         } else if !pending_subs.is_empty()
@@ -776,6 +850,11 @@ impl HeliusWsClient {
                             _ = cancel.cancelled() => {
                                 self.is_connected.store(false, Ordering::Release);
                                 return;
+                            }
+                            _ = self.dynamic_subscribe_notify.notified() => {
+                                // The next loop iteration drains the queue. Keeping
+                                // the send outside select avoids borrowing the socket
+                                // concurrently with its receive future.
                             }
                             _ = ping_interval.tick() => {
                                 if let Err(e) = ws_stream.send(Message::Ping(vec![])).await {
@@ -881,6 +960,7 @@ impl HeliusWsClient {
             }
 
             self.is_connected.store(false, Ordering::Release);
+            arb_metrics::set_ws_subscriptions_active(0);
             self.latest_slot.store(0, Ordering::Release);
             ingest.mark_helius_disconnected();
 
@@ -954,7 +1034,6 @@ impl HeliusWsClient {
                 continue;
             };
             let pool_bytes: &[u8] = &snap.data;
-            let slot = snap.slot.max(trigger_slot);
 
             match reg.protocol {
                 DexProtocol::MeteoraDlmm => {
@@ -970,10 +1049,18 @@ impl HeliusWsClient {
                     keys.push(ext);
                     let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
                     let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
-                    let Ok((accounts, _)) = self
+                    let Ok((accounts, hydration_context_slot)) = self
                         .rpc_pool
                         .get_multiple_accounts_with_slot(&ref_strs)
                         .await
+                    else {
+                        continue;
+                    };
+                    // Never promote derived accounts using the trigger slot or
+                    // an older pool snapshot. The returned RPC context is the
+                    // only slot that proves when this batch was read.
+                    let Some(slot) =
+                        validated_hydration_slot(hydration_context_slot, snap.slot, trigger_slot)
                     else {
                         continue;
                     };
@@ -999,11 +1086,21 @@ impl HeliusWsClient {
                     if bins.is_empty() {
                         continue;
                     }
-                    let covered =
-                        crate::registry::dlmm_bin_array_indices(d.active_bin_id, d.bin_step_bps);
-                    self.derived_covered
-                        .lock()
-                        .insert(pool_id, (covered, Instant::now()));
+                    let source_snapshot_unchanged = ingest
+                        .account_store()
+                        .get(&pool_id.0)
+                        .is_some_and(|current| {
+                            current.owner == snap.owner
+                                && current.slot == snap.slot
+                                && current.write_version == snap.write_version
+                                && current.provider_id == snap.provider_id
+                                && current.bank_id == snap.bank_id
+                                && current.generation == snap.generation
+                                && current.data.as_ref() == snap.data.as_ref()
+                        });
+                    if !source_snapshot_unchanged {
+                        continue;
+                    }
                     if let Some(mut state) = ingest.cache().get_pool(&pool_id)
                         && slot >= state.last_update_slot
                         && let Some(dlmm) = state.dlmm.as_mut()
@@ -1029,11 +1126,19 @@ impl HeliusWsClient {
                                 state.slot = Slot(slot);
                                 state.last_update_slot = slot;
                                 state.last_update_ms = now_ms;
-                                let _ = ingest.apply_pool_update(state);
-                                debug!(
-                                    "hydration: DLMM {} rehydrated bins at slot {}",
-                                    pool_id.0, slot
-                                );
+                                if matches!(ingest.apply_pool_update(state), Ok(true)) {
+                                    let covered = crate::registry::dlmm_bin_array_indices(
+                                        d.active_bin_id,
+                                        d.bin_step_bps,
+                                    );
+                                    self.derived_covered
+                                        .lock()
+                                        .insert(pool_id, (covered, Instant::now()));
+                                    debug!(
+                                        "hydration: DLMM {} rehydrated bins at RPC context slot {}",
+                                        pool_id.0, slot
+                                    );
+                                }
                             }
                         }
                     }
@@ -1062,10 +1167,18 @@ impl HeliusWsClient {
                     };
                     let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
                     let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
-                    let Ok((accounts, _)) = self
+                    let Ok((accounts, hydration_context_slot)) = self
                         .rpc_pool
                         .get_multiple_accounts_with_slot(&ref_strs)
                         .await
+                    else {
+                        continue;
+                    };
+                    // Never promote derived accounts using the trigger slot or
+                    // an older pool snapshot. The returned RPC context is the
+                    // only slot that proves when this batch was read.
+                    let Some(slot) =
+                        validated_hydration_slot(hydration_context_slot, snap.slot, trigger_slot)
                     else {
                         continue;
                     };
@@ -1113,13 +1226,21 @@ impl HeliusWsClient {
                     if arrays.is_empty() {
                         continue;
                     }
-                    self.derived_covered.lock().insert(
-                        pool_id,
-                        (
-                            starts.iter().map(|v| i64::from(*v)).collect(),
-                            Instant::now(),
-                        ),
-                    );
+                    let source_snapshot_unchanged = ingest
+                        .account_store()
+                        .get(&pool_id.0)
+                        .is_some_and(|current| {
+                            current.owner == snap.owner
+                                && current.slot == snap.slot
+                                && current.write_version == snap.write_version
+                                && current.provider_id == snap.provider_id
+                                && current.bank_id == snap.bank_id
+                                && current.generation == snap.generation
+                                && current.data.as_ref() == snap.data.as_ref()
+                        });
+                    if !source_snapshot_unchanged {
+                        continue;
+                    }
                     if let Some(mut state) = ingest.cache().get_pool(&pool_id)
                         && slot >= state.last_update_slot
                         && let Some(clmm) = state.clmm.as_mut()
@@ -1133,11 +1254,19 @@ impl HeliusWsClient {
                             state.last_update_slot = slot;
                             state.last_update_ms = now_ms;
                             let n_arrays = clmm.tick_arrays.len();
-                            let _ = ingest.apply_pool_update(state);
-                            debug!(
-                                "hydration: {:?} {} rehydrated {} tick arrays at slot {}",
-                                reg.protocol, pool_id.0, n_arrays, slot
-                            );
+                            if matches!(ingest.apply_pool_update(state), Ok(true)) {
+                                self.derived_covered.lock().insert(
+                                    pool_id,
+                                    (
+                                        starts.iter().map(|v| i64::from(*v)).collect(),
+                                        Instant::now(),
+                                    ),
+                                );
+                                debug!(
+                                    "hydration: {:?} {} rehydrated {} tick arrays at RPC context slot {}",
+                                    reg.protocol, pool_id.0, n_arrays, slot
+                                );
+                            }
                         }
                     }
                 }
@@ -1393,6 +1522,7 @@ impl HeliusWsClient {
         ) {
             if let Some(target_pk) = self.req_to_account.read().get(&req_id).copied() {
                 self.sub_to_account.write().insert(sub_id, target_pk);
+                arb_metrics::set_ws_subscriptions_active(self.sub_to_account.read().len() as u64);
                 if req_id >= 100 {
                     self.probe_confirmed.store(true, Ordering::Release);
                 }
@@ -1479,6 +1609,37 @@ impl HeliusWsClient {
 mod tests {
     use super::*;
     use arb_types::{MintId, PoolState};
+
+    #[test]
+    fn track_account_queues_only_new_accounts_after_connection() {
+        let client = HeliusWsClient::new(vec!["wss://ws1.example.com".to_string()]);
+        let owner = Pubkey::new_unique();
+        let startup_account = Pubkey::new_unique();
+        let dynamic_account = Pubkey::new_unique();
+
+        client.track_account(startup_account, owner);
+        assert!(client.pending_dynamic_subscriptions.lock().is_empty());
+
+        client.is_connected.store(true, Ordering::Release);
+        client.track_account(dynamic_account, owner);
+        client.track_account(dynamic_account, owner);
+
+        let pending = client.pending_dynamic_subscriptions.lock();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.front().copied(), Some(dynamic_account));
+        assert_eq!(
+            client.tracked_accounts.read().get(&dynamic_account),
+            Some(&owner)
+        );
+    }
+
+    #[test]
+    fn hydration_context_slot_never_promotes_zero_or_older_rpc_data() {
+        assert_eq!(validated_hydration_slot(0, 10, 10), None);
+        assert_eq!(validated_hydration_slot(9, 10, 8), None);
+        assert_eq!(validated_hydration_slot(10, 9, 10), Some(10));
+        assert_eq!(validated_hydration_slot(12, 10, 11), Some(12));
+    }
 
     #[test]
     fn collect_ws_urls_registers_numbered_slots_and_dedups() {

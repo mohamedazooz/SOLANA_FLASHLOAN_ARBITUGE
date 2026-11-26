@@ -85,17 +85,16 @@ The production execution pipeline proceeds through 12 deterministic stages:
 
 #### Stage 3: Route Discovery & Candidate Pathfinding
 * **Source File & Function**:
-  * `crates/arb-engine/src/cross_pool_dlmm.rs`: `MarketGraph::find_cross_pool_dlmm_cycles` (line 532)
-  * `crates/arb-engine/src/bellman_ford.rs`: `BellmanFordEngine::find_negative_cycles` (line 230)
-  * `crates/arb-engine/src/lib.rs`: `MarketGraph` struct (line 338), `MarketGraph::find_multi_hop_cycles` (line 1056)
-  * `crates/arb-engine/src/meteora_pair_discovery.rs`: `MeteoraPairDiscovery::find_3leg_cycles` (line 440)
-  * `crates/arb-bot/src/supervisor/strategy.rs`: `Supervisor::strategy_cycle` (lines 280–410)
+  * `crates/arb-engine/src/lib.rs`: `MarketGraph::build_from_pools`, `find_cycles_with_stats`, `evaluate_directed_route`
+  * `crates/arb-engine/src/cross_pool_dlmm.rs`: `find_cross_pool_dlmm_cycles` (specialized DLMM candidate seeds only)
+  * `crates/arb-bot/src/supervisor/strategy.rs`: `Supervisor::strategy_cycle` (single production planner)
+  * `crates/arb-bot/src/supervisor/run.rs`: `capture_three_leg_dlmm` (specialized chained-bin seed generation with Kamino liquidity and wallet-inventory proof)
 * **Programming Language**: Rust (100%)
 * **Runtime / Process**: `arb-bot` native binary
-* **Data Serialization Format**: In-memory typed Rust structures (`Vec<ExecutionOpportunity>`, `SwapHop`)
+* **Data Serialization Format**: In-memory typed Rust structures (`Vec<ExecutionOpportunity>`, `SwapHop`, protocol-specific pool state)
 * **Communication Mechanism**: In-process shared memory (`parking_lot::Mutex<MarketGraph>`)
-* **Latency Contribution**: ~50 – 300 µs (parallelized across Rayon / Tokio cores)
-* **Failure Handling**: If no valid cycle exists or state age > `max_state_age_slots`, returns empty opportunity list; tick terminates cleanly without dispatch.
+* **Latency Contribution**: Bounded by `MAX_ROUTE_CANDIDATES_PER_TICK`; every accepted seed is re-quoted and re-sized by the canonical venue-aware evaluator. Actual latency is measured by route-discovery and exact-quote histograms.
+* **Failure Handling**: Unsupported/incomplete protocol families, invalid fee state, stale pool snapshots, missing DLMM bins/tick arrays, unverified transfer-fee context, or inventory/flash-liquidity uncertainty fail closed. Candidate-budget truncation is reported in per-tick scan telemetry. Bellman-Ford is not a production strategy-cycle source.
 
 #### Stage 4: Borrow Sizing Optimization
 * **Source File & Function**:

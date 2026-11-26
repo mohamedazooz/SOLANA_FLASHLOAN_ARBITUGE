@@ -155,18 +155,17 @@ impl Supervisor {
             // verified available supply-vault liquidity.
             if self.config.strategy.use_flash_loan {
                 let available_vault_liquidity = match self
-                    .kamino_available_flash_liquidity(current_slot)
+                    .kamino_available_flash_liquidity_detailed(current_slot)
                 {
-                    Some(liq) => liq,
-                    None => {
+                    Ok(liquidity) => liquidity,
+                    Err(reason) => {
                         tracing::info!(
                             target: "arb_events",
-                            "OPPORTUNITY_REJECTED: route=unknown stage=KaminoLiquidity reason=liquidity unverifiable at slot {}",
-                            current_slot.0
+                            "OPPORTUNITY_REJECTED: route=unknown stage=KaminoLiquidity reason={reason}"
                         );
                         debug!(
-                            "Opportunity rejected: Kamino supply-vault liquidity unverifiable at slot {}",
-                            current_slot.0
+                            reason,
+                            "Opportunity rejected: Kamino supply-vault liquidity is not verifiable"
                         );
                         continue;
                     }

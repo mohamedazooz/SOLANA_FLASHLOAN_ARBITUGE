@@ -5,8 +5,6 @@
 //! statements became `return Ok(())`, which is behavior-preserving because the
 //! only code after the call site in `run()` is the loop bottom.
 use super::*;
-use std::collections::HashSet;
-
 fn parse_positive_env_limit(name: &str) -> anyhow::Result<Option<f64>> {
     let Ok(raw) = std::env::var(name) else {
         return Ok(None);
@@ -275,19 +273,20 @@ impl Supervisor {
                 }
             };
         }
-        // When flash funding is enabled, candidate sizing across all engines
-        // (find_base_cycles_with_stats, cross_pool_dlmm, bellman_ford, multi_hop)
-        // must be strictly clamped by verified live Kamino supply-vault liquidity.
+        // When flash funding is enabled, candidate sizing in the canonical
+        // graph scanner and both specialized DLMM seed generators is strictly
+        // clamped by verified live Kamino supply-vault liquidity.
         // If flash liquidity cannot be verified, fail closed (max_sizing = 0).
         if self.config.strategy.use_flash_loan {
-            match self.kamino_available_flash_liquidity(current_slot) {
-                Some(liq) => {
+            match self.kamino_available_flash_liquidity_detailed(current_slot) {
+                Ok(liq) => {
                     max_sizing = max_sizing.min(liq);
                 }
-                None => {
+                Err(reason) => {
                     debug!(
-                        "Kamino flash liquidity unverifiable at slot {}; fail closed",
-                        current_slot.0
+                        reason,
+                        slot = current_slot.0,
+                        "Kamino flash liquidity unavailable; fail closed"
                     );
                     max_sizing = 0;
                 }
@@ -336,156 +335,85 @@ impl Supervisor {
             return Ok(());
         }
 
-        let opportunities = {
+        let mut merged = {
             let mut graph = self.graph.lock();
-            graph.build_from_pools(&fresh_pools);
-            let (mut opps, base_stats) =
-                graph.find_base_cycles_with_stats(current_slot, max_sizing);
-            if base_stats.opportunities == 0 {
-                debug!(
-                    "base-cycle scan: anchors={} 2hop_gross={} 3hop_gross={} gate_rejected={}",
-                    base_stats.base_anchors,
-                    base_stats.two_hop_gross_profitable,
-                    base_stats.three_hop_gross_profitable,
-                    base_stats.gate_rejected
-                );
-            }
+            let build = graph.build_from_pools(&fresh_pools);
+            let (mut candidates, scan) = graph.find_cycles_with_stats(
+                current_slot,
+                max_sizing,
+                self.config.strategy.max_route_hops,
+                arb_engine::MAX_ROUTE_CANDIDATES_PER_TICK,
+            );
 
-            // ── MeteoraDlmmCrossPoolArbitrageStrategy (P0 first strategy) ──
-            // First-class two-pool DLMM path: distinct same-pair pools,
-            // both directions, bounded integer size optimizer, real bin
-            // traversal. Merged with the DFS candidates (deduped below).
+            // DLMM cross-pool discovery remains a venue-specific candidate
+            // generator. Every result is re-quoted and re-sized by the same
+            // canonical route evaluator before it can enter the opportunity set.
             let dcp_cfg = self
                 .config
                 .strategy
                 .dlmm_cross_pool
                 .clone()
                 .unwrap_or_default();
-            let scan = {
-                // Split borrow: config comes from the graph-hosting block.
-                let cfg = arb_engine::DlmmCrossPoolConfig {
-                    max_pairs: dcp_cfg.max_pairs,
-                    min_input: dcp_cfg.min_input,
-                    max_input: dcp_cfg.max_input.min(max_sizing),
-                    coarse_samples: dcp_cfg.coarse_samples,
-                    refine_samples: dcp_cfg.refine_samples,
-                    min_spread_bps: dcp_cfg.min_spread_bps,
-                    min_liquidity_bin_raw: dcp_cfg.min_liquidity_bin_raw,
-                };
-                let t_exact = std::time::Instant::now();
-                let res = graph.find_cross_pool_dlmm_cycles(current_slot, max_sizing, &cfg);
-                arb_metrics::observe_exact_quote_latency_us(t_exact.elapsed().as_micros() as f64);
-                res
+            let cross_cfg = arb_engine::DlmmCrossPoolConfig {
+                max_pairs: dcp_cfg.max_pairs,
+                min_input: dcp_cfg.min_input,
+                max_input: dcp_cfg.max_input.min(max_sizing),
+                coarse_samples: dcp_cfg.coarse_samples,
+                refine_samples: dcp_cfg.refine_samples,
+                min_spread_bps: dcp_cfg.min_spread_bps,
+                min_liquidity_bin_raw: dcp_cfg.min_liquidity_bin_raw,
             };
-            let mut cross_opps = scan.opportunities;
-            let cross_stats = scan.stats;
+            let cross_scan =
+                graph.find_cross_pool_dlmm_cycles(current_slot, max_sizing, &cross_cfg);
+            let mut cross_accepted = 0usize;
+            for candidate in cross_scan.opportunities {
+                if let Some(requoted) = graph.evaluate_directed_route(
+                    current_slot,
+                    max_sizing,
+                    candidate.route_id,
+                    &candidate.hops,
+                ) {
+                    candidates.push(requoted);
+                    cross_accepted += 1;
+                }
+            }
             if let Some(control) = self.control() {
-                control.record_evaluations(cross_stats.directions_evaluated as u64);
+                control.record_evaluations(cross_scan.stats.directions_evaluated);
             }
-            let cross_rejections = scan.rejections;
-            {
-                use arb_engine::CrossPoolRejectionReason as RR;
-                let mut by: std::collections::HashMap<&'static str, u64> = Default::default();
-                for r in &cross_rejections {
-                    let label = match r.reason {
-                        RR::EdgeBelowHurdle => "EDGE_BELOW_HURDLE",
-                        RR::InsufficientLiquidity => "INSUFFICIENT_LIQUIDITY",
-                        RR::StalePoolState => "STALE_POOL_STATE",
-                        RR::MissingAccounts => "MISSING_ACCOUNTS",
-                        RR::MaxTradeSizeExceeded => "MAX_TRADE_SIZE_EXCEEDED",
-                        RR::TokenProgramMismatch => "TOKEN_PROGRAM_MISMATCH",
-                        RR::EconomicGateRejected => "ECONOMIC_GATE_REJECTED",
-                    };
-                    *by.entry(label).or_insert(0) += 1;
-                }
-                info!(
-                    "DLMM cross-pool strategy: pairs={} directions={} opportunities={} rejections={}",
-                    cross_stats.pairs_scanned,
-                    cross_stats.directions_evaluated,
-                    cross_opps.len(),
-                    by.iter()
-                        .map(|(k, v)| format!("{k}:{v}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-            }
-            // Dedupe vs DFS candidates by (pool pair, size).
-            let mut seen_pairs: HashSet<(Pubkey, Pubkey)> = Default::default();
-            for o in &opps {
-                if let (Some(h1), Some(h2)) = (o.hops.first(), o.hops.last()) {
-                    seen_pairs.insert((h1.pool_id.0, h2.pool_id.0));
-                }
-            }
-            cross_opps.retain(|o| {
-                if let (Some(h1), Some(h2)) = (o.hops.first(), o.hops.last()) {
-                    seen_pairs.insert((h1.pool_id.0, h2.pool_id.0))
-                } else {
-                    false
-                }
-            });
-            opps.extend(cross_opps);
-
-            // ── Cross-platform multi-hop capture (always evaluated) ──
-            // Best practice: evaluate every candidate class each tick and
-            // merge by profitability instead of short-circuiting at the
-            // first non-empty class. Previously Bellman-Ford / multi-hop
-            // DFS ran only when the base-cycle set was empty, which hid
-            // longer cross-DEX routes (3..5 hops) whenever any 2-hop cycle
-            // existed — even when the longer route was more profitable.
-            let bf_opps = {
-                let bf_engine = arb_engine::BellmanFordEngine::from_pools(&fresh_pools)
-                    .with_economic_config(economic_config);
-                let found = bf_engine.find_negative_cycles(current_slot, max_sizing);
-                if !found.is_empty() {
-                    info!(
-                        "🎯 Bellman-Ford detected {} arbitrage cycle(s)",
-                        found.len()
-                    );
-                }
-                found
-            };
-            let multi_opps = graph.find_multi_hop_cycles(
-                current_slot,
-                max_sizing,
-                self.config.strategy.max_route_hops,
-            );
-            if !multi_opps.is_empty() {
-                info!("🔁 Multi-hop DFS detected {} route(s)", multi_opps.len());
-            }
-
-            // Graph stats for the tick log (snapshot while still locked).
-            let (graph_edges, graph_anchors) =
-                (graph.edges_by_from.len(), graph.base_anchors.len());
-
-            // Merge candidate sources, preserving route direction and retaining
-            // the best net-profit quote for each exact ordered route.
-            let mut merged: Vec<ExecutionOpportunity> = opps;
-            merged.extend(bf_opps);
-            merged.extend(multi_opps);
-            let merged = super::route_dedup::dedupe_best_by_route(merged);
-            let ranked = rank_opportunities_cross_mint(merged);
             info!(
-                "Slot {}: graph discovered {} candidate route(s) after dedupe; graph edges={}, base_anchors={}",
-                current_slot.0,
-                ranked.len(),
-                graph_edges,
-                graph_anchors
+                "DLMM cross-pool seed scan: pairs={} directions={} seeds={} canonical_accepted={} rejections={}",
+                cross_scan.stats.pairs_scanned,
+                cross_scan.stats.directions_evaluated,
+                cross_scan.stats.opportunities,
+                cross_accepted,
+                cross_scan.rejections.len(),
             );
-            ranked
+            info!(
+                "Unified route engine slot={}: pools={}/{} edges={} excluded[inactive={},raydium_clmm={},reserves={},risky={},transfer_fee={},fee={},unsupported={}] anchors={} cycles={} quote_rejected={} economic_rejected={} opportunities={} truncated={}",
+                current_slot.0,
+                build.pools_indexed,
+                build.pools_seen,
+                build.edges_indexed,
+                build.excluded_inactive,
+                build.excluded_raydium_clmm,
+                build.excluded_missing_reserves,
+                build.excluded_risky_token,
+                build.excluded_unmodeled_transfer_fee,
+                build.excluded_invalid_fee,
+                build.excluded_unsupported_protocol,
+                scan.base_anchors,
+                scan.cycles_evaluated,
+                scan.quote_rejected,
+                scan.gate_rejected,
+                scan.opportunities,
+                scan.truncated,
+            );
+            super::route_dedup::dedupe_best_by_route(candidates)
         };
-        let mut merged = opportunities;
-        arb_metrics::observe_route_discovery_latency_us(
-            discovery_start.elapsed().as_micros() as f64
-        );
 
-        // ── Meteora 3-leg (WSOL -> A -> B -> WSOL) pipeline ──
-        // Third candidate class: three distinct DLMM pools on Meteora,
-        // chained-quote discovery + 3-leg-native size search. Converted
-        // into a standard ExecutionOpportunity so the same economics,
-        // risk and dispatch path applies. Fails closed to an empty vec.
-        // Fail-closed liquidity proof: when flash funding is enabled, the
-        // actual supply-vault liquidity must be verifiable — an
-        // unverifiable reserve skips the capture entirely.
+        // Specialized Meteora 3-leg discovery proves chained DLMM bin quotes
+        // and wallet inventory provenance. Its routes are then re-evaluated by
+        // the canonical MarketGraph quote/sizing/economics path.
         let flash_liquidity = self.kamino_available_flash_liquidity(current_slot);
         let flash_liquidity_unverified =
             self.config.strategy.use_flash_loan && flash_liquidity.is_none();
@@ -494,67 +422,42 @@ impl Supervisor {
                 "3-leg capture skipped: flash funding enabled but Kamino supply-vault liquidity unverifiable at slot {}",
                 current_slot.0
             );
-        }
-        let three_leg_opps = if flash_liquidity_unverified {
-            Vec::new()
         } else {
-            self.capture_three_leg_dlmm(
-                &fresh_pools,
-                current_slot,
-                max_sizing,
-                verified.flash_loan_fee_sf.value,
-                flash_liquidity,
-                verified.tip_lamports.value.0,
-            )
-            .await
-        };
-        if !three_leg_opps.is_empty() {
-            info!(
-                "🟢 Meteora 3-leg DLMM pipeline captured {} chain(s)",
-                three_leg_opps.len()
-            );
-        }
-        if let Some(control) = self.control() {
-            for o in three_leg_opps.iter().take(16) {
-                control.record_opportunity(crate::control_service::OpportunityRecord {
-                    captured_at_unix: 0,
-                    slot: current_slot.0,
-                    route: o
-                        .hops
-                        .iter()
-                        .map(|h| format!("{}", h.pool_id))
-                        .collect::<Vec<_>>()
-                        .join("\u{2192}"),
-                    protocol: "meteora-dlmm-3leg".to_string(),
-                    borrow_lamports: o.size_in.0,
-                    expected_output_lamports: o.expected_out.0,
-                    gross_profit_lamports: 0,
-                    net_profit_lamports: o.net_profit.0 as i64,
-                    eligible: true,
-                    hop_quotes: o
-                        .hops
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, h)| {
-                            let amount_in = *o.hop_inputs.get(i)?;
-                            let amount_out = *o.hop_inputs.get(i + 1)?;
-                            Some(crate::control_service::HopQuoteRecord {
-                                protocol: format!("{:?}", h.protocol),
-                                pool: h.pool_id.0.to_string(),
-                                amount_in,
-                                amount_out,
-                            })
-                        })
-                        .collect(),
-                    reject_reason: None,
-                });
+            let three_leg_seeds = self
+                .capture_three_leg_dlmm(
+                    &fresh_pools,
+                    current_slot,
+                    max_sizing,
+                    verified.flash_loan_fee_sf.value,
+                    flash_liquidity,
+                    verified.tip_lamports.value.0,
+                )
+                .await;
+            let mut canonical_accepted = 0usize;
+            {
+                let graph = self.graph.lock();
+                for seed in three_leg_seeds {
+                    if let Some(requoted) = graph.evaluate_directed_route(
+                        current_slot,
+                        max_sizing,
+                        seed.route_id,
+                        &seed.hops,
+                    ) {
+                        merged.push(requoted);
+                        canonical_accepted += 1;
+                    }
+                }
             }
+            info!(
+                "Meteora 3-leg DLMM: canonical_accepted={} (inventory proof and exact chained quote required)",
+                canonical_accepted,
+            );
+            merged = super::route_dedup::dedupe_best_by_route(merged);
         }
 
-        merged.extend(three_leg_opps);
-        merged = super::route_dedup::dedupe_best_by_route(merged);
-
-        // ── Pump.fun BOOST Migration surveillance pass ──
+        arb_metrics::observe_route_discovery_latency_us(
+            discovery_start.elapsed().as_micros() as f64
+        ); // ── Pump.fun BOOST Migration surveillance pass ──
         // Scan active Pump.fun curves nearing completion in the sweet-spot band [40..75 SOL].
         // Log detected targets and record them in the ControlService dashboard.
         let boost_targets = {
@@ -626,15 +529,6 @@ impl Supervisor {
         // Feed evaluated cross-pool 2-leg and multi-hop opportunities into the control service & live WS / telemetry
         if let Some(control) = self.control() {
             for o in opportunities.iter().take(24) {
-                // Skip if this opportunity was already recorded in the 3-leg DLMM pass
-                let is_three_leg_dlmm = o.hops.len() >= 3
-                    && o.hops
-                        .iter()
-                        .all(|h| h.protocol == DexProtocol::MeteoraDlmm);
-                if is_three_leg_dlmm {
-                    continue;
-                }
-
                 let proto_str = if o.hops.len() == 2 {
                     if o.hops[0].protocol == o.hops[1].protocol {
                         format!("{:?}", o.hops[0].protocol).to_lowercase()
@@ -770,6 +664,8 @@ pub(super) fn rank_opportunities_cross_mint(
 #[cfg(test)]
 mod rank_tests {
     use super::*;
+    #[cfg(test)]
+    use arb_types::{Bps, RouteId};
     use arb_types::{PoolId, PumpSwapTradeIntent, TokenProgramKind};
 
     fn hop(mint_in: MintId, mint_out: MintId) -> SwapHop {
