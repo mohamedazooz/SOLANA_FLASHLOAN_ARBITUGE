@@ -98,6 +98,7 @@ fn make_test_pool(
         reserve_out: (liquidity_y as u128) * 5,
         fee_numerator: ((bin_step as u64) * (base_factor as u64) / 100).max(1),
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Dlmm,

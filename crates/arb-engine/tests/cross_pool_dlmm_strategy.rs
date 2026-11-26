@@ -111,6 +111,7 @@ fn dlmm_pool(
         reserve_out: per_bin_side,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Dlmm,

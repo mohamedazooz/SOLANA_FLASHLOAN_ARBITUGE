@@ -73,29 +73,105 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             return Err(ArbError::ZeroAmount);
         }
 
-        // Shared checked CPMM exact-in calculation. Missing fee state is rejected above.
-        let fee_num = u128::from(state.fee_numerator);
-        let fee_den = u128::from(state.fee_denominator);
-        let trade_fee_u64 =
-            arb_math::cpmm::cpmm_fee_ceil(u128::from(input_net_into_pool), fee_num, fee_den)
-                .ok_or_else(|| {
-                    ArbError::InvalidInput("Raydium CPMM fee ratio is invalid".into())
-                })?;
-        let gross_out = arb_math::cpmm::cpmm_out_upfront_fee_ceil(
+        // Raydium CPMM has two independent fees. Trade fee is always on input;
+        // creator fee may be on input or output according to PoolState.creator_fee_on.
+        // A missing or inconsistent fee snapshot is never approximated.
+        let cpmm_fees = state.raydium_cpmm_fee.ok_or_else(|| {
+            ArbError::IncompleteState(
+                "Raydium CPMM creator-fee mode is missing; refusing generic-fee fallback".into(),
+            )
+        })?;
+        if !cpmm_fees.is_valid()
+            || state.fee_numerator != cpmm_fees.trade_fee_rate_ppm
+            || state.fee_denominator != CPMM_FEE_RATE_DENOMINATOR as u64
+        {
+            return Err(ArbError::InvalidInput(
+                "Raydium CPMM PoolState and exact AmmConfig fee snapshot disagree".into(),
+            ));
+        }
+        let trade_rate = cpmm_fees.trade_fee_rate_ppm;
+        let creator_rate = cpmm_fees.effective_creator_fee_rate();
+        let creator_on_input = cpmm_fees.creator_fee_on_input(a_to_b).ok_or_else(|| {
+            ArbError::InvalidInput("Raydium CPMM creator fee mode is invalid".into())
+        })?;
+        let input_fee_rate = trade_rate
+            .checked_add(if creator_on_input { creator_rate } else { 0 })
+            .ok_or(ArbError::Overflow)?;
+        let input_fee = arb_math::cpmm::cpmm_fee_ceil(
+            u128::from(input_net_into_pool),
+            u128::from(input_fee_rate),
+            CPMM_FEE_RATE_DENOMINATOR,
+        )
+        .ok_or_else(|| ArbError::InvalidInput("Raydium CPMM input fee overflow".into()))?;
+        let trade_fee = if creator_on_input && creator_rate > 0 {
+            let creator = u128::from(input_fee)
+                .checked_mul(u128::from(creator_rate))
+                .ok_or(ArbError::Overflow)?
+                / u128::from(input_fee_rate);
+            input_fee
+                .checked_sub(u64::try_from(creator).map_err(|_| ArbError::Overflow)?)
+                .ok_or(ArbError::Overflow)?
+        } else {
+            input_fee
+        };
+        let creator_fee_input = if creator_on_input && creator_rate > 0 {
+            input_fee.checked_sub(trade_fee).ok_or(ArbError::Overflow)?
+        } else {
+            0
+        };
+        let curve_output = arb_math::cpmm::cpmm_out_upfront_fee_ceil(
             u128::from(input_net_into_pool),
             r_in,
             r_out,
-            fee_num,
-            fee_den,
+            u128::from(input_fee_rate),
+            CPMM_FEE_RATE_DENOMINATOR,
         )
         .ok_or(ArbError::Overflow)?;
-        if gross_out == 0 {
+        if curve_output == 0 {
             return Err(ArbError::InsufficientLiquidity(
                 "Raydium CPMM returned 0 output tokens".into(),
             ));
         }
+        let creator_fee_output = if !creator_on_input && creator_rate > 0 {
+            let fee = u128::from(curve_output)
+                .checked_mul(u128::from(creator_rate))
+                .and_then(|v| v.checked_add(CPMM_FEE_RATE_DENOMINATOR - 1))
+                .ok_or(ArbError::Overflow)?
+                / CPMM_FEE_RATE_DENOMINATOR;
+            u64::try_from(fee).map_err(|_| ArbError::Overflow)?
+        } else {
+            0
+        };
+        let gross_out = curve_output
+            .checked_sub(creator_fee_output)
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Raydium CPMM creator fee exceeds curve output".into())
+            })?;
+        if gross_out == 0 {
+            return Err(ArbError::InsufficientLiquidity(
+                "Raydium CPMM creator fee exhausted output".into(),
+            ));
+        }
+        let creator_fee = creator_fee_input
+            .checked_add(creator_fee_output)
+            .ok_or(ArbError::Overflow)?;
+        let protocol_fee = u64::try_from(
+            u128::from(trade_fee) * u128::from(cpmm_fees.protocol_fee_rate)
+                / CPMM_FEE_RATE_DENOMINATOR,
+        )
+        .map_err(|_| ArbError::Overflow)?;
+        let fund_fee = u64::try_from(
+            u128::from(trade_fee) * u128::from(cpmm_fees.fund_fee_rate) / CPMM_FEE_RATE_DENOMINATOR,
+        )
+        .map_err(|_| ArbError::Overflow)?;
+        let lp_fee = trade_fee
+            .checked_sub(protocol_fee)
+            .and_then(|v| v.checked_sub(fund_fee))
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Raydium CPMM fee splits exceed trade fee".into())
+            })?;
 
-        // 4. Outbound Token-2022 transfer fee deduction
+        // 4. Outbound Token-2022 transfer fee deduction (after creator output fee).
         let (output_net_to_next_hop, output_transfer_fee) =
             request.output_after_transfer_fee(gross_out)?;
 
@@ -106,7 +182,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         let impact_bps = arb_math::cpmm::cpmm_price_impact_bps(
             u128::from(
                 input_net_into_pool
-                    .checked_sub(trade_fee_u64)
+                    .checked_sub(input_fee)
                     .ok_or(ArbError::Overflow)?,
             ),
             r_in,
@@ -124,18 +200,21 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
             amount_out_raw: output_net_to_next_hop,
             minimum_amount_out_raw: min_amount_out,
             fees_breakdown: FeesBreakdown {
-                lp_fee: 0,
-                protocol_fee: 0,
-                fund_fee: 0,
-                creator_fee: 0,
+                lp_fee,
+                protocol_fee,
+                fund_fee,
+                creator_fee,
                 dynamic_fee: 0,
-                total_fee: trade_fee_u64,
+                // Input-side pool fees only (input mint raw units). When creator
+                // fee is charged on output, creator_fee is in output mint units.
+                total_fee: input_fee,
             },
             transfer_fee_breakdown: HopTransferFeeBreakdown {
                 input_gross: request.amount,
                 input_transfer_fee,
                 input_net_into_pool,
                 output_gross_from_pool: gross_out,
+                output_curve_reserve_debit: curve_output,
                 output_transfer_fee,
                 output_net_to_next_hop,
             },
@@ -156,6 +235,22 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         if !state.is_fee_valid() {
             return Err(ArbError::InvalidInput(
                 "Raydium CPMM fee snapshot is missing or invalid".into(),
+            ));
+        }
+        let cpmm_fees = state.raydium_cpmm_fee.ok_or_else(|| {
+            ArbError::IncompleteState("Raydium CPMM exact fee mode is missing".into())
+        })?;
+        if !cpmm_fees.is_valid()
+            || state.fee_numerator != cpmm_fees.trade_fee_rate_ppm
+            || state.fee_denominator != CPMM_FEE_RATE_DENOMINATOR as u64
+        {
+            return Err(ArbError::InvalidInput(
+                "Raydium CPMM fee snapshot mismatch".into(),
+            ));
+        }
+        if cpmm_fees.enable_creator_fee && cpmm_fees.creator_fee_rate_ppm > 0 {
+            return Err(ArbError::UnsupportedOperation(
+                "Raydium CPMM exact-out with creator fees is not implemented; use exact-in".into(),
             ));
         }
         if request.input_transfer_fee_config.is_some()
@@ -207,6 +302,7 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
                 input_transfer_fee: 0,
                 input_net_into_pool: req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?,
                 output_gross_from_pool: request.amount,
+                output_curve_reserve_debit: request.amount,
                 output_transfer_fee: 0,
                 output_net_to_next_hop: request.amount,
             },

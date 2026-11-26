@@ -382,7 +382,7 @@ fn quote_via_dispatcher(pool: &PoolState, amount_in: u64, a_to_b: bool) -> Resul
 /// rejects pool reuse, so those protocols remain immutable snapshot quotes.
 fn advance_pool_after_quote(pool: &mut PoolState, a_to_b: bool, quote: &QuoteResult) -> Result<()> {
     let input = u128::from(quote.transfer_fee_breakdown.input_net_into_pool);
-    let output = u128::from(quote.transfer_fee_breakdown.output_gross_from_pool);
+    let output = u128::from(quote.transfer_fee_breakdown.output_curve_reserve_debit);
     match pool.protocol {
         DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm => {
             let (reserve_in, reserve_out) = if a_to_b {
@@ -390,7 +390,41 @@ fn advance_pool_after_quote(pool: &mut PoolState, a_to_b: bool, quote: &QuoteRes
             } else {
                 (pool.reserve_out, pool.reserve_in)
             };
-            let next_in = reserve_in.checked_add(input).ok_or(ArbError::Overflow)?;
+            // CPMM vaults retain protocol/fund/creator fees physically, but
+            // those buckets are excluded from the curve reserves. Only the LP
+            // share of the trade fee remains in the invariant.
+            let curve_input_credit = if pool.protocol == DexProtocol::RaydiumCpmm {
+                let schedule = pool.raydium_cpmm_fee.ok_or_else(|| {
+                    ArbError::IncompleteState(
+                        "Raydium CPMM fee schedule missing during state advance".into(),
+                    )
+                })?;
+                let creator_on_input = schedule.creator_fee_on_input(a_to_b).ok_or_else(|| {
+                    ArbError::InvalidInput("Raydium CPMM creator fee direction is invalid".into())
+                })?;
+                let non_lp_fees = quote
+                    .fees_breakdown
+                    .protocol_fee
+                    .checked_add(quote.fees_breakdown.fund_fee)
+                    .and_then(|v| {
+                        v.checked_add(if creator_on_input {
+                            quote.fees_breakdown.creator_fee
+                        } else {
+                            0
+                        })
+                    })
+                    .ok_or(ArbError::Overflow)?;
+                input.checked_sub(u128::from(non_lp_fees)).ok_or_else(|| {
+                    ArbError::InvalidInput(
+                        "Raydium CPMM non-LP fee buckets exceed pool input".into(),
+                    )
+                })?
+            } else {
+                input
+            };
+            let next_in = reserve_in
+                .checked_add(curve_input_credit)
+                .ok_or(ArbError::Overflow)?;
             let next_out = reserve_out.checked_sub(output).ok_or_else(|| {
                 ArbError::InsufficientLiquidity("quote output exceeds reserve snapshot".into())
             })?;
@@ -578,6 +612,7 @@ mod tests {
             reserve_out: r_out,
             fee_numerator: fee_bps as u64,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Cpmm,
@@ -606,6 +641,7 @@ mod tests {
             reserve_out: sqrt_price,
             fee_numerator: 30,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Clmm,
@@ -663,6 +699,7 @@ mod tests {
             reserve_out: sqrt_price,
             fee_numerator: 30,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Clmm,
@@ -735,6 +772,68 @@ mod tests {
             result.is_err(),
             "CLMM route must fail closed without verified AmmConfig"
         );
+    }
+
+    #[test]
+    fn raydium_cpmm_state_advance_excludes_non_lp_fee_buckets() {
+        for (a_to_b, creator_fee_on) in [(true, 1u8), (false, 1u8)] {
+            let mut pool = cpmm_pool(44, 10_000_000_000, 20_000_000_000, 25);
+            pool.protocol = DexProtocol::RaydiumCpmm;
+            pool.fee_numerator = 2_500;
+            pool.fee_denominator = 1_000_000;
+            pool.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+                trade_fee_rate_ppm: 2_500,
+                creator_fee_rate_ppm: 500,
+                protocol_fee_rate: 120_000,
+                fund_fee_rate: 40_000,
+                enable_creator_fee: true,
+                creator_fee_on,
+            });
+            let amount_in = 1_000_000u64;
+            let quote = quote_via_dispatcher(&pool, amount_in, a_to_b).unwrap();
+            let reserve_in_before = if a_to_b {
+                pool.reserve_in
+            } else {
+                pool.reserve_out
+            };
+            let reserve_out_before = if a_to_b {
+                pool.reserve_out
+            } else {
+                pool.reserve_in
+            };
+            let creator_on_input = pool
+                .raydium_cpmm_fee
+                .unwrap()
+                .creator_fee_on_input(a_to_b)
+                .unwrap();
+            let non_lp = quote.fees_breakdown.protocol_fee
+                + quote.fees_breakdown.fund_fee
+                + if creator_on_input {
+                    quote.fees_breakdown.creator_fee
+                } else {
+                    0
+                };
+            let expected_input_credit = u128::from(amount_in - non_lp);
+            let expected_output_debit =
+                u128::from(quote.transfer_fee_breakdown.output_curve_reserve_debit);
+
+            advance_pool_after_quote(&mut pool, a_to_b, &quote).unwrap();
+            let reserve_in_after = if a_to_b {
+                pool.reserve_in
+            } else {
+                pool.reserve_out
+            };
+            let reserve_out_after = if a_to_b {
+                pool.reserve_out
+            } else {
+                pool.reserve_in
+            };
+            assert_eq!(reserve_in_after, reserve_in_before + expected_input_credit);
+            assert_eq!(
+                reserve_out_after,
+                reserve_out_before - expected_output_debit
+            );
+        }
     }
 
     #[test]
@@ -918,6 +1017,7 @@ mod tests {
             reserve_out: 1_000_000,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Dlmm,
@@ -986,6 +1086,7 @@ mod tests {
             reserve_out: 0,
             fee_numerator: 0,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Dlmm,
@@ -1105,6 +1206,7 @@ mod tests {
             reserve_out: 1_073_000_000_000_000,
             fee_numerator: 125,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Cpmm,

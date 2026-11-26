@@ -865,7 +865,26 @@ impl DlmmFlashArbEvaluator<'_> {
             }
         };
         let gross_profit = clamp_i64(i128::from(quote_b.amount_out) - i128::from(borrow));
-        let net_profit = clamp_i64(i128::from(gross_profit) - i128::from(total_cost));
+        // `cfg.execution_cost()` is already expressed in flash-mint raw units
+        // (not lamports); `quote_b.amount_out` is the final conservative quote
+        // after pool pricing/fees. Feed each liability to the canonical signed
+        // evaluator exactly once, without trying to sum unrelated fee mints.
+        let net_profit_signed = arb_math::economic::calculate_net_profit_raw_signed(
+            quote_b.amount_out,
+            borrow,
+            flash_fee,
+            0,                    // DEX fees are reflected in the hop quote outputs
+            0,                    // no separately charged transfer-fee amount in this route model
+            0,                    // account creation is not charged by this estimate
+            cfg.execution_cost(), // verified/derived aggregate in flash-mint raw units
+            arb_types::Lamports(0),
+            arb_types::Lamports(0),
+            arb_types::Lamports(0),
+            1,
+            1,
+        )
+        .unwrap_or(i128::MIN);
+        let net_profit = clamp_i64(net_profit_signed);
         let net_profit_bps = if borrow > 0 {
             clamp_i64(i128::from(net_profit) * 10_000 / i128::from(borrow))
         } else {
@@ -1363,6 +1382,7 @@ mod tests {
                 reserve_out: 0,
                 fee_numerator: 0,
                 fee_denominator: 1,
+                raydium_cpmm_fee: None,
                 is_active: true,
                 has_risky_token: false,
                 kind: arb_types::PoolKind::Dlmm,
@@ -1407,6 +1427,7 @@ mod tests {
                 reserve_out: 0,
                 fee_numerator: 0,
                 fee_denominator: 1,
+                raydium_cpmm_fee: None,
                 is_active: true,
                 has_risky_token: false,
                 kind: arb_types::PoolKind::Dlmm,

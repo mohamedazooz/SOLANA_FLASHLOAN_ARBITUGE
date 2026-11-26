@@ -214,6 +214,89 @@ impl MultiDexRegistry {
         .await;
         max_observed_slot = max_observed_slot.max(cpmm_cfg_slot);
 
+        // 2c. Re-read each CPMM dependency set in ONE getMultipleAccounts
+        // context. The first discovery pass cannot know vault/config addresses
+        // until PoolState is decoded, so its pool, vault and AmmConfig reads
+        // necessarily came from separate RPC contexts. Comparing those slots
+        // for equality rejected healthy pools on every tick. This second pass
+        // binds PoolState + both vaults + AmmConfig to the SAME RPC response
+        // context, preventing mixed pre/post-swap fee counters and balances.
+        // Keep groups bounded (<= 20 pools / 80 accounts) for free-tier RPCs.
+        let cpmm_pools: Vec<_> = self
+            .pools
+            .iter()
+            .filter(|p| p.protocol == DexProtocol::RaydiumCpmm)
+            .filter_map(|p| {
+                let (_, pool_data) = pool_data_map.get(&p.pool_id.0)?;
+                let state = crate::decoders::decode_raydium_cpmm_pool_accounting(pool_data)?;
+                Some((
+                    p.pool_id,
+                    [
+                        p.pool_id.0,
+                        state.token_0_vault,
+                        state.token_1_vault,
+                        state.amm_config,
+                    ],
+                ))
+            })
+            .collect();
+        for group in cpmm_pools.chunks(20) {
+            let mut keys = Vec::with_capacity(group.len() * 4);
+            for (_, group_keys) in group {
+                for key in group_keys {
+                    if !keys.contains(key) {
+                        keys.push(*key);
+                    }
+                }
+            }
+            let mut coherent_data = std::collections::HashMap::new();
+            let mut coherent_owners = std::collections::HashMap::new();
+            let coherent_slot = Self::batch_fetch_accounts(
+                &self.rpc,
+                &keys,
+                &mut coherent_data,
+                Some(&mut coherent_owners),
+            )
+            .await;
+            if coherent_slot == 0 {
+                debug!(
+                    "Raydium CPMM coherent dependency refresh failed for group of {} pools",
+                    group.len()
+                );
+                continue;
+            }
+            for (pool_id, [pool_key, vault_0, vault_1, config_key]) in group {
+                let required = [*pool_key, *vault_0, *vault_1, *config_key];
+                if required.iter().any(|key| {
+                    !coherent_data.contains_key(key) || !coherent_owners.contains_key(key)
+                }) {
+                    debug!(
+                        "Raydium CPMM {pool_id} coherent dependency response incomplete at slot {coherent_slot}"
+                    );
+                    continue;
+                }
+                for key in required {
+                    let Some((slot, bytes)) = coherent_data.get(&key).cloned() else {
+                        continue;
+                    };
+                    let Some(owner) = coherent_owners.get(&key).copied() else {
+                        continue;
+                    };
+                    if key == *pool_key {
+                        pool_data_map.insert(key, (slot, bytes));
+                        pool_owner_map.insert(key, owner);
+                    } else if key == *config_key {
+                        cpmm_config_map.insert(key, (slot, bytes));
+                        cpmm_config_owner_map.insert(key, owner);
+                    } else {
+                        vault_data_map.insert(key, (slot, bytes));
+                        vault_owner_map.insert(key, owner);
+                    }
+                }
+            }
+            max_observed_slot = max_observed_slot.max(coherent_slot);
+        }
+
         // 3. Fetch derived accounts (tick arrays / bin arrays) individually
         let mut derived_pubkeys: Vec<Pubkey> = Vec::new();
         for p in &self.pools {
@@ -277,9 +360,20 @@ impl MultiDexRegistry {
                 continue;
             };
             let Some(d) = decode_dlmm_state(pool_bytes) else {
+                debug!(
+                    "Meteora DLMM {} skipped: LbPair state decoder rejected account (len={})",
+                    p.pool_id,
+                    pool_bytes.len()
+                );
                 continue;
             };
             let Some(internal) = crate::decoders::decode_dlmm_internal_bitmap(pool_bytes) else {
+                debug!(
+                    "Meteora DLMM {} skipped: internal bitmap layout invalid (len={}, active_bin={})",
+                    p.pool_id,
+                    pool_bytes.len(),
+                    d.active_bin_id
+                );
                 continue;
             };
             let extension_pda = bitmap_extension_pda(&p.pool_id.0);
@@ -303,8 +397,23 @@ impl MultiDexRegistry {
             indices.dedup();
             if indices.is_empty() {
                 // Neither direction found a bitmap-proven initialized array.
+                debug!(
+                    "Meteora DLMM {} skipped: no initialized bin arrays around active_bin={} (extension_present={}, extension_owner_valid={})",
+                    p.pool_id,
+                    d.active_bin_id,
+                    derived_data_map.contains_key(&extension_pda),
+                    extension.is_some()
+                );
                 continue;
             }
+            debug!(
+                "Meteora DLMM {} selected {} initialized bin arrays around active_bin={} (extension_present={}, extension_valid={})",
+                p.pool_id,
+                indices.len(),
+                d.active_bin_id,
+                derived_data_map.contains_key(&extension_pda),
+                extension.is_some()
+            );
             for index in &indices {
                 let key = crate::decoders::derive_meteora_bin_array_pda(&p.pool_id.0, *index);
                 if !dlmm_array_pubkeys.contains(&key) {
@@ -322,6 +431,166 @@ impl MultiDexRegistry {
         )
         .await;
         max_observed_slot = max_observed_slot.max(dlmm_array_slot);
+
+        // 3b. Refresh each DLMM pool + bitmap extension + its selected bin
+        // arrays in the SAME getMultipleAccounts context. The earlier discovery
+        // pass needs pool/extension state to derive array PDAs, so it cannot be
+        // the final quote snapshot. Re-fetching this bounded dependency group
+        // removes the measured 14-slot skew that previously caused every
+        // Meteora pool to fail the strict coherence gate. If the bitmap or
+        // active bin changed between discovery and refresh, discard the pool
+        // for this cycle rather than using an incomplete/stale array set.
+        let meteora_program = Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID).ok();
+        let mut coherent_dlmm_groups: Vec<Vec<(PoolId, Vec<Pubkey>)>> = Vec::new();
+        let mut current_group = Vec::new();
+        let mut current_group_size = 0usize;
+        for p in &self.pools {
+            if p.protocol != DexProtocol::MeteoraDlmm {
+                continue;
+            }
+            let Some(indices) = dlmm_selected_indices.get(&p.pool_id) else {
+                continue;
+            };
+            if indices.is_empty() {
+                continue;
+            }
+            let mut keys = vec![p.pool_id.0, bitmap_extension_pda(&p.pool_id.0)];
+            keys.extend(
+                indices.iter().map(|index| {
+                    crate::decoders::derive_meteora_bin_array_pda(&p.pool_id.0, *index)
+                }),
+            );
+            keys.sort_unstable();
+            keys.dedup();
+            if !current_group.is_empty() && current_group_size + keys.len() > 100 {
+                coherent_dlmm_groups.push(std::mem::take(&mut current_group));
+                current_group_size = 0;
+            }
+            current_group_size += keys.len();
+            current_group.push((p.pool_id, keys));
+        }
+        if !current_group.is_empty() {
+            coherent_dlmm_groups.push(current_group);
+        }
+
+        for group in coherent_dlmm_groups {
+            let mut keys = Vec::new();
+            for (_, group_keys) in &group {
+                for key in group_keys {
+                    if !keys.contains(key) {
+                        keys.push(*key);
+                    }
+                }
+            }
+            let mut coherent_data = std::collections::HashMap::new();
+            let mut coherent_owners = std::collections::HashMap::new();
+            let coherent_slot = Self::batch_fetch_accounts(
+                &self.rpc,
+                &keys,
+                &mut coherent_data,
+                Some(&mut coherent_owners),
+            )
+            .await;
+            if coherent_slot == 0 {
+                for (pool_id, _) in &group {
+                    dlmm_selected_indices.insert(*pool_id, Vec::new());
+                }
+                continue;
+            }
+            for (pool_id, group_keys) in group {
+                let pool_key = pool_id.0;
+                let extension_key = bitmap_extension_pda(&pool_key);
+                let Some((pool_slot, pool_bytes)) = coherent_data.get(&pool_key).cloned() else {
+                    dlmm_selected_indices.insert(pool_id, Vec::new());
+                    continue;
+                };
+                let pool_owner = coherent_owners.get(&pool_key).copied();
+                if pool_slot == 0 || pool_owner != meteora_program {
+                    debug!(
+                        "Meteora DLMM {pool_id} coherent refresh rejected: invalid LbPair owner/slot"
+                    );
+                    dlmm_selected_indices.insert(pool_id, Vec::new());
+                    continue;
+                }
+                let Some(refreshed_state) = decode_dlmm_state(&pool_bytes) else {
+                    dlmm_selected_indices.insert(pool_id, Vec::new());
+                    continue;
+                };
+                let Some(internal) = crate::decoders::decode_dlmm_internal_bitmap(&pool_bytes)
+                else {
+                    dlmm_selected_indices.insert(pool_id, Vec::new());
+                    continue;
+                };
+                let extension = coherent_data
+                    .get(&extension_key)
+                    .zip(coherent_owners.get(&extension_key))
+                    .and_then(|((_, bytes), owner)| {
+                        arb_dex::decode_bitmap_extension_account(&pool_key, owner, bytes).ok()
+                    });
+                let mut refreshed_indices = Vec::new();
+                for swap_for_y in [true, false] {
+                    refreshed_indices.extend(crate::decoders::dlmm_initialized_bin_array_indices(
+                        refreshed_state.active_bin_id,
+                        swap_for_y,
+                        &internal,
+                        extension.as_ref(),
+                        arb_constants::METEORA_MAX_BIN_ARRAYS_PER_SWAP,
+                    ));
+                }
+                refreshed_indices.sort_unstable();
+                refreshed_indices.dedup();
+                let mut expected_indices = dlmm_selected_indices
+                    .get(&pool_id)
+                    .cloned()
+                    .unwrap_or_default();
+                expected_indices.sort_unstable();
+                expected_indices.dedup();
+                if refreshed_indices != expected_indices {
+                    debug!(
+                        "Meteora DLMM {pool_id} changed active bin/bitmap during coherent refresh; discarding this cycle"
+                    );
+                    dlmm_selected_indices.insert(pool_id, Vec::new());
+                    continue;
+                }
+                let dependencies_present = group_keys.iter().all(|key| {
+                    if *key == extension_key {
+                        // The extension is optional only when the refreshed
+                        // bitmap proves the selected arrays fit the default range.
+                        coherent_data.get(key).is_none_or(|(slot, _)| {
+                            *slot == pool_slot && coherent_owners.contains_key(key)
+                        })
+                    } else {
+                        coherent_data.get(key).is_some_and(|(slot, _)| {
+                            *slot == pool_slot && coherent_owners.contains_key(key)
+                        })
+                    }
+                });
+                if !dependencies_present {
+                    debug!(
+                        "Meteora DLMM {pool_id} coherent refresh missing one or more selected arrays"
+                    );
+                    dlmm_selected_indices.insert(pool_id, Vec::new());
+                    continue;
+                }
+                pool_data_map.insert(pool_key, (pool_slot, pool_bytes));
+                if let Some(owner) = pool_owner {
+                    pool_owner_map.insert(pool_key, owner);
+                }
+                for key in group_keys {
+                    if let (Some((slot, bytes)), Some(owner)) =
+                        (coherent_data.get(&key), coherent_owners.get(&key))
+                    {
+                        derived_data_map.insert(key, (*slot, bytes.clone()));
+                        derived_owner_map.insert(key, *owner);
+                    }
+                }
+                debug!(
+                    "Meteora DLMM {pool_id} coherent snapshot refreshed at slot {coherent_slot} with {} bin arrays",
+                    expected_indices.len()
+                );
+            }
+            max_observed_slot = max_observed_slot.max(coherent_slot);
+        }
 
         let mut dlmm_bins: std::collections::HashMap<PoolId, Vec<arb_types::DlmmBin>> =
             std::collections::HashMap::new();
@@ -463,8 +732,25 @@ impl MultiDexRegistry {
                                 Vec::new()
                             };
                             if !complete || !bins.iter().any(|bin| bin.bin_id == d.active_bin_id) {
+                                debug!(
+                                    "Meteora DLMM {} dependency hydration incomplete: complete={} arrays_selected={} bins={} active_bin={} active_present={} slot_span={}",
+                                    p.pool_id,
+                                    complete,
+                                    indices.len(),
+                                    bins.len(),
+                                    d.active_bin_id,
+                                    bins.iter().any(|bin| bin.bin_id == d.active_bin_id),
+                                    max_dependency_slot.saturating_sub(min_dependency_slot)
+                                );
                                 dlmm_bins.insert(p.pool_id, Vec::new());
                             } else {
+                                debug!(
+                                    "Meteora DLMM {} hydrated {} bins from {} arrays at coherent slot {}",
+                                    p.pool_id,
+                                    bins.len(),
+                                    indices.len(),
+                                    min_dependency_slot
+                                );
                                 dlmm_coherent_slots.insert(p.pool_id, Slot(min_dependency_slot));
                                 dlmm_bins.insert(p.pool_id, bins);
                             }
@@ -631,8 +917,18 @@ impl MultiDexRegistry {
             if p.protocol == DexProtocol::RaydiumCpmm {
                 if cpmm_coherent_slot.is_none() {
                     debug!(
-                        "Raydium CPMM {} pool/vault/config snapshots are not slot-coherent; skipping",
-                        p.pool_id
+                        "Raydium CPMM {} coherent snapshot unavailable (pool={:?}, vault0={:?}, vault1={:?}, config={:?}); skipping",
+                        p.pool_id,
+                        pool_data_map.get(&p.pool_id.0).map(|(slot, _)| *slot),
+                        cpmm_accounting
+                            .and_then(|a| vault_data_map.get(&a.token_0_vault))
+                            .map(|(slot, _)| *slot),
+                        cpmm_accounting
+                            .and_then(|a| vault_data_map.get(&a.token_1_vault))
+                            .map(|(slot, _)| *slot),
+                        cpmm_config_key
+                            .and_then(|key| cpmm_config_map.get(&key))
+                            .map(|(slot, _)| *slot),
                     );
                     continue;
                 }
@@ -685,15 +981,21 @@ impl MultiDexRegistry {
                     );
                     continue;
                 }
-                // Creator fees may be charged on either the input or output
-                // side. Until the protocol-native fee-side quote is wired into
-                // this PoolState model, do not publish a potentially optimistic
-                // quote for enabled creator-fee pools.
-                if accounting.enable_creator_fee && fees.creator_fee_rate > 0 {
-                    debug!(
-                        "Raydium CPMM {} creator fee is enabled but not modeled; skipping",
-                        p.pool_id
-                    );
+                if fees.trade_fee_rate == 0
+                    || fees
+                        .trade_fee_rate
+                        .checked_add(if accounting.enable_creator_fee {
+                            fees.creator_fee_rate
+                        } else {
+                            0
+                        })
+                        .is_none_or(|r| r >= 1_000_000)
+                    || fees
+                        .protocol_fee_rate
+                        .checked_add(fees.fund_fee_rate)
+                        .is_none_or(|r| r > 1_000_000)
+                {
+                    debug!("Raydium CPMM {} fee schedule invalid; skipping", p.pool_id);
                     continue;
                 }
             }
@@ -780,24 +1082,11 @@ impl MultiDexRegistry {
                 let Some(accounting) = cpmm_accounting else {
                     continue;
                 };
-                if p.base_mint.0 == accounting.token_0_mint
-                    && p.quote_mint.0 == accounting.token_1_mint
+                if let Some((mint_0, mint_1, decimals_0, decimals_1)) =
+                    accounting.canonical_orientation(p.base_mint.0, p.quote_mint.0)
                 {
-                    (
-                        MintId(accounting.token_0_mint),
-                        MintId(accounting.token_1_mint),
-                        accounting.mint_0_decimals,
-                        accounting.mint_1_decimals,
-                    )
-                } else if p.base_mint.0 == accounting.token_1_mint
-                    && p.quote_mint.0 == accounting.token_0_mint
-                {
-                    (
-                        MintId(accounting.token_1_mint),
-                        MintId(accounting.token_0_mint),
-                        accounting.mint_1_decimals,
-                        accounting.mint_0_decimals,
-                    )
+                    // creator_fee_on and reserve orientation both use token0/token1.
+                    (MintId(mint_0), MintId(mint_1), decimals_0, decimals_1)
                 } else {
                     debug!(
                         "Raydium CPMM {} catalog mints do not match on-chain token0/token1; skipping",
@@ -925,10 +1214,12 @@ impl MultiDexRegistry {
                         );
                         continue;
                     };
-                    if p.base_mint.0 == accounting.token_0_mint {
+                    // Reserves follow the same canonical token0/token1 order as
+                    // state_base/state_quote and creator_fee_on direction mapping.
+                    if p.base_mint.0 == accounting.token_0_mint
+                        || p.base_mint.0 == accounting.token_1_mint
+                    {
                         (u128::from(net_0), u128::from(net_1))
-                    } else if p.base_mint.0 == accounting.token_1_mint {
-                        (u128::from(net_1), u128::from(net_0))
                     } else {
                         continue;
                     }
@@ -956,6 +1247,15 @@ impl MultiDexRegistry {
                         let Some(res) =
                             compute_dlmm_reserves(d, raw_data, &state_base.0, &state_quote.0)
                         else {
+                            debug!(
+                                "Meteora DLMM {} reserve model rejected snapshot: bins={} active_bin={} bin_step={} mints={}/{}",
+                                p.pool_id,
+                                d.bins.len(),
+                                d.active_bin_id,
+                                d.bin_step_bps,
+                                state_base,
+                                state_quote
+                            );
                             continue;
                         };
                         res
@@ -1265,6 +1565,20 @@ impl MultiDexRegistry {
                 reserve_out,
                 fee_numerator,
                 fee_denominator,
+                raydium_cpmm_fee: if p.protocol == DexProtocol::RaydiumCpmm {
+                    let accounting = cpmm_accounting.expect("CPMM accounting validated above");
+                    let fees = cpmm_fee_config.expect("CPMM fee config validated above");
+                    Some(arb_types::RaydiumCpmmFeeState {
+                        trade_fee_rate_ppm: fees.trade_fee_rate,
+                        creator_fee_rate_ppm: fees.creator_fee_rate,
+                        protocol_fee_rate: fees.protocol_fee_rate,
+                        fund_fee_rate: fees.fund_fee_rate,
+                        enable_creator_fee: accounting.enable_creator_fee,
+                        creator_fee_on: accounting.creator_fee_on,
+                    })
+                } else {
+                    None
+                },
                 is_active: true,
                 has_risky_token: false,
                 last_update_slot: state_slot.0,

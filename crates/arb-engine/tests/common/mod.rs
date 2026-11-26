@@ -116,6 +116,7 @@ pub fn make_dlmm_pool(
         reserve_out: liquidity * 3,
         fee_numerator: ((bin_step as u64) * (base_factor as u64) / 100).max(1),
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Dlmm,

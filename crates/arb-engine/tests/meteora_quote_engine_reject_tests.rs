@@ -101,6 +101,7 @@ fn make_test_dlmm_pool(pool_byte: u8, mint_x_byte: u8, mint_y_byte: u8) -> PoolS
         reserve_out: 300_000_000_000,
         fee_numerator: 10,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Dlmm,

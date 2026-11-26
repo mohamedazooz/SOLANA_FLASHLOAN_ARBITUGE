@@ -162,16 +162,37 @@ impl TipStrategy {
     /// Returns the 75th percentile (p75) escalated by +25%.
     /// Empty input defaults to 100_000 micro-lamports.
     pub fn adaptive_cu_price(&self, recent_landed: &[u64]) -> u64 {
-        if recent_landed.is_empty() {
-            return 100_000;
-        }
-        let mut sorted: Vec<u64> = recent_landed.to_vec();
-        sorted.sort_unstable();
-        let idx = (sorted.len() * 3).div_ceil(4); // ceil p75
-        let idx = idx.min(sorted.len()).saturating_sub(1);
-        let p75 = sorted[idx];
-        p75 + (p75 / 4) // +25%
+        percentile_75_nonzero(recent_landed)
+            .map(|p| p.saturating_add(p / 4))
+            .unwrap_or(100_000)
     }
+
+    /// Combines confirmed landing evidence with the RPC's recent per-slot fee
+    /// floors. RPC samples are floors (not winning bids), so ignore zero-only
+    /// windows and add a modest 25% headroom; never let an RPC floor lower the
+    /// price learned from our own confirmed landings.
+    pub fn adaptive_cu_price_with_market(
+        &self,
+        recent_landed: &[u64],
+        recent_market_floors: &[u64],
+    ) -> u64 {
+        let landed = percentile_75_nonzero(recent_landed).map(|p| p.saturating_add(p / 4));
+        let market = percentile_75_nonzero(recent_market_floors).map(|p| p.saturating_add(p / 4));
+        landed.into_iter().chain(market).max().unwrap_or(100_000)
+    }
+}
+
+fn percentile_75_nonzero(samples: &[u64]) -> Option<u64> {
+    let mut sorted: Vec<u64> = samples.iter().copied().filter(|value| *value > 0).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_unstable();
+    let idx = (sorted.len() * 3)
+        .div_ceil(4)
+        .min(sorted.len())
+        .saturating_sub(1);
+    Some(sorted[idx])
 }
 
 /// Upper bound for the recent-landed-CU-price window fed to
@@ -967,6 +988,20 @@ mod tests {
         assert!(price >= 100_000);
         // empty default
         assert_eq!(ts.adaptive_cu_price(&[]), 100_000);
+    }
+
+    #[test]
+    fn adaptive_cu_price_uses_nonzero_market_floor_without_undercutting_landed() {
+        let ts = TipStrategy::new(5000, 100, 1000, 400);
+        assert_eq!(
+            ts.adaptive_cu_price_with_market(&[], &[0, 10_000, 20_000, 40_000]),
+            50_000
+        );
+        assert_eq!(
+            ts.adaptive_cu_price_with_market(&[80_000, 100_000], &[0, 1_000]),
+            125_000
+        );
+        assert_eq!(ts.adaptive_cu_price_with_market(&[], &[0, 0, 0]), 100_000);
     }
 
     #[test]

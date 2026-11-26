@@ -323,7 +323,39 @@ async fn main() -> Result<()> {
     let edge_count = graph.edges_by_from.values().map(|v| v.len()).sum::<usize>();
     info!("MarketGraph built: {edge_count} edges");
 
-    let opportunities = graph.find_base_cycles(slot, max_probe_lamports);
+    let (opportunities, cycle_stats) = graph.find_base_cycles_with_stats(slot, max_probe_lamports);
+    info!(
+        "Cycle scan: {} base anchor(s), {} gross-profitable 2-hop, {} gross-profitable 3-hop, {} rejected by verified economic gate, {} execution-eligible",
+        cycle_stats.base_anchors,
+        cycle_stats.two_hop_gross_profitable,
+        cycle_stats.three_hop_gross_profitable,
+        cycle_stats.gate_rejected,
+        cycle_stats.opportunities,
+    );
+    for rejected in &cycle_stats.rejected_cycles {
+        info!(
+            "REJECTED_CYCLE route={} base={:?} borrow_raw={} final_raw={} gross_raw={} hop_amounts_raw={:?}",
+            rejected.route_id,
+            rejected.base_mint,
+            rejected.borrow_amount_raw,
+            rejected.expected_final_amount_raw,
+            rejected.gross_profit_raw,
+            rejected.hop_amounts_raw,
+        );
+        for (index, hop) in rejected.hops.iter().enumerate() {
+            info!(
+                "  REJECTED_HOP route={} leg={} pool={:?} dex={:?} kind={:?} direction={:?}->{:?} dex_fee_bps={}",
+                rejected.route_id,
+                index + 1,
+                hop.pool_id,
+                hop.protocol,
+                hop.kind,
+                hop.from_mint,
+                hop.to_mint,
+                hop.fee_bps,
+            );
+        }
+    }
     info!("Detected {} arbitrage cycle(s)", opportunities.len());
     for opp in &opportunities {
         info!(
@@ -574,10 +606,28 @@ async fn main() -> Result<()> {
                     max_priority_share_bps,
                 );
                 let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
-                let flash_fee = calculate_flash_fee_raw(size, sf).unwrap_or(u64::MAX) as i128;
-                let costs =
-                    flash_fee + tip_lamports as i128 + base_fee as i128 + priority_fee as i128;
-                let net = gross - costs;
+                let flash_fee = calculate_flash_fee_raw(size, sf).unwrap_or(u64::MAX);
+                // The diagnostic route is explicitly WSOL-anchored, so its
+                // amounts and all execution liabilities are lamports. Still
+                // delegate PnL to the canonical evaluator: this keeps its
+                // rounding, signed-loss and overflow semantics aligned with
+                // the production Supervisor.
+                let net = arb_math::economic::calculate_net_profit_raw_signed(
+                    u64::try_from(back).unwrap_or(0),
+                    size,
+                    flash_fee,
+                    0, // DEX fees are reflected in the chained CPMM output
+                    0, // no separately charged Token-2022 transfer fees in this diagnostic
+                    0, // no account creation cost included
+                    0, // no additional verified raw costs
+                    Lamports(base_fee),
+                    Lamports(priority_fee),
+                    Lamports(tip_lamports),
+                    1,
+                    1,
+                )
+                .unwrap_or(i128::MIN);
+                let costs = gross.checked_sub(net).unwrap_or(i128::MAX);
                 let edge_bps = net as f64 / size as f64 * 10_000.0;
                 let hurdle = minimum_net_profit_hurdle_lamports(
                     Lamports(size),

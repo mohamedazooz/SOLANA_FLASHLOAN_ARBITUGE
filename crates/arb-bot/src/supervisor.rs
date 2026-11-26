@@ -9,7 +9,6 @@ use anyhow::Result;
 use arb_engine::MarketGraph;
 use arb_ingest::IngestClient;
 use arb_land::{BidderConfig, JitoLander, TipStrategy};
-use arb_math::economic::calculate_net_profit_raw;
 use arb_math::{RttTracker, SlotClock};
 use arb_risk::{CircuitBreaker, KillSwitch, RiskGate, RiskLimits};
 use arb_sim::{ForensicBundle, ForkSimulator, HopProvenance, Simulator};
@@ -45,6 +44,7 @@ use execution::max_state_age_slots;
 pub const BASE_FEE_LAMPORTS: u64 = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
 
 type CachedBlockhash = ([u8; 32], Instant, Option<i64>);
+type RecentPriorityMarketCu = Arc<parking_lot::Mutex<Option<(Vec<u64>, Instant)>>>;
 
 /// Refreshed by a low-frequency background task; dispatch only reads atomics.
 /// This keeps the SOL reserve guard out of the latency-sensitive HTTP-RPC path.
@@ -110,6 +110,9 @@ pub struct Supervisor {
     /// Bounded window fed ONLY by confirmed landings (dispatch.rs) — the p75+25%
     /// escalation in `adaptive_cu_price` never sees unconfirmed prices.
     recent_landed_cu: Arc<parking_lot::Mutex<Vec<u64>>>,
+    /// Fresh, background-refreshed RPC per-slot priority-fee floors (micro-lamports/CU).
+    /// Timestamped so stale observations never silently price a new opportunity.
+    recent_priority_market_cu: RecentPriorityMarketCu,
     simulator: Simulator,
     store: Arc<dyn Store>,
     intel_persistence: Option<Arc<arb_store::AsyncIntelligencePersistence>>,
@@ -362,6 +365,7 @@ impl Supervisor {
 
         // No synthetic CU seed: adaptive CU pricing learns only from measured observations.
         let recent_landed_cu = Arc::new(parking_lot::Mutex::new(Vec::<u64>::new()));
+        let recent_priority_market_cu = Arc::new(parking_lot::Mutex::new(None));
 
         let jito_lander = JitoLander::new(config.jito.regions.clone());
 
@@ -518,6 +522,7 @@ impl Supervisor {
                 arb_ingest::DependencyManifestRegistry::default(),
             ),
             recent_landed_cu,
+            recent_priority_market_cu,
             simulator,
             store,
             intel_persistence,
@@ -1597,6 +1602,7 @@ mod tests {
             reserve_out: 1,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: arb_types::PoolKind::Cpmm,

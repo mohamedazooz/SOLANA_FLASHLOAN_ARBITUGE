@@ -1114,6 +1114,7 @@ mod tests {
             reserve_out: 10_u128.pow(12),
             fee_numerator: 1,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Dlmm,

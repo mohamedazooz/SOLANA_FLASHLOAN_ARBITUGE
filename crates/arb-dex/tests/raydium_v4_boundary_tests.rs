@@ -30,6 +30,7 @@ fn make_v4_pool(
         reserve_out,
         fee_numerator: 25,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active,
         has_risky_token: false,
         kind: PoolKind::Cpmm,

@@ -237,7 +237,10 @@ pub struct HopTransferFeeBreakdown {
     pub input_gross: u64,
     pub input_transfer_fee: u64,
     pub input_net_into_pool: u64,
+    /// Gross tokens transferred from the pool vault before Token-2022 transfer fees.
     pub output_gross_from_pool: u64,
+    /// Amount debited from invariant curve reserves; differs when a protocol fee is retained in-vault.
+    pub output_curve_reserve_debit: u64,
     pub output_transfer_fee: u64,
     pub output_net_to_next_hop: u64,
 }

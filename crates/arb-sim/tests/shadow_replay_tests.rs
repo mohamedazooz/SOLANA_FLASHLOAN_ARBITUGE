@@ -53,6 +53,7 @@ fn mock_pool(id: &str, active_id: i32, x_reserve: u128, y_reserve: u128) -> Pool
         reserve_out: y_reserve,
         fee_numerator: 10,
         fee_denominator: 10_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Dlmm,

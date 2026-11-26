@@ -97,6 +97,7 @@ fn make_pool(
         reserve_out: 0,
         fee_numerator: 10_000,
         fee_denominator: 1_000_000_000,
+        raydium_cpmm_fee: None,
         is_active: true,
         has_risky_token: false,
         kind: PoolKind::Dlmm,

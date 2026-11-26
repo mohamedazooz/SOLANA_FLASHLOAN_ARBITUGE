@@ -236,6 +236,84 @@ pub fn lamports_to_base_raw(lamports: Lamports, rate_num: u128, rate_denom: u128
     u128::try_from(rounded).map_err(|_| ArbError::Overflow)
 }
 
+/// Aggregate every verified execution cost into base-mint raw units.
+///
+/// Token-denominated liabilities are summed as raw base units. Each lamport
+/// liability is converted independently with ceiling rounding, so no fee can
+/// be understated and every caller (quotes, integration adapters and gates)
+/// uses the same denomination and rounding policy.
+#[allow(clippy::too_many_arguments)]
+pub fn total_execution_costs_base_raw(
+    flash_fee_raw: u64,
+    dex_fees_raw: u64,
+    transfer_fees_raw: u64,
+    account_creation_cost_raw: u64,
+    other_verified_costs_raw: u64,
+    network_fee_lamports: Lamports,
+    priority_fee_lamports: Lamports,
+    jito_tip_lamports: Lamports,
+    lamports_to_base_mint_rate: u128,
+    lamports_to_base_rate_denom: u128,
+) -> Result<u128> {
+    let network_raw = lamports_to_base_raw(
+        network_fee_lamports,
+        lamports_to_base_mint_rate,
+        lamports_to_base_rate_denom,
+    )?;
+    let priority_raw = lamports_to_base_raw(
+        priority_fee_lamports,
+        lamports_to_base_mint_rate,
+        lamports_to_base_rate_denom,
+    )?;
+    let tip_raw = lamports_to_base_raw(
+        jito_tip_lamports,
+        lamports_to_base_mint_rate,
+        lamports_to_base_rate_denom,
+    )?;
+
+    let total = U256::from(flash_fee_raw)
+        .checked_add(U256::from(dex_fees_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(transfer_fees_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(account_creation_cost_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(other_verified_costs_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(network_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(priority_raw))
+        .ok_or(ArbError::Overflow)?
+        .checked_add(U256::from(tip_raw))
+        .ok_or(ArbError::Overflow)?;
+    u128::try_from(total).map_err(|_| ArbError::Overflow)
+}
+
+fn net_profit_from_total_costs(
+    final_received_raw: u64,
+    borrow_principal_raw: u64,
+    total_costs_raw: u128,
+) -> Result<i128> {
+    let gross_signed = signed_difference(
+        U256::from(final_received_raw),
+        U256::from(borrow_principal_raw),
+    )?;
+    if gross_signed >= 0 {
+        signed_difference(
+            U256::from(gross_signed as u128),
+            U256::from(total_costs_raw),
+        )
+    } else {
+        let loss = U256::from(gross_signed.unsigned_abs())
+            .checked_add(U256::from(total_costs_raw))
+            .ok_or(ArbError::Overflow)?;
+        i128::try_from(loss)
+            .map_err(|_| ArbError::Overflow)?
+            .checked_neg()
+            .ok_or(ArbError::Overflow)
+    }
+}
+
 fn signed_difference(lhs: U256, rhs: U256) -> Result<i128> {
     if lhs >= rhs {
         let magnitude = i128::try_from(lhs - rhs).map_err(|_| ArbError::Overflow)?;
@@ -312,6 +390,28 @@ pub fn base_raw_to_lamports_ceil(
         u64::try_from(rounded).map_err(|_| ArbError::Overflow)?,
     ))
 }
+/// Convert signed base-mint raw PnL into Lamports using the verified rational rate.
+///
+/// Positive PnL rounds DOWN (never overstates the edge available for a Jito bid);
+/// negative PnL rounds its absolute loss UP (never understates a shortfall).
+pub fn signed_base_raw_to_lamports(
+    base_raw_signed: i128,
+    rate_num: u128,
+    rate_denom: u128,
+) -> Result<i128> {
+    if base_raw_signed >= 0 {
+        let raw = u64::try_from(base_raw_signed).map_err(|_| ArbError::Overflow)?;
+        let lamports = base_raw_to_lamports(TokenAmount(raw), rate_num, rate_denom)?;
+        Ok(i128::from(lamports.as_u64()))
+    } else {
+        let raw = u64::try_from(base_raw_signed.unsigned_abs()).map_err(|_| ArbError::Overflow)?;
+        let lamports = base_raw_to_lamports_ceil(TokenAmount(raw), rate_num, rate_denom)?;
+        i128::from(lamports.as_u64())
+            .checked_neg()
+            .ok_or(ArbError::Overflow)
+    }
+}
+
 /// Ceiling share of `amount` at `per_hop_bps`, rounded up so any remainder
 /// reduces the returned floor rather than inflating it.
 fn ceil_bps_share(amount: u128, per_hop_bps: u64) -> Result<u128> {
@@ -393,59 +493,32 @@ pub fn build_economic_quote(
             "minimum output exceeds expected output".into(),
         ));
     }
-    let network_raw = lamports_to_base_raw(
+    let borrow = U256::from(borrow_amount_raw.as_u64());
+    let expected = U256::from(expected_final_amount_raw.as_u64());
+    let total_costs = U256::from(total_execution_costs_base_raw(
+        flash_loan_fee_raw.as_u64(),
+        dex_fees_raw.as_u64(),
+        transfer_fees_raw.as_u64(),
+        account_creation_cost_raw.as_u64(),
+        other_verified_costs_raw.as_u64(),
         network_fee_lamports,
-        lamports_to_base_mint_rate,
-        lamports_to_base_rate_denom,
-    )?;
-    let priority_raw = lamports_to_base_raw(
         priority_fee_lamports,
-        lamports_to_base_mint_rate,
-        lamports_to_base_rate_denom,
-    )?;
-    let tip_raw = lamports_to_base_raw(
         jito_tip_lamports,
         lamports_to_base_mint_rate,
         lamports_to_base_rate_denom,
-    )?;
+    )?);
 
-    let borrow = U256::from(borrow_amount_raw.as_u64());
-    let expected = U256::from(expected_final_amount_raw.as_u64());
-    let flash_fee = U256::from(flash_loan_fee_raw.as_u64());
-    let dex_fees = U256::from(dex_fees_raw.as_u64());
-    let transfer_fees = U256::from(transfer_fees_raw.as_u64());
-    let acct_cost = U256::from(account_creation_cost_raw.as_u64());
-    let other_costs = U256::from(other_verified_costs_raw.as_u64());
-    // Preserve losses as signed values; never turn an unprofitable route into Overflow.
     let gross_signed = signed_difference(expected, borrow)?;
-    let min_out = U256::from(minimum_final_amount_raw.as_u64());
-    let gross_min_signed = signed_difference(min_out, borrow)?;
-
-    // Total costs, each counted exactly once.
-    let total_costs = flash_fee
-        .checked_add(dex_fees)
-        .and_then(|v| v.checked_add(transfer_fees))
-        .and_then(|v| v.checked_add(U256::from(acct_cost)))
-        .and_then(|v| v.checked_add(U256::from(other_costs)))
-        .and_then(|v| v.checked_add(U256::from(network_raw)))
-        .and_then(|v| v.checked_add(U256::from(priority_raw)))
-        .and_then(|v| v.checked_add(U256::from(tip_raw)))
-        .ok_or(ArbError::Overflow)?;
-
-    let expected_net_signed = if gross_signed >= 0 {
-        signed_difference(U256::from(gross_signed as u128), total_costs)?
-    } else {
-        let loss = U256::from(gross_signed.unsigned_abs());
-        let total_loss = loss.checked_add(total_costs).ok_or(ArbError::Overflow)?;
-        -i128::try_from(total_loss).map_err(|_| ArbError::Overflow)?
-    };
-    let minimum_net_signed = if gross_min_signed >= 0 {
-        signed_difference(U256::from(gross_min_signed as u128), total_costs)?
-    } else {
-        let loss = U256::from(gross_min_signed.unsigned_abs());
-        let total_loss = loss.checked_add(total_costs).ok_or(ArbError::Overflow)?;
-        -i128::try_from(total_loss).map_err(|_| ArbError::Overflow)?
-    };
+    let expected_net_signed = net_profit_from_total_costs(
+        expected_final_amount_raw.as_u64(),
+        borrow_amount_raw.as_u64(),
+        u128::try_from(total_costs).map_err(|_| ArbError::Overflow)?,
+    )?;
+    let minimum_net_signed = net_profit_from_total_costs(
+        minimum_final_amount_raw.as_u64(),
+        borrow_amount_raw.as_u64(),
+        u128::try_from(total_costs).map_err(|_| ArbError::Overflow)?,
+    )?;
     let net_profit_raw = positive_projection(expected_net_signed)?;
     let gross_profit_raw = positive_projection(gross_signed)?;
     let meets_min_profit = minimum_net_signed >= i128::from(min_profit_raw.as_u64());
@@ -666,47 +739,19 @@ fn signed_net_profit(
     lamports_to_base_mint_rate: u128,
     lamports_to_base_rate_denom: u128,
 ) -> Result<i128> {
-    let network_raw = lamports_to_base_raw(
+    let total_costs = total_execution_costs_base_raw(
+        flash_fee_raw,
+        dex_fees_raw,
+        transfer_fees_raw,
+        account_creation_cost_raw,
+        other_verified_costs_raw,
         network_fee_lamports,
-        lamports_to_base_mint_rate,
-        lamports_to_base_rate_denom,
-    )?;
-    let priority_raw = lamports_to_base_raw(
         priority_fee_lamports,
-        lamports_to_base_mint_rate,
-        lamports_to_base_rate_denom,
-    )?;
-    let tip_raw = lamports_to_base_raw(
         jito_tip_lamports,
         lamports_to_base_mint_rate,
         lamports_to_base_rate_denom,
     )?;
-
-    // Signed ledger in i128: u64 components convert losslessly, and the
-    // lamport-denominated costs (u128 after rate conversion) are admitted
-    // only when they fit i128 — an absurd rate conversion fails closed
-    // instead of wrapping. No saturation, no wraparound, no swallowed zero.
-    let cost = |raw: u128| -> Result<i128> { i128::try_from(raw).map_err(|_| ArbError::Overflow) };
-
-    let gross = (final_received_raw as i128)
-        .checked_sub(borrow_principal_raw as i128)
-        .ok_or(ArbError::Overflow)?;
-
-    let network = cost(network_raw)?;
-    let priority = cost(priority_raw)?;
-    let tip = cost(tip_raw)?;
-
-    let total_costs = (flash_fee_raw as i128)
-        .checked_add(dex_fees_raw as i128)
-        .and_then(|v| v.checked_add(transfer_fees_raw as i128))
-        .and_then(|v| v.checked_add(account_creation_cost_raw as i128))
-        .and_then(|v| v.checked_add(other_verified_costs_raw as i128))
-        .and_then(|v| v.checked_add(network))
-        .and_then(|v| v.checked_add(priority))
-        .and_then(|v| v.checked_add(tip))
-        .ok_or(ArbError::Overflow)?;
-
-    gross.checked_sub(total_costs).ok_or(ArbError::Overflow)
+    net_profit_from_total_costs(final_received_raw, borrow_principal_raw, total_costs)
 }
 
 /// Calculate the Kamino flash loan fee in base-mint raw units from the raw
@@ -1141,6 +1186,23 @@ mod tests {
         // Zero rate fails closed
         assert!(base_raw_to_lamports(TokenAmount(1_000_000), 0, 1).is_err());
     }
+    #[test]
+    fn signed_base_raw_profit_conversion_rounds_conservatively() {
+        // Example USDC conversion at $180/SOL: 0.18 raw USDC units per lamport.
+        assert_eq!(
+            signed_base_raw_to_lamports(180, 180_000_000, 1_000_000_000).unwrap(),
+            1_000
+        );
+        assert_eq!(
+            signed_base_raw_to_lamports(-181, 180_000_000, 1_000_000_000).unwrap(),
+            -1_006
+        );
+        assert_eq!(signed_base_raw_to_lamports(1_000, 1, 1).unwrap(), 1_000);
+        assert_eq!(signed_base_raw_to_lamports(-1_000, 1, 1).unwrap(), -1_000);
+        assert!(signed_base_raw_to_lamports(1, 0, 1).is_err());
+        assert!(signed_base_raw_to_lamports(1, 1, 0).is_err());
+    }
+
     #[test]
     fn base_raw_to_lamports_ceil_never_understates_input_notional() {
         assert_eq!(

@@ -696,6 +696,7 @@ impl crate::IngestClient {
                 // Preserve the exact PPM fee ratio; graph metadata rounds up via fee_bps().
                 fee_numerator: total_ppm,
                 fee_denominator: 1_000_000,
+                raydium_cpmm_fee: None,
                 is_active: true,
                 has_risky_token: false,
                 kind: PoolKind::Cpmm,

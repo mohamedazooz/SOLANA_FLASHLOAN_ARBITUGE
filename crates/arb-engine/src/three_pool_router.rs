@@ -183,7 +183,10 @@ impl ThreePoolRouteEngine {
 
         let gross_output = current_amount;
 
-        // Kamino Flash Loan fee calculation: ceil(borrow * fee_bps / 10_000)
+        // This legacy router accepts a BPS estimate for borrow-size search only.
+        // The live supervisor recomputes the exact Kamino U68F60 fee from the
+        // verified reserve snapshot before any dispatch decision.
+        // Estimate: ceil(borrow * fee_bps / 10_000).
         let flash_loan_fee = if flash_fee_bps > 0 {
             // u128 product cannot overflow (u64 * u16), but the quotient can
             // exceed u64 for absurd borrow sizes: refuse instead of truncating
@@ -234,9 +237,28 @@ impl ThreePoolRouteEngine {
             .checked_add(priority_fee)
             .and_then(|v| v.checked_add(jito_tip))
             .ok_or(ArbError::Overflow)?;
-        let net_profit_lamports = gross_profit
-            .checked_sub(i64::try_from(total_costs).map_err(|_| ArbError::Overflow)?)
-            .ok_or(ArbError::Overflow)?;
+        // `gross_output` is already the chained quote result after each DEX
+        // fee and the configured per-hop Token-2022 transfer treatment. The
+        // per-hop fee breakdown above is forensic/reporting data in each mint;
+        // it must not be summed across denominations or deducted a second time.
+        // This route is WSOL-anchored (enforced above), so the verified
+        // lamport-to-base conversion is the identity (1/1).
+        let net_profit_signed = arb_math::economic::calculate_net_profit_raw_signed(
+            gross_output,
+            borrow_amount,
+            flash_loan_fee,
+            0, // DEX fees are already reflected in the chained quote
+            0, // Token-2022 transfer fees are already reflected in quote outputs
+            0, // no separate account-creation cost in this route estimate
+            0, // no additional verified token-denominated cost in this route estimate
+            arb_types::Lamports(network_fee),
+            arb_types::Lamports(priority_fee),
+            arb_types::Lamports(jito_tip),
+            1,
+            1,
+        )?;
+        let net_profit_lamports =
+            i64::try_from(net_profit_signed).map_err(|_| ArbError::Overflow)?;
         let is_profitable = net_profit_lamports >= (DEFAULT_MIN_NET_PROFIT_LAMPORTS as i64);
 
         // Estimate transaction size: Base header (64 bytes) + Kamino borrow/repay (2 * 150) + Hops (hops.len * 200)

@@ -454,6 +454,63 @@ impl PumpFunState {
     }
 }
 
+/// Exact Raydium CPMM fee schedule and per-pool creator-fee routing.
+/// Rates use the on-chain 1_000_000 denominator; protocol/fund rates are
+/// shares of the trade fee, while creator_fee_rate_ppm is a separate volume rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaydiumCpmmFeeState {
+    pub trade_fee_rate_ppm: u64,
+    pub creator_fee_rate_ppm: u64,
+    pub protocol_fee_rate: u64,
+    pub fund_fee_rate: u64,
+    pub enable_creator_fee: bool,
+    /// 0 = BothToken, 1 = OnlyToken0, 2 = OnlyToken1.
+    pub creator_fee_on: u8,
+}
+
+impl RaydiumCpmmFeeState {
+    pub fn is_valid(&self) -> bool {
+        const DENOMINATOR: u64 = 1_000_000;
+        self.trade_fee_rate_ppm < DENOMINATOR
+            && self.creator_fee_rate_ppm < DENOMINATOR
+            && (!self.enable_creator_fee
+                || self
+                    .trade_fee_rate_ppm
+                    .checked_add(self.creator_fee_rate_ppm)
+                    .is_some_and(|r| r < DENOMINATOR))
+            && self.protocol_fee_rate <= DENOMINATOR
+            && self.fund_fee_rate <= DENOMINATOR
+            && self
+                .protocol_fee_rate
+                .checked_add(self.fund_fee_rate)
+                .is_some_and(|r| r <= DENOMINATOR)
+            && self.creator_fee_on <= 2
+    }
+
+    pub fn creator_fee_on_input(&self, a_to_b: bool) -> Option<bool> {
+        if !self.is_valid() {
+            return None;
+        }
+        if !self.enable_creator_fee || self.creator_fee_rate_ppm == 0 {
+            return Some(true);
+        }
+        match self.creator_fee_on {
+            0 => Some(true),
+            1 => Some(a_to_b),
+            2 => Some(!a_to_b),
+            _ => None,
+        }
+    }
+
+    pub fn effective_creator_fee_rate(&self) -> u64 {
+        if self.enable_creator_fee {
+            self.creator_fee_rate_ppm
+        } else {
+            0
+        }
+    }
+}
+
 /// Canonical pool state across all DEX protocols.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolState {
@@ -475,6 +532,10 @@ pub struct PoolState {
     /// Exact protocol fee-rate denominator (10_000 for bps venues, 1_000_000
     /// for Raydium CPMM/CLMM). Quote engines must use this pair, not fee_bps().
     pub fee_denominator: u64,
+    /// Raydium CPMM's separate trade/creator fee schedule and direction mode.
+    /// `None` for other venues and for legacy/unverified CPMM snapshots.
+    #[serde(default)]
+    pub raydium_cpmm_fee: Option<RaydiumCpmmFeeState>,
     pub is_active: bool,
     /// Token-2022 safety: true if either mint has a risky extension
     /// (transfer fee, transfer hook, permanent delegate, non-transferable,

@@ -604,14 +604,31 @@ pub fn net_profit_lamports(
     network_cost_lamports: u64,
 ) -> i64 {
     let flash_fee = calculate_kamino_flash_fee(borrow, flash_fee_sf);
-    let net_i128 = i128::from(final_output)
-        - i128::from(borrow)
-        - i128::from(flash_fee)
-        - i128::from(network_cost_lamports);
-    if net_i128 > i128::from(i64::MAX) {
-        i64::MAX
-    } else {
-        i64::try_from(net_i128).unwrap_or(i64::MIN)
+    // This sizing path is explicitly WSOL-denominated: all amounts and the
+    // combined network-cost input are lamports, so the canonical rational
+    // conversion is the identity 1/1. Preserve a signed shortfall; any
+    // calculation error fails closed as the most negative representable value.
+    let net_i128 = match arb_math::economic::calculate_net_profit_raw_signed(
+        final_output,
+        borrow,
+        flash_fee,
+        0, // DEX fees are already reflected in the chained quote output
+        0, // transfer fees are already reflected in the per-leg minimum outputs
+        0, // no separate account-creation charge in this sizing model
+        0, // network/priority/tip are supplied together as lamports below
+        arb_types::Lamports(network_cost_lamports),
+        arb_types::Lamports(0),
+        arb_types::Lamports(0),
+        1,
+        1,
+    ) {
+        Ok(value) => value,
+        Err(_) => return i64::MIN,
+    };
+    match i64::try_from(net_i128) {
+        Ok(value) => value,
+        Err(_) if net_i128.is_negative() => i64::MIN,
+        Err(_) => i64::MAX,
     }
 }
 
@@ -915,6 +932,7 @@ mod tests {
             reserve_out: 0,
             fee_numerator: 25,
             fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
             is_active: true,
             has_risky_token: false,
             kind: PoolKind::Dlmm,

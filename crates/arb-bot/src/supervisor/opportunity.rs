@@ -262,8 +262,17 @@ impl Supervisor {
                 None => arb_tx::calculate_dynamic_cu_limit(estimated_cu),
             };
             let desired_cu_price = {
-                let recent = self.recent_landed_cu.lock().clone();
-                self.tip_strategy.adaptive_cu_price(&recent)
+                let landed = self.recent_landed_cu.lock().clone();
+                let fresh_market = {
+                    let market = self.recent_priority_market_cu.lock();
+                    market
+                        .as_ref()
+                        .filter(|(_, sampled_at)| sampled_at.elapsed() <= Duration::from_secs(12))
+                        .map(|(samples, _)| samples.clone())
+                        .unwrap_or_default()
+                };
+                self.tip_strategy
+                    .adaptive_cu_price_with_market(&landed, &fresh_market)
             };
             // Dynamic priority fee ceiling: scales adaptively between base_share and max_share
             // according to real-time competition factor observed by TipOracle.
@@ -299,23 +308,50 @@ impl Supervisor {
                 .collect::<Vec<_>>()
                 .join(" → ");
 
-            // Fail-closed: if costs exceed gross, reject instead of saturating to 0.
-            // F-07 observability: the SAME ledger is computed in signed i128 so a
-            // rejection due to costs exceeding gross records the PRECISE
-            // negative pre-tip PnL instead of a bare reason string. The
-            // eligibility decision below is unchanged (still fail-closed):
-            // negative or overflowing signed nets map to `None` exactly like
-            // the previous `checked_sub` ladder did.
-            let net_before_tip_signed = gross as i128
-                - flash_fee_raw as i128
-                - BASE_FEE_LAMPORTS as i128
-                - priority_fee_lamports as i128;
+            // Evaluate pre-tip PnL in base-mint raw units first. Flash fee is a
+            // base-mint liability; base/priority fees are lamports and are converted
+            // by the canonical economic model at the verified rational rate.
+            let net_before_tip_base_raw_signed =
+                match arb_math::economic::calculate_net_profit_raw_signed(
+                    opp.expected_out.as_u64(),
+                    opp.size_in.as_u64(),
+                    flash_fee_raw,
+                    0, // DEX fees are already reflected in expected_out
+                    0, // transfer fees are rejected by the verified-zero tripwire below
+                    0, // account creation costs are not charged in this route model
+                    0, // no additional verified costs supplied by this route
+                    Lamports(BASE_FEE_LAMPORTS),
+                    Lamports(priority_fee_lamports),
+                    Lamports(0), // pre-tip edge: Jito tip has not been selected yet
+                    verified.lamports_per_base_raw.value,
+                    verified.lamports_per_base_denom.value,
+                ) {
+                    Ok(net) => net,
+                    Err(error) => {
+                        warn!("Pre-tip economic calculation failed closed: {error}");
+                        continue;
+                    }
+                };
+            // Bid policy and configured floors are in lamports. Convert the
+            // already-netted PnL once; positive edge rounds down, losses round up.
+            let net_before_tip_signed = match arb_math::economic::signed_base_raw_to_lamports(
+                net_before_tip_base_raw_signed,
+                verified.lamports_per_base_raw.value,
+                verified.lamports_per_base_denom.value,
+            ) {
+                Ok(net) => net,
+                Err(error) => {
+                    warn!("Pre-tip PnL denomination conversion failed closed: {error}");
+                    continue;
+                }
+            };
             let net_before_tip = u64::try_from(net_before_tip_signed).ok();
-            let Some(net_before_tip) = net_before_tip else {
+            let Some(net_before_tip) = net_before_tip.filter(|net| *net > 0) else {
                 tracing::info!(
                     target: "arb_events",
-                    "OPPORTUNITY_REJECTED: route={} stage=CostsExceedGross reason=Costs exceed gross net_signed={} shortfall_signed={} gross={} flash_fee={} base_fee={} priority_fee={} slot={} slippage_bps={} pools={}",
+                    "OPPORTUNITY_REJECTED: route={} stage=CostsExceedGross reason=Costs exceed gross net_base_raw_signed={} net_lamports_signed={} shortfall_lamports_signed={} gross_lamports={} flash_fee_base_raw={} base_fee_lamports={} priority_fee_lamports={} slot={} slippage_bps={} pools={}",
                     route_label,
+                    net_before_tip_base_raw_signed,
                     net_before_tip_signed,
                     net_before_tip_signed.min(0),
                     gross,
@@ -326,7 +362,7 @@ impl Supervisor {
                     opp.hop_slippage_bps,
                     opp.hops.iter().map(|h| h.pool_id.0.to_string()).collect::<Vec<_>>().join(",")
                 );
-                debug!("Opportunity rejected: costs exceed gross profit (fail-closed)");
+                debug!("Opportunity rejected: pre-tip costs consume the gross edge (fail-closed)");
                 continue;
             };
 
@@ -533,11 +569,11 @@ impl Supervisor {
                 debug!("Opportunity skipped: route carries unverified Token-2022 transfer fees");
                 continue;
             }
-            let real_net_base_raw = calculate_net_profit_raw(
+            let real_net_base_raw_signed = arb_math::economic::calculate_net_profit_raw_signed(
                 opp.expected_out.as_u64(),
                 opp.size_in.as_u64(),
                 flash_fee_raw,
-                0, // dex fees already inside expected_out
+                0, // DEX fees are already reflected in expected_out
                 0, // transfer fees
                 0, // account creation
                 0, // other verified costs
@@ -547,23 +583,10 @@ impl Supervisor {
                 verified.lamports_per_base_raw.value,
                 verified.lamports_per_base_denom.value,
             )
-            .ok()
-            .filter(|net| *net > 0);
-            let real_net_base_raw_signed = arb_math::economic::calculate_net_profit_raw_signed(
-                opp.expected_out.as_u64(),
-                opp.size_in.as_u64(),
-                flash_fee_raw,
-                0,
-                0,
-                0,
-                0,
-                Lamports(BASE_FEE_LAMPORTS),
-                Lamports(priority_fee_lamports),
-                tip,
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
-            )
             .ok();
+            let real_net_base_raw = real_net_base_raw_signed
+                .and_then(|net| u64::try_from(net).ok())
+                .filter(|net| *net > 0);
             let Some(real_net_base_raw) = real_net_base_raw else {
                 tracing::info!(
                     target: "arb_events",
@@ -625,6 +648,24 @@ impl Supervisor {
                 }
                 continue;
             };
+            let real_net_profit_lamports = match arb_math::economic::base_raw_to_lamports(
+                arb_types::TokenAmount(real_net_base_raw),
+                verified.lamports_per_base_raw.value,
+                verified.lamports_per_base_denom.value,
+            ) {
+                Ok(value) if value.as_u64() > 0 => value,
+                Ok(_) => {
+                    debug!(
+                        "Opportunity rejected: positive base-raw PnL converts to less than one lamport"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    warn!("Net PnL conversion to lamports failed closed: {error}");
+                    continue;
+                }
+            };
+
             // Implausibility gate: implied ROI vs input size above a hard ceiling
             // cannot be a real edge - it is a stale/inconsistent quote artifact
             // (Phase 15.2 anomaly: ~965% ROI from stale pools). Holds regardless of
@@ -1840,7 +1881,7 @@ impl Supervisor {
                 cu_price,
                 tx_bytes: &tx_bytes,
                 record: &record,
-                real_net_profit: Lamports(real_net_base_raw),
+                real_net_profit: real_net_profit_lamports,
                 payer,
                 route_sig: &route_sig,
                 t_ingest_to_quote_us,

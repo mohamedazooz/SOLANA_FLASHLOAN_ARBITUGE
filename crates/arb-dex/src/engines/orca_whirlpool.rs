@@ -11,7 +11,9 @@
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID;
-use arb_math::clmm::{TickArrayFacade, TickFacade, compute_swap, orca_tick_array_start_indexes};
+use arb_math::clmm::{
+    TickArrayFacade, TickFacade, compute_whirlpool_swap, orca_tick_array_start_indexes,
+};
 use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -142,7 +144,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
         })?;
 
         // 3. Compute CLMM swap step traversal
-        let swap_quote = compute_swap(
+        let swap_quote = compute_whirlpool_swap(
             clmm_state.sqrt_price,
             clmm_state.tick_current,
             clmm_state.liquidity,
@@ -202,6 +204,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
                 input_transfer_fee,
                 input_net_into_pool,
                 output_gross_from_pool: gross_out,
+                output_curve_reserve_debit: gross_out,
                 output_transfer_fee,
                 output_net_to_next_hop,
             },

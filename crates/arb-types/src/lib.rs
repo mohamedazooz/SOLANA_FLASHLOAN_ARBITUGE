@@ -65,6 +65,7 @@ mod address_conflict_regression_tests {
                 reserve_out: 1_000_000,
                 fee_numerator,
                 fee_denominator,
+                raydium_cpmm_fee: None,
                 is_active: true,
                 has_risky_token: false,
                 kind: PoolKind::Cpmm,

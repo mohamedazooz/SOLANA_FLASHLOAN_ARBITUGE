@@ -248,7 +248,17 @@ impl Supervisor {
         );
         let effective_cu_limit = arb_tx::calculate_dynamic_cu_limit(estimated_cu);
         let recent_landed_cu = self.recent_landed_cu.lock().clone();
-        let desired_cu_price = self.tip_strategy.adaptive_cu_price(&recent_landed_cu);
+        let fresh_market = {
+            let market = self.recent_priority_market_cu.lock();
+            market
+                .as_ref()
+                .filter(|(_, sampled_at)| sampled_at.elapsed() <= Duration::from_secs(12))
+                .map(|(samples, _)| samples.clone())
+                .unwrap_or_default()
+        };
+        let desired_cu_price = self
+            .tip_strategy
+            .adaptive_cu_price_with_market(&recent_landed_cu, &fresh_market);
         let competition_factor = self.jito_service.competition_factor();
         let priority_fee_max_share_bps = ((self.config.strategy.priority_fee_base_share_bps as f64
             * competition_factor) as u64)
@@ -951,6 +961,65 @@ impl Supervisor {
             )
             .await;
         self.emit_market_snapshot(reported_seed_slot, true).await;
+
+        // 3b. Side-band priority-fee market sampler. Solana retains up to 150
+        // slots; query active writable pool accounts (max 128) rather than the
+        // network-wide floor, which is commonly zero. This worker is isolated
+        // from quote/dispatch and uses RpcPool's throttling + provider failover.
+        let priority_rpc = self.rpc_pool.clone();
+        let priority_ingest = Arc::clone(&self.ingest);
+        let priority_cache = Arc::clone(&self.recent_priority_market_cu);
+        let cancel_priority = cancel_token.clone();
+        tokio::spawn(async move {
+            let cadence = Duration::from_secs(3);
+            let mut interval =
+                tokio::time::interval_at(tokio::time::Instant::now() + cadence, cadence);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = cancel_priority.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                let mut accounts: Vec<String> = priority_ingest
+                    .snapshot()
+                    .snapshot_pools()
+                    .into_iter()
+                    .map(|pool| pool.pool_id.0.to_string())
+                    .collect();
+                accounts.sort_unstable();
+                accounts.dedup();
+                accounts.truncate(128);
+                if accounts.is_empty() {
+                    continue;
+                }
+                match priority_rpc
+                    .call("getRecentPrioritizationFees", serde_json::json!([accounts]))
+                    .await
+                {
+                    Ok(result) => {
+                        let mut samples: Vec<u64> = result
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|sample| {
+                                sample
+                                    .get("prioritizationFee")
+                                    .and_then(serde_json::Value::as_u64)
+                            })
+                            .collect();
+                        if samples.len() > 150 {
+                            samples.drain(..samples.len() - 150);
+                        }
+                        if !samples.is_empty() {
+                            *priority_cache.lock() = Some((samples, Instant::now()));
+                        }
+                    }
+                    Err(error) => tracing::debug!(
+                        "priority fee sampler unavailable; retaining only fresh cache/landed evidence: {error}"
+                    ),
+                }
+            }
+        });
 
         // 4. Multi-DEX active reserve ingestion worker (WS slot-driven + 750ms cadence, batch-100 parallel)
         let registry_worker = Arc::clone(&self.registry);
