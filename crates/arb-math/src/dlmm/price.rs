@@ -132,7 +132,9 @@ pub(super) fn calculate_price_impact_bps(
     }
 
     let diff = ideal_out.saturating_sub(amount_out);
-    let bps = (U256::from(diff) * U256::from(10_000)) / U256::from(ideal_out);
+    let numerator = U256::from(diff) * U256::from(10_000);
+    let denominator = U256::from(ideal_out);
+    let bps = (numerator + denominator - U256::from(1u8)) / denominator;
     let val = u16::try_from(bps.to::<u64>().min(10_000)).unwrap_or(10_000);
     Bps(val)
 }

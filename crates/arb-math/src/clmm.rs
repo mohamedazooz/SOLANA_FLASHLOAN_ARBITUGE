@@ -7,6 +7,7 @@
 //! - Strict price ordering: Token A = min(mint1, mint2), Token B = max(mint1, mint2)
 //! - TickArray binary layout parsing and initialized tick traversal replacing 8-tick jump heuristic
 
+use crate::cpmm::U512;
 use ruint::aliases::U256;
 use thiserror::Error;
 
@@ -1286,6 +1287,48 @@ pub fn update_liquidity_on_cross(
     }
 }
 
+/// Price impact relative to the initial marginal pool price, excluding swap
+/// and Token-2022 transfer fees. Inputs/outputs are pool-side raw token amounts.
+///
+/// sqrt_price_x64 is the initial token-B-per-token-A square-root price. All
+/// arithmetic is integer-only; U512 is required because amount * sqrt_price^2
+/// can exceed 256 bits for valid Q64.64 prices and u64 token amounts.
+pub fn clmm_price_impact_bps(
+    amount_in_fee_free: u64,
+    amount_out_fee_free: u64,
+    sqrt_price_x64: u128,
+    a_to_b: bool,
+) -> arb_types::Bps {
+    if amount_in_fee_free == 0 || amount_out_fee_free == 0 || sqrt_price_x64 == 0 {
+        return arb_types::Bps(10_000);
+    }
+
+    let sqrt = U512::from(sqrt_price_x64);
+    let price_q128 = sqrt * sqrt;
+    if price_q128.is_zero() {
+        return arb_types::Bps(10_000);
+    }
+
+    let input = U512::from(amount_in_fee_free);
+    let ideal_output: U512 = if a_to_b {
+        (input * price_q128) >> 128
+    } else {
+        (input << 128) / price_q128
+    };
+    if ideal_output.is_zero() {
+        return arb_types::Bps(10_000);
+    }
+
+    let actual_output = U512::from(amount_out_fee_free);
+    if actual_output >= ideal_output {
+        return arb_types::Bps(0);
+    }
+
+    let impact_numerator = (ideal_output - actual_output) * U512::from(10_000u64);
+    let impact = (impact_numerator + ideal_output - U512::from(1u8)) / ideal_output;
+    arb_types::Bps(u16::try_from(impact.to::<u64>().min(10_000)).unwrap_or(10_000))
+}
+
 /// End-to-end multi-step swap calculation across tick arrays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WhirlpoolQuote {
@@ -2023,6 +2066,28 @@ mod tests {
         // Edge case: current >= upper returns 0
         assert_eq!(clmm_max_delta_y_in_tick(p_upper, p_curr, l), Some(0));
         assert_eq!(clmm_max_delta_y_in_tick(p_curr, p_curr, l), Some(0));
+    }
+
+    #[test]
+    fn clmm_price_impact_uses_initial_spot_and_excludes_fees() {
+        let q64 = 1u128 << 64;
+        assert_eq!(
+            clmm_price_impact_bps(1_000, 990, q64, true),
+            arb_types::Bps(100),
+        );
+        assert_eq!(
+            clmm_price_impact_bps(1_000, 990, q64, false),
+            arb_types::Bps(100),
+        );
+        let sqrt_two_q64 = 26_087_638_317_181_869_225u128;
+        let ideal_y: u64 =
+            ((U512::from(1_000u64) * U512::from(sqrt_two_q64) * U512::from(sqrt_two_q64))
+                >> 128u32)
+                .to::<u64>();
+        assert_eq!(
+            clmm_price_impact_bps(1_000, ideal_y * 99 / 100, sqrt_two_q64, true),
+            arb_types::Bps(100),
+        );
     }
 
     #[test]

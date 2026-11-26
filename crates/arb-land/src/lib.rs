@@ -22,8 +22,11 @@ pub use tip_oracle::{DEFAULT_MAX_AGE_MS, TIP_FLOOR_URL, TipOracle, now_ms, parse
 
 use arb_math::pick_tip;
 use arb_types::{ArbError, InflightStatus, Lamports, Result as ArbResult, Slot};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use solana_pubkey::Pubkey;
+use std::future::Future;
 use tracing::debug;
 
 /// Default Jito regional Block Engine endpoints (Amsterdam, Frankfurt, NY) for ultra-low latency fanout.
@@ -209,6 +212,24 @@ pub fn record_landed_cu_price(window: &mut Vec<u64>, cu_price_micro_lamports: u6
     while window.len() > RECENT_LANDED_CU_WINDOW {
         window.remove(0);
     }
+}
+
+async fn first_success<T, F>(requests: Vec<F>, context: &str) -> ArbResult<T>
+where
+    F: Future<Output = ArbResult<T>>,
+{
+    let mut pending: FuturesUnordered<F> = requests.into_iter().collect();
+    let mut errors = Vec::new();
+    while let Some(result) = pending.next().await {
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) => errors.push(error.to_string()),
+        }
+    }
+    Err(ArbError::Internal(format!(
+        "All {context} requests failed: [{}]",
+        errors.join(" | ")
+    )))
 }
 
 #[derive(Clone)]
@@ -529,18 +550,7 @@ impl JitoLander {
             })
             .collect();
 
-        let results = futures::future::join_all(futures).await;
-        let mut err_details = Vec::new();
-        for res in results {
-            match res {
-                Ok(bundle_id) => return Ok(bundle_id),
-                Err(e) => err_details.push(e.to_string()),
-            }
-        }
-        Err(ArbError::Internal(format!(
-            "All Jito block engines failed to accept bundle: [{}]",
-            err_details.join(" | ")
-        )))
+        first_success(futures, "Jito block-engine").await
     }
 
     pub async fn send_bundle_multi_region(
@@ -808,18 +818,7 @@ pub async fn send_bundle_multi_region_authed(
         })
         .collect();
 
-    let results = futures::future::join_all(futures).await;
-    let mut err_details = Vec::new();
-    for res in results {
-        match res {
-            Ok(bundle_id) => return Ok(bundle_id),
-            Err(e) => err_details.push(e.to_string()),
-        }
-    }
-    Err(ArbError::Internal(format!(
-        "All Jito regional Block Engines failed to accept bundle: [{}]",
-        err_details.join(" | ")
-    )))
+    first_success(futures, "Jito regional Block Engine").await
 }
 
 pub struct BundleTracker {
@@ -884,6 +883,45 @@ pub fn parse_inflight_statuses(value: &Value) -> Vec<InflightStatus> {
 
 #[cfg(test)]
 mod tests {
+    use super::first_success;
+    use arb_types::ArbError;
+    use futures::future::BoxFuture;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn first_success_returns_without_waiting_for_slow_regions() {
+        let requests: Vec<BoxFuture<'static, crate::ArbResult<&'static str>>> = vec![
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                Err(ArbError::Internal("slow region failed".into()))
+            }),
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Ok("fast-region-bundle-id")
+            }),
+        ];
+        let started = Instant::now();
+        let result = first_success(requests, "test region").await.unwrap();
+        assert_eq!(result, "fast-region-bundle-id");
+        assert!(
+            started.elapsed() < Duration::from_millis(250),
+            "fanout waited for a slow request: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn first_success_keeps_all_errors_when_every_region_fails() {
+        let requests: Vec<BoxFuture<'static, crate::ArbResult<&'static str>>> = vec![
+            Box::pin(async { Err(ArbError::Internal("region-a".into())) }),
+            Box::pin(async { Err(ArbError::Internal("region-b".into())) }),
+        ];
+        let error = first_success(requests, "test region").await.unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("region-a"));
+        assert!(message.contains("region-b"));
+    }
+
     use super::*;
 
     #[test]

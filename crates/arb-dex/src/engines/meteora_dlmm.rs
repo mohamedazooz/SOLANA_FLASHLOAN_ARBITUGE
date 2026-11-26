@@ -145,9 +145,24 @@ impl MeteoraDlmmQuoteEngine {
             return Err(ArbError::ZeroAmount);
         }
         let (pool_math_state, bins) = Self::build_dlmm_math_state_from_parts(dlmm_state, pool_id)?;
-        let quote = quote_dlmm_view(&pool_math_state, &bins, amount_in, swap_for_y, None).map_err(
-            |error| ArbError::CalculationError(format!("Meteora DLMM math error: {error:?}")),
-        )?;
+        Self::quote_exact_in_from_view(&pool_math_state, &bins, amount_in, swap_for_y)
+    }
+
+    /// Canonical exact-in quote over an already decoded route-local view.
+    /// The market graph uses this entry point with its immutable bin cache, so
+    /// optimizer samples share one decoded snapshot and one set of fee rules.
+    pub fn quote_exact_in_from_view(
+        pool: &DlmmPoolState,
+        bins: &[DlmmBin],
+        amount_in: u64,
+        swap_for_y: bool,
+    ) -> Result<arb_math::dlmm::DlmmSwapQuote> {
+        if amount_in == 0 {
+            return Err(ArbError::ZeroAmount);
+        }
+        let quote = quote_dlmm_view(pool, bins, amount_in, swap_for_y, None).map_err(|error| {
+            ArbError::CalculationError(format!("Meteora DLMM math error: {error:?}"))
+        })?;
         if quote.amount_in != amount_in {
             return Err(ArbError::InsufficientLiquidity(format!(
                 "Meteora DLMM consumed {} of {} input raw units",

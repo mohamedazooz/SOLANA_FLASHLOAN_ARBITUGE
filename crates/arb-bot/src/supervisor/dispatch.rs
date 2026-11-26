@@ -560,10 +560,7 @@ impl Supervisor {
                                 sim_us, sim_res.units_consumed
                             );
                             if sim_res.status == arb_sim::SimulationStatus::Passed {
-                                self.measured_cu.lock().insert(
-                                    route_sig.to_owned(),
-                                    u32::try_from(sim_res.units_consumed).unwrap_or(u32::MAX),
-                                );
+                                self.record_measured_route_cu(route_sig, sim_res.units_consumed);
                                 preflight_cu = Some(sim_res.units_consumed);
                             }
                             if sim_res.status != arb_sim::SimulationStatus::Passed {
@@ -642,10 +639,7 @@ impl Supervisor {
                                     }
                                     let units_consumed = fallback.units_consumed;
                                     if units_consumed > 0 {
-                                        self.measured_cu.lock().insert(
-                                            route_sig.to_owned(),
-                                            u32::try_from(units_consumed).unwrap_or(u32::MAX),
-                                        );
+                                        self.record_measured_route_cu(route_sig, units_consumed);
                                         preflight_cu = Some(units_consumed);
                                     }
                                     info!(

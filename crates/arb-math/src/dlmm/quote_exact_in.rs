@@ -100,9 +100,26 @@ pub fn quote_dlmm_multi_bin(
         }
     }
 
-    // Price impact calculation in basis points
+    // Price impact is curve movement only, not the protocol's trading fee.
+    // CollectFeeMode may charge the fee on input or output; normalize both
+    // paths to fee-free pool-side amounts before comparing with starting spot.
+    let (impact_input, impact_output) = if fee_on_input {
+        (
+            amount_in
+                .checked_sub(total_fee)
+                .ok_or(DlmmError::MathOverflow)?,
+            total_out,
+        )
+    } else {
+        (
+            amount_in,
+            total_out
+                .checked_add(total_fee)
+                .ok_or(DlmmError::MathOverflow)?,
+        )
+    };
     let price_impact_bps =
-        calculate_price_impact_bps(amount_in, total_out, start_price, swap_for_y);
+        calculate_price_impact_bps(impact_input, impact_output, start_price, swap_for_y);
 
     Ok(DlmmSwapQuote {
         amount_in,

@@ -1,85 +1,89 @@
-# DEX Pricing & Fee Reference — Protocol Math vs. Repo Implementation
+# DEX Pricing & Fee Reference — Forensic Audit
 
-Date: 2026-11-26
-Baseline: `main` at `9e389e4` (merge of PR #175). Audit branch: `vibe/forensic-pricing-fee-audit-1b099c`.
-Author: forensic pricing/fee audit pass (external reference research + repo trace).
+**Audit date:** 2026-11-26
+**Branch:** `feat/forensic-pricing-fee-unification`
+**Scope:** Every DEX adapter and quote engine in `crates/arb-dex`, `crates/arb-math`, and `crates/arb-engine`.
+**Method:** Static code inspection of the current tree (no reliance on prior reports). Source code is the authority; documentation is descriptive only.
 
-**Honesty boundary.** This document records what was actually verified by reading
-upstream source at the cited commits and comparing it with this repository's
-code and test suites. It does NOT claim live-mainnet parity for any venue.
-"Support status" reflects the repo's own fail-closed gating
-(`crates/arb-dex/src/engines/mod.rs`, `UniversalQuoteDispatcher`), not a
-marketing claim.
+> **Honesty note.** This audit did **not** perform a live Mainnet differential
+> against official protocol SDKs in this session. Commit SHAs below are left as
+> "unpinned" where they could not be verified from the local checkout. A
+> follow-up pass must pin them and record exact SDK versions used for differential
+> vectors (see `OPEN_ISSUES.md` DEX-F-2026-11-25-N2).
 
----
+## 1. Common quote contract (`crates/arb-dex/src/quote_engine.rs`)
 
-## 1. Per-protocol pricing & fee matrix
+All adapters implement `QuoteEngine` with:
 
-| البروتوكول | نوع التسعير | مصدر السعر | طريقة احتساب الرسوم | مكان خصم الرسوم | التقريب | الحسابات المطلوبة | حالة الدعم |
+- `quote_exact_in(state, request) -> QuoteResult`
+- `quote_exact_out(state, request) -> QuoteResult`
+
+`QuoteResult` carries `amount_in_raw`, `amount_out_raw`, `minimum_amount_out_raw`,
+`total_fee_mint`, `creator_fee_mint`, `fees_breakdown`, `transfer_fee_breakdown`,
+`price_impact`, `unfilled_input_raw`, `required_accounts`, `state_slot`,
+`state_hash`, `calculation_version`. `QuoteRequest::validate` enforces:
+pool active, non-zero amount, slippage ≤ 10000 bps, distinct mints, mint
+orientation matches pool, risky-token rejection, family match, Token-2022
+schedule presence/absence consistency, transfer-fee bps ≤ 10000.
+
+**Invariant (enforced by tests, not by construction):** if `amount_out_raw` already
+reflects DEX fees + Token-2022 output transfer fee, the profit engine MUST NOT
+subtract them again. See `economic.rs` and the fee-ledger section of
+`HARDCODED_VALUES_AUDIT.md`.
+
+## 2. Protocol table
+
+| Protocol | Pricing type | Price source | Fee computation | Fee deduction side | Rounding | Required accounts | Support status |
 |---|---|---|---|---|---|---|---|
-| Meteora DLMM | Bin ladder exact (discrete bins, Q64.64 bin price) | Active bin id + bin arrays; `get_price_from_id` (`arb-math/src/dlmm/`) | Per-bin `compute_total_fee_rate` = base fee (`base_fee_power_factor`) + variable fee (`variable_fee_control × (VA × bin_step)²` / 1e11, ceil); protocol fee split from `fee_amount × protocol_share_bps` | On input token when `collect_fee_mode=0` (fee-on-input for X→Y in that mode); fee taken per bin during traversal, included in `amount_out` | Fee rate ceil; amounts integer, protocol-mirroring | LbPair, BinArrays (ordered), BitmapExtension when active bin at edge, StaticParameters, VariableParameters, oracle for fresh VA timestamp | Executable (`swap2`); math parity suites PASS |
-| Meteora DAMM v2 | Concentrated sqrt-price curve (Q64.64) or tracked-reserve constant product for `Compounding` | Pool account (V1 layout: token amount counters 680..696, layout version at 696) | Fee scheduler: `fee_numerator` over 1e9 denominator, max 50% (V0) / 99% (V1); dynamic fee from scheduler state | On input; A→B next-sqrt rounds UP, B→A rounds DOWN; compounding mode uses tracked reserves not sqrt curve | Fee ceil (1e9); sqrt-price directional rounding | Pool, token mints (T22 extensions), vaults, Clock (slot- or ts-based activation), fee scheduler state | Discovery/quote only — FAIL-CLOSED for execution (hydration returns no executable account set; see `docs/active/audit/UNIFIED_SWAP_PARITY_AUDIT_2026-11-26.md` §2) |
-| Raydium CPMM (CP-Swap) | Constant product `x·y=k`, PPM fee denominator | PoolState reserves + `AmmConfig` | Trade fee on input (`fee_rate/1e6`); creator fee on input XOR output per config; protocol fee & fund fee are SUB-ALLOCATIONS of the trade fee (not additive) | Trade fee taken from `amount_in` before curve; protocol/fund/creator portions move to their vaults, only LP share stays in reserves | Curve floor; fee ceil sub-allocations | PoolState (333 B), AmmConfig, authority PDA, both vaults, observation state, token programs | Executable; 54/54 exact-in vectors match Raydium TS SDK 0.2.87-alpha; creator-fee modes synthetic (mainnet pool has creator fee disabled); exact-out with creator fee / T22 fail-closed |
-| Raydium CLMM | Tick-crossing sqrt-price curve | Pool sqrt_price + tick arrays + AmmConfig | Fee on input per step (`fee_rate/1e6`), Raydium dynamic fee from `DynamicFee` struct; protocol fee is a share of the trade fee | Per-step from remaining input before liquidity math | Amount-out floor, next-sqrt floor per Raydium `swap_math` | Pool (273 B), AmmConfig (owner-verified), both vaults, tick arrays, bitmap extension, observation state | FAIL-CLOSED in production: telemetry-only until same-slot AmmConfig + dynamic-fee snapshot verified (`UniversalQuoteDispatcher` rejects). Math parity suites PASS in isolation |
-| Raydium AMM v4 | Constant product with OpenBook market scaffolding | AMM account reserves (with market orderbook fields) | AMM fee fields from the decoded account (`fees` struct), never a fixed 25 bps | On input, per program's swap logic | Curve floor | AMM account, authority, market accounts (bids/asks/queue/vaults), target orders | Executable for decoded snapshots; invalid/missing fee state is fail-closed |
-| Orca Whirlpool | Tick-crossing sqrt-price curve (Q64.64) | Whirlpool sqrt_price + tick arrays | Fee on input per step (`fee_rate/1e6`); protocol fee is a configured share of earned fee; adaptive-fee state in WhirlpoolsConfigExt must be honored when present | Per-step from remaining input; protocol fee moved to config vault | Floor on out / next-sqrt per `swap_math.rs` | Whirlpool (245 B), config, both vaults, tick arrays (88-tick spacing blocks), oracle, token programs | Executable; `orca_sdk_parity` + mainnet differential suites PASS |
-| Pump.fun | Bonding curve virtual reserves (constant product on virtual reserves) | Bonding curve account (virtual/real reserves, complete flag) | 125 bps fee (from pool's verified `fee_bps`, not hardcoded) on buy AND sell; mayhem/cashback modes unsupported ⇒ fail-closed | On input SOL and input token per direction | Curve ceil for cost | Bonding curve account, global/volume PDA config, event authority, mint | Executable for `complete=false`, non-mayhem, non-cashback curves |
-| PumpSwap | Constant product post-graduation pool | Pool account reserves + coin/Pi vaults | Fee from live `Pool`/`GlobalConfig` fee ratios; missing ratio ⇒ fail-closed (no invented split); base-fee-only quote for generic `PoolState` | On input | Curve floor | Pool, global config, coin vault, Pi vault, mint(s) | Executable with verified fee config; generic PoolState quote carries total fee only |
-| Kamino flash loans (klend) | Not a swap — liquidity borrow/repay | Reserve account `ReserveConfig.fees.flash_loan_fee_sf` (U68F60) | `fee_bits = max(amount × sf, 2^60)`, ties away from zero (klend `ReserveFees::calculate_fees`); `sf == u64::MAX` ⇒ flash loans disabled on that reserve | Repay transfer = principal + fee, exactly, in the borrowed mint | Ties-away on U68F60; BorrowTooSmall guard on RAW bits pre-rounding | Reserve, lending market, market authority, liquidity mint/vault, obligation/user ATA (token-program-aware), Instructions sysvar for borrow-index introspection | Executable; canonical implementation in `arb-math/src/economic.rs::calculate_kamino_flash_fee`; per-reserve sf extracted from live account, never a global % |
-| Solana runtime (fees) | N/A | Transaction content + `ComputeBudget` config (V1: message config mask, not CU instructions) | Base fee = signatures × 5000 lamports (`SOLANA_BASE_FEE_LAMPORTS`); priority fee = CU-price × CU-limit (the transaction's own limit, not observed usage); V1 (SIMD-0385): priority fee as absolute lamports in message mask bits [0,1] | Deducted from signer lamports; encoded in compute-budget instructions (legacy) or message config (V1) | Integer lamports | Fee payer signer, blockhash, ComputeBudget/System config | Wired; `arb-tx/src/transport/adaptive.rs` V1 config-mask encoding |
-| Jito | N/A — bundle auction | Tip floor market data / configured strategy (`tip_strategy`, TipOracle) | Tip = explicit `SystemTransfer` to a canonical tip account, inline (never ALT-loaded); amount from policy, not a fixed constant | Tip instruction inside the bundle; bundle is all-or-nothing, 1..=5 txs | Integer lamports | 8 canonical tip accounts (`arb_constants::JITO_TIP_ACCOUNTS`), block engine URL | Wired; tip accounts filtered out of ALTs (regression-tested) |
-| Token-2022 transfer fees | N/A — mint extension | Mint `TransferFeeConfig` for the execution epoch | `transfer_fee_bps` + `maximum_fee` from the epoch's config; epoch selection uses Clock epoch, never wall-clock | Withheld on transfer in/out of the pool; represented in `transfer_fee_breakdown` of every `QuoteResult` | Protocol: ceil on fee, floor on net | Mint accounts (both), epoch, token program ids | Fail-closed in production routing: routes with T2x2 transfer fees or risky extensions are rejected unless a verified per-mint epoch schedule is supplied |
+| Meteora DLMM (`meteora_dlmm.rs`, `engines/meteora_dlmm.rs`, `arb-math/src/dlmm/*`) | Bin traversal (active bin + neighbours via bitmap) | `LbPair.active_bin_id`, bin arrays, bitmap extension | Base fee + dynamic fee (volatility accumulator) + protocol share; `collect_fee_mode` handled in decoder | Fee on input (swap into pool) | Floor/ceil per bin per official `get_exact_in_fill_amount_result` | Pool, bin arrays, bitmap extension, vaults, token programs, oracle (if needed) | Quote + execution gated; Token-2022 path fail-closed unless verified |
+| Orca Whirlpool (`orca_whirlpool.rs`, `engines/orca_whirlpool.rs`, `arb-math/src/clmm.rs`) | CLMM tick-step | `sqrt_price` Q64.64, current tick, active liquidity, tick arrays | Per-step fee rate + adaptive fee + protocol fee | Fee on input; protocol fee split | Per official swap_math rounding | Pool, tick arrays, oracle (adaptive), vaults | Quote-only where adaptive fee state unverified |
+| Raydium CPMM (`raydium_cpmm.rs`, `engines/raydium_cpmm.rs`, `arb-math/src/cpmm.rs`) | CPMM `x*y=k` | Reserves (vaults minus accrued fees) | `trade_fee_rate` / 1e6 (exact); protocol/fund/creator split from AmmConfig | Fee on input | Floor per SDK v2 calculator | Pool, AmmConfig, vaults, mints | Differential-tested (54 vectors) |
+| Raydium CLMM (`raydium_clmm.rs`, `engines/raydium_clmm.rs`) | CLMM tick-step | sqrt price, tick, liquidity, tick arrays | `AmmConfig.trade_fee_rate` / 1e6; dynamic fee if present | Fee on input; protocol fee | Per official math | Pool, AmmConfig, tick arrays, bitmap extension, vaults | **NOT priceable** — AmmConfig not live-joined (DEX-F-2026-11-25-N3) |
+| Raydium V4 (`raydium_v4.rs`, `engines/raydium_v4.rs`) | Hybrid orderbook/AMM | Reserves | Config fee numerator/denominator | Fee on input | Floor | Pool, vaults, mints, open-orders (if applicable) | Quote-only / fail-closed where vaults undecodable |
+| Meteora DAMM v2 (`meteora_damm_v2.rs`, `engines/meteora_damm_v2.rs`, `arb-math/src/damm_v2.rs`) | CPMM/CLMM family by `is_compounding` | Reserves + config | Dynamic fee (volatility) + base fee; compounding fee added to reserve B | Fee on input | Per official DAMM v2 | Pool, config, vaults, mints | Quote pipeline present; execution gated |
+| Meteora DBC (`meteora_dbc.rs`) | Bonding curve | Curve state | Swap fee from config | Fee on input/output per curve | Floor | Pool, config, vaults | Quote-only, not executable |
+| Pump.fun bonding curve (`pump_fun.rs`, `engines/pump_bonding_curve.rs`) | Bonding curve `k` | Curve reserves | Flat 1.25% (125 bps) per official | Buy fee on input (SOL), sell fee on output (SOL) | Floor | Bonding curve, global, fee recipient | Quote + execution gated (Token-2022 rejected) |
+| PumpSwap (`pump_swap.rs`, `engines/pump_swap.rs`) | CPMM-style | Reserves | LP/protocol/creator PPM (exact) | Direction-correct placement | Floor + 2-raw-unit margin | Pool, fee config, vaults | Quote-only |
+| Orca (Whirlpool) adaptive fee | CLMM tick-step | As above + oracle | Adaptive fee from oracle EMA | Fee on input | Floor | + oracle account | Fail-closed if oracle missing |
 
----
+## 3. Kamino flash loan fee (`arb-math/src/economic.rs`, re-exported by `arb-tx`)
 
-## 2. Upstream sources inspected (commits)
+- `flash_loan_fee_sf` is a **scaled fraction** (sf) read from the Kamino `Reserve` state, NOT a fixed bps.
+- Conversion: `fee = max(amount * sf / 2^frac_bits, 2^60)` style scaled-fraction math; the `BorrowTooSmall` guard compares **raw bits pre-rounding**.
+- Repayment = principal + fee (exact). Never assume a global fee.
+- Different reserves (WSOL vs USDC) have different configs; `select_kamino_flash_reserve` must match flash mint to reserve mint.
+- Flash loans disabled state must be checked.
 
-| Protocol | Repo | Commit inspected | Key files |
-|---|---|---|---|
-| Meteora DLMM | [MeteoraAg/dlmm-sdk](https://github.com/MeteoraAg/dlmm-sdk) | `1532e540db41ac405dbf4c5bb2ddfceaa1f98ff1` (head 2026-11-04) | `commons/src/quote.rs`, `ts-client/src/dlmm/helpers/fee.ts` |
-| Orca Whirlpools | [orca-so/whirlpools](https://github.com/orca-so/whirlpools) | `cc683ec92acb5e7606caa3d8e514d9383e9c7c11` (head 2026-10-12) | `programs/whirlpool/src/math/swap_math.rs` |
-| Raydium CPMM | [raydium-io/raydium-cp-swap](https://github.com/raydium-io/raydium-cp-swap) | `3d69122790e97cd6aff24e8ba95940793773f58c` (head 2026-11-01) | `programs/cp-swap/src/curve/constant_product.rs`, fee modules |
-| Kamino klend | [Kamino-Finance/klend](https://github.com/Kamino-Finance/klend) | `686913ee421e0c5f3dc44c4c8344461ee0e4fb89` (release 1.28.0) | `handlers/handler_flash_borrow_reserve_liquidity.rs`, `state/reserve.rs` |
-| Solana fees / V1 | [solana.com/docs](https://solana.com/docs/core/fees) + SIMD-0385 | docs as of 2026-11 | compute-budget, transfer-fee extension docs |
-| Jito | [docs.jito.wtf/bundles](https://docs.jito.wtf/bundles/) | docs as of 2026-11 | bundle semantics, tip accounts |
+## 4. Solana network costs
 
-The Raydium CLMM repo head was not re-pinned in this pass; the repo's CLMM
-math is validated against its committed parity suites, and the live path is
-fail-closed regardless (see row above). Raydium AMM V4's program is closed for
-this audit; the repo quotes only from decoded on-chain AMM fee fields.
+- Base fee: 5000 lamports per signature (legacy/V0).
+- Priority fee: `CU_limit * CU_price / 1e6` (micro-lamports), using the **limit** requested in the message, not consumed units.
+- Compute budget instructions: `SetComputeUnitLimit`, `SetComputeUnitPrice`, `SetLoadedAccountsDataSizeLimit`.
+- Transaction format: V1 wire (0x81 discriminator, 4096-byte ceiling, 64 inline accounts, no ALT). Never silently downgrade.
 
-## 3. Repo vs. protocol deltas found in this pass
+## 5. Token-2022 transfer fees
 
-1. **No double fee deduction found in the canonical chain.** DLMM cross-pool
-   sizing embeds DEX fees in exact bin-traversal outputs and adds only the
-   flash fee + base fee + tip on top (`crates/arb-engine/src/cross_pool_dlmm.rs`
-   `optimize_size` — "DEX fees are already embedded" is enforced by the
-   `calculate_net_profit_raw_signed` call passing zero DEX-fee adders).
-2. **Fee splits are never stacked over the total.** `FeesBreakdown` carries
-   `total_fee` as authoritative; protocol/fund/creator are sub-allocations.
-   CPMM route advancement subtracts non-LP fee buckets from the curve credit
-   exactly once (`crates/arb-engine/src/adapters.rs::advance_pool_after_quote`).
-3. **Legacy test-only constants exist and are quarantined to tests:**
-   `arb_math::pump_fun_raydium::{DEFAULT_FLASH_LOAN_FEE_BPS=30,
-   DEFAULT_RAYDIUM_FEE_BPS=25}` are referenced only from `#[cfg(test)]` code
-   (`crates/arb-dex/src/pump_fun.rs` tests, `arb-math` tests). Production
-   pricing never consumes them. Recorded in `HARDCODED_VALUES_AUDIT.md`.
-4. **Raydium CLMM discovery fallback** still carries a structural
-   `fee_bps: 25` projection for graph ranking (registered gap
-   DEX-F-2026-11-22-N2); the operative quote path rejects CLMM entirely, so it
-   cannot fabricate profit.
-5. **DAMM v2 / DBC / LaunchLab** remain quote-only or unsupported in the
-   dispatcher — fail-closed, matching the unified-parity audit's gates.
+- `TransferFeeConfig` is epoch-aware; missing schedule = fail closed (not zero fee).
+- Input transfer fee applied **before** venue math; output transfer fee applied **after**.
+- Transfer hooks: unsupported until exact account resolution (fail closed).
+- See `crates/arb-dex/src/token2022.rs`.
 
-## 4. Not verified in this pass (honest gaps)
+## 6. Jito tip
 
-- No live-mainnet differential quotes were run (no RPC egress credentials in
-  this environment; `.env` absent). All parity statements rest on committed
-  fixtures and the repo's differential suites listed in
-  `docs/active/audit/QUOTE_PARITY_REPORT.md`.
-- Upstream heads move; the commits above were heads on 2026-11-26. A future
-  audit must re-pin and re-diff before making new parity claims.
-- Token-2022 transfer-hook account resolution is unimplemented upstream of the
-  quote layer; such mints remain non-executable by policy.
-- Jito V1 bundle support requires upstream verification (recorded in
-  `CURRENT_STATUS.md`).
+- Tip is **not** a fixed constant. It is only charged when a tip instruction is
+  present or an explicit expected-cost is recorded for the opportunity.
+- Tip accounts must stay inline (not ALT-loaded) — see `OPEN_ISSUES.md` TX-CORR-2026-11-23-N1.
+
+## 7. Differences between protocol model and project implementation
+
+1. **Raydium CLMM** is deliberately non-priceable pending AmmConfig live-join (safety gate). Discovery still emits metadata but exact quote returns `Unsupported`.
+2. **Token-2022** pools are excluded from the live pilot path; standalone quote helpers exist but are not wired end-to-end with epoch-aware mint data.
+3. **`MarketEdge.fee_bps`** is an integer BPS ceiling; exact sub-bps ratios (Raydium CPMM `trade_fee_rate` / 1e6) are preserved only inside the adapter, not in graph metadata. This may under-rank opportunities (conservative).
+4. **DLMM two-pool engine** (`dlmm_flash_arbitrage.rs`) is test/example only and lacks on-chain retained-profit floor (FL-F-2026-11-22-N2). Must not be wired without the floor.
+5. **Bellman-Ford** uses f64 only as a pre-screen; authoritative pricing/sizing uses integer math. This boundary must be preserved.
+
+## 8. Unverified items
+
+- Official SDK commit SHAs were not re-fetched in this session.
+- Mainnet differential vectors for Orca adaptive fee, Raydium CLMM dynamic fee, Meteora DLMM limit-order non-zero layers, and PumpSwap creator-fee attribution are queued (see OPEN_ISSUES).
+- Live pool decode coverage gaps (DATA-COVERAGE-2026-11-25-N1).

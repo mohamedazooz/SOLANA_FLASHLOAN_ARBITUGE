@@ -12,9 +12,10 @@ use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult}
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID;
 use arb_math::clmm::{
-    TickArrayFacade, TickFacade, compute_whirlpool_swap, orca_tick_array_start_indexes,
+    TickArrayFacade, TickFacade, clmm_price_impact_bps, compute_whirlpool_swap,
+    orca_tick_array_start_indexes,
 };
-use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
+use arb_types::{ArbError, DexProtocol, PoolState, Result};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use std::time::Instant;
@@ -173,6 +174,14 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
         let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
         let fee_amount = swap_quote.fee_paid;
+        let fee_free_input = swap_quote
+            .amount_in_consumed
+            .checked_sub(fee_amount)
+            .ok_or_else(|| {
+                ArbError::CalculationError("Orca Whirlpool fee exceeds consumed input".into())
+            })?;
+        let price_impact =
+            clmm_price_impact_bps(fee_free_input, gross_out, clmm_state.sqrt_price, a_to_b);
 
         // 6. Required Accounts (3 TickArray PDAs)
         let (ta0, ta1, ta2) = Self::get_tick_arrays_for_swap(
@@ -212,7 +221,7 @@ impl QuoteEngine for OrcaWhirlpoolQuoteEngine {
                 output_transfer_fee,
                 output_net_to_next_hop,
             },
-            price_impact: Bps(0),
+            price_impact,
             unfilled_input_raw: 0,
             required_accounts,
             state_slot: state.slot.0,

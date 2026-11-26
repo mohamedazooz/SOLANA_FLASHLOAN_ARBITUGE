@@ -10,9 +10,10 @@
 use crate::quote_engine::{FeesBreakdown, QuoteEngine, QuoteRequest, QuoteResult};
 use crate::token2022::HopTransferFeeBreakdown;
 use arb_math::clmm::{
-    ClmmTickMath, TickArrayFacade, TickFacade, compute_swap_with_ticks_per_array_and_math,
+    ClmmTickMath, TickArrayFacade, TickFacade, clmm_price_impact_bps,
+    compute_swap_with_ticks_per_array_and_math,
 };
-use arb_types::{ArbError, Bps, DexProtocol, PoolState, Result};
+use arb_types::{ArbError, DexProtocol, PoolState, Result};
 use std::time::Instant;
 
 pub const RAYDIUM_CLMM_VERSION: &str = "raydium-clmm-v1.0";
@@ -130,6 +131,14 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
         let min_amount_out = request.minimum_amount_out(output_net_to_next_hop);
 
         let fee_amount = swap_quote.fee_paid;
+        let fee_free_input = swap_quote
+            .amount_in_consumed
+            .checked_sub(fee_amount)
+            .ok_or_else(|| {
+                ArbError::CalculationError("Raydium CLMM fee exceeds consumed input".into())
+            })?;
+        let price_impact =
+            clmm_price_impact_bps(fee_free_input, gross_out, clmm_state.sqrt_price, a_to_b);
         let elapsed = start_time.elapsed().as_micros() as u64;
 
         Ok(QuoteResult {
@@ -159,7 +168,7 @@ impl QuoteEngine for RaydiumClmmQuoteEngine {
                 output_transfer_fee,
                 output_net_to_next_hop,
             },
-            price_impact: Bps(0),
+            price_impact,
             unfilled_input_raw: 0,
             required_accounts: vec![state.pool_id.0],
             state_slot: state.slot.0,
