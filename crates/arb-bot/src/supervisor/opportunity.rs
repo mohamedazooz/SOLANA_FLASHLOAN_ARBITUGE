@@ -238,14 +238,7 @@ impl Supervisor {
             // per-hop guess. The priority price is capped by a share of the
             // gross profit so it can never eat the edge.
             let hop_protocols: Vec<DexProtocol> = opp.hops.iter().map(|h| h.protocol).collect();
-            let route_sig = format!(
-                "cu:{}",
-                opp.hops
-                    .iter()
-                    .map(|h| format!("{}-{:?}", h.pool_id.0, h.protocol))
-                    .collect::<Vec<_>>()
-                    .join("_")
-            );
+            let route_sig = arb_engine::route_compute_signature(&opp.hops);
             let estimated_cu = arb_tx::estimate_route_cu(
                 self.config.strategy.use_flash_loan,
                 &hop_protocols,
@@ -260,26 +253,9 @@ impl Supervisor {
                 Some(measured) => arb_tx::calculate_dynamic_cu_limit_with_buffer(measured, 1_000),
                 None => arb_tx::calculate_dynamic_cu_limit(estimated_cu),
             };
-            let desired_cu_price = {
-                let landed = self.recent_landed_cu.lock().clone();
-                let fresh_market = {
-                    let market = self.recent_priority_market_cu.lock();
-                    market
-                        .as_ref()
-                        .filter(|(_, sampled_at)| sampled_at.elapsed() <= Duration::from_secs(12))
-                        .map(|(samples, _)| samples.clone())
-                        .unwrap_or_default()
-                };
-                self.tip_strategy
-                    .adaptive_cu_price_with_market(&landed, &fresh_market)
-            };
-            // Dynamic priority fee ceiling: scales adaptively between base_share and max_share
-            // according to real-time competition factor observed by TipOracle.
-            let comp_factor = self.jito_service.competition_factor();
-            let base_share = self.config.strategy.priority_fee_base_share_bps;
-            let max_share = self.config.strategy.priority_fee_max_share_bps;
-            let dynamic_max_share_bps =
-                ((base_share as f64 * comp_factor) as u64).clamp(base_share, max_share);
+            let priority_policy = self.current_priority_fee_policy();
+            let desired_cu_price = priority_policy.desired_cu_price_micro_lamports;
+            let dynamic_max_share_bps = priority_policy.max_share_bps;
 
             let cu_price = arb_tx::cap_cu_price_by_profit(
                 opp.gross_profit.as_u64(),

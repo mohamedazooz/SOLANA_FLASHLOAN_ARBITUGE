@@ -190,7 +190,8 @@ pub fn cpmm_price_impact_bps(dx: u128, x: u128, y: u128, gamma: u128) -> Bps {
     }
 
     let diff = spot_prod - exec_prod;
-    let bps = (diff * U256::from(10_000)) / spot_prod;
+    let numerator = diff * U256::from(10_000);
+    let bps = (numerator + spot_prod - U256::from(1u8)) / spot_prod;
     let bps_val = u16::try_from(bps.to::<u64>().min(10_000)).unwrap_or(10_000);
     Bps(bps_val)
 }

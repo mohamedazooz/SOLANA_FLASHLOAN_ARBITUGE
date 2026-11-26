@@ -469,7 +469,9 @@ impl Supervisor {
                 gross_profit: Lamports(gross),
                 net_profit: Lamports(net),
                 base_decimals: 9, // WSOL-anchored route
-                price_impact_bps: Bps(0),
+                // Seed only: the caller must re-price this route through MarketGraph.
+                // 10,000 bps is an unknown-impact sentinel, never a false zero.
+                price_impact_bps: Bps(10_000),
                 hops,
                 expected_min_final_output,
             });

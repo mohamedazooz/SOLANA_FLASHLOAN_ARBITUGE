@@ -27,12 +27,9 @@
 //! - Token-program mismatch across hops sharing a mint ⇒ rejected.
 //! - Zero profitable directions is an acceptable, honest result.
 
-use arb_math::{
-    cpmm_price_impact_bps,
-    economic::{
-        EconomicConfig, calculate_flash_fee_raw, calculate_net_profit_raw_signed,
-        slippage_haircut_min_final,
-    },
+use arb_math::economic::{
+    EconomicConfig, calculate_flash_fee_raw, calculate_net_profit_raw_signed,
+    slippage_haircut_min_final,
 };
 use arb_types::{
     DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolId, PoolKind, RouteId, Slot, SwapHop,
@@ -40,7 +37,9 @@ use arb_types::{
 };
 use std::collections::{HashMap, HashSet};
 
-use crate::{EPSILON_CYCLE_SPREAD_BPS, MarketEdge, MarketGraph, dlmm_quote_components, quote_pool};
+use crate::{
+    EPSILON_CYCLE_SPREAD_BPS, MarketEdge, MarketGraph, dlmm_quote_components, quote_pool_detailed,
+};
 
 /// Tuning knobs for the cross-pool DLMM strategy. All defaults are safe.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +93,8 @@ pub enum CrossPoolRejectionReason {
     TokenProgramMismatch,
     /// Economic gate (net-profit floor / config) rejected the best candidate.
     EconomicGateRejected,
+    /// An exact per-hop quote failed while validating a candidate or its impact.
+    QuoteFailed,
 }
 
 impl CrossPoolRejectionReason {
@@ -106,6 +107,7 @@ impl CrossPoolRejectionReason {
             Self::MaxTradeSizeExceeded => "MAX_TRADE_SIZE_EXCEEDED",
             Self::TokenProgramMismatch => "TOKEN_PROGRAM_MISMATCH",
             Self::EconomicGateRejected => "ECONOMIC_GATE_REJECTED",
+            Self::QuoteFailed => "QUOTE_FAILED",
         }
     }
 
@@ -261,14 +263,15 @@ fn two_hop_quote(
 ) -> Option<(u64, u128, u128)> {
     let mut cur_size = size;
     for _ in 0..MAX_RESIZE_PASSES {
-        let out1 = quote_pool(
+        let out1 = quote_pool_detailed(
             PoolKind::Dlmm,
             cur_size as u128,
             e1.reserve_in,
             e1.reserve_out,
             10_000u128.saturating_sub(e1.fee_bps as u128),
             Some(e1),
-        );
+        )?
+        .amount_out;
         if out1 == 0 {
             return None;
         }
@@ -284,14 +287,15 @@ fn two_hop_quote(
             cur_size = rescaled;
             continue;
         }
-        let final_out = quote_pool(
+        let final_out = quote_pool_detailed(
             PoolKind::Dlmm,
             out1,
             e2.reserve_in,
             e2.reserve_out,
             10_000u128.saturating_sub(e2.fee_bps as u128),
             Some(e2),
-        );
+        )?
+        .amount_out;
         if final_out == 0 {
             return None;
         }
@@ -670,12 +674,55 @@ impl MarketGraph {
                         Ok((size, out1, final_out, _gross)) => {
                             let hops = vec![swap_hop_of(l), swap_hop_of(r)];
                             let hop_inputs = vec![size, conv_u64(out1), conv_u64(final_out)];
-                            let impact = cpmm_price_impact_bps(
-                                size as u128,
+                            // Discovery seed impact is protocol-native for both DLMM hops.
+                            // The Supervisor still re-quotes and resizes this route canonically.
+                            let first_quote = quote_pool_detailed(
+                                PoolKind::Dlmm,
+                                u128::from(size),
                                 l.reserve_in,
                                 l.reserve_out,
-                                10_000u128.saturating_sub(l.fee_bps as u128),
+                                10_000u128.saturating_sub(u128::from(l.fee_bps)),
+                                Some(l),
                             );
+                            let Some(first_quote) = first_quote else {
+                                rejections.push(CrossPoolRejection {
+                                    base: base.0.to_string(),
+                                    mid: mid.0.to_string(),
+                                    pool_first: l.pool_id,
+                                    pool_second: r.pool_id,
+                                    direction,
+                                    reason: CrossPoolRejectionReason::QuoteFailed,
+                                    detail:
+                                        "first DLMM seed quote failed during impact calculation"
+                                            .into(),
+                                });
+                                continue;
+                            };
+                            let second_quote = quote_pool_detailed(
+                                PoolKind::Dlmm,
+                                first_quote.amount_out,
+                                r.reserve_in,
+                                r.reserve_out,
+                                10_000u128.saturating_sub(u128::from(r.fee_bps)),
+                                Some(r),
+                            );
+                            let Some(second_quote) = second_quote else {
+                                rejections.push(CrossPoolRejection {
+                                    base: base.0.to_string(),
+                                    mid: mid.0.to_string(),
+                                    pool_first: l.pool_id,
+                                    pool_second: r.pool_id,
+                                    direction,
+                                    reason: CrossPoolRejectionReason::QuoteFailed,
+                                    detail:
+                                        "second DLMM seed quote failed during impact calculation"
+                                            .into(),
+                                });
+                                continue;
+                            };
+                            let impact = first_quote
+                                .price_impact_bps
+                                .max(second_quote.price_impact_bps);
                             if let Some(opp) = self.make_economic_opportunity(
                                 base,
                                 current_slot,
