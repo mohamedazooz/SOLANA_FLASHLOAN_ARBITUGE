@@ -7,8 +7,6 @@ edition = "2024"
 [features]
 default = []
 extra-ingest = []
-yellowstone = ["dep:yellowstone-grpc-client"]
-solami = ["dep:solami"]
 
 [dependencies]
 arb-types = { path = "../arb-types" }
@@ -32,23 +30,12 @@ zstd = "0.14"
 ruint = { workspace = true }
 futures = { workspace = true }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["rustls-tls-webpki-roots", "connect"] }
-# Solami SDK (RPC + landing) — wired here; runtime adoption is behind its own
-# acceptance task. Types are solana-* 4.x.
-solami = { workspace = true, optional = true }
-# Yellowstone gRPC client (optional; cached in registry; Linux-only crate).
-# The `yellowstone` feature enables it. Note: yellowstone-grpc-client requires
-# tokio::net with UnixStream, which is Linux-only. Production builds run on Linux.
-yellowstone-grpc-client = { version = "17.0.0", optional = true }
 arb-metrics = { path = "../arb-metrics" }
 
 [[test]]
 name = "bitquery_ws_live"
 path = "tests/bitquery_ws_live.rs"
 required-features = ["extra-ingest"]
-
-[dev-dependencies]
-arb-engine = { path = "../arb-engine" }
-criterion = { workspace = true }
 
 [[bench]]
 name = "dual_ingest_bench"
