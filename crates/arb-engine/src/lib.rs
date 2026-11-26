@@ -136,6 +136,12 @@ fn compose_route_price_impact(retained_spot_bps: u128, hop_impact: Bps) -> u128 
     (numerator / 10_000).min(10_000)
 }
 
+/// Route edges do not carry verified Token-2022 epoch schedules or
+/// TransferHook account metas. Never price one as a legacy SPL token.
+fn route_token_context_supported(edge: &MarketEdge) -> bool {
+    edge.transfer_fee_bps == 0 && !edge.token_programs.contains(&TokenProgramKind::Token2022)
+}
+
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteComponents> {
     if edge.protocol != DexProtocol::MeteoraDlmm
         || edge.transfer_fee_bps != 0
@@ -195,6 +201,9 @@ fn quote_pool_with_dlmm_cache(
     edge: Option<&MarketEdge>,
     dlmm_cache: Option<&DlmmQuoteCache>,
 ) -> Option<PoolQuote> {
+    if edge.is_some_and(|candidate| !route_token_context_supported(candidate)) {
+        return None;
+    }
     match kind {
         PoolKind::Cpmm => {
             if let Some(edge) = edge {
@@ -410,7 +419,7 @@ impl MarketEdge {
             fee_denominator: self.fee_denominator,
             raydium_cpmm_fee: self.raydium_cpmm_fee,
             is_active: true,
-            has_risky_token: false,
+            has_risky_token: self.token_programs.contains(&TokenProgramKind::Token2022),
             kind: self.kind,
             clmm: self.clmm.clone(),
             dlmm: self.dlmm.clone(),
@@ -1657,6 +1666,44 @@ impl MarketGraph {
 
 #[cfg(test)]
 mod tests {
+    fn token_edge(token_programs: [TokenProgramKind; 2], transfer_fee_bps: u16) -> MarketEdge {
+        let base = MintId::new([2; 32]);
+        let quote = MintId::new([3; 32]);
+        MarketEdge {
+            pool_id: PoolId::new([1; 32]),
+            protocol: DexProtocol::RaydiumClmm,
+            kind: PoolKind::Clmm,
+            from_mint: base,
+            to_mint: quote,
+            pool_base: base,
+            pool_quote: quote,
+            reserve_in: 1_000_000,
+            reserve_out: 1_000_000,
+            fee_bps: 25,
+            fee_numerator: 2_500,
+            fee_denominator: 1_000_000,
+            raydium_cpmm_fee: None,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: None,
+            transfer_fee_bps,
+            token_programs,
+            execution_accounts: None,
+            active_bin_id: None,
+        }
+    }
+
+    #[test]
+    fn route_token_context_gate_rejects_token_2022_and_transfer_fees() {
+        let spl = token_edge([TokenProgramKind::SplToken; 2], 0);
+        assert!(route_token_context_supported(&spl));
+        let token_2022 = token_edge([TokenProgramKind::Token2022, TokenProgramKind::SplToken], 0);
+        assert!(!route_token_context_supported(&token_2022));
+        let transfer_fee = token_edge([TokenProgramKind::SplToken; 2], 1);
+        assert!(!route_token_context_supported(&transfer_fee));
+    }
+
     #[test]
     fn route_price_impact_compounds_each_hop_conservatively() {
         let retained = compose_route_price_impact(10_000, Bps(30));

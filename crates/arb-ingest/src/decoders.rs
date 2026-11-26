@@ -417,8 +417,11 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
     }
 }
 
-/// Read mint decimals (offset 44) for each mint using single-account paced RPC requests.
-/// Mints owned by Token-2022 are deliberately omitted to reject tokens with transfer fees.
+/// Read mint decimals (offset 44) using paced single-account RPC requests.
+/// This compatibility helper does not return account owner metadata and must not
+/// be used for token-program classification or route eligibility. Live route
+/// hydration verifies owners in its batched snapshot and blocks Token-2022 until
+/// epoch-aware fees and TransferHook support are integrated.
 pub async fn resolve_mints_decimals(
     _rpc: &crate::RpcPool,
     mints: &[MintId],
