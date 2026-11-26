@@ -5,7 +5,7 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ---
 
 
-## Resolved locally on 2026-11-25 — branch `fix/deep-quote-accounting-hardening-20261125` (not yet merged)
+## Resolved on 2026-11-25 — branch `fix/deep-quote-accounting-hardening-20261125` (merged to `main` via PRs #165 and #166 on 2026-11-26)
 
 ### QNT-CORR-2026-11-25-N1: Chronos Recomputed Success Costs and Used Floating-Point EV
 
