@@ -557,8 +557,8 @@ impl JitoLander {
     }
 
     pub async fn simulate_bundle(&self, txs: &[Vec<u8>]) -> ArbResult<Value> {
-        if txs.is_empty() {
-            return Err(ArbError::InvalidInput("empty bundle".into()));
+        if txs.is_empty() || txs.len() > 5 {
+            return Err(ArbError::InvalidInput("bundle must have 1..=5 txs".into()));
         }
         let encoded: Vec<String> = txs.iter().map(|t| base64_encode(t)).collect();
         let body = json!({

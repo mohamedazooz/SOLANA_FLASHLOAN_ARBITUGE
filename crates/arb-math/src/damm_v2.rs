@@ -371,13 +371,22 @@ pub fn quote_damm_v2_exact_in_with_fee_mode(
         if denom.is_zero() {
             return None;
         }
-        let sp_next = (l_q64.checked_mul(sp_u)?) / denom;
+        let numerator = l_q64.checked_mul(sp_u)?;
+        // Meteora ConcentratedLiquidity rounds A->B sqrt-price UP so the
+        // computed price never crosses the target boundary.
+        let sp_next = numerator.checked_add(denom.checked_sub(U256::from(1u8))?)? / denom;
         let min_sp = if sqrt_min_price_x64 > 0 {
             U256::from(sqrt_min_price_x64)
         } else {
             U256::from(1u64)
         };
-        let clamped_next = sp_next.max(min_sp);
+        // This scalar exact-in helper cannot return upstream amount_left.
+        // Reject a range-crossing quote rather than silently clamping and
+        // overstating executable output.
+        if sp_next < min_sp {
+            return None;
+        }
+        let clamped_next = sp_next;
         if clamped_next >= sp_u {
             return Some(0);
         }
@@ -388,11 +397,10 @@ pub fn quote_damm_v2_exact_in_with_fee_mode(
         // Selling token B increases sqrt_price: sp_next = sp + (net_in * Q64) / L
         let delta_sp = (net_in << 64usize) / l_u;
         let sp_next = sp_u.checked_add(delta_sp)?;
-        let clamped_next = if sqrt_max_price_x64 > 0 {
-            sp_next.min(U256::from(sqrt_max_price_x64))
-        } else {
-            sp_next
-        };
+        if sqrt_max_price_x64 > 0 && sp_next > U256::from(sqrt_max_price_x64) {
+            return None;
+        }
+        let clamped_next = sp_next;
         if clamped_next <= sp_u {
             return Some(0);
         }
@@ -419,6 +427,55 @@ pub fn quote_damm_v2_exact_in_with_fee_mode(
     }
 }
 
+/// Exact-in quote for DAMM v2 Compounding pools. The deployed program uses
+/// tracked V1 token amounts as constant-product reserves, not (sqrt_price, L).
+/// Fee rounding matches PoolFeesStruct::get_fee_on_amount (ceiling); invariant
+/// output rounds down.
+pub fn quote_damm_v2_compounding_exact_in(
+    amount_in: u64,
+    a_to_b: bool,
+    reserve_a: u64,
+    reserve_b: u64,
+    fee_numerator_1e9: u128,
+    fees_on_input: bool,
+) -> Option<u64> {
+    if amount_in == 0 || reserve_a == 0 || reserve_b == 0 {
+        return Some(0);
+    }
+    if fee_numerator_1e9 >= DAMM_V2_FEE_DENOMINATOR {
+        return None;
+    }
+    let fee_for = |amount: u64| -> Option<u64> {
+        if fee_numerator_1e9 == 0 || amount == 0 {
+            return Some(0);
+        }
+        let numerator = U256::from(amount).checked_mul(U256::from(fee_numerator_1e9))?;
+        let fee = numerator.checked_add(U256::from(DAMM_V2_FEE_DENOMINATOR - 1))?
+            / U256::from(DAMM_V2_FEE_DENOMINATOR);
+        u64::try_from(fee).ok()
+    };
+    let net_input = if fees_on_input {
+        amount_in.checked_sub(fee_for(amount_in)?)?
+    } else {
+        amount_in
+    };
+    if net_input == 0 {
+        return Some(0);
+    }
+    let (reserve_in, reserve_out) = if a_to_b {
+        (reserve_a, reserve_b)
+    } else {
+        (reserve_b, reserve_a)
+    };
+    let denominator = U256::from(reserve_in).checked_add(U256::from(net_input))?;
+    let gross_output = U256::from(reserve_out).checked_mul(U256::from(net_input))? / denominator;
+    let gross_output = u64::try_from(gross_output).ok()?;
+    if fees_on_input {
+        Some(gross_output)
+    } else {
+        gross_output.checked_sub(fee_for(gross_output)?)
+    }
+}
 /// Derive virtual CPMM-equivalent reserves `(reserve_a, reserve_b)` from `(sqrt_price_x64, liquidity)`.
 pub fn damm_v2_virtual_reserves(sqrt_price_x64: u128, liquidity: u128) -> (u128, u128) {
     if sqrt_price_x64 == 0 || liquidity == 0 {
@@ -557,14 +614,44 @@ mod tests {
     }
 
     #[test]
-    fn range_clamp_limits_max_output() {
-        // Bounded range: selling B cannot push sqrt_price past sqrt_max.
+    fn exact_in_rejects_input_that_would_be_partially_filled_at_range_boundary() {
         let (sp, l) = (1u128 << 64, 1_000_000_000_000u128);
         let sqrt_max = (1u128 << 64) + (1u128 << 32);
-        let unbounded = quote_damm_v2_exact_in(u64::MAX, false, sp, l, 0, 0, 0).unwrap();
-        let bounded = quote_damm_v2_exact_in(u64::MAX, false, sp, l, 0, sqrt_max, 0).unwrap();
-        assert!(bounded < unbounded, "range cap must reduce max output");
-        assert!(bounded > 0);
+        assert!(
+            quote_damm_v2_exact_in(u64::MAX, false, sp, l, 0, sqrt_max, 0).is_none(),
+            "scalar exact-in quote must not hide unfilled input at the upper price bound"
+        );
+    }
+
+    #[test]
+    fn compounding_quote_uses_tracked_reserves_not_concentrated_liquidity() {
+        let a_to_b =
+            quote_damm_v2_compounding_exact_in(1_000_000, true, 10_000_000, 20_000_000, 0, false)
+                .unwrap();
+        let b_to_a =
+            quote_damm_v2_compounding_exact_in(1_000_000, false, 10_000_000, 20_000_000, 0, false)
+                .unwrap();
+        assert_eq!(a_to_b, 1_818_181);
+        assert_eq!(b_to_a, 476_190);
+    }
+
+    #[test]
+    fn compounding_fee_is_charged_once_on_configured_side_with_upstream_rounding() {
+        let amount = 10_000u64;
+        let reserves = (1_000_000u64, 2_000_000u64);
+        let fee = 10_000_000u128;
+        let input_fee =
+            quote_damm_v2_compounding_exact_in(amount, true, reserves.0, reserves.1, fee, true)
+                .unwrap();
+        let output_fee =
+            quote_damm_v2_compounding_exact_in(amount, true, reserves.0, reserves.1, fee, false)
+                .unwrap();
+        assert!(input_fee > output_fee);
+        assert_eq!(
+            quote_damm_v2_compounding_exact_in(amount, true, reserves.0, reserves.1, 0, false)
+                .unwrap(),
+            19_801
+        );
     }
 
     #[test]

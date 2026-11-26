@@ -123,6 +123,7 @@ fn raydium_clmm_rejects_sqrt_price_outside_official_bounds() {
 #[test]
 fn meteora_damm_v2_rejects_sqrt_price_outside_official_bounds() {
     let mut data = vec![0u8; arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_MIN_SIZE];
+    data[..8].copy_from_slice(&arb_dex::meteora_damm_v2::METEORA_DAMM_V2_POOL_DISCRIMINATOR);
     data[360..376].copy_from_slice(&1u128.to_le_bytes());
     let damm_max = arb_constants::METEORA_DAMM_V2_MAX_SQRT_PRICE_X64;
     data[456..472].copy_from_slice(&(damm_max + 1).to_le_bytes());

@@ -30,7 +30,7 @@ pub use dlmm_validation::{
     validate_bin_array_account, validate_bitmap_extension_account, validate_lb_pair_account,
     validate_pool_pair_compatibility,
 };
-pub use meteora_damm_v2::MeteoraDammV2Pool;
+pub use meteora_damm_v2::{DammV2ClockSnapshot, MeteoraDammV2Pool};
 pub use meteora_dbc::MeteoraDbcPool;
 pub use meteora_dlmm::MeteoraDlmmPool;
 pub use orca_whirlpool::OrcaWhirlpool;

@@ -1239,7 +1239,9 @@ mod tests {
         assert!(validate_jito_bundle(std::slice::from_ref(&valid_tx)).is_ok());
         assert!(validate_jito_bundle(&[valid_tx.clone(), valid_tx.clone()]).is_ok());
 
-        // Max 5 txs
+        // Jito supports up to five sequential, all-or-nothing transactions.
+        let five_txs = vec![valid_tx.clone(); 5];
+        assert!(validate_jito_bundle(&five_txs).is_ok());
         let six_txs = vec![valid_tx.clone(); 6];
         assert!(validate_jito_bundle(&six_txs).is_err());
 
