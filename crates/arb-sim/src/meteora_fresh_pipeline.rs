@@ -865,6 +865,10 @@ impl MeteoraDlmmFreshStatePipeline {
                 best_observed_net_profit: Some(net_profit),
                 rejection_reason: report.rejection_reason.clone(),
                 status: report.status.clone(),
+                // The transaction existed and reached simulation: the builder
+                // assembled the full route. This is the explicit builder
+                // proof required for the EXECUTABLE stage.
+                builder_succeeded: true,
             };
             let _ = recorder.record_candidate(&opp_record);
 

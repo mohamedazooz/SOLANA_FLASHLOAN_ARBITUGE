@@ -478,6 +478,7 @@ fn test_pipeline_to_paper_journal_roundtrip() {
         best_observed_net_profit: Some(net),
         rejection_reason: Some("ARB_LIVE=0: paper-only record, no broadcast".to_string()),
         status: "paper".to_string(),
+        builder_succeeded: true,
     };
 
     // A process ID can be reused across test runs; isolate this append-only journal

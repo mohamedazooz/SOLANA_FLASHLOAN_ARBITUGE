@@ -406,7 +406,7 @@ mod tests {
             pool_b_id: Pubkey::new_unique(),
             pool_a_slot: 100,
             pool_b_slot: 100,
-            quote_slot: 101,
+            quote_slot: 100,
             pool_a_state: test_pool_state(),
             pool_b_state: test_pool_state(),
             direction: "DirectionA".to_string(),
@@ -427,6 +427,7 @@ mod tests {
             best_observed_net_profit: None,
             rejection_reason: None,
             status: status.to_string(),
+            builder_succeeded: true,
         }
     }
 
@@ -492,6 +493,43 @@ mod tests {
         assert_eq!(r.decay.still_alive_at_end, 1);
         assert_eq!(r.decay.median_lifetime_ms, 500);
         assert_eq!(r.decay.p90_lifetime_ms, 900);
+    }
+
+    #[test]
+    fn stage_counts_follow_evidence_gated_derivation() {
+        let records = vec![
+            // Fully proven positive: SIMULATED.
+            base_record("a", "VERIFIED_PROFITABLE", 15_000),
+            // Successful simulation of a LOSING trade: QUOTE_VALID, never
+            // ECONOMICALLY_POSITIVE / SIMULATED.
+            base_record("b", "SIMULATED_SUCCESS_NEGATIVE_EDGE", -3_000),
+            // Zero net: economics unproven → QUOTE_VALID.
+            base_record("c", "REJECTED_SIM_FAIL", 0),
+            // Stale: freshness failed → DISCOVERED.
+            {
+                let mut rec = base_record("d", "STALE_QUOTE", 0);
+                rec.quote_freshness_cleared = false;
+                rec
+            },
+            // Slot-inconsistent snapshots: DISCOVERED despite positive net.
+            {
+                let mut rec = base_record("e", "VERIFIED_PROFITABLE", 9_000);
+                rec.pool_b_slot = 101;
+                rec
+            },
+        ];
+        let r = build_report(&records, 42);
+        assert_eq!(
+            r.stage_counts,
+            vec![
+                ("DISCOVERED".to_string(), 2),
+                ("QUOTE_VALID".to_string(), 2),
+                ("SIMULATED".to_string(), 1),
+            ]
+        );
+        let md = render_markdown(&r);
+        assert!(md.contains("## Qualification stages (typed)"));
+        assert!(md.contains("| QUOTE_VALID | 2 |"));
     }
 
     #[test]

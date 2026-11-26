@@ -125,6 +125,7 @@ fn test_persist_and_shadow_replay_deterministic_reproduction() {
         best_observed_net_profit: Some(-1_640),
         rejection_reason: None,
         status: "SIMULATED_SUCCESS_NEGATIVE_EDGE".to_string(),
+        builder_succeeded: true,
     };
 
     recorder

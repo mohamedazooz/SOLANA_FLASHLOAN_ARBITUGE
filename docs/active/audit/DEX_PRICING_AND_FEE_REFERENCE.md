@@ -5,11 +5,22 @@
 **Scope:** Every DEX adapter and quote engine in `crates/arb-dex`, `crates/arb-math`, and `crates/arb-engine`.
 **Method:** Static code inspection of the current tree (no reliance on prior reports). Source code is the authority; documentation is descriptive only.
 
-> **Honesty note.** This audit did **not** perform a live Mainnet differential
-> against official protocol SDKs in this session. Commit SHAs below are left as
-> "unpinned" where they could not be verified from the local checkout. A
-> follow-up pass must pin them and record exact SDK versions used for differential
-> vectors (see `OPEN_ISSUES.md` DEX-F-2026-11-25-N2).
+> **Honesty note (revised 2026-11-26, audit branch `vibe/forensic-pricing-fee-audit-1b099c`).**
+> Upstream sources were re-fetched and **pinned** via the GitHub API in the
+> follow-up session. No live Mainnet differential against a running RPC/SDK
+> was performed; the Kamino fee path is the one area now covered by an
+> in-repo differential test against a from-scratch replication of the pinned
+> upstream algorithm (`crates/arb-math/tests/kamino_klend_differential.rs`).
+> The remaining unpinned items are listed in §8.
+>
+> Pinned upstream SHAs verified in-session:
+>
+> | Source | Commit (pinned) |
+> |---|---|
+> | `MeteoraAg/dlmm-sdk` | `1532e540db41ac405dbf4c5bb2ddfceaa1f98ff1` |
+> | `orca-so/whirlpools` | `cc683ec92acb5e7606caa3d8e514d9383e9c7c11` |
+> | `raydium-io/raydium-cp-swap` | `3d69122790e97cd6aff24e8ba95940793773f58c` |
+> | `Kamino-Finance/klend` | `686913ee421e0c5f3dc44c4c8344461ee0e4fb89` (release 1.28.0) |
 
 ## 1. Common quote contract (`crates/arb-dex/src/quote_engine.rs`)
 
@@ -48,11 +59,24 @@ subtract them again. See `economic.rs` and the fee-ledger section of
 
 ## 3. Kamino flash loan fee (`arb-math/src/economic.rs`, re-exported by `arb-tx`)
 
-- `flash_loan_fee_sf` is a **scaled fraction** (sf) read from the Kamino `Reserve` state, NOT a fixed bps.
-- Conversion: `fee = max(amount * sf / 2^frac_bits, 2^60)` style scaled-fraction math; the `BorrowTooSmall` guard compares **raw bits pre-rounding**.
-- Repayment = principal + fee (exact). Never assume a global fee.
+**Verified against `Kamino-Finance/klend` @ `686913ee` —
+`state/reserve.rs::ReserveFees::calculate_fees`,
+`state/lending_market/lending_operations.rs::flash_borrow_reserve_liquidity`
+/`flash_repay_reserve_liquidity`,
+`instructions/handler_flash_borrow_reserve_liquidity.rs`,
+`instructions/handler_flash_repay_reserve_liquidity.rs`,
+`utils/fraction.rs`.**
+
+- `flash_loan_fee_sf` is a **U68F60 scaled fraction** read from the Kamino `Reserve` state, NOT a fixed bps. Mainnet WSOL market: `sf = 11_529_215_046_068` (= 1e-5 = 0.1 bps).
+- Upstream formula (Exclusive): `fee_bits = (amount << 60) * sf >> 60` (truncating wide multiply — exactly `amount * sf`); `fee_f = max(fee_bits, 2^60)` (minimum fee = 1 atomic unit, applied BEFORE rounding); `BorrowTooSmall` iff `fee_f >= amount << 60` (raw bits, pre-rounding); `fee = round_half_away(fee_f)`.
+- **Referral split is INTERIOR to the one fee, never additive:** upstream computes `(protocol_fee, referral_fee) = calculate_flash_loan_fees(amount, lending_market.referral_fee_bps, referrer_token_state.is_some())` with `referral_fee = floor(fee_f × bps/10^4)` (full fee when bps = 10^4) and `protocol_fee = fee − referral_fee`. With `has_referrer = false` the referral share is structurally **zero**.
+- **Repayment handler makes TWO transfers:** `liquidity_amount` (+ `referral_fee` when present) → reserve destination, then `protocol_fee` → `reserve_liquidity_fee_receiver` (fee vault). Total user deduction = principal + THE ONE fee. `flash_repay_checks` enforces `liquidity_amount == borrow_liquidity_amount` and validates the borrow instruction index via the Instructions sysvar — so the repay instruction's `amount` MUST be the principal, never `principal + fee`.
+- Repo conformance: every production builder passes `referrer_account`/`referrer_token_state` = `None` (`arb-tx/src/flash/kamino.rs`, `kamino_flash.rs`, `provider.rs`), so `has_referrer = false` upstream and the repo's single-fee charge is exact. Repay builders pass the borrow principal (`arb-tx/src/primitives/builder.rs` `repay_principal = d_star`; `arb-tx/src/flash/dlmm_flash_arb.rs` `params.borrow_amount`).
+- Flash loans disabled: `flash_loan_fee_sf == u64::MAX` → upstream `FlashLoansDisabled` revert before fee math; repo maps to `KaminoFeeError::FlashLoanDisabled` (fail closed).
+- **Differential test:** `crates/arb-math/tests/kamino_klend_differential.rs` re-implements the upstream algorithm from scratch (wide-integer U68F60 math, min-fee floor, pre-round guard, ties-away rounding, referral split) and asserts bit-exact equality over ~110k+ (amount, fee_sf) combinations including all boundary classes, plus the split-interiority and total-deduction identities. No divergence found.
+- **Referral fee accounting:** because all production builders wire `None`, no separate referral-fee ledger entry exists. Should a referrer ever be wired, the referral share MUST be added as a split of the existing single flash fee (never a second deduction) and the `has_referrer` flag must flow into `kamino_flash_fee_*`'s accounting — tracked as an open follow-up.
+- Production fee source: `flash_loan_fee_sf` reaches pricing via `VerifiedValue<u64>` decoded from the reserve account (`arb-bot/src/verified_config.rs`), consumed at `supervisor/strategy.rs` and `supervisor/opportunity.rs` with slot-age freshness checks. No fixed bps fallback exists in any production path.
 - Different reserves (WSOL vs USDC) have different configs; `select_kamino_flash_reserve` must match flash mint to reserve mint.
-- Flash loans disabled state must be checked.
 
 ## 4. Solana network costs
 
@@ -81,9 +105,13 @@ subtract them again. See `economic.rs` and the fee-ledger section of
 3. **`MarketEdge.fee_bps`** is an integer BPS ceiling; exact sub-bps ratios (Raydium CPMM `trade_fee_rate` / 1e6) are preserved only inside the adapter, not in graph metadata. This may under-rank opportunities (conservative).
 4. **DLMM two-pool engine** (`dlmm_flash_arbitrage.rs`) is test/example only and lacks on-chain retained-profit floor (FL-F-2026-11-22-N2). Must not be wired without the floor.
 5. **Bellman-Ford** uses f64 only as a pre-screen; authoritative pricing/sizing uses integer math. This boundary must be preserved.
+6. **Opportunity stages are evidence-gated** (`arb-types/src/opportunity_stage.rs`): `QUOTE_VALID` requires quote completeness + freshness + same-slot consistency; `ECONOMICALLY_POSITIVE` requires strictly positive integer net profit ON TOP of valid-quote evidence (a stale/slot-inconsistent/incomplete quote can never rank above `DISCOVERED`, and a successful simulation of a LOSING trade tops out at `QUOTE_VALID`); `EXECUTABLE` requires an explicit builder-success proof (`CandidateOpportunityRecord::builder_succeeded`); `SIMULATED` requires simulation SUCCESS (`SimulationOutcome::Succeeded`), never a mere attempt — `REJECTED_SIM_FAIL` maps to `DISCOVERED`, `STALE_QUOTE` to `DISCOVERED`, `SIMULATED_SUCCESS_NEGATIVE_EDGE` to `QUOTE_VALID`. `SHADOW_VALIDATED`/`MAINNET_VERIFIED` require dedicated proof structures (`ShadowContinuityProof`, `MainnetSettlementProof`) that record fields cannot supply — they are unreachable until shadow-continuity replay and settlement reconciliation produce real proofs.
 
 ## 8. Unverified items
 
-- Official SDK commit SHAs were not re-fetched in this session.
+- Upstream SHAs above are pinned and statically verified; a live Mainnet
+  differential (RPC + deployed program versions + real account fixtures) was
+  NOT performed and remains queued (DEX-F-2026-11-25-N2).
 - Mainnet differential vectors for Orca adaptive fee, Raydium CLMM dynamic fee, Meteora DLMM limit-order non-zero layers, and PumpSwap creator-fee attribution are queued (see OPEN_ISSUES).
 - Live pool decode coverage gaps (DATA-COVERAGE-2026-11-25-N1).
+- Referral-fee wiring: verified structurally zero (all builders pass `None`); a split-aware accounting entry is only needed if a referrer is ever wired.
