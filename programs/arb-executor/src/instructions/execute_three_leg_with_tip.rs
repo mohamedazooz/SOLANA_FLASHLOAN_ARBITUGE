@@ -102,6 +102,9 @@ pub fn process_execute_three_leg_with_tip<'a>(
     if accounts.len() < body_accounts + 1 {
         return Err(ExecutorError::NotEnoughAccountInfos.into());
     }
+    if accounts.len() > body_accounts + 1 {
+        return Err(ExecutorError::InvalidInstructionData.into());
+    }
 
     let user = &accounts[0];
     let user_wsol_account = &accounts[1];
@@ -123,7 +126,7 @@ pub fn process_execute_three_leg_with_tip<'a>(
 
     // Delegate the entire routed execution and its sequential-balance
     // validation to the canonical, single-source processor.
-    process_execute_three_leg(accounts, ExecuteThreeLegArgs::from(&args))?;
+    process_execute_three_leg(&accounts[..body_accounts], ExecuteThreeLegArgs::from(&args))?;
 
     // Realized WSOL edge above the pre-borrow baseline, net of the borrowed
     // principal. WSOL units == lamports (peg verified above).

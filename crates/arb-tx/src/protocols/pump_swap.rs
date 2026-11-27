@@ -137,99 +137,38 @@ pub fn build_pump_swap_instruction_v2(
     })
 }
 
-/// Build genuine PumpSwap AMM swap instruction (Buy or Sell) with real on-chain account matrix (V1 compatibility).
-/// V1 legacy pools do not have remaining accounts per IDL; V2 pools use `build_pump_swap_instruction_v2`.
+/// Legacy PumpSwap V1 is intentionally disabled until its complete, current
+/// IDL account contract is wired into this builder.
+///
+/// The old implementation emitted a shortened account list. Pump's V1 trade
+/// instructions require additional program, authority, volume and fee accounts;
+/// using an incomplete list creates transactions that can only fail at CPI.
+/// V2 is supported by [`build_pump_swap_instruction_v2`]. Cashback pools, which
+/// still require V1 according to Pump's documentation, must remain unavailable
+/// until a fully verified V1 builder is implemented.
 #[allow(clippy::too_many_arguments)]
 pub fn build_pump_swap_instruction(
-    pool: Pubkey,
-    user_authority: Pubkey,
-    base_mint: Pubkey,
-    quote_mint: Pubkey,
-    pool_base_vault: Pubkey,
-    pool_quote_vault: Pubkey,
-    global_config: Pubkey,
-    fee_config: Pubkey,
-    protocol_fee_recipient: Pubkey,
-    protocol_fee_recipient_ata: Pubkey,
-    coin_creator_vault_authority: Pubkey,
-    coin_creator_vault_ata: Pubkey,
-    token_program_base: Pubkey,
-    token_program_quote: Pubkey,
-    amount_in: u64,
-    min_amount_out: u64,
-    is_buy: bool,
+    _pool: Pubkey,
+    _user_authority: Pubkey,
+    _base_mint: Pubkey,
+    _quote_mint: Pubkey,
+    _pool_base_vault: Pubkey,
+    _pool_quote_vault: Pubkey,
+    _global_config: Pubkey,
+    _fee_config: Pubkey,
+    _protocol_fee_recipient: Pubkey,
+    _protocol_fee_recipient_ata: Pubkey,
+    _coin_creator_vault_authority: Pubkey,
+    _coin_creator_vault_ata: Pubkey,
+    _token_program_base: Pubkey,
+    _token_program_quote: Pubkey,
+    _amount_in: u64,
+    _min_amount_out: u64,
+    _is_buy: bool,
 ) -> Result<CompiledInstruction, TxError> {
-    let program_id = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID)
-        .map_err(|e| TxError::InstructionError(e.to_string()))?;
-
-    let user_base_token = get_associated_token_address_with_program_id(
-        &user_authority,
-        &base_mint,
-        &token_program_base,
-    );
-    let user_quote_token = get_associated_token_address_with_program_id(
-        &user_authority,
-        &quote_mint,
-        &token_program_quote,
-    );
-
-    let fee_recipient_ata = if protocol_fee_recipient_ata != Pubkey::default() {
-        protocol_fee_recipient_ata
-    } else {
-        get_associated_token_address_with_program_id(
-            &protocol_fee_recipient,
-            &quote_mint,
-            &token_program_quote,
-        )
-    };
-
-    let creator_vault_ata = if coin_creator_vault_ata != Pubkey::default() {
-        coin_creator_vault_ata
-    } else if coin_creator_vault_authority != Pubkey::default() {
-        get_associated_token_address_with_program_id(
-            &coin_creator_vault_authority,
-            &quote_mint,
-            &token_program_quote,
-        )
-    } else {
-        fee_recipient_ata
-    };
-
-    let discriminator = if is_buy {
-        PUMP_SWAP_BUY_DISCRIMINATOR
-    } else {
-        PUMP_SWAP_SELL_DISCRIMINATOR
-    };
-
-    let mut data = Vec::with_capacity(24);
-    data.extend_from_slice(&discriminator);
-    data.extend_from_slice(&amount_in.to_le_bytes());
-    data.extend_from_slice(&min_amount_out.to_le_bytes());
-
-    let accounts_meta = vec![
-        AccountMeta::new(pool, false),
-        AccountMeta::new(user_authority, true),
-        AccountMeta::new_readonly(global_config, false),
-        AccountMeta::new_readonly(base_mint, false),
-        AccountMeta::new_readonly(quote_mint, false),
-        AccountMeta::new(user_base_token, false),
-        AccountMeta::new(user_quote_token, false),
-        AccountMeta::new(pool_base_vault, false),
-        AccountMeta::new(pool_quote_vault, false),
-        AccountMeta::new_readonly(protocol_fee_recipient, false),
-        AccountMeta::new(fee_recipient_ata, false),
-        AccountMeta::new_readonly(token_program_base, false),
-        AccountMeta::new_readonly(token_program_quote, false),
-        AccountMeta::new_readonly(coin_creator_vault_authority, false),
-        AccountMeta::new(creator_vault_ata, false),
-        AccountMeta::new_readonly(fee_config, false),
-    ];
-
-    Ok(CompiledInstruction {
-        program_id,
-        accounts: accounts_meta,
-        data,
-    })
+    Err(TxError::SanitizationError(
+        "PumpSwap V1 execution is disabled: the legacy builder does not yet provide the complete official account matrix; use a verified V2 pool or exclude this pool".into(),
+    ))
 }
 
 #[cfg(test)]
@@ -342,48 +281,26 @@ mod ata_program_tests {
     }
 
     #[test]
-    fn pump_swap_v1_uses_program_aware_atas_for_user_and_fee_accounts() {
-        let user = Pubkey::new_unique();
-        let base_mint = Pubkey::new_unique();
-        let quote_mint = Pubkey::new_unique();
-        let fee_authority = Pubkey::new_unique();
-        let token_program_base = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
-        let token_program_quote = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
-        let ix = build_pump_swap_instruction(
-            Pubkey::new_unique(),
-            user,
-            base_mint,
-            quote_mint,
+    fn pump_swap_v1_builder_fails_closed_until_full_idl_contract_is_implemented() {
+        let result = build_pump_swap_instruction(
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
             Pubkey::new_unique(),
-            fee_authority,
-            Pubkey::default(),
             Pubkey::new_unique(),
-            Pubkey::default(),
-            token_program_base,
-            token_program_quote,
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap(),
+            Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap(),
             10_000,
             9_000,
             true,
-        )
-        .unwrap();
-        assert_eq!(
-            ix.accounts[5].pubkey,
-            get_associated_token_address_with_program_id(&user, &base_mint, &token_program_base)
         );
-        assert_eq!(
-            ix.accounts[6].pubkey,
-            get_associated_token_address_with_program_id(&user, &quote_mint, &token_program_quote)
-        );
-        assert_eq!(
-            ix.accounts[10].pubkey,
-            get_associated_token_address_with_program_id(
-                &fee_authority,
-                &quote_mint,
-                &token_program_quote
-            )
-        );
+        assert!(result.is_err());
     }
 }

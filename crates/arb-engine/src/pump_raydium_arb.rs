@@ -172,11 +172,10 @@ impl RaydiumPool {
         match self {
             RaydiumPool::AMMv4(p) => (p.base_reserve, p.quote_reserve),
             RaydiumPool::CPMM(p) => (p.reserve_0, p.reserve_1),
-            RaydiumPool::CLMM(p) => {
-                // For CLMM, we need to compute effective reserves from liquidity
-                // This is a simplified approximation
-                (u128::MAX, u128::MAX) // TODO: Implement proper CLMM reserve calculation
-            }
+            // Concentrated-liquidity pools do not have a finite pair of CPMM
+            // reserves. Until this legacy engine uses the tick-array-aware CLMM
+            // quote path, expose zero capacity so the optimizer fails closed.
+            RaydiumPool::CLMM(_) => (0, 0),
         }
     }
 
@@ -239,22 +238,9 @@ impl RaydiumPool {
                 let fee_bps = (total_fee_ppm / 100) as u16; // ppm to bps
                 cpmm_out_fee(amount_in, x, y, fee_bps)
             }
-            RaydiumPool::CLMM(p) => {
-                // For CLMM, use the official quote function
-                // This is a placeholder - actual implementation needs proper CLMM math
-                arb_math::quote_clmm(
-                    amount_in,
-                    p.sqrt_price_x64,
-                    p.tick_current,
-                    p.liquidity,
-                    p.tick_spacing,
-                    p.fee_rate_ppm as u16,
-                    a_to_b,
-                    &[],
-                )
-                .map(|v| v as u64)
-                .map_err(|_| ArbError::QuoteError("CLMM quote failed".into()))
-            }
+            RaydiumPool::CLMM(_) => Err(ArbError::QuoteError(
+                "legacy Pump/Raydium engine has no verified CLMM tick-array quote path".into(),
+            )),
         }
     }
 }

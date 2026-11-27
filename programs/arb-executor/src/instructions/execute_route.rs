@@ -20,8 +20,8 @@ use crate::cpi::{
 };
 use crate::error::ExecutorError;
 use crate::validation::{
-    DexProtocolTag, read_token_account_balance, validate_account_signer, validate_account_writable,
-    validate_dex_program, validate_distinct_pools, validate_distinct_pools_2leg,
+    DexProtocolTag, validate_account_signer, validate_account_writable, validate_dex_program,
+    validate_distinct_pools, validate_distinct_pools_2leg, validate_user_token_account,
 };
 use solana_account_info::AccountInfo;
 use solana_address::Address;
@@ -52,7 +52,7 @@ pub struct HopDescriptor {
 impl HopDescriptor {
     /// Safe unaligned deserialization from a byte slice.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ExecutorError> {
-        if bytes.len() < 24 {
+        if bytes.len() != 24 || bytes[3..8].iter().any(|byte| *byte != 0) {
             return Err(ExecutorError::InvalidInstructionData);
         }
         let protocol = bytes[0];
@@ -98,7 +98,7 @@ pub struct ExecuteRouteArgs {
 impl ExecuteRouteArgs {
     /// Safe unaligned deserialization from a byte slice.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, ExecutorError> {
-        if bytes.len() < 88 {
+        if bytes.len() != 88 || bytes[1..8].iter().any(|byte| *byte != 0) {
             return Err(ExecutorError::InvalidInstructionData);
         }
         let hop_count = bytes[0];
@@ -160,6 +160,85 @@ fn extract_pool_address(
     }
 }
 
+/// User token flow resolved from a protocol's canonical CPI account layout.
+struct UserTokenFlow<'a> {
+    input: &'a AccountInfo<'a>,
+    output: &'a AccountInfo<'a>,
+    authority: &'a AccountInfo<'a>,
+}
+
+/// Resolve the user-controlled input/output token accounts and authority for a hop.
+/// The indices mirror the CPI builders below; exact fixed-size layouts are enforced
+/// wherever the protocol instruction does not define variable remaining accounts.
+fn extract_user_token_flow<'a>(
+    tag: DexProtocolTag,
+    flags: u8,
+    hop_accounts: &'a [AccountInfo<'a>],
+) -> Result<UserTokenFlow<'a>, ProgramError> {
+    let (input_index, output_index, authority_index) = match tag {
+        DexProtocolTag::MeteoraDlmm => {
+            if hop_accounts.len() < 17 {
+                return Err(ExecutorError::NotEnoughAccountInfos.into());
+            }
+            if flags != 0 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            (4, 5, 10)
+        }
+        DexProtocolTag::RaydiumCpmm => {
+            if hop_accounts.len() != 14 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            if flags != 0 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            (4, 5, 0)
+        }
+        DexProtocolTag::RaydiumClmm => {
+            // This adapter does not yet pass/validate the complete dynamic-fee and
+            // tick-array-bitmap dependency set. Keep it fail-closed on-chain.
+            return Err(ExecutorError::UnsupportedDexProtocol.into());
+        }
+        DexProtocolTag::OrcaWhirlpool => {
+            if hop_accounts.len() != 12 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            if flags & !1 != 0 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            // Adaptive-fee Whirlpool swaps require a writable oracle. The current
+            // static quote path does not model those fees, so reject that path.
+            if hop_accounts[10].is_writable {
+                return Err(ExecutorError::UnsupportedDexProtocol.into());
+            }
+            if flags & 1 != 0 {
+                (3, 5, 1) // A -> B
+            } else {
+                (5, 3, 1) // B -> A
+            }
+        }
+        DexProtocolTag::PumpSwap => {
+            if hop_accounts.len() != 17 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            if flags & !1 != 0 {
+                return Err(ExecutorError::InvalidInstructionData.into());
+            }
+            if flags & 1 != 0 {
+                (6, 5, 1) // quote -> base (buy)
+            } else {
+                (5, 6, 1) // base -> quote (sell)
+            }
+        }
+    };
+
+    Ok(UserTokenFlow {
+        input: &hop_accounts[input_index],
+        output: &hop_accounts[output_index],
+        authority: &hop_accounts[authority_index],
+    })
+}
+
 /// Execute a multi-leg route across allowlisted DEX protocols.
 ///
 /// Header Accounts:
@@ -178,6 +257,30 @@ pub fn process_execute_route<'a>(
     // 1. Validate hop count (must be 2 or 3)
     if args.hop_count < 2 || args.hop_count > 3 {
         return Err(ExecutorError::InvalidHopCount.into());
+    }
+
+    // Reject no-op hops and malformed economic floors before inspecting accounts.
+    if args.min_final_delta == 0
+        || args.hops[..args.hop_count as usize]
+            .iter()
+            .any(|hop| hop.amount_in == 0 || hop.min_amount_out == 0 || hop._reserved != [0; 5])
+    {
+        return Err(ExecutorError::InvalidInstructionData.into());
+    }
+    // A two-hop message must not smuggle an ignored third descriptor. Requiring
+    // the unused slot to be all-zero keeps serialization canonical and prevents
+    // different builders from assigning conflicting meaning to ignored bytes.
+    if args.hop_count == 2 {
+        let unused = &args.hops[2];
+        if unused.protocol != 0
+            || unused.flags != 0
+            || unused.account_count != 0
+            || unused._reserved != [0; 5]
+            || unused.amount_in != 0
+            || unused.min_amount_out != 0
+        {
+            return Err(ExecutorError::InvalidInstructionData.into());
+        }
     }
 
     // 2. Validate sequential solvency invariants
@@ -216,11 +319,15 @@ pub fn process_execute_route<'a>(
     }
 
     // 4. Measure initial settlement balance
-    let initial_balance = read_token_account_balance(settlement_account)?;
+    // The settlement account must be a live token account controlled by this
+    // signer; merely supplying any initialized token account is not sufficient.
+    let initial_balance = validate_user_token_account(settlement_account, user.key, None)?;
 
-    // 5. Unpack per-hop account slices, validate allowlisting & pool distinctness
+    // 5. Unpack per-hop account slices and validate pool IDs, authorities and
+    // token-account continuity before issuing any CPI.
     let mut offset = header_len;
     let mut pool_addresses = [Address::default(); 3];
+    let mut token_flows: Vec<UserTokenFlow<'a>> = Vec::with_capacity(args.hop_count as usize);
 
     for (i, pool_addr) in pool_addresses
         .iter_mut()
@@ -237,6 +344,35 @@ pub fn process_execute_route<'a>(
 
         let tag = DexProtocolTag::try_from(hop.protocol)?;
         *pool_addr = extract_pool_address(tag, hop_accounts)?;
+        let flow = extract_user_token_flow(tag, hop.flags, hop_accounts)?;
+        if flow.authority.key != user.key || !flow.authority.is_signer {
+            return Err(ExecutorError::MissingRequiredSigner.into());
+        }
+        validate_user_token_account(flow.input, user.key, None)?;
+        validate_user_token_account(flow.output, user.key, None)?;
+        token_flows.push(flow);
+    }
+
+    // The route must be a connected cycle: the first hop spends the settlement
+    // account, each intermediate output is exactly the next hop's input, and
+    // the final hop returns to the same settlement account whose balance is
+    // checked below. This prevents unrelated swaps from subsidizing a fake
+    // settlement delta.
+    if offset != accounts.len()
+        || token_flows.first().map(|flow| flow.input.key) != Some(settlement_account.key)
+        || token_flows.last().map(|flow| flow.output.key) != Some(settlement_account.key)
+    {
+        return Err(ExecutorError::InvalidTokenAccount.into());
+    }
+
+    for index in 0..(args.hop_count as usize - 1) {
+        let intermediate = &accounts[2 + index];
+        if token_flows[index].output.key != intermediate.key
+            || token_flows[index + 1].input.key != intermediate.key
+        {
+            return Err(ExecutorError::InvalidTokenAccount.into());
+        }
+        validate_user_token_account(intermediate, user.key, None)?;
     }
 
     // Enforce distinct pools
@@ -341,7 +477,7 @@ pub fn process_execute_route<'a>(
     }
 
     // 7. Post-execution settlement balance check
-    let final_balance = read_token_account_balance(settlement_account)?;
+    let final_balance = validate_user_token_account(settlement_account, user.key, None)?;
     let delta = final_balance
         .checked_sub(initial_balance)
         .ok_or(ExecutorError::FinalWsolDeltaBelowMinimum)?;

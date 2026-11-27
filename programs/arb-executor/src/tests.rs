@@ -9,8 +9,8 @@ use crate::validation::{
     validate_distinct_pools_2leg,
 };
 use crate::{
-    DISCRIMINATOR_EXECUTE_ROUTE, DISCRIMINATOR_PROFIT_GUARD, PROFIT_GUARD_DISCRIMINATOR,
-    process_instruction,
+    DISCRIMINATOR_EXECUTE_ROUTE, DISCRIMINATOR_PROFIT_GUARD, EXECUTE_ROUTE_DISCRIMINATOR,
+    PROFIT_GUARD_DISCRIMINATOR, process_instruction,
 };
 use solana_account_info::AccountInfo;
 use solana_address::Address;
@@ -51,13 +51,72 @@ fn test_allowlisted_dex_programs() {
     );
     assert_eq!(
         validate_dex_program(&PUMP_FUN_PROGRAM_ID),
-        Ok(DexProtocolTag::PumpSwap)
+        Err(ExecutorError::UnauthorizedProgramId)
+    );
+
+    // Reject the stale/noncanonical value that had previously been hardcoded
+    // in this validator instead of the PumpSwap AMM program in arb-constants.
+    let stale_pump_swap_id = Address::from_str_const("PSwapMdSai8tjrEXcxFeQth87xC4rRGQ6ToNCPgAZgU");
+    assert_eq!(
+        validate_dex_program(&stale_pump_swap_id),
+        Err(ExecutorError::UnauthorizedProgramId)
     );
 
     let unauthorized = Address::from_str_const("11111111111111111111111111111111");
     assert_eq!(
         validate_dex_program(&unauthorized),
         Err(ExecutorError::UnauthorizedProgramId)
+    );
+}
+
+#[test]
+fn test_execute_route_payload_rejects_trailing_bytes_and_nonzero_padding() {
+    let mut args = ExecuteRouteArgs {
+        hop_count: 2,
+        _reserved: [0; 7],
+        min_final_delta: 1,
+        hops: [
+            HopDescriptor {
+                protocol: DexProtocolTag::RaydiumCpmm as u8,
+                flags: 0,
+                account_count: 14,
+                _reserved: [0; 5],
+                amount_in: 10,
+                min_amount_out: 11,
+            },
+            HopDescriptor {
+                protocol: DexProtocolTag::MeteoraDlmm as u8,
+                flags: 0,
+                account_count: 17,
+                _reserved: [0; 5],
+                amount_in: 11,
+                min_amount_out: 12,
+            },
+            HopDescriptor {
+                protocol: 0,
+                flags: 0,
+                account_count: 0,
+                _reserved: [0; 5],
+                amount_in: 0,
+                min_amount_out: 0,
+            },
+        ],
+    };
+
+    let valid = bytemuck::bytes_of(&args);
+    assert!(ExecuteRouteArgs::from_slice(valid).is_ok());
+
+    let mut trailing = valid.to_vec();
+    trailing.push(0);
+    assert_eq!(
+        ExecuteRouteArgs::from_slice(&trailing),
+        Err(ExecutorError::InvalidInstructionData)
+    );
+
+    args._reserved[0] = 1;
+    assert_eq!(
+        ExecuteRouteArgs::from_slice(bytemuck::bytes_of(&args)),
+        Err(ExecutorError::InvalidInstructionData)
     );
 }
 
@@ -274,6 +333,49 @@ fn test_process_instruction_discriminators_routing() {
         process_instruction(&dummy_program_id, &accounts, &route_1byte),
         Err(ProgramError::Custom(
             ExecutorError::InvalidInstructionData as u32
+        ))
+    );
+
+    // Full-width execute_route must be decoded before the overlapping legacy
+    // one-byte tag. A valid payload reaches account validation rather than
+    // being rejected as an oversized POD structure.
+    let valid_args = ExecuteRouteArgs {
+        hop_count: 2,
+        _reserved: [0; 7],
+        min_final_delta: 1,
+        hops: [
+            HopDescriptor {
+                protocol: DexProtocolTag::RaydiumCpmm as u8,
+                flags: 0,
+                account_count: 14,
+                _reserved: [0; 5],
+                amount_in: 10,
+                min_amount_out: 11,
+            },
+            HopDescriptor {
+                protocol: DexProtocolTag::MeteoraDlmm as u8,
+                flags: 0,
+                account_count: 17,
+                _reserved: [0; 5],
+                amount_in: 11,
+                min_amount_out: 12,
+            },
+            HopDescriptor {
+                protocol: 0,
+                flags: 0,
+                account_count: 0,
+                _reserved: [0; 5],
+                amount_in: 0,
+                min_amount_out: 0,
+            },
+        ],
+    };
+    let mut route_8byte = EXECUTE_ROUTE_DISCRIMINATOR.to_vec();
+    route_8byte.extend_from_slice(bytemuck::bytes_of(&valid_args));
+    assert_eq!(
+        process_instruction(&dummy_program_id, &accounts, &route_8byte),
+        Err(ProgramError::Custom(
+            ExecutorError::NotEnoughAccountInfos as u32
         ))
     );
 }
