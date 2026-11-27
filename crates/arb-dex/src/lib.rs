@@ -144,31 +144,56 @@ pub struct CpmmDecoder;
 
 /// Conservative Token-2022 mint extension scanner.
 ///
-/// Token-2022 mint extensions start after the 82-byte Mint base, the 83-byte
-/// padding, and the account-type byte: TLV data therefore starts at offset 166.
-/// This bot currently has no complete quote/transfer-hook model for Token-2022,
-/// so any non-empty extension set is treated as unsupported. Malformed layouts
-/// are also treated as unsupported (fail closed).
+/// Only the TransferFeeConfig mint extension is supported by the quote layer.
+/// TransferHook, PermanentDelegate, frozen/default state, confidential transfer,
+/// and every unknown extension remain fail-closed. The scanner validates the
+/// complete TLV chain instead of treating a valid fee extension as an unknown
+/// risky extension.
 pub fn token2022_has_risky_extension(data: &[u8]) -> bool {
     const MINT_BASE_LEN: usize = 82;
     const ACCOUNT_TYPE_OFFSET: usize = 165;
     const TLV_START: usize = 166;
     const ACCOUNT_TYPE_MINT: u8 = 1;
+    const TRANSFER_FEE_CONFIG_TYPE: u16 = 1;
+    const TRANSFER_FEE_CONFIG_LEN: usize = 108;
 
-    // Legacy SPL mint bytes have no Token-2022 extension trailer.
     if data.len() == MINT_BASE_LEN {
         return false;
     }
-
-    // Anything between the base Mint and the canonical Token-2022 trailer is
-    // malformed/ambiguous. Do not interpret it as an extension-free mint.
     if data.len() < TLV_START || data[ACCOUNT_TYPE_OFFSET] != ACCOUNT_TYPE_MINT {
         return true;
     }
 
-    // No Token-2022 extensions are currently enabled for execution. Treat any
-    // non-zero TLV bytes as unsupported; this also fails closed for malformed TLV.
-    data[TLV_START..].iter().any(|byte| *byte != 0)
+    let mut offset = TLV_START;
+    let mut seen_transfer_fee_config = false;
+    while offset < data.len() {
+        if data[offset..].iter().all(|byte| *byte == 0) {
+            return seen_transfer_fee_config && decode_transfer_fee_config(data).is_none();
+        }
+        let Some(header_end) = offset.checked_add(4) else {
+            return true;
+        };
+        if header_end > data.len() {
+            return true;
+        }
+        let extension_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let extension_len = usize::from(u16::from_le_bytes([data[offset + 2], data[offset + 3]]));
+        let Some(payload_end) = header_end.checked_add(extension_len) else {
+            return true;
+        };
+        if payload_end > data.len() || payload_end <= offset {
+            return true;
+        }
+        if extension_type != TRANSFER_FEE_CONFIG_TYPE
+            || extension_len != TRANSFER_FEE_CONFIG_LEN
+            || seen_transfer_fee_config
+        {
+            return true;
+        }
+        seen_transfer_fee_config = true;
+        offset = payload_end;
+    }
+    seen_transfer_fee_config && decode_transfer_fee_config(data).is_none()
 }
 
 impl CpmmDecoder {
@@ -314,6 +339,18 @@ mod tests {
     }
 
     #[test]
+    fn token2022_scanner_rejects_malformed_transfer_fee_config_payload() {
+        let mut data = vec![0u8; 166 + 4 + 108];
+        data[165] = 1;
+        data[166..168].copy_from_slice(&1u16.to_le_bytes());
+        data[168..170].copy_from_slice(&108u16.to_le_bytes());
+        data[170 + 88..170 + 90].copy_from_slice(&10_001u16.to_le_bytes());
+        data[170 + 106..170 + 108].copy_from_slice(&10_001u16.to_le_bytes());
+        assert!(decode_transfer_fee_config(&data).is_none());
+        assert!(token2022_has_risky_extension(&data));
+    }
+
+    #[test]
     fn transfer_fee_config_decoder_reads_onchain_layout() {
         let mut data = vec![0u8; 166 + 4 + 108];
         data[165] = 1;
@@ -327,6 +364,7 @@ mod tests {
         v[98..106].copy_from_slice(&75u64.to_le_bytes());
         v[106..108].copy_from_slice(&200u16.to_le_bytes());
         let cfg = decode_transfer_fee_config(&data).unwrap();
+        assert!(!token2022_has_risky_extension(&data));
         assert_eq!(cfg.older.epoch, 3);
         assert_eq!(cfg.newer.maximum_fee, 75);
         assert_eq!(cfg.newer.basis_points, 200);

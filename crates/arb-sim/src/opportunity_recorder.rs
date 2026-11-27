@@ -243,6 +243,7 @@ mod stage_derivation_tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,

@@ -11,9 +11,71 @@ use tracing::{debug, info, warn};
 const SOLANA_CLOCK_SYSVAR_ADDRESS: &str = "SysvarC1ock11111111111111111111111111111111";
 const SOLANA_SYSVAR_OWNER_ADDRESS: &str = "Sysvar1111111111111111111111111111111111111";
 
+/// Decode the canonical 40-byte Clock sysvar only when its RPC account owner
+/// and per-account response slot agree with the embedded bank slot.
+fn decode_clock_epoch(owner: &Pubkey, data: &[u8], response_slot: u64) -> Option<(u64, u64)> {
+    let expected_owner = Pubkey::from_str(SOLANA_SYSVAR_OWNER_ADDRESS).ok()?;
+    if *owner != expected_owner || data.len() != 40 || response_slot == 0 {
+        return None;
+    }
+    let slot = u64::from_le_bytes(data.get(0..8)?.try_into().ok()?);
+    let epoch = u64::from_le_bytes(data.get(16..24)?.try_into().ok()?);
+    (slot == response_slot).then_some((slot, epoch))
+}
+
+/// Select and normalize the active Token-2022 fee schedule. A mint without a
+/// transfer-fee extension receives an explicit zero schedule; unsupported or
+/// malformed extensions return None and keep the pool fail-closed.
+fn active_token2022_transfer_fee(
+    mint_data: &[u8],
+    epoch: u64,
+) -> Option<arb_types::Token2022TransferFee> {
+    if arb_dex::token2022_has_risky_extension(mint_data) {
+        return None;
+    }
+    let selected = match arb_dex::decode_transfer_fee_config(mint_data) {
+        Some(config) => arb_dex::active_transfer_fee(config, epoch),
+        None => arb_dex::TransferFeeSchedule {
+            epoch,
+            maximum_fee: 0,
+            basis_points: 0,
+        },
+    };
+    Some(arb_types::Token2022TransferFee {
+        basis_points: selected.basis_points,
+        maximum_fee: selected.maximum_fee,
+    })
+}
+
+/// Return the selected active fee for a mint, requiring the mint bytes and Clock
+/// to come from the same RPC context. `Some(None)` means a verified legacy SPL
+/// mint; `Some(Some(fee))` means verified Token-2022; outer `None` is unsafe.
+fn verified_mint_transfer_fee(
+    mint: Pubkey,
+    token_program: TokenProgramKind,
+    epoch: u64,
+    clock_slot: u64,
+    mint_data: &std::collections::HashMap<Pubkey, (u64, Vec<u8>)>,
+    mint_owners: &std::collections::HashMap<Pubkey, Pubkey>,
+) -> Option<Option<arb_types::Token2022TransferFee>> {
+    if token_program == TokenProgramKind::SplToken {
+        return Some(None);
+    }
+    let (mint_slot, data) = mint_data.get(&mint)?;
+    if *mint_slot != clock_slot {
+        return None;
+    }
+    let owner = mint_owners.get(&mint)?;
+    let (decoded_program, _) = decode_mint_program_and_decimals(owner, data)?;
+    if decoded_program != token_program {
+        return None;
+    }
+    active_token2022_transfer_fee(data, epoch).map(Some)
+}
+
 /// Resolve token program from the mint account owner and validate its base layout.
-/// Token-2022 is identified but remains ineligible until epoch-aware fees and
-/// TransferHook account resolution are supported through quote and execution.
+/// Token-2022 transfer-fee quoting is enabled only with a verified same-context
+/// Clock/mint schedule; unsupported extensions and live execution remain gated.
 fn decode_mint_program_and_decimals(owner: &Pubkey, data: &[u8]) -> Option<(TokenProgramKind, u8)> {
     if data.len() < 82 || data[45] != 1 || data[44] > 18 {
         return None;
@@ -141,9 +203,38 @@ pub(crate) fn decode_damm_v2_coherent_pool_state(
             && arb_dex::token2022_has_risky_extension(mint_b_bytes));
 
     let clock = arb_dex::DammV2ClockSnapshot::decode(clock_bytes, context_slot)?;
-    if !pool.set_clock_snapshot(clock, context_slot) || !pool.is_tradable() {
+    if clock.slot != context_slot
+        || !pool.set_clock_snapshot(clock, context_slot)
+        || !pool.is_tradable()
+    {
         return None;
     }
+    let token_programs = [pool.token_a_program, pool.token_b_program];
+    let token2022_fee_context = if token_programs.contains(&TokenProgramKind::Token2022) {
+        (|| {
+            let base_fee = match pool.token_a_program {
+                TokenProgramKind::SplToken => Some(None),
+                TokenProgramKind::Token2022 => {
+                    active_token2022_transfer_fee(mint_a_bytes, pool.current_epoch).map(Some)
+                }
+            }?;
+            let quote_fee = match pool.token_b_program {
+                TokenProgramKind::SplToken => Some(None),
+                TokenProgramKind::Token2022 => {
+                    active_token2022_transfer_fee(mint_b_bytes, pool.current_epoch).map(Some)
+                }
+            }?;
+            let context = arb_types::Token2022FeeContext {
+                snapshot_slot: context_slot,
+                epoch: pool.current_epoch,
+                base: base_fee,
+                quote: quote_fee,
+            };
+            context.is_valid_for(token_programs).then_some(context)
+        })()
+    } else {
+        None
+    };
     let fee_numerator = u64::try_from(pool.fee_params.effective_fee_numerator_at(
         pool.current_point,
         pool.activation_point,
@@ -194,7 +285,9 @@ pub(crate) fn decode_damm_v2_coherent_pool_state(
         fee_denominator: 1_000_000_000,
         raydium_cpmm_fee: None,
         is_active: true,
-        has_risky_token: pool.has_risky,
+        has_risky_token: pool.has_risky
+            || (token_programs.contains(&TokenProgramKind::Token2022)
+                && token2022_fee_context.is_none()),
         kind: if pool.fee_params.collect_fee_mode == 2 {
             arb_types::PoolKind::Cpmm
         } else {
@@ -205,7 +298,8 @@ pub(crate) fn decode_damm_v2_coherent_pool_state(
         pump_fun: None,
         damm_v2: Some(damm_quote_state),
         transfer_fee_bps: 0,
-        token_programs: [pool.token_a_program, pool.token_b_program],
+        token_programs,
+        token2022_fee_context,
         execution_accounts: Some(execution_accounts),
         last_update_slot: context_slot,
         last_update_ms: 0,
@@ -336,13 +430,26 @@ impl MultiDexRegistry {
                     continue; // DAMM v2 has its own coherent Pool/Vault/Mint/Clock fetch.
                 }
                 for mint in [pool.base_mint.0, pool.quote_mint.0] {
-                    if !cache.contains_key(&mint) && seen_accounts.insert(mint) {
+                    // Legacy mint ownership/decimals are immutable and can be cached.
+                    // Token-2022 fee schedules are epoch-sensitive, so their mint bytes
+                    // must be refreshed alongside Clock on every hydration cycle.
+                    let legacy_cached = cache
+                        .get(&mint)
+                        .is_some_and(|(program, _)| *program == TokenProgramKind::SplToken);
+                    if !legacy_cached && seen_accounts.insert(mint) {
                         mint_pubkeys.push(mint);
                     }
                 }
             }
         }
         pool_pubkeys.extend(mint_pubkeys.iter().copied());
+        let clock_key = Pubkey::from_str(SOLANA_CLOCK_SYSVAR_ADDRESS).ok();
+        if let Some(clock_key) = clock_key
+            && seen_accounts.insert(clock_key)
+        {
+            // Fetch Clock in the same account batches as refreshed Token-2022 mints.
+            pool_pubkeys.push(clock_key);
+        }
         let mut max_observed_slot = Self::batch_fetch_accounts(
             &self.rpc,
             &pool_pubkeys,
@@ -350,6 +457,11 @@ impl MultiDexRegistry {
             Some(&mut pool_owner_map),
         )
         .await;
+        let clock_snapshot = clock_key.and_then(|key| {
+            let (response_slot, data) = pool_data_map.get(&key)?;
+            let owner = pool_owner_map.get(&key)?;
+            decode_clock_epoch(owner, data, *response_slot)
+        });
 
         // Cache only successfully decoded, owner-verified Mint accounts. A
         // missing/malformed response is not cached, so the next tick can retry.
@@ -1603,6 +1715,35 @@ impl MultiDexRegistry {
                 continue;
             };
             let token_programs = [base_token_program, quote_token_program];
+            let token2022_fee_context = if token_programs.contains(&TokenProgramKind::Token2022) {
+                clock_snapshot.and_then(|(clock_slot, epoch)| {
+                    let base_fee = verified_mint_transfer_fee(
+                        state_base.0,
+                        base_token_program,
+                        epoch,
+                        clock_slot,
+                        &pool_data_map,
+                        &pool_owner_map,
+                    )?;
+                    let quote_fee = verified_mint_transfer_fee(
+                        state_quote.0,
+                        quote_token_program,
+                        epoch,
+                        clock_slot,
+                        &pool_data_map,
+                        &pool_owner_map,
+                    )?;
+                    let context = arb_types::Token2022FeeContext {
+                        snapshot_slot: clock_slot,
+                        epoch,
+                        base: base_fee,
+                        quote: quote_fee,
+                    };
+                    context.is_valid_for(token_programs).then_some(context)
+                })
+            } else {
+                None
+            };
 
             let (reserve_in, reserve_out) = match p.protocol {
                 DexProtocol::RaydiumCpmm => {
@@ -2009,9 +2150,11 @@ impl MultiDexRegistry {
                     None
                 },
                 is_active: true,
-                // Token-2022 stays disabled until epoch-aware fees and transfer
-                // hook account resolution are verified across quote + execution.
-                has_risky_token: token_programs.contains(&TokenProgramKind::Token2022),
+                // Token-2022 is quote-eligible only with a verified Clock epoch,
+                // same-context mint data, and an allowlisted extension set. Execution
+                // adapters and transaction builders retain their separate hard gate.
+                has_risky_token: token_programs.contains(&TokenProgramKind::Token2022)
+                    && token2022_fee_context.is_none(),
                 last_update_slot: state_slot.0,
                 last_update_ms: now_ms,
                 kind,
@@ -2020,6 +2163,7 @@ impl MultiDexRegistry {
                 pump_fun: pump_state,
                 damm_v2: None,
                 token_programs,
+                token2022_fee_context,
                 execution_accounts,
                 transfer_fee_bps: 0,
             });
@@ -2095,6 +2239,101 @@ mod mint_token_program_tests {
 }
 
 #[cfg(test)]
+mod token2022_epoch_fee_context_tests {
+    use super::{active_token2022_transfer_fee, decode_clock_epoch, verified_mint_transfer_fee};
+    use arb_types::TokenProgramKind;
+    use solana_pubkey::Pubkey;
+    use std::{collections::HashMap, str::FromStr};
+
+    fn transfer_fee_mint() -> Vec<u8> {
+        let mut data = vec![0u8; 166 + 4 + 108];
+        data[44] = 6;
+        data[45] = 1;
+        data[165] = 1;
+        data[166..168].copy_from_slice(&1u16.to_le_bytes());
+        data[168..170].copy_from_slice(&108u16.to_le_bytes());
+        let value = &mut data[170..278];
+        value[72..80].copy_from_slice(&1u64.to_le_bytes());
+        value[80..88].copy_from_slice(&7u64.to_le_bytes());
+        value[88..90].copy_from_slice(&100u16.to_le_bytes());
+        value[90..98].copy_from_slice(&5u64.to_le_bytes());
+        value[98..106].copy_from_slice(&9u64.to_le_bytes());
+        value[106..108].copy_from_slice(&200u16.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn active_fee_uses_older_then_newer_epoch_and_preserves_max_fee() {
+        let data = transfer_fee_mint();
+        assert!(!arb_dex::token2022_has_risky_extension(&data));
+
+        let before = active_token2022_transfer_fee(&data, 4).unwrap();
+        assert_eq!(before.basis_points, 100);
+        assert_eq!(before.maximum_fee, 7);
+
+        let at_activation = active_token2022_transfer_fee(&data, 5).unwrap();
+        assert_eq!(at_activation.basis_points, 200);
+        assert_eq!(at_activation.maximum_fee, 9);
+    }
+
+    #[test]
+    fn unknown_extensions_remain_fail_closed() {
+        let mut data = vec![0u8; 170];
+        data[44] = 6;
+        data[45] = 1;
+        data[165] = 1;
+        data[166..168].copy_from_slice(&12u16.to_le_bytes());
+        data[168..170].copy_from_slice(&0u16.to_le_bytes());
+        assert!(arb_dex::token2022_has_risky_extension(&data));
+        assert!(active_token2022_transfer_fee(&data, 1).is_none());
+    }
+
+    #[test]
+    fn verified_schedule_requires_mint_and_clock_at_same_slot() {
+        let mint = Pubkey::new_unique();
+        let owner = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        let mut data = transfer_fee_mint();
+        data[44] = 6;
+        let mint_data = HashMap::from([(mint, (777u64, data))]);
+        let owners = HashMap::from([(mint, owner)]);
+
+        let fee = verified_mint_transfer_fee(
+            mint,
+            TokenProgramKind::Token2022,
+            4,
+            777,
+            &mint_data,
+            &owners,
+        )
+        .flatten()
+        .unwrap();
+        assert_eq!(fee.basis_points, 100);
+        assert!(
+            verified_mint_transfer_fee(
+                mint,
+                TokenProgramKind::Token2022,
+                4,
+                778,
+                &mint_data,
+                &owners,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn clock_epoch_requires_sysvar_owner_and_matching_response_slot() {
+        let owner = Pubkey::from_str(super::SOLANA_SYSVAR_OWNER_ADDRESS).unwrap();
+        let mut data = vec![0u8; 40];
+        data[0..8].copy_from_slice(&777u64.to_le_bytes());
+        data[16..24].copy_from_slice(&1_097u64.to_le_bytes());
+        assert_eq!(decode_clock_epoch(&owner, &data, 777), Some((777, 1_097)));
+        assert_eq!(decode_clock_epoch(&owner, &data, 778), None);
+        assert_eq!(decode_clock_epoch(&Pubkey::new_unique(), &data, 777), None);
+    }
+}
+
+#[cfg(test)]
 mod cpmm_snapshot_slot_tests {
     use super::coherent_cpmm_snapshot_slot;
 
@@ -2122,7 +2361,7 @@ mod cpmm_snapshot_slot_tests {
 #[cfg(test)]
 mod damm_v2_coherent_account_graph_tests {
     use super::decode_damm_v2_coherent_pool_state;
-    use arb_types::{DexProtocol, PoolId, PoolKind};
+    use arb_types::{DexProtocol, PoolId, PoolKind, TokenProgramKind};
     use solana_pubkey::Pubkey;
     use std::str::FromStr;
 
@@ -2254,6 +2493,47 @@ mod damm_v2_coherent_account_graph_tests {
         assert!(damm.account_graph_verified);
         assert_eq!(damm.clock_slot, 777);
         assert_eq!(damm.clock_epoch, 1_097);
+    }
+
+    fn token2022_mint_with_fee(bps: u16, max_fee: u64) -> Vec<u8> {
+        let mut data = vec![0u8; 166 + 4 + 108];
+        data[44] = 6;
+        data[45] = 1;
+        data[165] = 1;
+        data[166..168].copy_from_slice(&1u16.to_le_bytes());
+        data[168..170].copy_from_slice(&108u16.to_le_bytes());
+        let value = &mut data[170..278];
+        value[72..80].copy_from_slice(&1u64.to_le_bytes());
+        value[80..88].copy_from_slice(&max_fee.to_le_bytes());
+        value[88..90].copy_from_slice(&bps.to_le_bytes());
+        value[90..98].copy_from_slice(&2_000u64.to_le_bytes());
+        value[98..106].copy_from_slice(&max_fee.to_le_bytes());
+        value[106..108].copy_from_slice(&bps.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn accepts_token2022_transfer_fee_mints_with_same_context_clock() {
+        let mut f = fixture();
+        f.pool[482] = 1;
+        f.pool[483] = 1;
+        f.token_owner = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        f.mint_a = token2022_mint_with_fee(100, 7);
+        f.mint_b = token2022_mint_with_fee(250, 11);
+
+        let state = decode(&f).expect("verified Token-2022 TransferFeeConfig should quote");
+        assert!(!state.has_risky_token);
+        assert_eq!(
+            state.token_programs,
+            [TokenProgramKind::Token2022, TokenProgramKind::Token2022]
+        );
+        let context = state.token2022_fee_context.expect("epoch fee context");
+        assert_eq!(context.snapshot_slot, 777);
+        assert_eq!(context.epoch, 1_097);
+        assert_eq!(context.base.unwrap().basis_points, 100);
+        assert_eq!(context.base.unwrap().maximum_fee, 7);
+        assert_eq!(context.quote.unwrap().basis_points, 250);
+        assert_eq!(context.quote.unwrap().maximum_fee, 11);
     }
 
     #[test]

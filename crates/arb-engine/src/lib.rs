@@ -136,17 +136,42 @@ fn compose_route_price_impact(retained_spot_bps: u128, hop_impact: Bps) -> u128 
     (numerator / 10_000).min(10_000)
 }
 
-/// Route edges do not carry verified Token-2022 epoch schedules or
-/// TransferHook account metas. Never price one as a legacy SPL token.
+/// Validate the canonical PoolState Token-2022 context. SPL-only pools need
+/// no context; every Token-2022 side must have a current-epoch, same-context
+/// fee schedule and no unsupported mint extension.
+pub(crate) fn pool_token_context_supported(pool: &PoolState) -> bool {
+    if pool.transfer_fee_bps != 0 || pool.has_risky_token {
+        return false;
+    }
+    if pool.token_programs == [TokenProgramKind::SplToken; 2] {
+        return pool.token2022_fee_context.is_none();
+    }
+    pool.token2022_fee_context
+        .as_ref()
+        .is_some_and(|context| context.is_valid_for(pool.token_programs))
+}
+
+/// MarketEdge token programs are oriented `(from_mint, to_mint)`, whereas the
+/// verified Token-2022 fee context is kept in canonical `(base, quote)` order.
 fn route_token_context_supported(edge: &MarketEdge) -> bool {
-    edge.transfer_fee_bps == 0 && !edge.token_programs.contains(&TokenProgramKind::Token2022)
+    if edge.transfer_fee_bps != 0 {
+        return false;
+    }
+    let canonical_programs = if edge.from_mint == edge.pool_base {
+        edge.token_programs
+    } else {
+        [edge.token_programs[1], edge.token_programs[0]]
+    };
+    if canonical_programs == [TokenProgramKind::SplToken; 2] {
+        return edge.token2022_fee_context.is_none();
+    }
+    edge.token2022_fee_context
+        .as_ref()
+        .is_some_and(|context| context.is_valid_for(canonical_programs))
 }
 
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteComponents> {
-    if edge.protocol != DexProtocol::MeteoraDlmm
-        || edge.transfer_fee_bps != 0
-        || edge.token_programs.contains(&TokenProgramKind::Token2022)
-    {
+    if edge.protocol != DexProtocol::MeteoraDlmm || !route_token_context_supported(edge) {
         return None;
     }
     let dlmm = edge.dlmm.as_ref()?;
@@ -238,16 +263,15 @@ fn quote_pool_with_dlmm_cache(
             // sentinel so the candidate cannot pass the production risk gate.
             if edge.protocol == DexProtocol::RaydiumClmm {
                 let state = edge.clmm.as_ref()?;
+                // Raydium's live AmmConfig + dynamic-fee upper bound is already
+                // preserved in ClmmState::fee_rate at its native 1_000_000
+                // denominator. Never reconstruct it from rounded BPS metadata.
+                let fee_rate = state.fee_rate;
                 if state.liquidity == 0
                     || state.sqrt_price == 0
                     || state.tick_arrays.is_empty()
-                    || gamma > 10_000
+                    || fee_rate == 0
                 {
-                    return None;
-                }
-                let fee_rate =
-                    u16::try_from(10_000u128.checked_sub(gamma)?.checked_mul(100)?).ok()?;
-                if fee_rate == 0 {
                     return None;
                 }
                 let arrays: Vec<TickArrayFacade> = state
@@ -302,6 +326,19 @@ fn quote_pool_with_dlmm_cache(
             let edge = edge?;
             let amount = u64::try_from(dx).ok()?;
             let a_to_b = edge.pool_base == edge.from_mint;
+            // Cached bin views omit Token-2022 mint schedules. Use the canonical
+            // dispatcher path for those pools so inbound/outbound transfer fees
+            // are deducted exactly once with the active epoch/max-fee context.
+            if edge.token_programs.contains(&TokenProgramKind::Token2022) {
+                let pool = edge.to_pool_state();
+                let quote = crate::adapters::quote_via_dispatcher(&pool, amount, a_to_b).ok()?;
+                return Some(PoolQuote {
+                    amount_out: u128::from(quote.amount_out_raw),
+                    price_impact_bps: quote.price_impact,
+                    discrete_bins_crossed: quote.dlmm_bins_crossed,
+                    clmm_steps_taken: None,
+                });
+            }
             let quote = match dlmm_cache {
                 Some(cache) => {
                     let (pool, bins) = cache.get(&edge.pool_id)?.as_ref()?;
@@ -384,6 +421,8 @@ pub struct MarketEdge {
     pub transfer_fee_bps: u16,
     /// Token programs for (from_mint, to_mint).
     pub token_programs: [TokenProgramKind; 2],
+    /// Active per-mint transfer-fee context in canonical base/quote mint order.
+    pub token2022_fee_context: Option<arb_types::Token2022FeeContext>,
     /// Verified on-chain execution accounts resolved for this pool.
     pub execution_accounts: Option<PoolExecutionAccounts>,
     /// Active bin ID for DLMM pools.
@@ -419,14 +458,20 @@ impl MarketEdge {
             fee_denominator: self.fee_denominator,
             raydium_cpmm_fee: self.raydium_cpmm_fee,
             is_active: true,
-            has_risky_token: self.token_programs.contains(&TokenProgramKind::Token2022),
+            has_risky_token: self.token_programs.contains(&TokenProgramKind::Token2022)
+                && self.token2022_fee_context.is_none(),
             kind: self.kind,
             clmm: self.clmm.clone(),
             dlmm: self.dlmm.clone(),
             pump_fun: self.pump_fun.clone(),
             damm_v2: self.damm_v2.clone(),
             transfer_fee_bps: self.transfer_fee_bps,
-            token_programs: self.token_programs,
+            token_programs: if self.from_mint == self.pool_base {
+                self.token_programs
+            } else {
+                [self.token_programs[1], self.token_programs[0]]
+            },
+            token2022_fee_context: self.token2022_fee_context,
             execution_accounts: self.execution_accounts.clone(),
             last_update_slot: 0,
             last_update_ms: 0,
@@ -1327,6 +1372,10 @@ impl MarketGraph {
                 stats.excluded_unmodeled_transfer_fee += 1;
                 continue;
             }
+            if !pool_token_context_supported(p) {
+                stats.excluded_risky_token += 1;
+                continue;
+            }
             if !p.is_fee_valid() {
                 stats.excluded_invalid_fee += 1;
                 continue;
@@ -1357,6 +1406,7 @@ impl MarketGraph {
                     damm_v2: p.damm_v2.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
                     token_programs: p.token_programs,
+                    token2022_fee_context: p.token2022_fee_context,
                     execution_accounts: p.execution_accounts.clone(),
                     active_bin_id: p.dlmm.as_ref().map(|d| d.active_bin_id),
                 });
@@ -1383,6 +1433,7 @@ impl MarketGraph {
                     damm_v2: p.damm_v2.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
                     token_programs: [p.token_programs[1], p.token_programs[0]],
+                    token2022_fee_context: p.token2022_fee_context,
                     execution_accounts: p.execution_accounts.clone(),
                     active_bin_id: p.dlmm.as_ref().map(|d| d.active_bin_id),
                 });
@@ -1732,8 +1783,8 @@ mod tests {
         let quote = MintId::new([3; 32]);
         MarketEdge {
             pool_id: PoolId::new([1; 32]),
-            protocol: DexProtocol::RaydiumClmm,
-            kind: PoolKind::Clmm,
+            protocol: DexProtocol::RaydiumV4,
+            kind: PoolKind::Cpmm,
             from_mint: base,
             to_mint: quote,
             pool_base: base,
@@ -1750,17 +1801,45 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps,
             token_programs,
+            token2022_fee_context: None,
             execution_accounts: None,
             active_bin_id: None,
         }
     }
 
     #[test]
-    fn route_token_context_gate_rejects_token_2022_and_transfer_fees() {
+    fn route_token_context_requires_verified_epoch_fee_schedule() {
         let spl = token_edge([TokenProgramKind::SplToken; 2], 0);
         assert!(route_token_context_supported(&spl));
-        let token_2022 = token_edge([TokenProgramKind::Token2022, TokenProgramKind::SplToken], 0);
+
+        let mut token_2022 =
+            token_edge([TokenProgramKind::Token2022, TokenProgramKind::SplToken], 0);
         assert!(!route_token_context_supported(&token_2022));
+        token_2022.token2022_fee_context = Some(arb_types::Token2022FeeContext {
+            snapshot_slot: 123,
+            epoch: 456,
+            base: Some(arb_types::Token2022TransferFee {
+                basis_points: 125,
+                maximum_fee: 10_000,
+            }),
+            quote: None,
+        });
+        assert!(route_token_context_supported(&token_2022));
+        let quote = quote_pool_detailed(
+            PoolKind::Cpmm,
+            10_000,
+            token_2022.reserve_in,
+            token_2022.reserve_out,
+            10_000,
+            Some(&token_2022),
+        )
+        .expect("graph route must use the verified epoch-aware fee schedule");
+        assert!(quote.amount_out > 0);
+
+        let mut stale = token_2022.clone();
+        stale.token2022_fee_context.as_mut().unwrap().snapshot_slot = 0;
+        assert!(!route_token_context_supported(&stale));
+
         let transfer_fee = token_edge([TokenProgramKind::SplToken; 2], 1);
         assert!(!route_token_context_supported(&transfer_fee));
     }
@@ -2016,6 +2095,7 @@ mod tests {
             damm_v2: Some(state),
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: None,
             execution_accounts: Some(PoolExecutionAccounts::MeteoraDammV2 {
                 token_a_mint: mint_a.0,
                 token_b_mint: mint_b.0,
@@ -2065,6 +2145,8 @@ mod tests {
             damm_v2: pool.damm_v2.clone(),
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: pool.token2022_fee_context,
+
             execution_accounts: pool.execution_accounts.clone(),
             active_bin_id: None,
         }
@@ -2191,6 +2273,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 100,
             last_update_ms: 1_700_000_000_000,
@@ -2247,6 +2330,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             active_bin_id: None,
         };
@@ -2287,6 +2371,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
         }
     }

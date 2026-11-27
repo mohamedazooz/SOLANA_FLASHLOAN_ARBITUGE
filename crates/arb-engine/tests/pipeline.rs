@@ -37,6 +37,7 @@ fn edge(id: u8, from: u8, to: u8, reserve_in: u128, reserve_out: u128) -> Market
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: Default::default(),
+        token2022_fee_context: None,
         execution_accounts: None,
         active_bin_id: None,
     }
@@ -68,6 +69,7 @@ fn pool(id: u8, base: u8, quote: u8, reserve_base: u128, reserve_quote: u128) ->
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: Default::default(),
+        token2022_fee_context: None,
         execution_accounts: None,
     }
 }

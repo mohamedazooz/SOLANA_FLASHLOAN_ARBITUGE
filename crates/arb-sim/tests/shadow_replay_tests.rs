@@ -66,6 +66,7 @@ fn mock_pool(id: &str, active_id: i32, x_reserve: u128, y_reserve: u128) -> Pool
             arb_types::TokenProgramKind::SplToken,
             arb_types::TokenProgramKind::SplToken,
         ],
+        token2022_fee_context: None,
         execution_accounts: None,
         last_update_slot: 320_000_000,
         last_update_ms: 0,

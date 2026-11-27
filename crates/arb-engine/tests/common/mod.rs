@@ -126,6 +126,7 @@ pub fn make_dlmm_pool(
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+        token2022_fee_context: None,
         execution_accounts: Some(exec),
         last_update_slot: 467_000_000,
         last_update_ms: 1_700_000_000_000,

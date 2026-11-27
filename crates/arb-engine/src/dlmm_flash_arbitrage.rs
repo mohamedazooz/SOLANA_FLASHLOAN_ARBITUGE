@@ -453,12 +453,25 @@ impl DlmmFlashArbConfig {
         flash_is_wsol == reserve_is_wsol
     }
 
+    /// Priority fee charged by the exact ComputeBudget instructions assembled
+    /// for this transaction: ceil(CU limit * micro-lamports per CU / 1e6).
+    /// None means the calculation cannot be represented and must fail closed.
+    pub fn priority_fee_from_compute_budget(&self) -> Option<u64> {
+        let micro_lamports =
+            u128::from(self.cu_limit).checked_mul(u128::from(self.priority_fee_micro_lamports))?;
+        u64::try_from(micro_lamports.div_ceil(1_000_000)).ok()
+    }
+
     /// Total non-pool cost of one execution, in flash-mint raw units.
+    ///
+    /// The explicit lamport field is retained as a conservative configured
+    /// minimum for backwards compatibility. The actual on-chain ComputeBudget
+    /// price is derived from the transaction CU limit and instruction value;
+    /// the higher amount is reserved so a stale lower config cannot overstate PnL.
     pub fn execution_cost(&self) -> u64 {
-        self.cost_in_flash_mint(
-            self.network_cost_lamports
-                .saturating_add(self.priority_fee_lamports),
-        )
+        let instruction_priority_fee = self.priority_fee_from_compute_budget().unwrap_or(u64::MAX);
+        let priority_fee = self.priority_fee_lamports.max(instruction_priority_fee);
+        self.cost_in_flash_mint(self.network_cost_lamports.saturating_add(priority_fee))
     }
 }
 
@@ -1291,6 +1304,32 @@ mod tests {
     }
 
     #[test]
+    fn priority_fee_floor_matches_the_compute_budget_instruction() {
+        let cfg = DlmmFlashArbConfig::default();
+        let micro_lamports = u128::from(cfg.cu_limit) * u128::from(cfg.priority_fee_micro_lamports);
+        let instruction_fee = u64::try_from(micro_lamports.div_ceil(1_000_000)).unwrap();
+        assert_eq!(
+            cfg.priority_fee_from_compute_budget(),
+            Some(instruction_fee)
+        );
+
+        let reserved_priority_fee = cfg.priority_fee_lamports.max(instruction_fee);
+        let expected = cfg.cost_in_flash_mint(cfg.network_cost_lamports + reserved_priority_fee);
+        assert_eq!(cfg.execution_cost(), expected);
+    }
+
+    #[test]
+    fn priority_fee_overflow_fails_closed() {
+        let cfg = DlmmFlashArbConfig {
+            cu_limit: u32::MAX,
+            priority_fee_micro_lamports: u64::MAX,
+            ..DlmmFlashArbConfig::default()
+        };
+        assert_eq!(cfg.priority_fee_from_compute_budget(), None);
+        assert_eq!(cfg.execution_cost(), u64::MAX);
+    }
+
+    #[test]
     fn wsol_default_consistency_guard_passes() {
         let cfg = DlmmFlashArbConfig::default();
         assert!(cfg.flash_mint_matches_kamino_reserve());
@@ -1418,6 +1457,7 @@ mod tests {
                 damm_v2: None,
                 transfer_fee_bps: 0,
                 token_programs: [TokenProgramKind::SplToken; 2],
+                token2022_fee_context: None,
                 execution_accounts: None,
                 last_update_slot: 0,
                 last_update_ms: 0,
@@ -1496,6 +1536,7 @@ mod tests {
                 damm_v2: None,
                 transfer_fee_bps: 0,
                 token_programs: [TokenProgramKind::SplToken; 2],
+                token2022_fee_context: None,
                 execution_accounts: None,
                 last_update_slot: 0,
                 last_update_ms: 0,
