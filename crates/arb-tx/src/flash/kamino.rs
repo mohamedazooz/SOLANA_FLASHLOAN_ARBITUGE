@@ -227,18 +227,20 @@ pub fn calculate_kamino_flash_fee(borrow_amount: u64, fee_sf: u64) -> u64 {
 // On-chain reserve fee reader (klend `ReserveConfig.fees.flash_loan_fee_sf`)
 // ============================================================================
 
-/// Anchor discriminator of the klend `Reserve` account:
-/// `sha256("global:Reserve")[..8]`, read live from the mainnet WSOL reserve
-/// (`d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q`) on 2026-11-04.
+/// Anchor account discriminator of the klend `Reserve` account:
+/// `sha256("account:Reserve")[..8]`, matching the official klend-interface
+/// schema and the captured Mainnet WSOL/USDC reserve account bytes.
 pub const KAMINO_RESERVE_DISCRIMINATOR: [u8; 8] = [0x2b, 0xf2, 0xcc, 0xca, 0x1a, 0xf7, 0x3b, 0x7f];
 
-/// Byte offsets into the **account** (after the 8-byte discriminator) of the
-/// deployed klend program (`KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD`).
-/// Verified empirically against live mainnet accounts for both the WSOL and the
-/// USDC reserve on 2026-11-04: `liquidity.mint_pubkey` @120, `mint_decimals`
-/// @264, `config.status` @4848, `config.fees.flash_loan_fee_sf` @4896.
-/// (The deployed layout predates the master-branch `LastUpdate` 24-byte form;
-/// re-verify these offsets if the program is upgraded.)
+/// Absolute byte offsets from the beginning of the full on-chain account data,
+/// including its 8-byte Anchor discriminator. These offsets match the official
+/// klend-interface Reserve schema (payload size 8,616 bytes) and the captured
+/// Mainnet WSOL/USDC Reserve fixtures. Key fields: liquidity.mint_pubkey @128,
+/// mint_decimals @272, config.status @4,856, and
+/// config.fees.flash_loan_fee_sf @4,904. Revalidate on every deployed program
+/// layout upgrade; do not infer compatibility from a crate version alone.
+/// Official schema:
+/// https://github.com/Kamino-Finance/klend/blob/master/libs/klend-interface/src/state/reserve.rs
 pub const KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET: usize = 8 + 120;
 pub const KAMINO_RESERVE_MINT_DECIMALS_OFFSET: usize = 8 + 264;
 pub const KAMINO_RESERVE_STATUS_OFFSET: usize = 8 + 4848;
