@@ -122,6 +122,7 @@ pub struct Supervisor {
     telegram: TelegramNotifier,
     keypair: Option<KeypairSigner>,
     last_known_live_sol_price: parking_lot::RwLock<f64>,
+    last_known_live_sol_price_slot: parking_lot::RwLock<u64>,
     rpc_pool: arb_ingest::RpcPool,
     /// Periodic health sweep: RPC, disk, Telegram. Logs the exact reason for
     /// any outage and alerts via Telegram — never blocks the hot path.
@@ -550,6 +551,7 @@ impl Supervisor {
             telegram,
             keypair,
             last_known_live_sol_price: parking_lot::RwLock::new(0.0),
+            last_known_live_sol_price_slot: parking_lot::RwLock::new(0),
             rpc_pool,
             health_monitor,
             heartbeat,
@@ -615,6 +617,10 @@ impl Supervisor {
 
     pub fn set_last_known_live_sol_price(&self, price: f64) {
         *self.last_known_live_sol_price.write() = price;
+        let slot = self.ingest.current_slot();
+        if slot > 0 {
+            *self.last_known_live_sol_price_slot.write() = slot;
+        }
     }
 
     pub fn set_cached_blockhash(&self, bh: [u8; 32], lvbh: Option<i64>) {
@@ -825,13 +831,27 @@ impl Supervisor {
         });
     }
 
+    /// Compute median of finite positive prices so outlier pools cannot skew the spot reference.
+    fn median_price(values: &mut [f64]) -> Option<f64> {
+        if values.is_empty() {
+            return None;
+        }
+        values.sort_by(f64::total_cmp);
+        let mid = values.len() / 2;
+        if values.len() % 2 == 1 {
+            Some(values[mid])
+        } else {
+            Some((values[mid - 1] + values[mid]) * 0.5)
+        }
+    }
+
     /// Computes real-time token mid-prices across active on-chain pools in MarketStateCache
     /// and feeds the live calculated ticker to ControlService.
     pub(crate) fn compute_and_publish_ticker(
         &self,
         current_slot: Slot,
     ) -> Option<serde_json::Value> {
-        let control = self.control()?;
+        let control = self.control();
         let market_snap = self.ingest.snapshot();
         let pools = market_snap.snapshot_pools();
 
@@ -894,20 +914,14 @@ impl Supervisor {
             }
         }
 
-        let onchain_sol = if !sol_prices.is_empty() {
-            Some(sol_prices.iter().sum::<f64>() / (sol_prices.len() as f64))
-        } else {
-            None
-        };
+        let onchain_sol = Self::median_price(&mut sol_prices);
 
         if let Some(price) = onchain_sol {
             *self.last_known_live_sol_price.write() = price;
-            self.telegram.update_sol_price(price);
-        } else {
-            let mkt_price = self.telegram.sol_price();
-            if mkt_price > 0.0 && mkt_price.is_finite() {
-                *self.last_known_live_sol_price.write() = mkt_price;
+            if current_slot.0 > 0 {
+                *self.last_known_live_sol_price_slot.write() = current_slot.0;
             }
+            self.telegram.update_sol_price(price);
         }
 
         let live_sol = *self.last_known_live_sol_price.read();
@@ -915,29 +929,29 @@ impl Supervisor {
             self.telegram.live_market_prices();
         let effective_sol = if live_sol > 0.0 { live_sol } else { tg_sol };
 
-        let wif_price_sol = if !wif_prices.is_empty() {
-            wif_prices.iter().sum::<f64>() / (wif_prices.len() as f64)
-        } else if tg_wif_usd > 0.0 && effective_sol > 0.0 {
-            tg_wif_usd / effective_sol
-        } else {
-            0.0
-        };
+        let wif_price_sol = Self::median_price(&mut wif_prices).unwrap_or_else(|| {
+            if tg_wif_usd > 0.0 && effective_sol > 0.0 {
+                tg_wif_usd / effective_sol
+            } else {
+                0.0
+            }
+        });
 
-        let popcat_price_sol = if !popcat_prices.is_empty() {
-            popcat_prices.iter().sum::<f64>() / (popcat_prices.len() as f64)
-        } else if tg_popcat_usd > 0.0 && effective_sol > 0.0 {
-            tg_popcat_usd / effective_sol
-        } else {
-            0.0
-        };
+        let popcat_price_sol = Self::median_price(&mut popcat_prices).unwrap_or_else(|| {
+            if tg_popcat_usd > 0.0 && effective_sol > 0.0 {
+                tg_popcat_usd / effective_sol
+            } else {
+                0.0
+            }
+        });
 
-        let fartcoin_price_sol = if !fartcoin_prices.is_empty() {
-            fartcoin_prices.iter().sum::<f64>() / (fartcoin_prices.len() as f64)
-        } else if tg_fartcoin_usd > 0.0 && effective_sol > 0.0 {
-            tg_fartcoin_usd / effective_sol
-        } else {
-            0.0
-        };
+        let fartcoin_price_sol = Self::median_price(&mut fartcoin_prices).unwrap_or_else(|| {
+            if tg_fartcoin_usd > 0.0 && effective_sol > 0.0 {
+                tg_fartcoin_usd / effective_sol
+            } else {
+                0.0
+            }
+        });
 
         let sol_venues_str = if !sol_venues.is_empty() {
             sol_venues.into_iter().collect::<Vec<_>>().join(" • ")
@@ -975,192 +989,277 @@ impl Supervisor {
                     "USDC": { "symbol": "USDC/USD", "price": 1.000, "venues": "Kamino • Orca", "change_24h": "0.0%" }
                 }
             });
-            control.update_ticker(live_ticker.clone());
+            if let Some(control) = control {
+                control.update_ticker(live_ticker.clone());
+            }
             Some(live_ticker)
         } else {
             None
         }
     }
 
-    /// Evaluates cross-pool route spreads across all matching pools in MarketStateCache
-    /// and streams them into ControlService so the live opportunity matrix updates on every slot.
+    /// Evaluates WSOL-anchored cross-pool diagnostic pairs using protocol-native
+    /// quote math (`quote_via_dispatcher`) and canonical all-cost economics
+    /// (`arb_math::economic::calculate_net_profit_raw_signed`) at the actual
+    /// bounded `max_sizing` cap. Never uses mid-price spread heuristics, and
+    /// never marks diagnostic probes as execution-eligible (`eligible` stays
+    /// `false` — only the canonical `Unified route engine` promotes eligible
+    /// opportunities).
     pub(crate) fn evaluate_and_record_cross_pool_routes(
         &self,
         current_slot: Slot,
-        pools: &[PoolState],
+        fresh_pools: &[PoolState],
         max_sizing: u64,
+        verified: &VerifiedQuoteInputs,
+        desired_cu_price: u64,
     ) {
         let Some(control) = self.control() else {
             return;
         };
+        if max_sizing == 0 || fresh_pools.len() < 2 {
+            return;
+        }
+        let wsol_pubkey = crate::verified_config::wsol_mint();
+        let usdc_pubkey = crate::verified_config::usdc_mint();
         let mut recorded_pairs = std::collections::HashSet::new();
         let mut pairs_map: std::collections::HashMap<(Pubkey, Pubkey), Vec<&PoolState>> =
             std::collections::HashMap::new();
-        for p in pools {
+        for p in fresh_pools {
             let m1 = p.base_mint.0;
             let m2 = p.quote_mint.0;
+            if m1 != wsol_pubkey && m2 != wsol_pubkey {
+                continue;
+            }
             let pair_key = if m1 < m2 { (m1, m2) } else { (m2, m1) };
             pairs_map.entry(pair_key).or_default().push(p);
         }
 
-        let test_size = if max_sizing > 0 {
-            max_sizing.clamp(1_000_000_000, 100_000_000_000)
-        } else {
-            10_000_000_000 // 10 SOL default sample evaluation notional
-        };
-
+        let base_fee = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
+        let flash_fee_sf = verified.flash_loan_fee_sf.value;
+        let tip_lamports = verified.tip_lamports.value;
+        let max_priority_share_bps = self.config.strategy.priority_fee_max_share_bps;
         let mut eval_count = 0u64;
+
         for ((m1, m2), pool_list) in pairs_map {
             if pool_list.len() < 2 {
                 continue;
             }
+            let other_mint = if m1 == wsol_pubkey { m2 } else { m1 };
+            let other_str = other_mint.to_string();
+            let (token_sym, quote_sym) = if other_mint == usdc_pubkey {
+                ("SOL", "USDC")
+            } else if other_str == arb_constants::WIF_MINT {
+                ("WIF", "SOL")
+            } else if other_str == arb_constants::POPCAT_MINT {
+                ("POPCAT", "SOL")
+            } else if other_str == arb_constants::FARTCOIN_MINT {
+                ("FARTCOIN", "SOL")
+            } else {
+                ("TOKEN", "SOL")
+            };
+
             for i in 0..pool_list.len() {
                 for j in (i + 1)..pool_list.len() {
-                    eval_count += 2;
                     let p1 = pool_list[i];
                     let p2 = pool_list[j];
                     if p1.pool_id == p2.pool_id {
                         continue;
                     }
-
-                    let pair_id = (p1.pool_id.0, p2.pool_id.0);
-                    if recorded_pairs.contains(&pair_id) {
+                    let pair_id = if p1.pool_id.0 < p2.pool_id.0 {
+                        (p1.pool_id.0, p2.pool_id.0)
+                    } else {
+                        (p2.pool_id.0, p1.pool_id.0)
+                    };
+                    if !recorded_pairs.insert(pair_id) {
                         continue;
                     }
-                    recorded_pairs.insert(pair_id);
 
-                    let (token_sym, quote_sym) = if m1.to_string() == arb_constants::WSOL_MINT {
-                        if m2.to_string() == arb_constants::USDC_MINT {
-                            ("SOL", "USDC")
-                        } else if m2.to_string() == arb_constants::WIF_MINT {
-                            ("WIF", "SOL")
-                        } else if m2.to_string() == arb_constants::POPCAT_MINT {
-                            ("POPCAT", "SOL")
-                        } else if m2.to_string() == arb_constants::FARTCOIN_MINT {
-                            ("FARTCOIN", "SOL")
-                        } else {
-                            ("TOKEN", "SOL")
-                        }
-                    } else if m2.to_string() == arb_constants::WSOL_MINT {
-                        if m1.to_string() == arb_constants::USDC_MINT {
-                            ("SOL", "USDC")
-                        } else if m1.to_string() == arb_constants::WIF_MINT {
-                            ("WIF", "SOL")
-                        } else if m1.to_string() == arb_constants::POPCAT_MINT {
-                            ("POPCAT", "SOL")
-                        } else if m1.to_string() == arb_constants::FARTCOIN_MINT {
-                            ("FARTCOIN", "SOL")
-                        } else {
-                            ("TOKEN", "SOL")
-                        }
-                    } else {
-                        ("TOKEN", "SOL")
-                    };
+                    struct DiagnosticCandidate<'a> {
+                        buy_pool: &'a PoolState,
+                        sell_pool: &'a PoolState,
+                        mid_out: u64,
+                        final_out: u64,
+                        gross_signed: i64,
+                        net_signed: i64,
+                    }
+                    let mut best: Option<DiagnosticCandidate<'_>> = None;
 
-                    let price_1 = strategy::extract_pool_mid_price(
-                        p1,
-                        &m1.to_string(),
-                        &m2.to_string(),
-                        p1.decimals_a,
-                        p1.decimals_b,
-                    )
-                    .map(|(p, _)| p)
-                    .unwrap_or(0.0);
-                    let price_2 = strategy::extract_pool_mid_price(
-                        p2,
-                        &m1.to_string(),
-                        &m2.to_string(),
-                        p2.decimals_a,
-                        p2.decimals_b,
-                    )
-                    .map(|(p, _)| p)
-                    .unwrap_or(0.0);
-
-                    if price_1 > 0.0 && price_2 > 0.0 {
-                        let spread_pct = ((price_1 - price_2).abs() / price_1.min(price_2)) * 100.0;
-                        let gross_diff = ((spread_pct / 100.0) * (test_size as f64)) as i64;
-                        let out_lamports = test_size.saturating_add(gross_diff.max(0) as u64);
-                        let net_diff = gross_diff.saturating_sub(5000);
-                        let min_net = self.config.strategy.min_net_profit_abs as i64;
-                        let is_eligible = net_diff >= min_net && net_diff > 0;
-
-                        let (buy_pool, sell_pool) = if price_1 <= price_2 {
-                            (p1, p2)
-                        } else {
-                            (p2, p1)
+                    for (buy_pool, sell_pool) in [(p1, p2), (p2, p1)] {
+                        eval_count += 1;
+                        let a_to_b_1 = buy_pool.base_mint.0 == wsol_pubkey;
+                        let Ok(q1) = arb_engine::adapters::quote_via_dispatcher(
+                            buy_pool, max_sizing, a_to_b_1,
+                        ) else {
+                            continue;
                         };
+                        if q1.amount_out_raw == 0 {
+                            continue;
+                        }
+                        let a_to_b_2 = sell_pool.base_mint.0 != wsol_pubkey;
+                        let Ok(q2) = arb_engine::adapters::quote_via_dispatcher(
+                            sell_pool,
+                            q1.amount_out_raw,
+                            a_to_b_2,
+                        ) else {
+                            continue;
+                        };
+                        let final_out = q2.amount_out_raw;
+                        let gross_i128 = i128::from(final_out) - i128::from(max_sizing);
+                        let route_protocols = [buy_pool.protocol, sell_pool.protocol];
+                        let estimated_cu = arb_tx::estimate_route_cu(
+                            self.config.strategy.use_flash_loan,
+                            &route_protocols,
+                            1,
+                        );
+                        let cu_limit = arb_tx::calculate_dynamic_cu_limit(estimated_cu);
+                        let gross_pos_u64 = u64::try_from(gross_i128.max(0)).unwrap_or(0);
+                        let cu_price = arb_tx::cap_cu_price_by_profit(
+                            gross_pos_u64,
+                            cu_limit,
+                            desired_cu_price,
+                            max_priority_share_bps,
+                        );
+                        let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
+                        let flash_fee = if self.config.strategy.use_flash_loan {
+                            let Ok(fee) = arb_math::economic::calculate_flash_fee_raw(
+                                max_sizing,
+                                flash_fee_sf,
+                            ) else {
+                                continue;
+                            };
+                            fee
+                        } else {
+                            0
+                        };
+                        let Ok(net_i128) = arb_math::economic::calculate_net_profit_raw_signed(
+                            final_out,
+                            max_sizing,
+                            flash_fee,
+                            0, // DEX fees are already reflected in protocol-native quote outputs
+                            0,
+                            0,
+                            0,
+                            Lamports(base_fee),
+                            Lamports(priority_fee),
+                            tip_lamports,
+                            1,
+                            1,
+                        ) else {
+                            continue;
+                        };
+                        let gross_signed =
+                            gross_i128.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        let net_signed =
+                            net_i128.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+                        if best.as_ref().is_none_or(|b| net_signed > b.net_signed) {
+                            best = Some(DiagnosticCandidate {
+                                buy_pool,
+                                sell_pool,
+                                mid_out: q1.amount_out_raw,
+                                final_out,
+                                gross_signed,
+                                net_signed,
+                            });
+                        }
+                    }
 
+                    if let Some(cand) = best {
+                        let hurdle = arb_risk::minimum_net_profit_hurdle_lamports(
+                            Lamports(max_sizing),
+                            Lamports(self.config.strategy.min_net_profit_abs),
+                            self.config.strategy.min_net_profit_bps,
+                        )
+                        .as_u64();
+                        let reject_reason = if i128::from(cand.net_signed) >= i128::from(hurdle) {
+                            "DIAGNOSTIC_PAIR_PROBE_NOT_CANONICAL".to_string()
+                        } else {
+                            "BELOW_MIN_PROFIT_HURDLE".to_string()
+                        };
                         control.record_opportunity(crate::control_service::OpportunityRecord {
                             captured_at_unix: 0,
                             slot: current_slot.0,
                             route: format!(
                                 "{} \u{2192} {} [{}/{}]",
-                                buy_pool.protocol.as_str(),
-                                sell_pool.protocol.as_str(),
+                                cand.buy_pool.protocol.as_str(),
+                                cand.sell_pool.protocol.as_str(),
                                 token_sym,
                                 quote_sym
                             ),
                             protocol: format!(
                                 "{}-to-{}",
-                                buy_pool.protocol.as_str(),
-                                sell_pool.protocol.as_str()
+                                cand.buy_pool.protocol.as_str(),
+                                cand.sell_pool.protocol.as_str()
                             )
                             .to_lowercase(),
-                            borrow_lamports: test_size,
-                            expected_output_lamports: out_lamports,
-                            gross_profit_lamports: gross_diff,
-                            net_profit_lamports: net_diff,
-                            eligible: is_eligible,
+                            borrow_lamports: max_sizing,
+                            expected_output_lamports: cand.final_out,
+                            gross_profit_lamports: cand.gross_signed,
+                            net_profit_lamports: cand.net_signed,
+                            eligible: false,
                             hop_quotes: vec![
                                 crate::control_service::HopQuoteRecord {
-                                    protocol: buy_pool.protocol.as_str().to_string(),
-                                    pool: buy_pool.pool_id.0.to_string(),
-                                    amount_in: test_size,
-                                    amount_out: test_size,
+                                    protocol: cand.buy_pool.protocol.as_str().to_string(),
+                                    pool: cand.buy_pool.pool_id.0.to_string(),
+                                    amount_in: max_sizing,
+                                    amount_out: cand.mid_out,
                                 },
                                 crate::control_service::HopQuoteRecord {
-                                    protocol: sell_pool.protocol.as_str().to_string(),
-                                    pool: sell_pool.pool_id.0.to_string(),
-                                    amount_in: test_size,
-                                    amount_out: out_lamports,
+                                    protocol: cand.sell_pool.protocol.as_str().to_string(),
+                                    pool: cand.sell_pool.pool_id.0.to_string(),
+                                    amount_in: cand.mid_out,
+                                    amount_out: cand.final_out,
                                 },
                             ],
-                            reject_reason: if is_eligible {
-                                None
-                            } else {
-                                Some("BELOW_MIN_PROFIT_HURDLE".to_string())
-                            },
+                            reject_reason: Some(reject_reason),
                         });
                     }
                 }
             }
         }
-        control.record_evaluations(eval_count.max(1));
+        if eval_count > 0 {
+            control.record_evaluations(eval_count);
+        }
     }
 
-    /// Per-protocol route coverage for the route monitor: one cheap pass over
-    /// the registry (protocol + fee_bps only, no PoolState clones).
+    /// Per-protocol route coverage for the route monitor: averages real
+    /// hydrated pool fees from `MarketStateCache` when populated, falling back
+    /// to registry metadata at startup before hydration completes.
     fn route_coverage(&self) -> Vec<crate::control_service::ProtocolCoverage> {
         use std::collections::BTreeMap;
-        let registry = self.registry.read();
-        let mut acc: BTreeMap<&'static str, (usize, u64)> = BTreeMap::new();
-        for p in registry.pools() {
-            let entry = acc.entry(p.protocol.as_str()).or_default();
-            entry.0 += 1;
-            entry.1 += u64::from(p.fee_bps);
+        let snapshot_pools = self.ingest.snapshot().snapshot_pools();
+        let mut acc: BTreeMap<&'static str, (usize, u64, usize)> = BTreeMap::new();
+        if !snapshot_pools.is_empty() {
+            for p in &snapshot_pools {
+                let entry = acc.entry(p.protocol.as_str()).or_default();
+                entry.0 += 1;
+                if let Some(fee) = p.fee_bps() {
+                    entry.1 += u64::from(fee);
+                    entry.2 += 1;
+                }
+            }
+        } else {
+            let registry = self.registry.read();
+            for p in registry.pools() {
+                let entry = acc.entry(p.protocol.as_str()).or_default();
+                entry.0 += 1;
+                if p.fee_bps > 0 {
+                    entry.1 += u64::from(p.fee_bps);
+                    entry.2 += 1;
+                }
+            }
         }
         acc.into_iter()
-            .map(
-                |(protocol, (pools, fee_sum))| crate::control_service::ProtocolCoverage {
+            .map(|(protocol, (pools, fee_sum, fee_count))| {
+                crate::control_service::ProtocolCoverage {
                     protocol: protocol.to_string(),
                     pools,
-                    avg_fee_bps: if pools > 0 {
-                        fee_sum as f64 / pools as f64
+                    avg_fee_bps: if fee_count > 0 {
+                        fee_sum as f64 / fee_count as f64
                     } else {
                         0.0
                     },
-                },
-            )
+                }
+            })
             .collect()
     }
 

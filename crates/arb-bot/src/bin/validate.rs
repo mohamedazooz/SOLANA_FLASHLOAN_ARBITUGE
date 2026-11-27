@@ -121,32 +121,24 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Implied mid price per SOL/USDC pool + inter-DEX spread. A large spread
-    // between venues is the raw signal; whether it survives fees is a separate
-    // question answered by the cycle detection below.
+    // Implied mid price per SOL/USDC pool + inter-DEX spread. Uses protocol-native
+    // spot mid-prices (CLMM sqrt_price, DLMM active_bin_id, CPMM/V4 reserves)
+    // instead of dividing raw vault balances on concentrated-liquidity pools.
+    let wsol_str_mid = arb_tx::WSOL_MINT;
+    let usdc_str_mid = arb_tx::USDC_MINT;
     let mut priced: Vec<(&str, f64)> = Vec::new();
     for p in &live_pools {
-        let is_sol_usdc = (p.base_mint.0 == wsol && p.quote_mint.0 == usdc)
-            || (p.base_mint.0 == usdc && p.quote_mint.0 == wsol);
-        if !is_sol_usdc || p.reserve_in == 0 || p.reserve_out == 0 {
+        let Some((price, venue)) = arb_bot::supervisor::strategy::extract_pool_mid_price(
+            p,
+            wsol_str_mid,
+            usdc_str_mid,
+            9,
+            6,
+        ) else {
             continue;
-        }
-        let (sol_res, usdc_res) = if p.base_mint.0 == wsol {
-            (p.reserve_in as f64 / 1e9, p.reserve_out as f64 / 1e6)
-        } else {
-            (p.reserve_out as f64 / 1e9, p.reserve_in as f64 / 1e6)
         };
-        if sol_res > 0.0 {
-            let label = match p.protocol {
-                arb_types::DexProtocol::RaydiumV4 => "RaydiumV4",
-                arb_types::DexProtocol::OrcaWhirlpool => "OrcaWhirlpool",
-                arb_types::DexProtocol::MeteoraDlmm => "MeteoraDlmm",
-                _ => "Other",
-            };
-            let price = usdc_res / sol_res;
-            info!("  💲 {label} implied price = {price:.4} USDC/SOL");
-            priced.push((label, price));
-        }
+        info!("  💲 {venue} implied price = {price:.4} USDC/SOL");
+        priced.push((venue, price));
     }
     if priced.len() >= 2 {
         let max = priced.iter().cloned().fold(f64::MIN, |a, b| a.max(b.1));

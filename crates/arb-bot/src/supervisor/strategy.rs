@@ -65,7 +65,7 @@ fn apply_environment_borrow_caps(max_sizing_lamports: u64, sol_usd: f64) -> anyh
         max_flash_borrow_usd,
     ))
 }
-pub(crate) fn extract_pool_mid_price(
+pub fn extract_pool_mid_price(
     p: &PoolState,
     expected_base_mint: &str,
     expected_quote_mint: &str,
@@ -203,6 +203,11 @@ impl Supervisor {
             .lock()
             .retain(|(slot, _), _| *slot + 2 >= current_slot.0);
 
+        // Refresh on-chain SOL/USD spot reference and ticker BEFORE building
+        // anchor economic inputs so cross-mint rate conversion sees current-slot
+        // pool prices instead of a previous tick's stale observation slot.
+        self.compute_and_publish_ticker(current_slot);
+
         // 0. Verified economic inputs (fail closed): hydrate live Kamino
         // reserve fee and decimals per configured anchor (WSOL + USDC).
         // Each anchor receives its own denomination-exact EconomicConfig; if
@@ -307,9 +312,6 @@ impl Supervisor {
         let market_snap = self.ingest.snapshot();
         let pools: Vec<PoolState> = market_snap.snapshot_pools();
         arb_metrics::observe_state_processing_latency_us(state_start.elapsed().as_micros() as f64);
-        // Track live on-chain token prices from active pools (Raydium, Orca Whirlpool, Meteora DLMM).
-        // Using all venues extracts actual market mid-prices and cross-checks accuracy.
-        self.compute_and_publish_ticker(current_slot);
 
         let discovery_start = std::time::Instant::now();
 
@@ -398,9 +400,6 @@ impl Supervisor {
             anchor_caps.insert(*anchor, cap_raw);
         }
 
-        // Evaluate and record cross-pool candidate routes across all matching pools in MarketStateCache
-        self.evaluate_and_record_cross_pool_routes(current_slot, &pools, max_sizing);
-
         if anchor_caps.values().all(|&cap| cap == 0) {
             debug!(
                 "Missing fresh SOL/USD reference, invalid USD size cap, or zero/unverified flash liquidity across all anchors; skip graph sizing"
@@ -439,6 +438,15 @@ impl Supervisor {
             debug!("No fresh pools within graph max age; skipping tick (fail closed)");
             return Ok(());
         }
+
+        // Record protocol-native, all-cost diagnostic pair probes across fresh pools only.
+        self.evaluate_and_record_cross_pool_routes(
+            current_slot,
+            &fresh_pools,
+            max_sizing,
+            &verified,
+            desired_cu_price,
+        );
 
         let mut merged = {
             let mut graph = self.graph.lock();
@@ -678,6 +686,32 @@ impl Supervisor {
                     .collect::<Vec<_>>()
                     .join("\u{2192}");
 
+                let base_mint = o.hops.first().map(|h| h.mint_in);
+                let min_hurdle_raw = if base_mint == Some(MintId(wsol_mint)) {
+                    arb_risk::minimum_net_profit_hurdle_lamports(
+                        Lamports(o.size_in.0),
+                        Lamports(self.config.strategy.min_net_profit_abs),
+                        self.config.strategy.min_net_profit_bps,
+                    )
+                    .as_u64()
+                } else {
+                    let abs_floor = base_mint
+                        .and_then(|m| {
+                            verified_anchors
+                                .iter()
+                                .find(|(a, _, _)| *a == m)
+                                .map(|(_, _, eco)| eco.min_profit_raw.0)
+                        })
+                        .unwrap_or(u64::MAX);
+                    let bps_floor = o
+                        .size_in
+                        .0
+                        .saturating_mul(self.config.strategy.min_net_profit_bps)
+                        .div_ceil(10_000);
+                    abs_floor.max(bps_floor)
+                };
+                let is_eligible = o.net_profit.0 >= min_hurdle_raw && o.net_profit.0 > 0;
+
                 control.record_opportunity(crate::control_service::OpportunityRecord {
                     captured_at_unix: 0,
                     slot: current_slot.0,
@@ -687,9 +721,9 @@ impl Supervisor {
                     expected_output_lamports: o.expected_out.0,
                     gross_profit_lamports: o.gross_profit.0 as i64,
                     net_profit_lamports: o.net_profit.0 as i64,
-                    eligible: o.net_profit.0 > 0,
+                    eligible: is_eligible,
                     hop_quotes,
-                    reject_reason: if o.net_profit.0 > 0 {
+                    reject_reason: if is_eligible {
                         None
                     } else {
                         Some("BELOW_MIN_PROFIT_HURDLE".to_string())
@@ -1034,5 +1068,103 @@ mod rank_tests {
             (p_clmm_inv - 200.0).abs() < 0.01,
             "inverted CLMM price expected ~200.0, got {p_clmm_inv}"
         );
+    }
+
+    #[test]
+    fn median_price_rejects_single_pool_outlier_and_diagnostic_pair_never_marks_eligible() {
+        let mut prices = vec![73.0, 73.1, 72.9, 500.0];
+        let med = Supervisor::median_price(&mut prices).unwrap();
+        assert!(
+            (med - 73.05).abs() < 1e-9,
+            "expected median ~73.05, got {med}"
+        );
+
+        let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
+        let mut p1 = test_pool(
+            DexProtocol::RaydiumV4,
+            wsol,
+            usdc,
+            9,
+            6,
+            1_000_000_000_000,
+            73_000_000_000,
+        );
+        p1.pool_id = PoolId::new([1u8; 32]);
+        let mut p2 = test_pool(
+            DexProtocol::RaydiumV4,
+            wsol,
+            usdc,
+            9,
+            6,
+            1_000_000_000_000,
+            73_050_000_000,
+        );
+        p2.pool_id = PoolId::new([2u8; 32]);
+
+        let cfg = crate::config::load(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../config/base.toml"
+        ))
+        .unwrap();
+        let mode = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            crate::BotMode::Simulate as u8,
+        ));
+        let sup = Supervisor::with_mode_atomic(std::sync::Arc::clone(&mode), cfg);
+        let control = std::sync::Arc::new(crate::control_service::ControlService::new(
+            mode,
+            sup.kill_switch(),
+            std::env::temp_dir()
+                .join(format!("arb_diag_test_{}.log", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+        ));
+        sup.attach_control(std::sync::Arc::clone(&control));
+
+        let verified = crate::verified_config::VerifiedQuoteInputs {
+            flash_loan_fee_sf: crate::verified_config::VerifiedValue::new(
+                11_529_215_046_068,
+                "test",
+                Slot(100),
+                Slot(100),
+            ),
+            base_decimals: crate::verified_config::VerifiedValue::new(
+                9,
+                "test",
+                Slot(100),
+                Slot(100),
+            ),
+            lamports_per_base_raw: crate::verified_config::VerifiedValue::new(
+                1,
+                "test",
+                Slot(100),
+                Slot(100),
+            ),
+            lamports_per_base_denom: crate::verified_config::VerifiedValue::new(
+                1,
+                "test",
+                Slot(100),
+                Slot(100),
+            ),
+            tip_lamports: crate::verified_config::VerifiedValue::new(
+                Lamports(10_000),
+                "test",
+                Slot(100),
+                Slot(100),
+            ),
+        };
+        sup.evaluate_and_record_cross_pool_routes(
+            Slot(100),
+            &[p1, p2],
+            100_000_000, // 0.1 SOL
+            &verified,
+            100_000,
+        );
+        let recorded = control.opportunities(5);
+        assert_eq!(recorded.len(), 1);
+        assert!(!recorded[0].eligible);
+        assert!(recorded[0].gross_profit_lamports < 0);
+        assert!(recorded[0].net_profit_lamports < recorded[0].gross_profit_lamports);
+        assert_eq!(control.status().profitable_total, 0);
     }
 }
