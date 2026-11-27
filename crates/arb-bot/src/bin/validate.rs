@@ -862,6 +862,29 @@ fn route_verdict(gross: i128, net: i128, hurdle: u64, tip_floor_available: bool)
     }
 }
 
+fn optional_positive_env_f64(name: &str) -> Result<Option<f64>> {
+    match std::env::var(name) {
+        Ok(raw) => {
+            let value = raw
+                .trim()
+                .parse::<f64>()
+                .map_err(|error| anyhow::anyhow!("{name} must be a positive number: {error}"))?;
+            if !value.is_finite() || value <= 0.0 {
+                anyhow::bail!("{name} must be finite and greater than zero");
+            }
+            Ok(Some(value))
+        }
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            anyhow::bail!("{name} is not valid Unicode")
+        }
+    }
+}
+
+fn positive_env_f64(name: &str, fallback: f64) -> Result<f64> {
+    Ok(optional_positive_env_f64(name)?.unwrap_or(fallback))
+}
+
 #[cfg(test)]
 mod route_verdict_tests {
     use super::route_verdict;
@@ -888,27 +911,4 @@ mod route_verdict_tests {
     fn unavailable_tip_floor_never_marks_candidate_eligible() {
         assert!(route_verdict(20_000, 20_000, 1_000, false).contains("TIP FLOOR UNAVAILABLE"));
     }
-}
-
-fn optional_positive_env_f64(name: &str) -> Result<Option<f64>> {
-    match std::env::var(name) {
-        Ok(raw) => {
-            let value = raw
-                .trim()
-                .parse::<f64>()
-                .map_err(|error| anyhow::anyhow!("{name} must be a positive number: {error}"))?;
-            if !value.is_finite() || value <= 0.0 {
-                anyhow::bail!("{name} must be finite and greater than zero");
-            }
-            Ok(Some(value))
-        }
-        Err(std::env::VarError::NotPresent) => Ok(None),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            anyhow::bail!("{name} is not valid Unicode")
-        }
-    }
-}
-
-fn positive_env_f64(name: &str, fallback: f64) -> Result<f64> {
-    Ok(optional_positive_env_f64(name)?.unwrap_or(fallback))
 }
