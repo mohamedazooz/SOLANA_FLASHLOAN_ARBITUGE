@@ -664,7 +664,19 @@ pub struct RejectedCycleDiagnostic {
     pub gross_profit_raw: u64,
     /// Amount at each route boundary: borrow input followed by each hop output.
     pub hop_amounts_raw: Vec<u64>,
+    /// Why the canonical dispatcher did not produce matching per-hop fee diagnostics.
+    /// This is diagnostic only and does not alter the optimizer or economic gate.
+    pub quote_dispatch_error: Option<String>,
     pub hops: Vec<RejectedHopDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct GrossProfitableSample {
+    borrow_amount_raw: u64,
+    gross_profit_raw: u64,
+    hop_amounts_raw: Vec<u64>,
+    hops: Vec<RejectedHopDiagnostic>,
+    quote_dispatch_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -685,7 +697,7 @@ pub struct BaseCycleScanStats {
 
 struct RouteOptimizationOutcome {
     opportunity: Option<ExecutionOpportunity>,
-    gross_profitable_sample: Option<(u64, u64, Vec<u64>, Vec<RejectedHopDiagnostic>)>,
+    gross_profitable_sample: Option<GrossProfitableSample>,
 }
 
 impl MarketGraph {
@@ -1011,8 +1023,7 @@ impl MarketGraph {
             }
         }
         boundary_seeds = arb_math::dlmm::dlmm_breakpoint_seed_sizes(&boundary_seeds, 1, upper, 48);
-        let best_gross_sample =
-            std::cell::RefCell::new(None::<(u64, u64, Vec<u64>, Vec<RejectedHopDiagnostic>)>);
+        let best_gross_sample = std::cell::RefCell::new(None::<(u64, u64, Vec<u64>)>);
         let result = route_sizing::optimize_bounded_non_monotonic_with_budget(
             upper,
             32,
@@ -1040,59 +1051,12 @@ impl MarketGraph {
                 let replace = best_gross_sample
                     .borrow()
                     .as_ref()
-                    .is_none_or(|(_, best, _, _)| gross > *best);
+                    .is_none_or(|(_, best_gross, _)| gross > *best_gross);
                 if replace {
                     let mut amounts = Vec::with_capacity(hop_inputs.len() + 1);
                     amounts.push(size_in);
                     amounts.extend(hop_inputs.iter().copied());
-
-                    // Ask the canonical dispatcher for fee components on the same
-                    // immutable route snapshot. Only attach fee values if every hop
-                    // output and the final route output exactly match the optimizer.
-                    let mut diagnostic_pools: Vec<PoolState> =
-                        edges.iter().map(|edge| edge.to_pool_state()).collect();
-                    let requests: Vec<HopRequest> = edges
-                        .iter()
-                        .map(|edge| HopRequest {
-                            pool_id: edge.pool_id,
-                            mint_in: edge.from_mint,
-                        })
-                        .collect();
-                    let dispatched = quote_route(&mut diagnostic_pools, &requests, size_in).ok();
-                    let fee_quotes_match = dispatched.as_ref().is_some_and(|quote| {
-                        quote.amount_out == *hop_inputs.last().unwrap_or(&0)
-                            && quote.hops.len() == edges.len()
-                            && quote
-                                .hops
-                                .iter()
-                                .zip(hop_inputs.iter())
-                                .all(|(hop, output)| hop.amount_out == *output)
-                    });
-                    let fee_diagnostics: Vec<RejectedHopDiagnostic> = edges
-                        .iter()
-                        .enumerate()
-                        .map(|(index, edge)| {
-                            let quote = fee_quotes_match
-                                .then(|| {
-                                    dispatched.as_ref().and_then(|route| route.hops.get(index))
-                                })
-                                .flatten();
-                            RejectedHopDiagnostic {
-                                pool_id: edge.pool_id,
-                                protocol: edge.protocol,
-                                kind: edge.kind,
-                                from_mint: edge.from_mint,
-                                to_mint: edge.to_mint,
-                                fee_bps: edge.fee_bps,
-                                amount_in_raw: quote.map(|hop| hop.amount_in),
-                                amount_out_raw: quote.map(|hop| hop.amount_out),
-                                dex_fee_paid_raw: quote.map(|hop| hop.fee_paid),
-                                transfer_fee_paid_raw: quote.map(|hop| hop.transfer_fee_paid),
-                            }
-                        })
-                        .collect();
-                    *best_gross_sample.borrow_mut() =
-                        Some((size_in, gross, amounts, fee_diagnostics));
+                    *best_gross_sample.borrow_mut() = Some((size_in, gross, amounts));
                 }
 
                 let impact = route_quote.route_price_impact_bps;
@@ -1140,9 +1104,95 @@ impl MarketGraph {
             debug_assert_eq!(result.score, i128::from(result.candidate.net_profit.0));
             result.candidate
         });
+        // Run the diagnostic dispatcher once, after sizing has selected its
+        // best gross-positive sample. Never add dispatcher work to each sizing
+        // evaluation, and never use its result to change route eligibility.
+        let gross_profitable_sample = best_gross_sample
+            .into_inner()
+            .map(|(borrow_amount_raw, gross_profit_raw, hop_amounts_raw)| {
+                let mut diagnostic_pools: Vec<PoolState> =
+                    edges.iter().map(|edge| edge.to_pool_state()).collect();
+                let requests: Vec<HopRequest> = edges
+                    .iter()
+                    .map(|edge| HopRequest {
+                        pool_id: edge.pool_id,
+                        mint_in: edge.from_mint,
+                    })
+                    .collect();
+                let (dispatched, dispatch_error) =
+                    match quote_route(&mut diagnostic_pools, &requests, borrow_amount_raw) {
+                        Ok(quote) => (Some(quote), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    };
+                let expected_final = hop_amounts_raw.last().copied().unwrap_or_default();
+                let fee_quotes_match = dispatched.as_ref().is_some_and(|quote| {
+                    quote.amount_in == borrow_amount_raw
+                        && quote.amount_out == expected_final
+                        && quote.hops.len() == edges.len()
+                        && quote
+                            .hops
+                            .iter()
+                            .zip(hop_amounts_raw.iter().skip(1))
+                            .all(|(hop, output)| hop.amount_out == *output)
+                });
+                let dispatch_error = dispatch_error.or_else(|| {
+                    let quote = dispatched.as_ref()?;
+                    if fee_quotes_match {
+                        return None;
+                    }
+                    let first_hop_mismatch = quote
+                        .hops
+                        .iter()
+                        .zip(hop_amounts_raw.iter().skip(1))
+                        .position(|(hop, output)| hop.amount_out != *output)
+                        .map(|index| {
+                            format!(
+                                "index={index}, expected={}, actual={}",
+                                hop_amounts_raw[index + 1],
+                                quote.hops[index].amount_out
+                            )
+                        })
+                        .unwrap_or_else(|| "none".to_owned());
+                    Some(format!(
+                        "quote_output_mismatch: input_expected={borrow_amount_raw}, input_actual={}, route_out_expected={expected_final}, route_out_actual={}, hop_count_expected={}, hop_count_actual={}, first_hop_mismatch={first_hop_mismatch}",
+                        quote.amount_in,
+                        quote.amount_out,
+                        edges.len(),
+                        quote.hops.len()
+                    ))
+                });
+                let hops = edges
+                    .iter()
+                    .enumerate()
+                    .map(|(index, edge)| {
+                        let quote = fee_quotes_match
+                            .then(|| dispatched.as_ref().and_then(|route| route.hops.get(index)))
+                            .flatten();
+                        RejectedHopDiagnostic {
+                            pool_id: edge.pool_id,
+                            protocol: edge.protocol,
+                            kind: edge.kind,
+                            from_mint: edge.from_mint,
+                            to_mint: edge.to_mint,
+                            fee_bps: edge.fee_bps,
+                            amount_in_raw: quote.map(|hop| hop.amount_in),
+                            amount_out_raw: quote.map(|hop| hop.amount_out),
+                            dex_fee_paid_raw: quote.map(|hop| hop.fee_paid),
+                            transfer_fee_paid_raw: quote.map(|hop| hop.transfer_fee_paid),
+                        }
+                    })
+                    .collect();
+                GrossProfitableSample {
+                    borrow_amount_raw,
+                    gross_profit_raw,
+                    hop_amounts_raw,
+                    hops,
+                    quote_dispatch_error: dispatch_error,
+                }
+            });
         Some(RouteOptimizationOutcome {
             opportunity,
-            gross_profitable_sample: best_gross_sample.borrow().clone(),
+            gross_profitable_sample,
         })
     }
 
@@ -1604,18 +1654,20 @@ impl MarketGraph {
                     }
                     if let Some(opportunity) = outcome.opportunity {
                         results.push(opportunity);
-                    } else if let Some((borrow, gross, hop_amounts, fee_diagnostics)) = gross_sample
-                    {
+                    } else if let Some(sample) = gross_sample {
                         stats.gate_rejected += 1;
                         if stats.rejected_cycles.len() < 32 {
                             stats.rejected_cycles.push(RejectedCycleDiagnostic {
                                 route_id: route_id.0,
                                 base_mint: base_anchor,
-                                borrow_amount_raw: borrow,
-                                expected_final_amount_raw: borrow.saturating_add(gross),
-                                gross_profit_raw: gross,
-                                hop_amounts_raw: hop_amounts,
-                                hops: fee_diagnostics,
+                                borrow_amount_raw: sample.borrow_amount_raw,
+                                expected_final_amount_raw: sample
+                                    .borrow_amount_raw
+                                    .saturating_add(sample.gross_profit_raw),
+                                gross_profit_raw: sample.gross_profit_raw,
+                                hop_amounts_raw: sample.hop_amounts_raw,
+                                quote_dispatch_error: sample.quote_dispatch_error,
+                                hops: sample.hops,
                             });
                         }
                     } else {

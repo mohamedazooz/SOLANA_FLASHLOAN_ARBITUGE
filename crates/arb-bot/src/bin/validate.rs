@@ -442,13 +442,14 @@ async fn main() -> Result<()> {
     );
     for rejected in &cycle_stats.rejected_cycles {
         info!(
-            "REJECTED_CYCLE route={} base={:?} borrow_raw={} final_raw={} gross_raw={} hop_amounts_raw={:?}",
+            "REJECTED_CYCLE route={} base={:?} borrow_raw={} final_raw={} gross_raw={} hop_amounts_raw={:?} quote_dispatch_error={:?}",
             rejected.route_id,
             rejected.base_mint,
             rejected.borrow_amount_raw,
             rejected.expected_final_amount_raw,
             rejected.gross_profit_raw,
             rejected.hop_amounts_raw,
+            rejected.quote_dispatch_error,
         );
         for (index, hop) in rejected.hops.iter().enumerate() {
             info!(
