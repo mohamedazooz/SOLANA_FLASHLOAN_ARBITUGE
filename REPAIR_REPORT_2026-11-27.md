@@ -60,15 +60,20 @@ This is **not a production certification**. The environment did not contain `car
 
 ## Validation performed
 
+Executed locally on the repository branch with the pinned Rust toolchain **1.99.1**:
+
 | Check | Result | Notes |
 |---|---|---|
-| `npm --prefix web run test:security` | **PASS — 3/3** | Login submission contract, short-lived WebSocket tickets, canonical emergency-control API |
-| `python3 scripts/audit_codebase.py` | **Ran — exit 0** | Reported 15 production WebSocket endpoint literals, 8 localhost/port defaults, and 4 production pubkeys outside the central constants crate |
-| PumpSwap Anchor discriminator checks | **PASS — 5/5** | SHA-256 prefixes matched `buy_exact_quote_in_v2`, `sell_v2`, Pool, GlobalConfig, and FeeConfig account discriminators |
-| Changed Rust delimiter sanity check | **PASS** | Braces/parentheses/brackets balance in modified Rust files; this is not a parser or compiler check |
-| Rust format / compile / tests / Clippy | **NOT RUN** | `cargo`, `rustc`, `rustup`, and `rustfmt` are not installed in the execution environment |
-| Web production build | **BLOCKED** | `web/node_modules` is absent; build previously failed resolving React and UI dependencies |
-| Mainnet/devnet transaction simulation | **NOT RUN** | No RPC-backed integration environment or deployed executor binary was provided |
+| `cargo fmt --all -- --check` | **PASS** | Workspace formatting check |
+| `cargo check --workspace --all-targets --locked` | **PASS** | All workspace targets checked |
+| `cargo test -p arb-executor --all-targets --locked` | **PASS — 47/47** | All executor unit tests passed |
+| `cargo test --workspace --all-targets --locked` | **PASS** | All executed workspace suites passed; opt-in live RPC / mainnet tests remained ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | **PASS** | No warnings accepted |
+| `git diff --check` | **PASS** | No whitespace errors |
+| Web security/build checks | **NOT RUN** | `web/node_modules` is absent in this worktree; no dependency installation was attempted |
+| Mainnet/devnet transaction simulation | **NOT RUN** | No RPC-backed integration simulation or deployed executor binary was provided |
+
+These checks establish compilation and test coverage only. They do not establish on-chain CPI success, deployed-program identity, mainnet execution, landing, or profitability.
 
 ## Remaining release blockers and risks
 
@@ -118,4 +123,4 @@ Do not enable mainnet live mode until those checks pass and the executor deploym
 
 ---
 
-**Delivery status:** repaired local project snapshot only. The remote `main` branch was not modified, and no remote branch or pull request was created from this ZIP because it had no Git metadata and the GitHub integration previously rejected branch creation with HTTP 403.
+**Delivery status:** committed on `fix/pumpswap-v2-executor-hardening-20261127` and pushed to origin. The remote `main` branch was not modified. Pull request creation is the remaining publication step.
