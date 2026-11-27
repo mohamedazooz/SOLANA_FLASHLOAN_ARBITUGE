@@ -333,8 +333,16 @@ impl Supervisor {
             let desired_cu_price = priority_policy.desired_cu_price_micro_lamports;
             let dynamic_max_share_bps = priority_policy.max_share_bps;
 
+            let gross = opp.gross_profit.as_u64();
+            let gross_lamports = arb_math::economic::base_raw_to_lamports(
+                arb_types::TokenAmount(gross),
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
+            )
+            .map(|l| l.as_u64())
+            .unwrap_or(0);
             let cu_price = arb_tx::cap_cu_price_by_profit(
-                opp.gross_profit.as_u64(),
+                gross_lamports,
                 cu_limit,
                 desired_cu_price,
                 dynamic_max_share_bps,
@@ -344,10 +352,16 @@ impl Supervisor {
             // the gate's cost and the encoded instruction cannot drift. Ceiling
             // rounding keeps this non-refundable cost from being understated.
             let priority_fee_lamports = arb_tx::priority_fee_lamports(cu_price, cu_limit);
-            let gross = opp.gross_profit.as_u64();
-            let gross_sol = gross as f64 / 1e9;
-            let loan_size_sol =
-                opp.size_in.as_u64() as f64 / 10f64.powi(i32::from(opp.base_decimals));
+            let gross_sol = gross_lamports as f64 / 1e9;
+            let loan_size_sol = arb_math::economic::base_raw_to_lamports(
+                arb_types::TokenAmount(opp.size_in.as_u64()),
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
+            )
+            .map(|l| l.as_u64() as f64 / 1e9)
+            .unwrap_or_else(|_| {
+                opp.size_in.as_u64() as f64 / 10f64.powi(i32::from(opp.base_decimals))
+            });
             let pools_count = opp.hops.len();
             let route_label = opp
                 .hops

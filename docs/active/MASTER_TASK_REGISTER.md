@@ -583,3 +583,39 @@ PR: (this PR)
 REMAINING_RISKS: 24h live shadow soak + production-environment approval gate remain operator actions (recorded in PRODUCTION_READINESS.md).
 NEXT_TASK: Mission §22 Phase 17 — shadow soak authorization request (operator).
 ```
+
+```markdown
+TASK_ID: TASK-DEX-STATE-20261127-001
+PHASE: Phase 7 — Exact Quote Math & Differential/Boundary Tests
+PRIORITY: P2
+STATUS: COMPLETED
+BASE_COMMIT: 4dc530a
+BRANCH: fix/protocol-parity-hardening-20261127-v2
+FILES_CHANGED:
+  - crates/arb-dex/src/engines/raydium_cpmm.rs
+  - crates/arb-dex/src/engines/raydium_v4.rs
+  - crates/arb-dex/tests/raydium_cpmm_boundary_tests.rs
+  - crates/arb-dex/tests/raydium_v4_boundary_tests.rs
+  - docs/active/OPEN_ISSUES.md
+  - docs/active/CURRENT_STATUS.md
+  - docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS_CHANGED:
+  - RaydiumCpmmQuoteEngine::quote_exact_out
+  - RaydiumAmmV4QuoteEngine::quote_exact_out
+OBSERVED_BEHAVIOR: Both Raydium exact-in adapters rejected inactive PoolState snapshots, but the corresponding exact-out adapters could still calculate a quote for the same inactive pool.
+ROOT_CAUSE: The exact-out implementations validated fee state and quote inputs but omitted the shared is_active guard already present in exact-in.
+IMPLEMENTATION: Added fail-closed PoolDisabled checks to both exact-out adapters before reserve/quote math; expanded each existing disabled-pool regression test to assert rejection for exact-in and exact-out; documented the finding and evidence.
+TESTS_EXECUTED:
+  - cargo fmt --all -- --check
+  - cargo test -p arb-dex --test raydium_cpmm_boundary_tests
+  - cargo test -p arb-dex --test raydium_v4_boundary_tests
+  - cargo clippy -p arb-dex --all-targets -- -D warnings
+  - cargo test -p arb-dex --all-targets
+  - git diff --check
+TEST_RESULTS: Formatting and diff checks passed. CPMM boundary tests: 8 passed; V4 boundary tests: 5 passed; complete arb-dex all-targets suite: 168 passed, 0 failed. Clippy passed with -D warnings.
+CI_STATUS: PENDING (PR workflow)
+KNOWN_LIMITATIONS: This only enforces the already-decoded PoolState.is_active flag. It does not change upstream status decoding, add new exact-out support, or enable any previously gated venue.
+OPEN_QUESTIONS: None for this narrow fix.
+REMAINING_RISKS: Workspace-wide CI remains pending. No RPC simulation, live transaction, landing, or realized PnL was part of this task.
+NEXT_ACTION: Review PR CI and keep merge as an operator action.
+```

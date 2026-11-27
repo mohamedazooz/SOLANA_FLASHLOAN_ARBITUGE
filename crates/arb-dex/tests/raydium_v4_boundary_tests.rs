@@ -192,7 +192,13 @@ fn test_raydium_v4_disabled_pool_and_mismatched_mint() {
         Err(ArbError::PoolDisabled(msg)) => {
             assert!(msg.contains("disabled"));
         }
-        other => panic!("expected PoolDisabled, got {:?}", other),
+        other => panic!("expected PoolDisabled for exact-in, got {:?}", other),
+    }
+    match engine.quote_exact_out(&pool_inactive, &req) {
+        Err(ArbError::PoolDisabled(msg)) => {
+            assert!(msg.contains("disabled"));
+        }
+        other => panic!("expected PoolDisabled for exact-out, got {:?}", other),
     }
 
     // Sub-case B: mismatched input mint

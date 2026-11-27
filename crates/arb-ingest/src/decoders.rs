@@ -512,7 +512,14 @@ pub fn raydium_clmm_tick_array_pdas(
     let Ok(program_id) = Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID) else {
         return (Vec::new(), Vec::new());
     };
-    let spacing = i32::from(tick_spacing.max(1));
+    if tick_spacing == 0
+        || tick_spacing > 1_000
+        || !(arb_math::clmm::MIN_TICK_INDEX..=arb_math::clmm::MAX_TICK_INDEX)
+            .contains(&tick_current)
+    {
+        return (Vec::new(), Vec::new());
+    }
+    let spacing = i32::from(tick_spacing);
     let ticks_per_array = 60i32 * spacing;
     if ticks_per_array == 0 {
         return (Vec::new(), Vec::new());
@@ -784,14 +791,14 @@ pub async fn fetch_accounts_chunked(
 /// Authoritative Raydium AMM v4 state needed for a quote.
 ///
 /// Offsets follow the official `AmmInfo` repr(C, packed) layout (752 bytes):
-/// status @0, coin/pc decimals @32/@40, swap fee ratio @176/@184,
+/// status @0, authority_bump @8, coin/pc decimals @32/@40, swap fee ratio @176/@184,
 /// need_take_pnl_coin/pc @192/@200, pool_open_time @224,
 /// coin/pc vaults @336/@368, coin/pc mints @400/@432.
-/// The 2026-07 OpenBook removal makes the curve reserves vault-only; legacy
-/// OpenOrders/market fields are not part of reserve calculation anymore.
+/// Reserves are vault balances less accrued protocol PnL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RaydiumV4PoolAccounting {
     pub status: u64,
+    pub authority_bump: u8,
     pub coin_decimals: u8,
     pub pc_decimals: u8,
     pub swap_fee_numerator: u64,
@@ -828,10 +835,10 @@ impl RaydiumV4PoolAccounting {
 }
 
 /// Decode a complete Raydium AMM v4 AmmInfo account. Invalid status, fee ratio,
-/// decimals, or missing pool identities are rejected before any state is published.
+/// decimals, or missing pool identities are rejected before any state can be published.
 pub fn decode_raydium_v4_pool_accounting(data: &[u8]) -> Option<RaydiumV4PoolAccounting> {
     const AMM_INFO_LEN: usize = 752;
-    if data.len() < AMM_INFO_LEN {
+    if data.len() != AMM_INFO_LEN {
         return None;
     }
     let u64_at = |offset: usize| -> Option<u64> {
@@ -847,6 +854,7 @@ pub fn decode_raydium_v4_pool_accounting(data: &[u8]) -> Option<RaydiumV4PoolAcc
     if status > 7 {
         return None;
     }
+    let authority_bump = u8::try_from(u64_at(8)?).ok()?;
     let coin_decimals = u8::try_from(u64_at(32)?)
         .ok()
         .filter(|value| *value <= 18)?;
@@ -858,8 +866,9 @@ pub fn decode_raydium_v4_pool_accounting(data: &[u8]) -> Option<RaydiumV4PoolAcc
     if swap_fee_denominator == 0 || swap_fee_numerator >= swap_fee_denominator {
         return None;
     }
-    Some(RaydiumV4PoolAccounting {
+    let accounting = RaydiumV4PoolAccounting {
         status,
+        authority_bump,
         coin_decimals,
         pc_decimals,
         swap_fee_numerator,
@@ -871,7 +880,11 @@ pub fn decode_raydium_v4_pool_accounting(data: &[u8]) -> Option<RaydiumV4PoolAcc
         pc_vault: pubkey_at(368)?,
         coin_mint: pubkey_at(400)?,
         pc_mint: pubkey_at(432)?,
-    })
+    };
+    if accounting.coin_vault == accounting.pc_vault || accounting.coin_mint == accounting.pc_mint {
+        return None;
+    }
+    Some(accounting)
 }
 
 /// Decode the Raydium v4 swap fee in basis points for graph/display metadata.
@@ -932,16 +945,21 @@ pub fn decode_raydium_cpmm_fee_bps(data: &[u8]) -> Option<u16> {
 mod fee_decoder_tests {
     use super::*;
 
-    #[test]
-    fn raydium_sub_basis_point_fee_rounds_up_and_invalid_ratio_fails_closed() {
+    fn raydium_v4_fixture(fee_numerator: u64, fee_denominator: u64) -> Vec<u8> {
         let mut data = vec![0u8; 752];
-        data[32..40].copy_from_slice(&9u64.to_le_bytes());
-        data[40..48].copy_from_slice(&6u64.to_le_bytes());
-        data[176..184].copy_from_slice(&50u64.to_le_bytes());
-        data[184..192].copy_from_slice(&1_000_000u64.to_le_bytes());
+        data[0..8].copy_from_slice(&6u64.to_le_bytes());
+        data[8..16].copy_from_slice(&254u64.to_le_bytes());
+        data[176..184].copy_from_slice(&fee_numerator.to_le_bytes());
+        data[184..192].copy_from_slice(&fee_denominator.to_le_bytes());
         for offset in [336, 368, 400, 432] {
             data[offset..offset + 32].copy_from_slice(Pubkey::new_unique().as_ref());
         }
+        data
+    }
+
+    #[test]
+    fn raydium_sub_basis_point_fee_rounds_up_and_invalid_ratio_fails_closed() {
+        let mut data = raydium_v4_fixture(50, 1_000_000);
         assert_eq!(decode_raydium_fee_bps(&data), Some(1));
         data[184..192].fill(0);
         assert_eq!(decode_raydium_fee_bps(&data), None);
@@ -956,14 +974,7 @@ mod fee_decoder_tests {
     #[test]
     fn raydium_fee_reads_live_value() {
         // swap_fee_numerator=25, swap_fee_denominator=10_000 => 25 bps.
-        let mut d = vec![0u8; 752];
-        d[32..40].copy_from_slice(&9u64.to_le_bytes());
-        d[40..48].copy_from_slice(&6u64.to_le_bytes());
-        d[176..184].copy_from_slice(&25u64.to_le_bytes());
-        d[184..192].copy_from_slice(&10_000u64.to_le_bytes());
-        for offset in [336, 368, 400, 432] {
-            d[offset..offset + 32].copy_from_slice(Pubkey::new_unique().as_ref());
-        }
+        let d = raydium_v4_fixture(25, 10_000);
         assert_eq!(decode_raydium_fee_bps(&d), Some(25));
     }
 
@@ -1011,8 +1022,8 @@ mod fee_decoder_tests {
     fn fee_decoders_fail_closed() {
         assert_eq!(decode_raydium_fee_bps(&[0u8; 10]), None);
         assert_eq!(decode_orca_fee_bps(&[0u8; 10]), None);
-        let mut zero_den = vec![0u8; 192];
-        zero_den[176..184].copy_from_slice(&25u64.to_le_bytes());
+        let mut zero_den = raydium_v4_fixture(25, 10_000);
+        zero_den[184..192].fill(0);
         assert_eq!(decode_raydium_fee_bps(&zero_den), None);
     }
 
@@ -1309,63 +1320,85 @@ pub fn decode_raydium_clmm_state(data: &[u8], fee_bps: u16) -> Option<arb_types:
     decode_raydium_clmm_state_with_amm_config(PoolId::default(), data, None, fee_bps)
 }
 
-/// Decode Raydium CLMM PoolState with optional live `AmmConfig` bytes and
-/// conservative dynamic-fee upper bound (`DynamicFeeInfo` @1096..1176).
+/// Decode Raydium CLMM with a validated live AmmConfig and conservative
+/// dynamic-fee upper bound. The fee remains in exact 1e6 precision.
 pub fn decode_raydium_clmm_state_with_amm_config(
     pool_id: PoolId,
     data: &[u8],
     amm_config: Option<&[u8]>,
     fallback_fee_bps: u16,
 ) -> Option<arb_types::ClmmState> {
-    if data.len() < 273 {
+    let base_fee_rate = if let Some(config_bytes) = amm_config {
+        let config = arb_dex::raydium_clmm::RaydiumClmmAmmConfig::decode(config_bytes).ok()?;
+        let tick_spacing = u16::from_le_bytes(data.get(235..237)?.try_into().ok()?);
+        if config.tick_spacing != tick_spacing {
+            return None;
+        }
+        config.trade_fee_rate
+    } else {
+        u32::from(fallback_fee_bps).checked_mul(100)?
+    };
+    decode_raydium_clmm_state_with_fee_rate_for_pool(pool_id, data, base_fee_rate)
+}
+
+/// Decode with the exact on-chain trade fee rate in ppm (denominator 1e6).
+/// This preserves sub-basis-point rates instead of rounding through BPS.
+pub fn decode_raydium_clmm_state_with_fee_rate(
+    data: &[u8],
+    fee_rate_ppm: u32,
+) -> Option<arb_types::ClmmState> {
+    decode_raydium_clmm_state_with_fee_rate_for_pool(PoolId::default(), data, fee_rate_ppm)
+}
+
+fn decode_raydium_clmm_state_with_fee_rate_for_pool(
+    pool_id: PoolId,
+    data: &[u8],
+    base_fee_rate: u32,
+) -> Option<arb_types::ClmmState> {
+    if data.len() < arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_MIN_SIZE
+        || data.get(..8)
+            != Some(arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR.as_slice())
+        || base_fee_rate == 0
+        || base_fee_rate > arb_math::raydium_dynamic_fee::RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR
+        || data[389] & (1 << 4) != 0
+        || data[390] != 0
+    {
         return None;
     }
-    let tick_spacing = u16::from_le_bytes(data[235..237].try_into().ok()?).max(1);
+    let tick_spacing = u16::from_le_bytes(data[235..237].try_into().ok()?);
+    if tick_spacing == 0 || tick_spacing > 1_000 {
+        return None;
+    }
     let liquidity = u128::from_le_bytes(data[237..253].try_into().ok()?);
     let sqrt_price = u128::from_le_bytes(data[253..269].try_into().ok()?);
     let tick_current = i32::from_le_bytes(data[269..273].try_into().ok()?);
-
-    if liquidity == 0 || sqrt_price == 0 {
+    if !(arb_math::clmm::MIN_TICK_INDEX..=arb_math::clmm::MAX_TICK_INDEX).contains(&tick_current)
+        || liquidity == 0
+        || !arb_math::clmm::sqrt_price_x64_in_raydium_clmm_bounds(sqrt_price)
+    {
         return None;
     }
 
-    // `PoolState.fee_on != 0` charges the fee on the output token in one
-    // direction; exclude those pools from sizing/routing until direction-split
-    // output-fee math is implemented.
-    if data.get(390).copied().unwrap_or(0) != 0 {
-        return None;
-    }
-
-    let base_fee_rate: u32 = if let Some(cfg) = amm_config {
-        if cfg.len() < 52 {
-            return None;
-        }
-        let trade_fee_rate = u32::from_le_bytes(cfg[47..51].try_into().ok()?);
-        if trade_fee_rate == 0 || trade_fee_rate > 100_000 {
-            return None;
-        }
-        trade_fee_rate
-    } else {
-        u32::from(fallback_fee_bps.checked_mul(100)?)
-    };
-
-    let has_dynamic_fee = data.len() >= 1176 && data[1096..1176].iter().any(|&byte| byte != 0);
-    let total_fee_rate_u32 = if has_dynamic_fee {
-        let mut pool = arb_dex::RaydiumClmmPool::from_account(pool_id, data).ok()?;
+    let has_dynamic_fee = data[1096..1176].iter().any(|&byte| byte != 0);
+    let total_fee_rate = if has_dynamic_fee {
+        let mut pool = arb_dex::raydium_clmm::RaydiumClmmPool::from_account(pool_id, data).ok()?;
         pool.fee_rate_ppm = base_fee_rate;
-        let total = pool.total_fee_rate_upper_bound()?;
-        u32::try_from(total).ok()?
+        pool.total_fee_rate_upper_bound()?
     } else {
-        base_fee_rate
+        u64::from(base_fee_rate)
     };
-
-    let fee_rate = u16::try_from(total_fee_rate_u32).ok()?;
+    if total_fee_rate == 0
+        || total_fee_rate
+            > u64::from(arb_math::raydium_dynamic_fee::RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR)
+    {
+        return None;
+    }
     Some(arb_types::ClmmState {
         sqrt_price,
         liquidity,
         tick_current,
         tick_spacing,
-        fee_rate,
+        fee_rate: u16::try_from(total_fee_rate).ok()?,
         tick_arrays: Vec::new(),
     })
 }
@@ -1761,6 +1794,18 @@ mod tests {
     use crate::registry::{MultiDexRegistry, RegisteredPool};
     use crate::rpc_pool::RpcPool;
 
+    fn v4_account_fixture(fee_numerator: u64, fee_denominator: u64) -> Vec<u8> {
+        let mut data = vec![0u8; 752];
+        data[0..8].copy_from_slice(&6u64.to_le_bytes());
+        data[8..16].copy_from_slice(&254u64.to_le_bytes());
+        data[176..184].copy_from_slice(&fee_numerator.to_le_bytes());
+        data[184..192].copy_from_slice(&fee_denominator.to_le_bytes());
+        for offset in [336, 368, 400, 432] {
+            data[offset..offset + 32].copy_from_slice(Pubkey::new_unique().as_ref());
+        }
+        data
+    }
+
     #[test]
     fn cpmm_catalog_inversion_never_inverts_protocol_fee_direction() {
         let token_0 = Pubkey::new_unique();
@@ -1864,14 +1909,7 @@ mod tests {
 
     #[test]
     fn resolve_fee_bps_raydium_rejects_invalid_ratio_and_rounds_up() {
-        let mut data = vec![0u8; 752];
-        data[32..40].copy_from_slice(&9u64.to_le_bytes());
-        data[40..48].copy_from_slice(&6u64.to_le_bytes());
-        for offset in [336, 368, 400, 432] {
-            data[offset..offset + 32].copy_from_slice(Pubkey::new_unique().as_ref());
-        }
-        data[176..184].copy_from_slice(&1u64.to_le_bytes());
-        data[184..192].copy_from_slice(&1_000_000u64.to_le_bytes());
+        let mut data = v4_account_fixture(1, 1_000_000);
         assert_eq!(resolve_fee_bps(DexProtocol::RaydiumV4, &data), Some(1));
         data[176..184].copy_from_slice(&10_001u64.to_le_bytes());
         data[184..192].copy_from_slice(&10_000u64.to_le_bytes());
@@ -1879,14 +1917,7 @@ mod tests {
     }
     #[test]
     fn resolve_fee_bps_raydium() {
-        let mut data = vec![0u8; 752];
-        data[32..40].copy_from_slice(&9u64.to_le_bytes());
-        data[40..48].copy_from_slice(&6u64.to_le_bytes());
-        for offset in [336, 368, 400, 432] {
-            data[offset..offset + 32].copy_from_slice(Pubkey::new_unique().as_ref());
-        }
-        data[176..184].copy_from_slice(&25u64.to_le_bytes());
-        data[184..192].copy_from_slice(&10_000u64.to_le_bytes());
+        let data = v4_account_fixture(25, 10_000);
         assert_eq!(resolve_fee_bps(DexProtocol::RaydiumV4, &data), Some(25));
     }
 
@@ -1938,19 +1969,11 @@ mod tests {
 
     #[test]
     fn test_decode_pool_info_raydium_v4() {
-        let mut data = vec![0u8; 752];
-        data[32..40].copy_from_slice(&9u64.to_le_bytes());
-        data[40..48].copy_from_slice(&6u64.to_le_bytes());
-        let va = Pubkey::new_unique();
-        let vb = Pubkey::new_unique();
-        let ma = Pubkey::new_unique();
-        let mb = Pubkey::new_unique();
-        data[336..368].copy_from_slice(&va.to_bytes());
-        data[368..400].copy_from_slice(&vb.to_bytes());
-        data[400..432].copy_from_slice(&ma.to_bytes());
-        data[432..464].copy_from_slice(&mb.to_bytes());
-        data[176..184].copy_from_slice(&25u64.to_le_bytes());
-        data[184..192].copy_from_slice(&10_000u64.to_le_bytes());
+        let data = v4_account_fixture(25, 10_000);
+        let va = Pubkey::new_from_array(data[336..368].try_into().unwrap());
+        let vb = Pubkey::new_from_array(data[368..400].try_into().unwrap());
+        let ma = Pubkey::new_from_array(data[400..432].try_into().unwrap());
+        let mb = Pubkey::new_from_array(data[432..464].try_into().unwrap());
 
         let info = decode_pool_info(DexProtocol::RaydiumV4, &data).expect("valid Raydium V4");
         assert_eq!(info.token_a_vault, va);
@@ -1963,15 +1986,7 @@ mod tests {
 
     #[test]
     fn test_decode_pool_info_raydium_v4_rejects_missing_fee_ratio() {
-        let mut data = vec![0u8; 752];
-        data[32..40].copy_from_slice(&9u64.to_le_bytes());
-        data[40..48].copy_from_slice(&6u64.to_le_bytes());
-        data[336..368].copy_from_slice(&Pubkey::new_unique().to_bytes());
-        data[368..400].copy_from_slice(&Pubkey::new_unique().to_bytes());
-        data[400..432].copy_from_slice(&Pubkey::new_unique().to_bytes());
-        data[432..464].copy_from_slice(&Pubkey::new_unique().to_bytes());
-        data[176..184].copy_from_slice(&50u64.to_le_bytes());
-        data[184..192].copy_from_slice(&1_000_000u64.to_le_bytes());
+        let mut data = v4_account_fixture(50, 1_000_000);
         let info = decode_pool_info(DexProtocol::RaydiumV4, &data)
             .expect("sub-bps Raydium fee is conservatively rounded up");
         assert_eq!(info.fee_bps, 1);
@@ -2033,6 +2048,72 @@ mod tests {
         assert_eq!(info.token_a_vault, va);
         assert_eq!(info.token_b_vault, vb);
         assert_eq!(info.fee_bps, 4);
+    }
+
+    #[test]
+    fn raydium_clmm_exact_ppm_decoder_preserves_sub_basis_point_fee() {
+        let mut data = vec![0u8; arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_MIN_SIZE];
+        data[..8].copy_from_slice(&arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR);
+        data[235..237].copy_from_slice(&60u16.to_le_bytes());
+        data[237..253].copy_from_slice(&5_000_000u128.to_le_bytes());
+        data[253..269].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        data[269..273].copy_from_slice(&120i32.to_le_bytes());
+        let state = decode_raydium_clmm_state_with_fee_rate(&data, 1)
+            .expect("one ppm fee is representable without BPS rounding");
+        assert_eq!(state.fee_rate, 1);
+        assert!(decode_raydium_clmm_state_with_fee_rate(&data[..350], 1).is_none());
+        let mut invalid_discriminator = data.clone();
+        invalid_discriminator[0] ^= 1;
+        assert!(decode_raydium_clmm_state_with_fee_rate(&invalid_discriminator, 1).is_none());
+        assert!(decode_raydium_clmm_state_with_fee_rate(&data, 0).is_none());
+    }
+
+    #[test]
+    fn raydium_clmm_uses_live_amm_config_and_dynamic_fee_upper_bound() {
+        let mut data = vec![0u8; arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_MIN_SIZE];
+        data[..8].copy_from_slice(&arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR);
+        data[235..237].copy_from_slice(&60u16.to_le_bytes());
+        data[237..253].copy_from_slice(&5_000_000u128.to_le_bytes());
+        data[253..269].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        data[269..273].copy_from_slice(&120i32.to_le_bytes());
+
+        let mut config = vec![0u8; arb_dex::raydium_clmm::RAYDIUM_CLMM_AMM_CONFIG_SIZE];
+        config[..8].copy_from_slice(&arb_dex::raydium_clmm::RAYDIUM_CLMM_AMM_CONFIG_DISCRIMINATOR);
+        config[8] = 1;
+        config[9..11].copy_from_slice(&3u16.to_le_bytes());
+        config[11..43].copy_from_slice(&[9u8; 32]);
+        config[43..47].copy_from_slice(&10_000u32.to_le_bytes());
+        config[47..51].copy_from_slice(&2_501u32.to_le_bytes());
+        config[51..53].copy_from_slice(&60u16.to_le_bytes());
+        config[53..57].copy_from_slice(&1_000u32.to_le_bytes());
+
+        let pool_id = PoolId(Pubkey::new_from_array([7u8; 32]));
+        let static_state =
+            decode_raydium_clmm_state_with_amm_config(pool_id, &data, Some(&config), 25)
+                .expect("validated AmmConfig fee");
+        assert_eq!(static_state.fee_rate, 2_501);
+
+        let mut dynamic = data;
+        dynamic[1096..1098].copy_from_slice(&10u16.to_le_bytes());
+        dynamic[1098..1100].copy_from_slice(&100u16.to_le_bytes());
+        dynamic[1100..1102].copy_from_slice(&5_000u16.to_le_bytes());
+        dynamic[1102..1106].copy_from_slice(&10_000u32.to_le_bytes());
+        dynamic[1106..1110].copy_from_slice(&10_000u32.to_le_bytes());
+        dynamic[1118..1122].copy_from_slice(&5_000u32.to_le_bytes());
+        let dynamic_state =
+            decode_raydium_clmm_state_with_amm_config(pool_id, &dynamic, Some(&config), 25)
+                .expect("dynamic fee upper bound");
+        assert!(dynamic_state.fee_rate > static_state.fee_rate);
+        assert!(
+            u32::from(dynamic_state.fee_rate)
+                <= arb_math::raydium_dynamic_fee::RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR
+        );
+
+        config[51..53].copy_from_slice(&120u16.to_le_bytes());
+        assert!(
+            decode_raydium_clmm_state_with_amm_config(pool_id, &dynamic, Some(&config), 25,)
+                .is_none()
+        );
     }
 
     #[test]
@@ -2178,7 +2259,8 @@ mod tests {
 
     #[test]
     fn test_decode_raydium_clmm_state() {
-        let mut data = vec![0u8; 300];
+        let mut data = vec![0u8; arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_MIN_SIZE];
+        data[..8].copy_from_slice(&arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR);
         data[235..237].copy_from_slice(&60u16.to_le_bytes()); // tick_spacing
         data[237..253].copy_from_slice(&5_000_000u128.to_le_bytes()); // liquidity
         data[253..269].copy_from_slice(&(1u128 << 64).to_le_bytes()); // sqrt_price
@@ -2190,6 +2272,7 @@ mod tests {
         assert_eq!(state.sqrt_price, 1u128 << 64);
         assert_eq!(state.tick_current, 120);
         assert_eq!(state.fee_rate, 2_500);
+        assert!(decode_raydium_clmm_state(&data[..350], 25).is_none());
     }
 
     #[test]
@@ -2207,6 +2290,12 @@ mod tests {
         assert_ne!(keys[0], keys[1]);
         assert_ne!(keys[1], keys[2]);
         assert_ne!(keys[0], Pubkey::default());
+        assert!(raydium_clmm_tick_array_pdas(&pool, 0, 0).0.is_empty());
+        assert!(
+            raydium_clmm_tick_array_pdas(&pool, arb_math::clmm::MAX_TICK_INDEX + 1, 1,)
+                .0
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2411,7 +2500,8 @@ mod raydium_v4_accounting_tests {
 
     fn fixture() -> Vec<u8> {
         let mut data = vec![0u8; 752];
-        data[0..8].copy_from_slice(&6u64.to_le_bytes());
+        data[0..8].copy_from_slice(&6u64.to_le_bytes()); // SwapOnly
+        data[8..16].copy_from_slice(&254u64.to_le_bytes()); // canonical AMM authority bump
         data[32..40].copy_from_slice(&9u64.to_le_bytes());
         data[40..48].copy_from_slice(&6u64.to_le_bytes());
         data[176..184].copy_from_slice(&25u64.to_le_bytes());
@@ -2430,6 +2520,7 @@ mod raydium_v4_accounting_tests {
         let data = fixture();
         let state = decode_raydium_v4_pool_accounting(&data).unwrap();
         assert_eq!(state.status, 6);
+        assert_eq!(state.authority_bump, 254);
         assert_eq!(state.coin_decimals, 9);
         assert_eq!(state.pc_decimals, 6);
         assert_eq!(state.swap_fee_numerator, 25);
@@ -2444,9 +2535,16 @@ mod raydium_v4_accounting_tests {
     fn rejects_truncated_invalid_status_decimals_and_fee_ratio() {
         let data = fixture();
         assert!(decode_raydium_v4_pool_accounting(&data[..751]).is_none());
+        let mut oversized = data.clone();
+        oversized.push(0);
+        assert!(decode_raydium_v4_pool_accounting(&oversized).is_none());
 
         let mut invalid = fixture();
         invalid[0..8].copy_from_slice(&8u64.to_le_bytes());
+        assert!(decode_raydium_v4_pool_accounting(&invalid).is_none());
+
+        let mut invalid = fixture();
+        invalid[8..16].copy_from_slice(&256u64.to_le_bytes());
         assert!(decode_raydium_v4_pool_accounting(&invalid).is_none());
 
         let mut invalid = fixture();

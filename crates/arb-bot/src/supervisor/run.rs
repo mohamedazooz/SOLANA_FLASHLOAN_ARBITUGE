@@ -864,29 +864,20 @@ impl Supervisor {
         let seed_slot = Slot(active_seed_slot);
         let reg = self.registry.read().clone();
         let initial_pools = reg.fetch_live_pool_states(seed_slot).await;
-        let mut live_sol_price_seed = 0.0_f64;
+        let mut seed_sol_prices: Vec<f64> = Vec::new();
         for pool in initial_pools {
-            let p_base = pool.base_mint.0.to_string();
-            let p_quote = pool.quote_mint.0.to_string();
-            if live_sol_price_seed == 0.0 && pool.reserve_in > 0 && pool.reserve_out > 0 {
-                if p_base == arb_tx::WSOL_MINT && p_quote == arb_tx::USDC_MINT {
-                    let sol_res = pool.reserve_in as f64 / 1e9;
-                    let usdc_res = pool.reserve_out as f64 / 1e6;
-                    if sol_res > 0.0 {
-                        live_sol_price_seed = usdc_res / sol_res;
-                    }
-                } else if p_base == arb_tx::USDC_MINT && p_quote == arb_tx::WSOL_MINT {
-                    let sol_res = pool.reserve_out as f64 / 1e9;
-                    let usdc_res = pool.reserve_in as f64 / 1e6;
-                    if sol_res > 0.0 {
-                        live_sol_price_seed = usdc_res / sol_res;
-                    }
-                }
+            if let Some((price, _)) =
+                strategy::extract_pool_mid_price(&pool, arb_tx::WSOL_MINT, arb_tx::USDC_MINT, 9, 6)
+            {
+                seed_sol_prices.push(price);
             }
             let _ = self.ingest.apply_pool_update(pool);
         }
-        if live_sol_price_seed > 0.0 {
+        if let Some(live_sol_price_seed) = Self::median_price(&mut seed_sol_prices) {
             *self.last_known_live_sol_price.write() = live_sol_price_seed;
+            if active_seed_slot > 0 {
+                *self.last_known_live_sol_price_slot.write() = active_seed_slot;
+            }
             self.telegram.update_sol_price(live_sol_price_seed);
         }
         let reported_seed_slot = self
