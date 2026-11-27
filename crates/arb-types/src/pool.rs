@@ -588,6 +588,37 @@ impl DammV2State {
     }
 }
 
+/// Verified Token-2022 transfer-fee schedule selected for one mint at a bank epoch.
+/// The schedule is only usable with the Mint account and Clock snapshot that produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Token2022TransferFee {
+    pub basis_points: u16,
+    pub maximum_fee: u64,
+}
+
+/// Epoch-aware fee context for the canonical `(base_mint, quote_mint)` ordering.
+/// `None` on a side means that mint is legacy SPL; `Some(ZERO)` represents
+/// extensionless Token-2022 with no transfer-fee extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Token2022FeeContext {
+    pub snapshot_slot: u64,
+    pub epoch: u64,
+    pub base: Option<Token2022TransferFee>,
+    pub quote: Option<Token2022TransferFee>,
+}
+
+impl Token2022FeeContext {
+    pub fn is_valid_for(&self, token_programs: [TokenProgramKind; 2]) -> bool {
+        self.snapshot_slot > 0
+            && self.base.is_some() == (token_programs[0] == TokenProgramKind::Token2022)
+            && self.quote.is_some() == (token_programs[1] == TokenProgramKind::Token2022)
+            && [self.base, self.quote]
+                .into_iter()
+                .flatten()
+                .all(|fee| fee.basis_points <= 10_000)
+    }
+}
+
 /// Canonical pool state across all DEX protocols.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolState {
@@ -642,6 +673,10 @@ pub struct PoolState {
     /// Token programs for `(base_mint, quote_mint)`.
     #[serde(default)]
     pub token_programs: [TokenProgramKind; 2],
+    /// Same-context Clock epoch and active Token-2022 fee schedules for each mint.
+    /// Missing/stale context keeps the pool fail-closed for Token-2022 quote/execution.
+    #[serde(default)]
+    pub token2022_fee_context: Option<Token2022FeeContext>,
     /// Resolved on-chain execution accounts (vaults, configs, ticks/bins, etc.).
     #[serde(default)]
     pub execution_accounts: Option<PoolExecutionAccounts>,

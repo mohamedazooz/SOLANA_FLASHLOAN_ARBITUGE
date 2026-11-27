@@ -942,6 +942,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: Some(execution_accounts),
             last_update_slot: 1,
             last_update_ms: 0,

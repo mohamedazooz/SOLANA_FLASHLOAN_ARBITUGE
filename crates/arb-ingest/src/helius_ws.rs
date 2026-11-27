@@ -2202,6 +2202,7 @@ mod tests {
             pump_fun: None,
             damm_v2: None,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             transfer_fee_bps: 0,
         };
@@ -2661,6 +2662,7 @@ mod tests {
             pump_fun: None,
             damm_v2: None,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             transfer_fee_bps: 0,
         }

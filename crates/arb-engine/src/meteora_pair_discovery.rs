@@ -477,6 +477,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            token2022_fee_context: None,
             execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
                 reserve_x: Pubkey::new_unique(),
                 reserve_y: Pubkey::new_unique(),
@@ -513,6 +514,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            token2022_fee_context: None,
             execution_accounts: Some(PoolExecutionAccounts::RaydiumCpmm {
                 amm_config: Pubkey::new_unique(),
                 authority: Pubkey::new_unique(),
@@ -572,6 +574,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            token2022_fee_context: None,
             execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
                 reserve_x: Pubkey::new_unique(),
                 reserve_y: Pubkey::new_unique(),

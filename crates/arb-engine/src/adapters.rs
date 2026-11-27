@@ -8,6 +8,7 @@
 
 use arb_dex::engines::UniversalQuoteDispatcher;
 use arb_dex::quote_engine::{QuoteRequest, QuoteResult};
+use arb_dex::token2022::TransferFeeConfig;
 #[cfg(test)]
 use arb_math::clmm::{self, TickArrayFacade};
 use arb_types::{ArbError, DexProtocol, PoolKind, PoolState, Result};
@@ -352,9 +353,54 @@ pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuo
     }
 }
 
+/// Resolve the active fee for a mint from the verified PoolState context.
+/// SPL mints have no transfer-fee config; Token-2022 without an epoch snapshot
+/// never defaults to zero.
+fn transfer_fee_config_for_mint(
+    pool: &PoolState,
+    mint: MintId,
+) -> Result<Option<TransferFeeConfig>> {
+    let index = if mint == pool.base_mint {
+        0
+    } else if mint == pool.quote_mint {
+        1
+    } else {
+        return Err(ArbError::InvalidToken(
+            "mint is not part of the pool".into(),
+        ));
+    };
+    match pool.token_programs[index] {
+        arb_types::TokenProgramKind::SplToken => Ok(None),
+        arb_types::TokenProgramKind::Token2022 => {
+            if pool.has_risky_token {
+                return Err(ArbError::InvalidToken(
+                    "Token-2022 mint has unsupported extensions or stale fee context".into(),
+                ));
+            }
+            let context = pool.token2022_fee_context.ok_or_else(|| {
+                ArbError::IncompleteState("Token-2022 Clock/fee snapshot missing".into())
+            })?;
+            if !context.is_valid_for(pool.token_programs) {
+                return Err(ArbError::IncompleteState(
+                    "Token-2022 fee context does not match mint programs/snapshot".into(),
+                ));
+            }
+            let fee = if index == 0 {
+                context.base
+            } else {
+                context.quote
+            }
+            .ok_or_else(|| ArbError::IncompleteState("Token-2022 fee schedule missing".into()))?;
+            Ok(Some(TransferFeeConfig {
+                transfer_fee_basis_points: fee.basis_points,
+                maximum_fee: fee.maximum_fee,
+            }))
+        }
+    }
+}
+
 /// Build the one authoritative exact-in quote used by route planning and adapters.
-/// Token-2022 schedules are intentionally not synthesized here: this compatibility
-/// route API has no verified mint/epoch context and therefore fails closed.
+/// Fee schedules come only from verified, epoch-aware PoolState context.
 pub(crate) fn quote_via_dispatcher(
     pool: &PoolState,
     amount_in: u64,
@@ -370,8 +416,8 @@ pub(crate) fn quote_via_dispatcher(
         output_mint,
         amount: amount_in,
         slippage_bps: arb_constants::DEFAULT_HOP_SLIPPAGE_BPS as u16,
-        input_transfer_fee_config: None,
-        output_transfer_fee_config: None,
+        input_transfer_fee_config: transfer_fee_config_for_mint(pool, input_mint)?,
+        output_transfer_fee_config: transfer_fee_config_for_mint(pool, output_mint)?,
     };
     let quote = UniversalQuoteDispatcher::new().quote_exact_in(pool, &request)?;
     if !quote.quote_validity
@@ -634,10 +680,48 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
         }
+    }
+
+    #[test]
+    fn dispatcher_applies_epoch_selected_token2022_input_and_output_fees() {
+        let mut pool = cpmm_pool(44, 10_000_000, 20_000_000, 25);
+        let input_fee = arb_types::Token2022TransferFee {
+            basis_points: 100,
+            maximum_fee: 10_000,
+        };
+        pool.token_programs = [
+            arb_types::TokenProgramKind::Token2022,
+            arb_types::TokenProgramKind::SplToken,
+        ];
+        pool.token2022_fee_context = Some(arb_types::Token2022FeeContext {
+            snapshot_slot: 123,
+            epoch: 456,
+            base: Some(input_fee),
+            quote: None,
+        });
+
+        let input_quote = quote_via_dispatcher(&pool, 100_000, true).unwrap();
+        assert_eq!(input_quote.transfer_fee_breakdown.input_transfer_fee, 1_000);
+        assert_eq!(input_quote.transfer_fee_breakdown.output_transfer_fee, 0);
+
+        pool.token_programs = [
+            arb_types::TokenProgramKind::SplToken,
+            arb_types::TokenProgramKind::Token2022,
+        ];
+        pool.token2022_fee_context = Some(arb_types::Token2022FeeContext {
+            snapshot_slot: 123,
+            epoch: 456,
+            base: None,
+            quote: Some(input_fee),
+        });
+        let output_quote = quote_via_dispatcher(&pool, 100_000, true).unwrap();
+        assert_eq!(output_quote.transfer_fee_breakdown.input_transfer_fee, 0);
+        assert!(output_quote.transfer_fee_breakdown.output_transfer_fee > 0);
     }
 
     fn clmm_pool(id: u8, sqrt_price: u128, liquidity: u128, tick: i32, spacing: u16) -> PoolState {
@@ -688,6 +772,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
@@ -747,6 +832,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
@@ -1070,6 +1156,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,
@@ -1151,6 +1238,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: Some(PoolExecutionAccounts::MeteoraDlmm {
                 reserve_x: Pubkey::new_unique(),
                 reserve_y: Pubkey::new_unique(),
@@ -1256,6 +1344,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 1,
             last_update_ms: 0,

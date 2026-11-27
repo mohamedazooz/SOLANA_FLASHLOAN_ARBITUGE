@@ -127,6 +127,7 @@ fn create_protocol_test_pool(
         damm_v2: (protocol == DexProtocol::MeteoraDammV2).then(arb_types::DammV2State::default),
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: None,
         last_update_slot: 200,
         last_update_ms: 1_700_000_000_000,

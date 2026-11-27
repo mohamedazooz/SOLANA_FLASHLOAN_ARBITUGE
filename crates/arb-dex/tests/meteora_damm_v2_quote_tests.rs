@@ -90,6 +90,7 @@ fn pool(collect_fee_mode: u8) -> PoolState {
         damm_v2: Some(damm),
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: Some(PoolExecutionAccounts::MeteoraDammV2 {
             token_a_mint: mint_a.0,
             token_b_mint: mint_b.0,
