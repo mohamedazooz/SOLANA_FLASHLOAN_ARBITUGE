@@ -238,6 +238,12 @@ pub struct FlashArbParams {
     pub cu_limit: u32,
     /// Priority fee in micro-lamports.
     pub priority_fee_micro_lamports: u64,
+    /// Jito tip in lamports charged by the assembled tip instruction when this
+    /// route is bundled through the block engine. Zero means not bundled and
+    /// no tip is owed; a non-zero value must satisfy the block-engine minimum
+    /// (`arb_constants::MIN_JITO_TIP_LAMPORTS`) which the engine-side evaluator
+    /// enforces before assembly.
+    pub jito_tip_lamports: u64,
 }
 
 impl FlashArbParams {
@@ -252,13 +258,21 @@ impl FlashArbParams {
             })
     }
 
-    /// Minimum economically sound Pool-B return floor (`principal + flash_fee + network_fee`).
+    /// Minimum economically sound Pool-B return floor
+    /// (`principal + flash_fee + network_fee + jito_tip`).
+    ///
+    /// Like the base and priority fee, the tip is lamport-denominated; this
+    /// floor is exact for the WSOL flash mint (1 lamport = 1 raw unit) and
+    /// conservative (over-rejecting) for flash mints with fewer decimals.
     #[inline]
     pub fn required_floor(&self) -> Result<u64, FlashArbError> {
         let repay = self.repay_amount()?;
-        let network_fee = arb_constants::SOLANA_BASE_FEE_LAMPORTS.saturating_add(
-            crate::priority_fee_lamports(self.priority_fee_micro_lamports, self.cu_limit),
-        );
+        let network_fee = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+            .saturating_add(crate::priority_fee_lamports(
+                self.priority_fee_micro_lamports,
+                self.cu_limit,
+            ))
+            .saturating_add(self.jito_tip_lamports);
         repay
             .checked_add(network_fee)
             .ok_or(FlashArbError::ArithmeticOverflow {
@@ -615,6 +629,7 @@ mod tests {
             leg_b: leg(pool_b(), wsol(), usdc(), false),
             cu_limit: 400_000,
             priority_fee_micro_lamports: 10_000,
+            jito_tip_lamports: 0,
         }
     }
 
@@ -682,6 +697,40 @@ mod tests {
         assert!(matches!(
             assemble_flash_funded_two_pool(&p),
             Err(FlashArbError::FinalOutputBelowRepayment { .. })
+        ));
+    }
+
+    #[test]
+    fn required_floor_excludes_tip_when_not_bundled() {
+        let p = params();
+        let floor = p.required_floor().unwrap();
+        let expected = arb_constants::SOLANA_BASE_FEE_LAMPORTS.saturating_add(
+            crate::priority_fee_lamports(p.priority_fee_micro_lamports, p.cu_limit),
+        );
+        assert_eq!(p.jito_tip_lamports, 0);
+        assert_eq!(floor, p.repay_amount().unwrap() + expected);
+    }
+
+    #[test]
+    fn required_floor_includes_jito_tip_once() {
+        let mut p = params();
+        p.jito_tip_lamports = arb_constants::MIN_JITO_TIP_LAMPORTS;
+        let floor_with_tip = p.required_floor().unwrap();
+        p.jito_tip_lamports = 0;
+        let floor_without_tip = p.required_floor().unwrap();
+        assert_eq!(
+            floor_with_tip,
+            floor_without_tip + arb_constants::MIN_JITO_TIP_LAMPORTS
+        );
+    }
+
+    #[test]
+    fn required_floor_tip_overflow_fails_closed() {
+        let mut p = params();
+        p.jito_tip_lamports = u64::MAX;
+        assert!(matches!(
+            p.required_floor(),
+            Err(FlashArbError::ArithmeticOverflow { .. })
         ));
     }
 

@@ -389,6 +389,14 @@ pub struct DlmmFlashArbConfig {
     pub priority_fee_lamports: u64,
     /// Priority fee in micro-lamports (instruction payload).
     pub priority_fee_micro_lamports: u64,
+    /// Jito tip liability in lamports for one landed bundle.
+    ///
+    /// The tip is a native SOL system transfer and is only paid when a bundle
+    /// lands, so zero means the route is not bundled through Jito and no tip is
+    /// owed. A non-zero tip below the block-engine minimum
+    /// (`arb_constants::MIN_JITO_TIP_LAMPORTS`) can never land, so evaluation
+    /// rejects it fail-closed instead of pricing an unusable bundle.
+    pub jito_tip_lamports: u64,
     /// Transaction authority.
     pub payer: Pubkey,
     /// Kamino flash-loan parameters.
@@ -417,6 +425,7 @@ impl Default for DlmmFlashArbConfig {
             network_cost_lamports: 9_000,
             priority_fee_lamports: 4_000,
             priority_fee_micro_lamports: arb_constants::FLASH_ARB_PRIORITY_FEE_MICRO_LAMPORTS,
+            jito_tip_lamports: 0,
             payer: Pubkey::default(),
             kamino: KaminoFlashParams::default(),
         }
@@ -471,7 +480,14 @@ impl DlmmFlashArbConfig {
     pub fn execution_cost(&self) -> u64 {
         let instruction_priority_fee = self.priority_fee_from_compute_budget().unwrap_or(u64::MAX);
         let priority_fee = self.priority_fee_lamports.max(instruction_priority_fee);
-        self.cost_in_flash_mint(self.network_cost_lamports.saturating_add(priority_fee))
+        // Saturation at u64::MAX is intentional fail-closed behavior: a cost
+        // that cannot be represented always overstates net profit and the
+        // downstream checked arithmetic rejects the candidate.
+        let lamports = self
+            .network_cost_lamports
+            .saturating_add(priority_fee)
+            .saturating_add(self.jito_tip_lamports);
+        self.cost_in_flash_mint(lamports)
     }
 }
 
@@ -494,6 +510,7 @@ pub enum FlashArbRejection {
     PoolNotAllowlisted { pool: Pubkey },
     MismatchedMints,
     FlashMintReserveMismatch,
+    JitoTipBelowMinimum { tip: u64, min: u64 },
 }
 
 impl FlashArbRejection {
@@ -516,6 +533,7 @@ impl FlashArbRejection {
             Self::PoolNotAllowlisted { .. } => "POOL_NOT_ALLOWLISTED",
             Self::MismatchedMints => "MISMATCHED_MINTS",
             Self::FlashMintReserveMismatch => "FLASH_MINT_RESERVE_MISMATCH",
+            Self::JitoTipBelowMinimum { .. } => "JITO_TIP_BELOW_MINIMUM",
         }
     }
 }
@@ -642,6 +660,16 @@ impl DlmmFlashArbEvaluator<'_> {
             return DlmmFlashArbEvaluation::reject(
                 borrow,
                 FlashArbRejection::FlashMintReserveMismatch,
+            );
+        }
+        if cfg.jito_tip_lamports > 0 && cfg.jito_tip_lamports < arb_constants::MIN_JITO_TIP_LAMPORTS
+        {
+            return DlmmFlashArbEvaluation::reject(
+                borrow,
+                FlashArbRejection::JitoTipBelowMinimum {
+                    tip: cfg.jito_tip_lamports,
+                    min: arb_constants::MIN_JITO_TIP_LAMPORTS,
+                },
             );
         }
 
@@ -1003,9 +1031,12 @@ impl DlmmFlashArbEvaluator<'_> {
                 .then_some(plan_a.bitmap_extension_pda),
             host_fee_in: None,
         };
-        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS.saturating_add(
-            arb_tx::priority_fee_lamports(cfg.priority_fee_micro_lamports, cfg.cu_limit),
-        );
+        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+            .saturating_add(arb_tx::priority_fee_lamports(
+                cfg.priority_fee_micro_lamports,
+                cfg.cu_limit,
+            ))
+            .saturating_add(cfg.jito_tip_lamports);
         let leg_b = FlashArbPoolLeg {
             lb_pair: route.pool_b.pool_id,
             reserve_x: route.pool_b.reserve_x,
@@ -1035,6 +1066,7 @@ impl DlmmFlashArbEvaluator<'_> {
             leg_b,
             cu_limit: cfg.cu_limit,
             priority_fee_micro_lamports: cfg.priority_fee_micro_lamports,
+            jito_tip_lamports: cfg.jito_tip_lamports,
         };
 
         let (ixs, _, _) = assemble_flash_funded_two_pool(&params).map_err(|e| {
@@ -1319,6 +1351,30 @@ mod tests {
         let reserved_priority_fee = cfg.priority_fee_lamports.max(instruction_fee);
         let expected = cfg.cost_in_flash_mint(cfg.network_cost_lamports + reserved_priority_fee);
         assert_eq!(cfg.execution_cost(), expected);
+    }
+
+    #[test]
+    fn jito_tip_is_counted_once_in_execution_cost() {
+        let mut cfg = DlmmFlashArbConfig::default();
+        let untipped = cfg.execution_cost();
+        cfg.jito_tip_lamports = 10_000;
+        let tipped = cfg.execution_cost();
+        assert_eq!(
+            tipped,
+            untipped + cfg.jito_tip_lamports,
+            "WSOL flash mint converts lamports one to one"
+        );
+    }
+
+    #[test]
+    fn jito_tip_overflow_fails_closed() {
+        let cfg = DlmmFlashArbConfig {
+            jito_tip_lamports: u64::MAX,
+            ..DlmmFlashArbConfig::default()
+        };
+        // Saturation overstates cost; the downstream checked arithmetic must
+        // reject the candidate instead of silently wrapping.
+        assert_eq!(cfg.execution_cost(), u64::MAX);
     }
 
     #[test]

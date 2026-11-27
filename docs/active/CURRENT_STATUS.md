@@ -5,6 +5,13 @@
 **CI Status**: GitHub Actions green on both latest main merges — `Merge pull request #168` (2026-11-26T14:37:44Z) and `Merge pull request #167` (2026-11-26T13:17:38Z): format/check/test/clippy, gitleaks, cargo-deny, web build, webhook service, and Vercel all pass.
 **Compilation Baseline**: Latest full local workspace run (post-#167 cleanup, toolchain 1.99.1): 1,814 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass. Targeted post-#168 scanner checks also pass locally: `route_graph_boundary_tests` (5 passed), `canonical_route_scanner_reports_candidate_budget_exhaustion`, `market_graph_excludes_quote_only_protocols_instead_of_using_cpmm_math`.
 
+## DLMM Two-Pool Flash-Lane Cost-Model Completion — 2026-11-27
+
+- **Scope**: isolated `dlmm_flash_arbitrage` evaluator + `arb-tx` two-pool builder only; no runtime wiring, no new execution path, no change to the generic `MarketGraph` route pipeline.
+- **Jito-tip liability (FL-F-2026-11-22-N2)**: `DlmmFlashArbConfig.jito_tip_lamports` (default 0 = not bundled) counted once in `execution_cost()`; sub-minimum tips (< `MIN_JITO_TIP_LAMPORTS` = 1,000 per docs.jito.wtf) rejected fail-closed via the new `JitoTipBelowMinimum` rejection; `FlashArbParams::required_floor()` includes the tip with checked math.
+- **LimitOrder-layer differential coverage (DIAG-F-2026-11-23-N1 residual)**: new `deep_sdk_verified_paths_traverse_nonzero_limit_order_bins` test proves all 8 SDK-verified deep cases on the captured Mainnet snapshot cross ≥1 of its 179 non-zero-LO bins while matching `@meteora-ag/dlmm@1.9.14` exactly.
+- **Verification (local Linux, toolchain 1.99.1)**: `cargo fmt --all -- --check`, `cargo clippy -p arb-tx -p arb-engine -p arb-sim --all-targets --locked -- -D warnings`, and `cargo test --workspace --all-targets --locked` (2,007 passed / 0 failed) all pass. No transaction was signed or submitted; live mainnet capture of a function_type=2 pool remains blocked (no `.env` credentials / node_modules in this environment).
+
 ## Local Route-Contract Hardening ? 2026-11-27 (not merged)
 
 - **Branch:** `fix/flashloan-2-3-pool-route-gates-20261127`, based on `3319b7e` (`origin/main`). The operator's existing dirty/conflicted checkout was left untouched; work was isolated in a separate Git worktree.
