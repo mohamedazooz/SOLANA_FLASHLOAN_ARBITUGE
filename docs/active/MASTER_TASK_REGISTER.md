@@ -724,3 +724,6 @@ NEXT_ACTION: Review PR CI and continue the remaining P1 protocol-parity issues i
 ```
 
 - [x] RPC getMultipleAccounts response cardinality validation — 2026-11-27: malformed arrays rejected before positional account mapping; batch path falls back to checked five-key chunks. See reports/RPC_MULTIPLE_ACCOUNTS_CARDINALITY_AUDIT_2026-11-27.md.
+
+
+- [x] Unified live execution spine audit/remediation ? 2026-11-27: Processed no longer books fills; Jito landing requires confirmed/finalized signature evidence; settlement parses route base mint; unresolved intents are periodically reconciled; terminal PnL writes are idempotent and aggregate unique attempts. Remaining: persist base-mint/payer/conversion metadata in dispatch intents for crash-time actual PnL recovery. See reports/UNIFIED_EXECUTION_SPINE_AUDIT_2026-11-27.md.

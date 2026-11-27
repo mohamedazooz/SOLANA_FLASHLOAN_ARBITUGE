@@ -28,6 +28,8 @@ pub(super) struct DispatchContext<'a> {
     pub tx_bytes: &'a Vec<u8>,
     pub record: &'a AttemptRecord,
     pub real_net_profit: Lamports,
+    pub lamports_per_base_raw: u128,
+    pub lamports_per_base_denom: u128,
     pub payer: Pubkey,
     pub route_sig: &'a str,
     pub t_ingest_to_quote_us: u64,
@@ -54,6 +56,19 @@ fn format_mint_short(pk: &Pubkey) -> String {
 /// Signed view of a u64 lamports value for the signed-outcome store. Values
 /// beyond `i64::MAX` are unreachable for bounded borrows configured by the
 /// risk gate; clamp instead of silently wrapping.
+fn lifecycle_to_land_status(lifecycle: arb_land::TransactionLifecycle) -> arb_land::LandStatus {
+    if lifecycle.is_confirmed() {
+        arb_land::LandStatus::Landed
+    } else {
+        match lifecycle {
+            arb_land::TransactionLifecycle::Failed => arb_land::LandStatus::Failed,
+            arb_land::TransactionLifecycle::Expired => arb_land::LandStatus::Expired,
+            // Processed is provisional inclusion, not settlement proof.
+            _ => arb_land::LandStatus::Sent,
+        }
+    }
+}
+
 fn signed_lamports(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
@@ -243,6 +258,8 @@ impl Supervisor {
             tx_bytes,
             record,
             real_net_profit,
+            lamports_per_base_raw,
+            lamports_per_base_denom,
             payer,
             route_sig,
             t_ingest_to_quote_us,
@@ -1099,7 +1116,7 @@ impl Supervisor {
                         let sol_price_val = live_sol_price;
                         let slot_val = current_slot.0;
                         let route_label_task = route_label.to_string();
-                        let loan_size_sol_val = opp.size_in.as_u64() as f64 / 1e9;
+                        let loan_size_sol_val = loan_size_sol;
                         let pools_count_task = pools_count;
                         let leader_task = leader_str.clone();
                         let tokens_str_val = {
@@ -1136,6 +1153,10 @@ impl Supervisor {
                         // F-01 settlement handles (cloned before the spawn so the
                         // reconciliation task never captures `self`).
                         let settle_opp_task = opp.clone();
+                        let settle_base_mint_task =
+                            opp.hops.first().map(|hop| hop.mint_in.0.to_string());
+                        let settle_rate_num_task = lamports_per_base_raw;
+                        let settle_rate_denom_task = lamports_per_base_denom;
                         let settle_payer_task = payer;
                         let settle_rpc_task = self.rpc_pool.clone();
                         let settle_tx_rpc_task = self.tx_rpc.clone();
@@ -1181,15 +1202,7 @@ impl Supervisor {
                                         )
                                     }
                                 };
-                                let st = if lifecycle.is_landed() {
-                                    arb_land::LandStatus::Landed
-                                } else if lifecycle == arb_land::TransactionLifecycle::Failed {
-                                    arb_land::LandStatus::Failed
-                                } else if lifecycle == arb_land::TransactionLifecycle::Expired {
-                                    arb_land::LandStatus::Expired
-                                } else {
-                                    arb_land::LandStatus::Sent
-                                };
+                                let st = lifecycle_to_land_status(lifecycle);
                                 (st, slot, reason, lifecycle)
                             } else {
                                 let (lifecycle, slot, err) = js
@@ -1202,15 +1215,7 @@ impl Supervisor {
                                         last_valid_height_task,
                                     )
                                     .await;
-                                let st = if lifecycle.is_landed() {
-                                    arb_land::LandStatus::Landed
-                                } else if lifecycle == arb_land::TransactionLifecycle::Failed {
-                                    arb_land::LandStatus::Failed
-                                } else if lifecycle == arb_land::TransactionLifecycle::Expired {
-                                    arb_land::LandStatus::Expired
-                                } else {
-                                    arb_land::LandStatus::Sent
-                                };
+                                let st = lifecycle_to_land_status(lifecycle);
                                 (st, slot, err, lifecycle)
                             };
 
@@ -1244,33 +1249,72 @@ impl Supervisor {
                                             // realized net recorded to the store prefers this
                                             // evidence over the pre-dispatch estimate. Signed:
                                             // losses must persist as losses (MATH-01).
-                                            let changes = arb_sim::parse_landed_balance_changes(
-                                                &meta,
-                                                &payer_pubkey_task,
-                                                arb_constants::WSOL_MINT,
-                                            );
-                                            if let Some(actual) = changes.realized_net_wsol {
-                                                info!(
-                                                    "Actual balance changes on-chain: fee_payer_delta={} wsol_token_delta={:?} realized_net_wsol={actual} (estimated {net_profit_val})",
-                                                    changes.fee_payer_lamport_delta,
-                                                    changes.wsol_token_delta
-                                                );
-                                                match i64::try_from(actual) {
-                                                    Ok(signed) => {
-                                                        actual_realized_net =
-                                                            Some(SignedLamports::new(signed));
-                                                        if signed < 0 {
+                                            if let Some(base_mint) =
+                                                settle_base_mint_task.as_deref()
+                                            {
+                                                let changes =
+                                                    arb_sim::parse_landed_asset_balance_changes(
+                                                        &meta,
+                                                        &payer_pubkey_task,
+                                                        base_mint,
+                                                    );
+                                                // For non-WSOL anchors, require both the tracked
+                                                // token delta and native fee-payer delta. WSOL may
+                                                // also settle as unwrapped native lamports.
+                                                let token_delta =
+                                                    changes.token_mint_delta.or_else(|| {
+                                                        (base_mint == arb_constants::WSOL_MINT
+                                                            && changes.fee_payer_balance_verified)
+                                                            .then_some(0)
+                                                    });
+                                                let actual = if changes.fee_payer_balance_verified {
+                                                    token_delta.and_then(|delta| {
+                                                        arb_math::economic::signed_base_raw_to_lamports(
+                                                            delta,
+                                                            settle_rate_num_task,
+                                                            settle_rate_denom_task,
+                                                        )
+                                                        .ok()
+                                                        .and_then(|token_lamports| {
+                                                            token_lamports.checked_add(
+                                                                changes.fee_payer_lamport_delta,
+                                                            )
+                                                        })
+                                                    })
+                                                } else {
+                                                    None
+                                                };
+                                                if let Some(actual) = actual {
+                                                    info!(
+                                                        "On-chain settlement evidence: base_mint={} token_delta_raw={:?} payer_lamport_delta={} realized_net_lamports={} (estimated {})",
+                                                        base_mint,
+                                                        changes.token_mint_delta,
+                                                        changes.fee_payer_lamport_delta,
+                                                        actual,
+                                                        net_profit_val.as_u64()
+                                                    );
+                                                    match i64::try_from(actual) {
+                                                        Ok(signed) => {
+                                                            actual_realized_net =
+                                                                Some(SignedLamports::new(signed));
+                                                            if signed < 0 {
+                                                                warn!(
+                                                                    "Landed transaction realized a NET LOSS of {signed} lamports (estimated +{}); signed loss persisted",
+                                                                    net_profit_val.as_u64()
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(_) => {
                                                             warn!(
-                                                                "Landed transaction realized a NET LOSS of {signed} raw WSOL lamports (estimated +{}); signed loss persisted with actual provenance",
-                                                                net_profit_val.as_u64()
+                                                                "Landed realized net {actual} exceeds i64 storage range; retaining estimate provenance"
                                                             );
                                                         }
                                                     }
-                                                    Err(_) => {
-                                                        warn!(
-                                                            "Landed realized net {actual} exceeds i64 storage range; recorded as estimate-free (no actual provenance)"
-                                                        );
-                                                    }
+                                                } else {
+                                                    warn!(
+                                                        "On-chain PnL evidence incomplete for base mint {}; retaining estimated provenance",
+                                                        base_mint
+                                                    );
                                                 }
                                             }
                                         }
@@ -1502,13 +1546,6 @@ impl Supervisor {
                                 }
                                 arb_land::LandStatus::Failed => {
                                     warn!("⚠️ Execution reverted on-chain: {}", b_id);
-                                    let _ = store.record_outcome(
-                                        rec_id,
-                                        "failed",
-                                        None,
-                                        NetProvenance::Estimated,
-                                    );
-                                    let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     if let Some(r) = rung_for_record {
                                         js.record(r, InflightStatus::Failed);
                                     }
@@ -1521,18 +1558,35 @@ impl Supervisor {
                                     // the flat 5,000-lamport figure is only the
                                     // no-evidence fallback (PIPE-06).
                                     let mut failure_fee_lamports = 5_000u64;
+                                    let mut actual_failure_fee = None;
                                     if let Some(ref sig) = tx_signature {
                                         if let Ok(Some(meta)) =
                                             signature_rpc.get_transaction_with_metadata(sig).await
                                         {
                                             if let Some(fee) = arb_sim::meta_fee_lamports(&meta) {
                                                 failure_fee_lamports = fee;
+                                                actual_failure_fee = Some(fee);
                                                 debug!(
                                                     "Failed-on-chain tx paid {fee} lamports (base + priority)"
                                                 );
                                             }
                                         }
                                     }
+                                    let realized_failure = actual_failure_fee
+                                        .and_then(|fee| i64::try_from(fee).ok())
+                                        .and_then(i64::checked_neg)
+                                        .map(SignedLamports::new);
+                                    let _ = store.record_outcome(
+                                        rec_id,
+                                        "failed",
+                                        realized_failure,
+                                        if realized_failure.is_some() {
+                                            NetProvenance::Actual
+                                        } else {
+                                            NetProvenance::Estimated
+                                        },
+                                    );
+                                    let _ = store.resolve_dispatch_intent(rec_id, "failed_onchain");
                                     risk_gate.record_loss(
                                         failure_fee_lamports as f64 / 1e9 * sol_price_val,
                                     );
@@ -1640,12 +1694,49 @@ impl Supervisor {
                                         send_error = %err_for_task,
                                         "send errored but on-chain evidence resolved the dispatch outcome"
                                     );
-                                    let _ = store.record_outcome(
-                                        attempt_id,
-                                        resolution,
-                                        None,
-                                        NetProvenance::Estimated,
-                                    );
+                                    let (outcome, realized, provenance) = match resolution {
+                                        "landed" => {
+                                            let estimate = store
+                                                .get_attempt(attempt_id)
+                                                .ok()
+                                                .flatten()
+                                                .and_then(|attempt| {
+                                                    i64::try_from(attempt.expected_net.as_u64())
+                                                        .ok()
+                                                })
+                                                .map(SignedLamports::new);
+                                            ("landed", estimate, NetProvenance::Estimated)
+                                        }
+                                        "failed_onchain" => {
+                                            let fee = signature_rpc
+                                                .get_transaction_with_metadata(&pre_sig_task)
+                                                .await
+                                                .ok()
+                                                .flatten()
+                                                .and_then(|meta| arb_sim::meta_fee_lamports(&meta));
+                                            let realized = fee
+                                                .and_then(|value| i64::try_from(value).ok())
+                                                .and_then(i64::checked_neg)
+                                                .map(SignedLamports::new);
+                                            let provenance = if realized.is_some() {
+                                                NetProvenance::Actual
+                                            } else {
+                                                NetProvenance::Estimated
+                                            };
+                                            ("failed", realized, provenance)
+                                        }
+                                        other => (other, None, NetProvenance::Estimated),
+                                    };
+                                    if let Err(store_error) = store
+                                        .record_outcome(attempt_id, outcome, realized, provenance)
+                                    {
+                                        warn!(
+                                            ?store_error,
+                                            attempt_id,
+                                            "terminal outcome persistence failed; dispatch intent remains pending"
+                                        );
+                                        return;
+                                    }
                                     let _ = store.resolve_dispatch_intent(attempt_id, resolution);
                                     if let Some(control) = control_task {
                                         control.record_execution_with(
@@ -1692,6 +1783,22 @@ mod required_live_balance_tests {
         assert_eq!(
             required_live_payer_balance(1_000, 100, 5, 20, 50),
             Some(1_175)
+        );
+    }
+
+    #[test]
+    fn processed_is_not_a_confirmed_landing_for_settlement() {
+        assert_eq!(
+            super::lifecycle_to_land_status(arb_land::TransactionLifecycle::Processed),
+            arb_land::LandStatus::Sent
+        );
+        assert_eq!(
+            super::lifecycle_to_land_status(arb_land::TransactionLifecycle::Confirmed),
+            arb_land::LandStatus::Landed
+        );
+        assert_eq!(
+            super::lifecycle_to_land_status(arb_land::TransactionLifecycle::Finalized),
+            arb_land::LandStatus::Landed
         );
     }
 

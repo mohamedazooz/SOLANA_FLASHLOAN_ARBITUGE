@@ -486,6 +486,23 @@ impl JitoService {
         Ok(set)
     }
 
+    /// Convert only evidence-backed signature statuses into a settled lifecycle.
+    /// Processed is deliberately excluded: it is provisional fork inclusion.
+    fn confirmed_signature_lifecycle(
+        status: arb_ingest::SignatureStatus,
+    ) -> Option<arb_land::TransactionLifecycle> {
+        match status {
+            arb_ingest::SignatureStatus::Finalized => {
+                Some(arb_land::TransactionLifecycle::Finalized)
+            }
+            arb_ingest::SignatureStatus::Confirmed => {
+                Some(arb_land::TransactionLifecycle::Confirmed)
+            }
+            arb_ingest::SignatureStatus::Failed => Some(arb_land::TransactionLifecycle::Failed),
+            arb_ingest::SignatureStatus::Processed | arb_ingest::SignatureStatus::Pending => None,
+        }
+    }
+
     /// Poll one bundle until it reaches a terminal status or the attempts run out.
     pub async fn poll_until_terminal(
         &self,
@@ -542,23 +559,40 @@ impl JitoService {
 
                     match record.status {
                         arb_land::LandStatus::Landed => {
-                            // Cross-verify on-chain execution with Solana RPC if signature is available
                             let sig = tx_signature
                                 .or_else(|| record.transactions.first().map(String::as_str));
                             if let Some(s) = sig {
                                 if let Ok(sig_status) = rpc.get_signature_status(s).await {
-                                    if sig_status == arb_ingest::SignatureStatus::Failed {
-                                        return (
-                                            arb_land::LandStatus::Failed,
-                                            landed_slot,
-                                            observed_err.or_else(|| {
-                                                Some("transaction reverted on chain".into())
-                                            }),
-                                        );
+                                    match Self::confirmed_signature_lifecycle(sig_status) {
+                                        Some(arb_land::TransactionLifecycle::Finalized) => {
+                                            return (
+                                                arb_land::LandStatus::Landed,
+                                                landed_slot,
+                                                None,
+                                            );
+                                        }
+                                        Some(arb_land::TransactionLifecycle::Confirmed) => {
+                                            return (
+                                                arb_land::LandStatus::Landed,
+                                                landed_slot,
+                                                None,
+                                            );
+                                        }
+                                        Some(arb_land::TransactionLifecycle::Failed) => {
+                                            return (
+                                                arb_land::LandStatus::Failed,
+                                                landed_slot,
+                                                observed_err.or_else(|| {
+                                                    Some("transaction reverted on chain".into())
+                                                }),
+                                            );
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
-                            return (arb_land::LandStatus::Landed, landed_slot, None);
+                            // Keep polling. A Jito status without a confirmed
+                            // signature is not settlement evidence.
                         }
                         arb_land::LandStatus::Failed => {
                             return (arb_land::LandStatus::Failed, landed_slot, observed_err);
@@ -643,6 +677,7 @@ impl JitoService {
     ) -> (arb_land::TransactionLifecycle, Option<u64>, Option<String>) {
         let mut landed_slot = None;
         let mut observed_err = None;
+        let mut jito_landed_unverified = false;
 
         for _ in 0..attempts {
             tokio::time::sleep(interval).await;
@@ -662,19 +697,43 @@ impl JitoService {
                             let sig = tx_signature
                                 .or_else(|| record.transactions.first().map(String::as_str));
                             if let Some(s) = sig {
-                                if let Ok(sig_status) = rpc.get_signature_status(s).await {
-                                    if sig_status == arb_ingest::SignatureStatus::Failed {
+                                match rpc.get_signature_status_detailed(s).await {
+                                    Ok((arb_ingest::SignatureStatus::Finalized, slot, _)) => {
+                                        return (
+                                            arb_land::TransactionLifecycle::Finalized,
+                                            slot.or(landed_slot),
+                                            None,
+                                        );
+                                    }
+                                    Ok((arb_ingest::SignatureStatus::Confirmed, slot, _)) => {
+                                        return (
+                                            arb_land::TransactionLifecycle::Confirmed,
+                                            slot.or(landed_slot),
+                                            None,
+                                        );
+                                    }
+                                    Ok((arb_ingest::SignatureStatus::Failed, slot, err)) => {
                                         return (
                                             arb_land::TransactionLifecycle::Failed,
-                                            landed_slot,
-                                            observed_err.or_else(|| {
+                                            slot.or(landed_slot),
+                                            err.or_else(|| observed_err.clone()).or_else(|| {
                                                 Some("transaction reverted on chain".into())
                                             }),
                                         );
                                     }
+                                    // Jito's report alone is not enough to book
+                                    // realized PnL: wait for RPC confirmation.
+                                    Ok((arb_ingest::SignatureStatus::Processed, slot, _)) => {
+                                        landed_slot = slot.or(landed_slot);
+                                        jito_landed_unverified = true;
+                                    }
+                                    Ok((arb_ingest::SignatureStatus::Pending, _, _)) | Err(_) => {
+                                        jito_landed_unverified = true;
+                                    }
                                 }
+                            } else {
+                                jito_landed_unverified = true;
                             }
-                            return (arb_land::TransactionLifecycle::Confirmed, landed_slot, None);
                         }
                         arb_land::LandStatus::Failed => {
                             return (
@@ -729,11 +788,8 @@ impl JitoService {
                             );
                         }
                         arb_ingest::SignatureStatus::Processed => {
-                            return (
-                                arb_land::TransactionLifecycle::Processed,
-                                slot.or(landed_slot),
-                                None,
-                            );
+                            // Provisional fork inclusion only; keep polling.
+                            landed_slot = slot.or(landed_slot);
                         }
                         arb_ingest::SignatureStatus::Failed => {
                             return (
@@ -750,15 +806,43 @@ impl JitoService {
 
         // Final check via RPC with history search
         if let Some(s) = tx_signature {
-            if let Ok((sig_status, slot, _)) = rpc.get_signature_status_detailed(s).await {
-                if sig_status.is_landed() {
-                    return (
-                        arb_land::TransactionLifecycle::Confirmed,
-                        slot.or(landed_slot),
-                        None,
-                    );
+            if let Ok((sig_status, slot, err)) = rpc.get_signature_status_detailed(s).await {
+                match sig_status {
+                    arb_ingest::SignatureStatus::Finalized => {
+                        return (
+                            arb_land::TransactionLifecycle::Finalized,
+                            slot.or(landed_slot),
+                            None,
+                        );
+                    }
+                    arb_ingest::SignatureStatus::Confirmed => {
+                        return (
+                            arb_land::TransactionLifecycle::Confirmed,
+                            slot.or(landed_slot),
+                            None,
+                        );
+                    }
+                    arb_ingest::SignatureStatus::Failed => {
+                        return (
+                            arb_land::TransactionLifecycle::Failed,
+                            slot.or(landed_slot),
+                            err.or(observed_err),
+                        );
+                    }
+                    arb_ingest::SignatureStatus::Processed => {
+                        landed_slot = slot.or(landed_slot);
+                    }
+                    arb_ingest::SignatureStatus::Pending => {}
                 }
             }
+        }
+
+        if jito_landed_unverified {
+            return (
+                arb_land::TransactionLifecycle::Unknown,
+                landed_slot,
+                Some("Jito reports a landed bundle, but transaction RPC did not prove confirmed/finalized status".into()),
+            );
         }
 
         // Verify current block height against lastValidBlockHeight
@@ -1059,6 +1143,30 @@ mod tests {
         .expect("service");
         assert_eq!(restored.observations(), 10);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn processed_signature_is_not_confirmation_evidence() {
+        assert_eq!(
+            JitoService::confirmed_signature_lifecycle(arb_ingest::SignatureStatus::Processed),
+            None
+        );
+        assert_eq!(
+            JitoService::confirmed_signature_lifecycle(arb_ingest::SignatureStatus::Pending),
+            None
+        );
+        assert_eq!(
+            JitoService::confirmed_signature_lifecycle(arb_ingest::SignatureStatus::Confirmed),
+            Some(arb_land::TransactionLifecycle::Confirmed)
+        );
+        assert_eq!(
+            JitoService::confirmed_signature_lifecycle(arb_ingest::SignatureStatus::Finalized),
+            Some(arb_land::TransactionLifecycle::Finalized)
+        );
+        assert_eq!(
+            JitoService::confirmed_signature_lifecycle(arb_ingest::SignatureStatus::Failed),
+            Some(arb_land::TransactionLifecycle::Failed)
+        );
     }
 
     #[test]
