@@ -69,7 +69,7 @@ Do not copy any reference repository wholesale. Use narrow patterns and official
 - Official Rust core: https://github.com/orca-so/whirlpools
 - Official docs: https://docs.orca.so/
 - The reviewed local workspace pins orca_whirlpools_core. Verify quote parity with exact same pool/tick-array/oracle/time inputs.
-- The reviewed instruction-builder path passed is_adaptive_fee=false; confirm current code and pool type before changing it. Adaptive-fee pools must not be treated as ordinary static-fee pools.
+- The current decoder rejects adaptive-fee pools from the classic fee path when the on-chain fee_tier_index_seed differs from tick_spacing. Adaptive-fee support is not implemented; it requires authoritative oracle-aware fee state/math and complete account hydration.
 
 ### 3.3 Meteora DLMM
 
@@ -91,7 +91,7 @@ Do not copy any reference repository wholesale. Use narrow patterns and official
 - CLMM source: https://github.com/raydium-io/raydium-clmm
 - CPMM source: https://github.com/raydium-io/raydium-cp-swap
 - The reviewed local CPMM path models Trading Fee and Creator Fee separately and has AmmConfig-loading gates. Validate against official SDK/source golden vectors, including creator-fee direction and transfer-fee effects.
-- The reviewed CLMM builder did not fully resolve bitmap-extension/tick-array dependencies in every case. A fixed first-three-tick-array assumption is not a general execution guarantee. Resolve the complete required account set and validate same-slot coherence before enabling a route.
+- The local CLMM builder now represents the fixed first tick-array account, optional bitmap extension, and variable additional arrays; it rejects empty/default/duplicate keys. Hydration still does not fetch and owner/discriminator/length-validate AmmConfig, tick arrays, or the optional bitmap extension at one coherent slot, and the live fee state is not joined. The route remains unpriceable and unexecutable. Builder structure is not runtime account-resolution proof.
 - Keep CLMM unpriceable/unexecutable while its authoritative AmmConfig/dynamic-fee state is missing or stale.
 
 ### 3.6 Solana transaction format and Jito
@@ -111,10 +111,10 @@ The following findings were observed in the prior forensic pass and are **not au
 |---|---|---|
 | Canonical execution | Supervisor path used TxBuilder::assemble_flash_arbitrage with Kamino borrow, top-level DEX instructions, final min-output, repay, and Jito dispatch | Trace current call graph and preserve the canonical path |
 | Economic floor | Canonical builder derived final output floor from principal, flash fee, base fee, priority fee, tip, and minimum net profit | Add regression coverage for every cost and avoid double-counting swap fees |
-| Kamino decoder | Manual Reserve offset decoder with structural and semantic checks | Differential-test against pinned official klend-interface fixtures |
-| Raydium CLMM | Bitmap-extension and complete tick-array account resolution appeared incomplete | Resolve all required accounts from live coherent state; fail closed otherwise |
-| PumpSwap V2 | Remaining accounts appeared absent in a builder path despite comments describing observed V2 remaining-account requirements | Derive metas from authoritative SDK/program interface and add buy/sell fixtures |
-| Orca adaptive fees | Builder path appeared to disable adaptive-fee handling | Correctly resolve pool fee mode and reject unsupported adaptive-fee pools |
+| Kamino decoder | Existing Reserve offsets are checked against a pinned 8,624-byte Mainnet Reserve + supply-vault fixture; discriminator, mint, status, decimals, fee SF, vaults, liquidity, and truncation are tested. No klend-interface dependency was added because its reviewed BSL-1.1 license is outside deny.toml. | Keep the pinned Mainnet regression fixture; pursue a legally compatible official-schema differential oracle separately. Fixture coverage is not an SDK differential or proof of a live borrow/repay |
+| Raydium CLMM | Builder now accepts the required first tick array, optional bitmap extension, and variable additional arrays, with duplicate/default validation. Hydration still supplies no verified arrays/bitmap and does not join live AmmConfig/dynamic fees; CLMM remains unpriceable/unexecutable. | Fetch and validate all required dependencies and exact fee state from a coherent slot; add official quote differential and simulation before changing the gate |
+| PumpSwap V2 | The official V2 interface specifies exactly 17 fixed accounts and no inferred remaining accounts. The builder now derives the user-volume accumulator and buyback recipient ATA and separates V1 legacy. Only WSOL/USDC quote mints are currently accepted; others fail closed pending ATA existence/rent handling. | Preserve the official fixed matrix; keep mode-specific discriminator/argument/account-meta tests and add coherent-state RPC simulation before execution claims |
+| Orca adaptive fees | Decoder now rejects adaptive-fee pools from the classic path when fee_tier_index_seed differs from tick_spacing; adaptive fee math remains unsupported. | Keep the fail-closed rejection until oracle-aware state/math and full account dependencies are implemented and differentially tested |
 | Meteora DAMM V2 | Quote path existed while production execution was deliberately gated | Preserve quote-only gate until SDK parity and transaction simulation pass |
 | Bellman-Ford economics | Legacy path appeared to zero network costs and convert flash-fee errors to zero | Determine whether it is reachable; unify with canonical economics or deprecate safely |
 | Legacy builders | Some legacy/test builders appeared weaker than canonical economic checks | Keep unreachable from production; add compile-time/API boundaries where appropriate |
@@ -125,8 +125,8 @@ The following findings were observed in the prior forensic pass and are **not au
 ### P1 — correctness and execution parity
 
 1. Revalidate the current Kamino Reserve decoder and add differential tests against the official interface.
-2. Complete Raydium CLMM account resolution: bitmap extension, all required tick arrays, AmmConfig and dynamic-fee state, coherent slot checks.
-3. Complete PumpSwap V2 remaining-account resolution for each supported direction/version.
+2. Complete Raydium CLMM runtime hydration: bitmap extension, all required tick arrays, AmmConfig and dynamic-fee state, owner/discriminator/pool validation, and coherent slot checks. The builder shape alone does not complete this gate.
+3. Preserve PumpSwap V2 fixed 17-account layout with no inferred remaining accounts; finish non-WSOL/USDC buyback ATA existence/rent resolution or keep those quote mints rejected. Keep V1 cashback/legacy routing separate.
 4. Implement or explicitly reject Orca adaptive-fee pools based on authoritative pool state.
 5. Add Meteora DAMM V2 differential quote + instruction/account parity while preserving the quote-only production gate.
 6. Add same-state RPC simulation fixtures/matrix for every route marked executable.
