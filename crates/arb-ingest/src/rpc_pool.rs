@@ -1149,7 +1149,7 @@ impl RpcPool {
         let slot = response
             .pointer("/context/slot")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
+            .context("Missing or invalid getMultipleAccounts context.slot")?;
         let values = response["value"]
             .as_array()
             .context("Invalid accounts array format")?;
@@ -1170,8 +1170,8 @@ impl RpcPool {
     /// Like [`Self::get_multiple_accounts_with_slot`] but returns the
     /// `context.slot` of the response that carried EACH account, so a slow
     /// replica can never borrow a faster replica's slot and mask staleness
-    /// (DATA-01). `0` means the response carried no slot — callers already
-    /// treat that as "fall back to current slot".
+    /// (DATA-01). A missing or malformed context slot is rejected by the
+    /// response decoder; an explicit zero is preserved for downstream fail-closed gates.
     pub async fn get_multiple_accounts_with_slots(
         &self,
         pubkeys: &[&str],
@@ -2100,6 +2100,41 @@ mod tests {
         let error = RpcPool::decode_multiple_accounts_response(&response, 1)
             .expect_err("an extra value must not be silently discarded");
         assert!(error.to_string().contains("expected 1, got 2"));
+    }
+
+    #[test]
+    fn get_multiple_accounts_rejects_missing_or_invalid_context_slot() {
+        let invalid_responses = [
+            serde_json::json!({ "value": [null] }),
+            serde_json::json!({ "context": {}, "value": [null] }),
+            serde_json::json!({ "context": { "slot": "42" }, "value": [null] }),
+            serde_json::json!({ "context": { "slot": -1 }, "value": [null] }),
+            serde_json::json!({ "context": { "slot": 42.5 }, "value": [null] }),
+            serde_json::json!({ "context": { "slot": null }, "value": [null] }),
+        ];
+
+        for response in invalid_responses {
+            let error = RpcPool::decode_multiple_accounts_response(&response, 1)
+                .expect_err("missing or malformed context.slot must fail closed");
+            assert!(
+                error
+                    .to_string()
+                    .contains("Missing or invalid getMultipleAccounts context.slot"),
+                "unexpected error: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn get_multiple_accounts_preserves_explicit_zero_context_slot() {
+        let response = serde_json::json!({
+            "context": { "slot": 0 },
+            "value": [null]
+        });
+        let (accounts, slot) = RpcPool::decode_multiple_accounts_response(&response, 1)
+            .expect("an explicit u64 slot is structurally valid");
+        assert_eq!(accounts, vec![None]);
+        assert_eq!(slot, 0);
     }
 
     // DATA-11 regression: get_priority_fee_estimate must surface the RPC's
