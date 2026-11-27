@@ -115,6 +115,21 @@ fn create_test_dlmm_cpmm_opportunity(
 }
 
 #[test]
+fn cross_dex_validator_rejects_four_pool_routes() {
+    let (mut opp, _, _, _) =
+        create_test_dlmm_cpmm_opportunity(1_000_000_000, 150_000_000, 1_050_000_000);
+    let first = opp.hops[0].clone();
+    let second = opp.hops[1].clone();
+    opp.hops.extend([first, second]);
+
+    assert!(!is_cross_dex_opportunity(&opp));
+    assert!(
+        validate_cross_dex_opportunity(&opp).is_err(),
+        "cross-DEX validation must reject routes with more than three pools"
+    );
+}
+
+#[test]
 fn test_matrix_01_profitable_dlmm_to_cpmm_v1_compilation() {
     let borrow = 1_000_000_000; // 1 SOL
     let dlmm_out = 150_000_000; // 150 USDC (6 decimals)

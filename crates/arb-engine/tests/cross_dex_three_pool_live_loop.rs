@@ -112,7 +112,7 @@ fn cross_dex_three_pool_fixture() -> Vec<arb_types::PoolState> {
         make_dlmm_pool(1, -100, 10, 100, wsol, ma, 10_u128.pow(12)),
         cpmm_pool(2, ma, mb, 10_000_000_000),
         // Final leg returns 12% more WSOL per MemeB than parity: profit,
-        // mirroring the `graph_4hop_multi_detection` fixture pattern.
+        // mirroring the canonical three-pool cycle fixture.
         v4_pool(3, mb, wsol, 11_200_000_000),
     ]
 }
@@ -127,7 +127,7 @@ fn cross_dex_three_pool_cycle_discovered_with_per_protocol_hops() {
     let mut graph = MarketGraph::new(vec![wsol]).with_economic_config(economic_config());
     graph.build_from_pools(&pools);
 
-    let opps = graph.find_multi_hop_cycles(Slot(467_000_001), 1_000_000_000, 4);
+    let opps = graph.find_multi_hop_cycles(Slot(467_000_001), 1_000_000_000, 3);
     let three_hop = opps
         .iter()
         .find(|o| {
@@ -250,12 +250,10 @@ fn orca_clmm_pool(id: u8, a: MintId, b: MintId) -> PoolState {
     }
 }
 
-/// ALL executable platforms connected in ONE four-pool cycle:
-/// WSOL -DLMM-> A -CPMM-> B -OrcaCLMM-> C -RaydiumV4-> WSOL. The unified graph
-/// path must enumerate mixed-protocol routes and carry each hop's own protocol
-/// and per-pool fee into the opportunity.
+/// A four-pool cycle is outside the executable route contract and must be
+/// excluded even when a caller asks the graph scanner for four hops.
 #[test]
-fn cross_protocol_four_pool_cycle_connects_all_platforms() {
+fn cross_protocol_four_pool_cycle_is_excluded() {
     let wsol = wsol_mint();
     let ma = meme_a_mint();
     let mb = meme_b_mint();
@@ -264,8 +262,6 @@ fn cross_protocol_four_pool_cycle_connects_all_platforms() {
         make_dlmm_pool(1, -100, 10, 100, wsol, ma, 10_u128.pow(12)),
         cpmm_pool(2, ma, mb, 10_000_000_000),
         orca_clmm_pool(4, mb, mc),
-        // The extra CLMM hop compounds the configured 1% hop slippage floor;
-        // make the final leg sufficiently rich for the *net* route to clear it.
         v4_pool(3, mc, wsol, 13_000_000_000),
     ];
 
@@ -273,30 +269,10 @@ fn cross_protocol_four_pool_cycle_connects_all_platforms() {
     graph.build_from_pools(&pools);
 
     let opps = graph.find_multi_hop_cycles(Slot(467_000_001), 1_000_000_000, 4);
-    let four_hop = opps
-        .iter()
-        .find(|o| {
-            o.hops.len() == 4
-                && o.hops[0].pool_id == pools[0].pool_id
-                && o.hops[1].pool_id == pools[1].pool_id
-                && o.hops[2].pool_id == pools[2].pool_id
-                && o.hops[3].pool_id == pools[3].pool_id
-        })
-        .expect("forward DLMM -> CPMM -> Whirlpool -> V4 cycle must be discovered by the unified graph path");
-
-    let protocols: Vec<_> = four_hop.hops.iter().map(|h| h.protocol).collect();
-    assert_eq!(
-        protocols,
-        vec![
-            DexProtocol::MeteoraDlmm,
-            DexProtocol::RaydiumCpmm,
-            DexProtocol::OrcaWhirlpool,
-            DexProtocol::RaydiumV4
-        ]
+    assert!(
+        opps.is_empty(),
+        "four-pool DLMM -> CPMM -> Whirlpool -> V4 cycle must not enter executable opportunities"
     );
-    assert_eq!(four_hop.hops[0].mint_in, wsol);
-    assert_eq!(four_hop.hops[3].mint_out, wsol);
-    assert!(four_hop.gross_profit.as_u64() > 0);
 }
 
 /// Fee awareness: with two CPMM pools between the same mints (cheap 25 bps vs

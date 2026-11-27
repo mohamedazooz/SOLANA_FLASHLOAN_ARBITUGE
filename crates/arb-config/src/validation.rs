@@ -209,6 +209,11 @@ fn validate_wallet(cfg: &WalletConfig) -> ConfigResult<()> {
 }
 
 fn validate_strategy(cfg: &StrategyConfig) -> ConfigResult<()> {
+    if !cfg.use_flash_loan {
+        return Err(ConfigError::Validation(
+            "strategy.use_flash_loan must be true: executable arbitrage requires an atomic Kamino flash loan".to_string(),
+        ));
+    }
     if cfg.base_tokens.is_empty() {
         return Err(ConfigError::Validation(
             "strategy.base_tokens must not be empty".to_string(),
@@ -267,9 +272,9 @@ fn validate_strategy(cfg: &StrategyConfig) -> ConfigResult<()> {
             ));
         }
     }
-    if !(2..=4).contains(&cfg.max_route_hops) {
+    if !(2..=3).contains(&cfg.max_route_hops) {
         return Err(ConfigError::Validation(format!(
-            "strategy.max_route_hops ({}) must be within 2..=4: each extra hop stacks another DEX fee plus another failure point, and routes longer than 4 hops are economically dominated by cumulative fees",
+            "strategy.max_route_hops ({}) must be within 2..=3: only closed cycles using two or three distinct pools are supported",
             cfg.max_route_hops
         )));
     }
@@ -515,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn max_route_hops_beyond_four_rejected() {
+    fn max_route_hops_above_three_rejected() {
         let mut cfg = base_valid();
         cfg.strategy.max_route_hops = 5;
         let err = validate(&cfg).unwrap_err().to_string();
@@ -533,10 +538,25 @@ mod tests {
     }
 
     #[test]
-    fn max_route_hops_four_accepted() {
+    fn max_route_hops_four_rejected() {
         let mut cfg = base_valid();
         cfg.strategy.max_route_hops = 4;
-        assert!(validate(&cfg).is_ok());
+        let err = validate(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("max_route_hops"),
+            "error must name the key: {err}"
+        );
+    }
+
+    #[test]
+    fn flash_loan_cannot_be_disabled() {
+        let mut cfg = base_valid();
+        cfg.strategy.use_flash_loan = false;
+        let err = validate(&cfg).unwrap_err().to_string();
+        assert!(
+            err.contains("use_flash_loan"),
+            "error must name the key: {err}"
+        );
     }
 
     #[test]

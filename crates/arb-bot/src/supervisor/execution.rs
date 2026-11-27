@@ -89,11 +89,13 @@ impl Supervisor {
         tip_base_raw: u64,
         min_profit_raw: TokenAmount,
     ) -> anyhow::Result<Vec<arb_tx::CompiledInstruction>> {
-        if self.config.strategy.use_flash_loan {
-            let proven_zero_intermediate_mints: Vec<Pubkey> = Vec::new();
+        if !self.config.strategy.use_flash_loan {
+            anyhow::bail!("flash loans are mandatory; non-flash arbitrage assembly is disabled");
+        }
+        let proven_zero_intermediate_mints: Vec<Pubkey> = Vec::new();
 
-            if arb_tx::cross_dex_flash_arb::is_cross_dex_opportunity(opp) {
-                return arb_tx::cross_dex_flash_arb::assemble_cross_dex_opportunity_with_converted_costs(
+        if arb_tx::cross_dex_flash_arb::is_cross_dex_opportunity(opp) {
+            return arb_tx::cross_dex_flash_arb::assemble_cross_dex_opportunity_with_converted_costs(
                     payer,
                     tip_account,
                     tip,
@@ -107,33 +109,22 @@ impl Supervisor {
                     min_profit_raw,
                     &proven_zero_intermediate_mints,
                 );
-            }
-
-            Ok(TxBuilder::assemble_flash_arbitrage_with_converted_costs(
-                payer,
-                tip_account,
-                tip,
-                cu_limit,
-                cu_price,
-                opp,
-                kamino_params,
-                flash_loan_fee_sf,
-                network_fee_base_raw,
-                tip_base_raw,
-                min_profit_raw,
-                &proven_zero_intermediate_mints,
-            )?)
-        } else {
-            Ok(TxBuilder::assemble_arbitrage(
-                payer,
-                tip_account,
-                tip,
-                cu_limit,
-                cu_price,
-                opp,
-                min_profit_raw,
-            )?)
         }
+
+        TxBuilder::assemble_flash_arbitrage_with_converted_costs(
+            payer,
+            tip_account,
+            tip,
+            cu_limit,
+            cu_price,
+            opp,
+            kamino_params,
+            flash_loan_fee_sf,
+            network_fee_base_raw,
+            tip_base_raw,
+            min_profit_raw,
+            &proven_zero_intermediate_mints,
+        )
     }
 
     /// Collect `(mint, ata, program)` for every intermediate mint of the

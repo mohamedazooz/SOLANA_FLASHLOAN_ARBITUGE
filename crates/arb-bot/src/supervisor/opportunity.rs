@@ -141,6 +141,13 @@ impl Supervisor {
             pools,
         } = pass;
 
+        if !self.config.strategy.use_flash_loan {
+            tracing::error!(
+                "Opportunity processing halted: flash loans are mandatory for arbitrage execution"
+            );
+            return;
+        }
+
         if self.mode() == BotMode::Observe {
             debug!(
                 "Supervisor in OBSERVE mode: monitoring pools only; skipping opportunity processing"
@@ -156,9 +163,43 @@ impl Supervisor {
         > = std::collections::HashMap::new();
         anchor_verified_cache.insert(kamino_params.liquidity_mint, Some(verified.clone()));
         for opp in opportunities {
-            let Some(opp_base_mint) = opp.hops.first().map(|h| h.mint_in.0) else {
+            if !(2..=3).contains(&opp.hops.len()) {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: stage=RouteShape reason=pool_count_outside_2_to_3 pools={}",
+                    opp.hops.len()
+                );
+                continue;
+            }
+            let Some(first_hop) = opp.hops.first() else {
                 continue;
             };
+            let Some(last_hop) = opp.hops.last() else {
+                continue;
+            };
+            let reuses_pool = match opp.hops.as_slice() {
+                [first, second] => first.pool_id == second.pool_id,
+                [first, second, third] => {
+                    first.pool_id == second.pool_id
+                        || first.pool_id == third.pool_id
+                        || second.pool_id == third.pool_id
+                }
+                _ => true,
+            };
+            if first_hop.mint_in != last_hop.mint_out
+                || opp
+                    .hops
+                    .windows(2)
+                    .any(|pair| pair[0].mint_out != pair[1].mint_in)
+                || reuses_pool
+            {
+                tracing::info!(
+                    target: "arb_events",
+                    "OPPORTUNITY_REJECTED: stage=RouteShape reason=route_not_closed_or_reuses_pool"
+                );
+                continue;
+            }
+            let opp_base_mint = first_hop.mint_in.0;
             let opp_verified = if let Some(cached) = anchor_verified_cache.get(&opp_base_mint) {
                 match cached {
                     Some(v) => v.clone(),

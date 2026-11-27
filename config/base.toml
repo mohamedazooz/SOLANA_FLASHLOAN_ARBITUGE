@@ -55,12 +55,13 @@ max_price_impact_bps = 40
 max_state_age_slots = 2
 # Keep graph discovery freshness no wider than the quote/state freshness window.
 graph_max_age_slots = 2
+# Mandatory: every executable arbitrage cycle must borrow and repay atomically via Kamino.
 use_flash_loan = true
 max_pools = 135
 discovery_refresh_secs = 60
 discovery_min_tvl_usd = 25000.0
-# Max hops per route. Each extra hop stacks another DEX fee + failure point;
-# >4 hops is economically dominated by cumulative fees. Validated 2..=4.
+# Maximum distinct pools (swap legs) in one closed flash-loan route: 2 or 3.
+# This is independent of max_pools, which bounds the discovery universe.
 max_route_hops = 3
 # HTTP catalog discovery off by default: pools arrive via WebSocket only.
 http_discovery_enabled = false
