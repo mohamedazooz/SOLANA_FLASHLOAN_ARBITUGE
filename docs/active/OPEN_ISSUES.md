@@ -1,4 +1,4 @@
-﻿# Forensic Defect Register & Open Issues
+# Forensic Defect Register & Open Issues
 
 This register tracks all identified engineering defects, correctness gaps, and architectural vulnerabilities across the codebase. Issues are strictly prioritized and must be resolved before proceeding through phase exit gates.
 
@@ -460,3 +460,10 @@ The canonical Kamino flash-fee calculation, fee-exclusive per-protocol price-imp
 - **Fix:** Both quote directions now call the same checked fee-exclusion helper, respecting InputOnly and OnlyY fee placement. Added exact-out regression coverage for both collection modes.
 - **Verification:** `cargo test -p arb-math -p arb-dex --all-targets` passed (559 tests); Clippy with `-D warnings` passed for `arb-math` and `arb-dex`; format check passed.
 - **Unchanged gates:** Exact-out is still not exposed through `QuoteEngine` because the shared request/result contract does not yet model target output and max input. DLMM timestamp decay remains conservative until a trusted bank Clock snapshot is available. Limit-order/unsupported extension modes remain fail-closed.
+
+## RPC getMultipleAccounts response cardinality — 2026-11-27
+
+- **Finding:** RpcPool::get_multiple_accounts_with_slots trusted the provider value array length and downstream code zipped returned accounts against requested pubkeys. A short response could shift subsequent account bytes onto the wrong address; an oversized response could be silently ignored.
+- **Fix:** Every batch and fallback response now requires exactly one result per requested pubkey. A malformed large batch is retried as bounded five-key requests; malformed fallback responses return an error and are never mapped to keys.
+- **Regression coverage:** Short batch response retries and preserves per-response slots; oversized arrays are rejected. Existing per-account slot regression remains green.
+- **Safety:** No partial account set is promoted. No RPC endpoint credentials or account secrets are written to logs or fixtures.
