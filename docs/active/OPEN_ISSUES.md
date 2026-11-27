@@ -1,4 +1,4 @@
-# Forensic Defect Register & Open Issues
+﻿# Forensic Defect Register & Open Issues
 
 This register tracks all identified engineering defects, correctness gaps, and architectural vulnerabilities across the codebase. Issues are strictly prioritized and must be resolved before proceeding through phase exit gates.
 
@@ -447,3 +447,8 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Regression coverage:** Four-pool graph and cross-protocol cycles are rejected; config tests reject four hops and disabled flash loans; cross-DEX validation rejects four-pool opportunities.
 - **Verification:** `cargo test -p arb-config -p arb-engine -p arb-tx --locked` passed; `cargo test -p arb-bot --all-targets --locked` passed (142 tests across the bot library, binaries, and integration targets); focused cross-DEX four-pool regression passed (1/1); `cargo check -p arb-bot --locked`, `cargo fmt --all -- --check`, targeted Clippy with `-D warnings`, and `git diff --check` passed.
 - **Remaining:** No RPC simulation, shadow soak, mainnet transaction, or realized-PnL evidence. The legacy four-leg builder remains disconnected from the active Supervisor and was not wired into the execution path.
+## Economic / Fee Revalidation Note — 2026-11-27
+
+The current Raydium CPMM input-side creator-fee calculation was checked against the current official CP-Swap `CurveCalculator` and CPMM fee documentation. The official behavior is one ceiling on `(trade_fee_rate + creator_fee_rate)`, followed by a proportional creator split; protocol/fund allocations are based on the trade-fee bucket only. The local exact-in/exact-out implementation matches this behavior. Two raw-unit boundary/round-trip tests were added. The suspected independent-ceiling change was not applied.
+
+The canonical Kamino flash-fee calculation, fee-exclusive per-protocol price-impact math, and separation of base fee / priority fee / Jito tip were revalidated. No additional production formula defect was confirmed in this pass. See `reports/ECONOMIC_COST_AUDIT_2026-11-27.md` for source links, formulas, test evidence, and limits.
