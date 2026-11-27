@@ -1,4 +1,4 @@
-# Master Task Register
+﻿# Master Task Register
 
 This register is the single authoritative ledger for engineering task tracking, execution status, and verification evidence across all roadmap phases.
 
@@ -675,6 +675,24 @@ KNOWN_LIMITATIONS: Verification host is Windows with Rust 1.99.1; Linux CI remai
 OPEN_QUESTIONS: None for this scoped route/funding contract.
 REMAINING_RISKS: GitHub CI and Linux build must pass before merge; no live execution authorization or profitability claim is implied.
 NEXT_ACTION: PR #203 is open with all required checks passing; human review and merge remain operator actions.
+```markdown
+TASK_ID: TASK-ECON-2026-11-27-001
+PHASE: Phase 7 — Protocol Mathematics and Quote Correctness / Phase 9 — Canonical Economic Engine
+PRIORITY: P1
+STATUS: VERIFIED
+OBJECTIVE: Revalidate CPMM price impact, protocol swap-fee rounding, Kamino flash-loan premium, Solana base/priority fees, Jito tip, and canonical net-profit accounting against official sources and active call paths.
+FILES: crates/arb-dex/src/engines/raydium_cpmm.rs, reports/ECONOMIC_COST_AUDIT_2026-11-27.md, docs/active/CURRENT_STATUS.md, docs/active/OPEN_ISSUES.md
+FUNCTIONS: RaydiumCpmmQuoteEngine::quote_exact_in, RaydiumCpmmQuoteEngine::quote_exact_out, cpmm_price_impact_bps, calculate_kamino_flash_fee, AdaptiveBidder::plan_with_context, Supervisor economic opportunity evaluation
+CURRENT_BEHAVIOR: CPMM input creator fees use the official combined-rate ceiling and proportional split; curve impact excludes fees; flash/base/priority/Jito costs are separately represented.
+ROOT_CAUSE: No production formula defect was confirmed in the canonical path. The review found a documentation ambiguity around CPMM creator fee rounding that warranted a source-pinned regression test.
+REQUIRED_CHANGE: Preserve the verified formulas; add regression tests for CPMM fee split, exact-out inverse, round-trip, and fee-exclusive price impact; document the economic audit and legacy-path reachability.
+TEST_PLAN: cargo fmt --all -- --check; cargo test -p arb-math -p arb-dex; cargo clippy -p arb-math -p arb-dex --all-targets -- -D warnings.
+ACCEPTANCE_CRITERIA: Official formula parity pinned by tests; all targeted math/DEX tests pass; no fee double-counting; no `.env` or live-execution changes; all work remains on a new feature branch rebased on current main.
+ACTUAL_RESULT: Two Raydium CPMM official-fee-rounding parity tests pass; All 1,258 tests across `arb-math`, `arb-dex`, `arb-tx`, `arb-land`, and `arb-bot` passed (0 failures; 5 live-RPC tests ignored); `cargo fmt --all -- --check` and Clippy for `arb-math`/`arb-dex` passed. Clippy for `arb-tx`/`arb-land`/`arb-bot` did not complete because Cargo waited on a build-directory lock. No production formula rewrite was applied because the existing code matches the official source.
+BRANCH: fix/economic-accounting-audit-20261127`r`nBASE_COMMIT: 6cbc9b6108c27a984a97b2a41265ed707b0c21ce`r`nCOMMIT: 3132e09 (rebased feature commit).
+PR: #204 (open; https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204).
+REMAINING_RISKS: No RPC simulation, Jito ingress canary, mainnet landing, or realized PnL evidence was produced. Legacy Bellman-Ford helper remains disconnected and requires a separate deprecation decision.
+NEXT_TASK: Review PR #204 CI and human review; update branch if needed; do not merge automatically.
 ```
 
 ```markdown
