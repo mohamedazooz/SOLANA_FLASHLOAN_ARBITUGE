@@ -202,3 +202,11 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - Feature commit: `3132e09`.
 - PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
 - No merge was performed; CI/review remain operator actions.
+
+## DLMM pricing parity slice — 2026-11-27
+
+- Fixed exact-out DLMM price impact to exclude trading fees using the same shared checked normalization as exact-in; covered InputOnly and OnlyY fee collection modes.
+- Confirmed cross-pool route composition delegates to `MeteoraDlmmQuoteEngine` / `UniversalQuoteDispatcher`; no parallel protocol math path was introduced.
+- Verification on the source PR: 559 tests passed across `arb-math` and `arb-dex`; format and Clippy (`-D warnings`) passed for both crates.
+- Remaining gates: exact-out is not exposed through the public `QuoteEngine` contract; trusted bank Clock timestamp for dynamic-fee decay is still required. No live execution was enabled.
+- Report: `reports/DLMM_QUOTE_PARITY_AUDIT_2026-11-27.md`.
