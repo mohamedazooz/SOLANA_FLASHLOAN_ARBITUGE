@@ -1680,25 +1680,21 @@ impl MultiDexRegistry {
                     let vault_0 = Pubkey::new_from_array(d[137..169].try_into().unwrap());
                     let vault_1 = Pubkey::new_from_array(d[169..201].try_into().unwrap());
                     let observation_state = Pubkey::new_from_array(d[201..233].try_into().unwrap());
-                    let tick_current = i32::from_le_bytes(d[269..273].try_into().unwrap());
-                    let tick_spacing = u16::from_le_bytes(d[235..237].try_into().unwrap()).max(1);
-                    let (pdas, _) =
-                        raydium_clmm_tick_array_pdas(&p.pool_id, tick_current, tick_spacing);
-                    let prog = Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID)
-                        .unwrap_or_default();
-                    let (bitmap_extension, _) =
-                        Pubkey::find_program_address(&[b"bitmap", p.pool_id.0.as_ref()], &prog);
+                    // Raydium CLMM is telemetry-only until tick arrays and the
+                    // optional bitmap extension are fetched, owner-validated,
+                    // and joined with this pool at one coherent slot. A derived
+                    // PDA alone is not an executable account.
                     Some(arb_types::PoolExecutionAccounts::RaydiumClmm {
                         amm_config,
                         vault_0,
                         vault_1,
                         observation_state,
-                        tick_array_pdas: pdas,
-                        bitmap_extension: Some(bitmap_extension),
+                        tick_array_pdas: Vec::new(),
+                        bitmap_extension: None,
                         pool_mint_0: Pubkey::new_from_array(d[73..105].try_into().unwrap()),
                     })
                 }
-                (DexProtocol::OrcaWhirlpool, Some(d)) if d.len() >= 245 => {
+                (DexProtocol::OrcaWhirlpool, Some(d)) if d.len() >= 245 && clmm.is_some() => {
                     let _whirlpool_config = Pubkey::new_from_array(d[8..40].try_into().unwrap());
                     let token_vault_a = Pubkey::new_from_array(d[133..165].try_into().unwrap());
                     let token_vault_b = Pubkey::new_from_array(d[213..245].try_into().unwrap());

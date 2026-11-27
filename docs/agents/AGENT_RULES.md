@@ -33,3 +33,8 @@ These rules are permanent, mandatory, and binding on every autonomous agent and 
 2. **Clean Baseline Check**: Verify the working tree is clean or securely back up working changes to a dedicated backup branch before switching branches.
 3. **Verified PR Creation**: Open PRs with complete problem description, root cause, implementation details, regression tests, and verification evidence.
 4. **Manual Merge Requirement**: Agents must not merge PRs automatically or push directly to `main`. Merging is an operator action in GitHub.
+
+
+## 3. Protocol Parity Addendum — 2026-11-27
+
+The binding rules in [`PROTOCOL_PARITY_RULES.md`](PROTOCOL_PARITY_RULES.md) apply to all protocol, economics, route, and transaction work. The reference comparison dossier is [`../active/research/REFERENCE_IMPLEMENTATION_COMPARISON_2026-11-27.md`](../active/research/REFERENCE_IMPLEMENTATION_COMPARISON_2026-11-27.md). Agents MUST read both before implementation. Do not weaken route gates, infer production support from mocks/builders, or treat third-party README claims as independent proof. Revalidate all inherited findings against the current branch and preserve pre-existing local changes.

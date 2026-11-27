@@ -72,3 +72,11 @@ All autonomous agents and human developers must follow the specialized role defi
 3. **No Stale Fallbacks**: Fail closed when data feeds fail or lag; never serve cached market data as fresh.
 4. **Zero Floating-Point in Authoritative Decisions**: Use integer/fixed-point arithmetic (`u64`, `u128`, `ruint::Uint<256, 4>`) for token amounts and financial calculations.
 5. **Atomic Flash Loans**: Borrow, all swaps, and repayment must execute in a single atomic transaction. No bundle splitting.
+
+
+## 4. Protocol parity research and binding remediation rules
+
+- [`research/REFERENCE_IMPLEMENTATION_COMPARISON_2026-11-27.md`](research/REFERENCE_IMPLEMENTATION_COMPARISON_2026-11-27.md) — external project comparison, official protocol references, local findings requiring revalidation, remediation order, and acceptance criteria.
+- [`../agents/PROTOCOL_PARITY_RULES.md`](../agents/PROTOCOL_PARITY_RULES.md) — binding rules for protocol parity, economics, account coherence, atomic flash-loan execution, and fix workflow. Every agent must read this before touching the affected code.
+
+- [`research/REMEDIATION_PROGRESS_2026-11-27.md`](research/REMEDIATION_PROGRESS_2026-11-27.md) — verified Kamino Mainnet fixture, current remediation checkpoint, and shared-worktree handoff for the active coding agent.

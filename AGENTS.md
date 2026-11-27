@@ -184,3 +184,8 @@ depend on `arb-math`; never the reverse.
 Conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`),
 focused units, no unrelated churn. PRs: draft by default, HEREDOC body files,
 report the PR URL, ask before monitoring CI.
+
+
+## Additional Mandatory Protocol-Parity Rules (2026-11-27)
+
+Before changing any DEX adapter, quote math, flash-loan path, account resolver, transaction builder, or route eligibility gate, every agent MUST read [`docs/agents/PROTOCOL_PARITY_RULES.md`](docs/agents/PROTOCOL_PARITY_RULES.md) and the evidence dossier [`docs/active/research/REFERENCE_IMPLEMENTATION_COMPARISON_2026-11-27.md`](docs/active/research/REFERENCE_IMPLEMENTATION_COMPARISON_2026-11-27.md). These are binding additions to the mandatory first-read list above. The dossier's code findings are historical observations and must be revalidated against the current branch before patching. Preserve all pre-existing operator working-tree changes; never reset/stash/checkout them without explicit approval.

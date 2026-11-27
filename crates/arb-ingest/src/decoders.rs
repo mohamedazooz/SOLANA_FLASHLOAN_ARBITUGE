@@ -1185,6 +1185,14 @@ pub fn decode_clmm_state(data: &[u8]) -> Option<arb_types::ClmmState> {
         return None;
     }
     let tick_spacing = u16::from_le_bytes(data[41..43].try_into().ok()?);
+    // The canonical engine implements classic Whirlpool fees only. Orca's
+    // fee_tier_index_seed is a little-endian u16 at @43..45; classic pools
+    // have it equal tick_spacing. Adaptive-fee pools need oracle-aware math
+    // and must not enter this quote path until that implementation exists.
+    let fee_tier_index = u16::from_le_bytes(data[43..45].try_into().ok()?);
+    if fee_tier_index != tick_spacing {
+        return None;
+    }
     let fee_rate = u16::from_le_bytes(data[45..47].try_into().ok()?);
     let liquidity = u128::from_le_bytes(data[49..65].try_into().ok()?);
     let sqrt_price = u128::from_le_bytes(data[65..81].try_into().ok()?);
@@ -1953,6 +1961,33 @@ mod tests {
         data
     }
 
+    #[test]
+    fn decode_clmm_state_accepts_classic_fee_tier_seed() {
+        let mut data = vec![0u8; 653];
+        data[41..43].copy_from_slice(&64u16.to_le_bytes());
+        data[43..45].copy_from_slice(&64u16.to_le_bytes());
+        data[45..47].copy_from_slice(&300u16.to_le_bytes());
+        data[49..65].copy_from_slice(&1_000_000u128.to_le_bytes());
+        data[65..81].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        data[81..85].copy_from_slice(&0i32.to_le_bytes());
+
+        let decoded = decode_clmm_state(&data).expect("classic pool must decode");
+        assert_eq!(decoded.tick_spacing, 64);
+        assert_eq!(decoded.fee_rate, 300);
+    }
+
+    #[test]
+    fn decode_clmm_state_rejects_adaptive_fee_tier_seed() {
+        let mut data = vec![0u8; 653];
+        data[41..43].copy_from_slice(&64u16.to_le_bytes());
+        data[43..45].copy_from_slice(&256u16.to_le_bytes());
+        data[45..47].copy_from_slice(&300u16.to_le_bytes());
+        data[49..65].copy_from_slice(&1_000_000u128.to_le_bytes());
+        data[65..81].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        data[81..85].copy_from_slice(&0i32.to_le_bytes());
+
+        assert!(decode_clmm_state(&data).is_none());
+    }
     #[test]
     fn clmm_onchain_mints_orca_interleaved_layout() {
         let ma = Pubkey::new_unique();
