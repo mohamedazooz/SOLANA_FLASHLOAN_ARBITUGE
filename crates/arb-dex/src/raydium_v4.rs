@@ -12,6 +12,28 @@ use std::str::FromStr;
 pub const RAYDIUM_V4_LAYOUT_SIZE: usize = 752;
 pub const OPENBOOK_MARKET_MIN_SIZE: usize = 388;
 
+/// Decode a legacy SPL token vault used by AMM v4. The account owner program
+/// is checked by the hydration caller; this validates the token-account data
+/// itself before its amount can enter the reserve calculation.
+fn decode_v4_vault_amount(data: &[u8], mint: Pubkey, authority: Pubkey) -> Result<u64> {
+    if data.len() != 165
+        || data[0..32] != mint.to_bytes()
+        || data[32..64] != authority.to_bytes()
+        || data[72..76] != [0, 0, 0, 0]
+        || data[108] != 1
+        || data[121..129] != [0, 0, 0, 0, 0, 0, 0, 0]
+        || data[129..133] != [0, 0, 0, 0]
+    {
+        return Err(ArbError::InvalidInput(
+            "Raydium v4 vault mint, authority, or token-account state is invalid".into(),
+        ));
+    }
+    let amount_bytes: [u8; 8] = data[64..72]
+        .try_into()
+        .map_err(|_| ArbError::DeserializationError("invalid Raydium v4 vault amount".into()))?;
+    Ok(u64::from_le_bytes(amount_bytes))
+}
+
 /// Raydium AMM v4 Pool representation.
 #[derive(Debug, Clone)]
 pub struct RaydiumV4Pool {
@@ -90,13 +112,13 @@ impl RaydiumV4Pool {
     /// the protocol's accrued `need_take_pnl`.
     ///
     /// The on-chain program computes `vault.amount - need_take_pnl` with
-    /// `checked_sub` and aborts when the vault cannot cover the accrued PnL.
-    /// Mirroring that here matters: a `saturating_sub` would silently keep a
-    /// previously observed (now stale) reserve and quote against a pool state
-    /// the program would reject. Until at least one vault balance has been
-    /// observed, the caller-provided reserves are left untouched.
+    /// `checked_sub` and aborts when a vault cannot cover accrued PnL. Clear
+    /// old reserves before every refresh so missing or invalid dependencies
+    /// can never leave a stale quoteable state.
     pub fn refresh_effective_reserves(&mut self) -> Result<()> {
-        if self.base_vault_balance == 0 && self.quote_vault_balance == 0 {
+        self.base_reserve = 0;
+        self.quote_reserve = 0;
+        if self.base_vault_balance == 0 || self.quote_vault_balance == 0 {
             return Ok(());
         }
         let eff_base = self
@@ -224,38 +246,29 @@ impl AmmPool for RaydiumV4Pool {
     }
 
     fn required_dependency_pubkeys(&self) -> Vec<Pubkey> {
-        let mut keys = Vec::with_capacity(3);
+        // V2 is the only supported/default swap path in this adapter. The
+        // official 8-account V2 instruction does not consume OpenBook state.
+        let mut keys = Vec::with_capacity(2);
         if self.base_vault != Pubkey::default() {
             keys.push(self.base_vault);
         }
         if self.quote_vault != Pubkey::default() {
             keys.push(self.quote_vault);
         }
-        if self.serum_market != Pubkey::default() {
-            keys.push(self.serum_market);
-        }
         keys
     }
 
     fn apply_dependency_account(&mut self, pubkey: &Pubkey, data: &[u8]) -> Result<bool> {
         if *pubkey == self.base_vault {
-            if data.len() >= 72 {
-                let amount_bytes: [u8; 8] = data[64..72].try_into().map_err(|_| {
-                    ArbError::DeserializationError("invalid base vault data".into())
-                })?;
-                self.base_vault_balance = u64::from_le_bytes(amount_bytes);
-                self.refresh_effective_reserves();
-                return Ok(true);
-            }
+            self.base_vault_balance =
+                decode_v4_vault_amount(data, self.base_mint.0, Self::amm_authority())?;
+            self.refresh_effective_reserves()?;
+            return Ok(true);
         } else if *pubkey == self.quote_vault {
-            if data.len() >= 72 {
-                let amount_bytes: [u8; 8] = data[64..72].try_into().map_err(|_| {
-                    ArbError::DeserializationError("invalid quote vault data".into())
-                })?;
-                self.quote_vault_balance = u64::from_le_bytes(amount_bytes);
-                self.refresh_effective_reserves();
-                return Ok(true);
-            }
+            self.quote_vault_balance =
+                decode_v4_vault_amount(data, self.quote_mint.0, Self::amm_authority())?;
+            self.refresh_effective_reserves()?;
+            return Ok(true);
         } else if *pubkey == self.serum_market {
             if data.len() >= OPENBOOK_MARKET_MIN_SIZE {
                 let nonce_bytes: [u8; 8] = data[45..53]
@@ -309,6 +322,13 @@ impl AmmPool for RaydiumV4Pool {
                 RAYDIUM_V4_LAYOUT_SIZE
             )));
         }
+
+        // A new AmmInfo version invalidates all prior vault observations.
+        // The caller must hydrate both vaults again before this adapter quotes.
+        self.base_vault_balance = 0;
+        self.quote_vault_balance = 0;
+        self.base_reserve = 0;
+        self.quote_reserve = 0;
 
         // Status at 0..8
         if let Ok(status_bytes) = data[0..8].try_into() {
@@ -368,7 +388,7 @@ impl AmmPool for RaydiumV4Pool {
             self.target_orders = Pubkey::new_from_array(bytes);
         }
 
-        self.refresh_effective_reserves();
+        self.refresh_effective_reserves()?;
 
         Ok(())
     }
@@ -471,5 +491,121 @@ mod tests {
         assert_eq!(pool.target_orders, target_orders);
         assert_eq!(pool.need_take_pnl_coin, 500);
         assert_eq!(pool.need_take_pnl_pc, 300);
+    }
+}
+
+#[cfg(test)]
+mod raydium_v4_reserve_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn partial_or_invalid_vault_refresh_clears_quoteable_reserves() {
+        let mut pool = RaydiumV4Pool::new(
+            PoolId::new([3; 32]),
+            MintId::new([1; 32]),
+            MintId::new([2; 32]),
+            Pubkey::new_unique(),
+            Pubkey::new_unique(),
+            Pubkey::default(),
+        );
+        pool.need_take_pnl_coin = 100;
+        pool.need_take_pnl_pc = 200;
+        pool.base_reserve = 900;
+        pool.quote_reserve = 1_800;
+        pool.base_vault_balance = 1_000;
+        pool.quote_vault_balance = 0;
+
+        pool.refresh_effective_reserves().unwrap();
+        assert_eq!(pool.reserves(), (0, 0));
+
+        pool.quote_vault_balance = 2_000;
+        pool.refresh_effective_reserves().unwrap();
+        assert_eq!(pool.reserves(), (900, 1_800));
+
+        pool.base_vault_balance = 99;
+        assert!(pool.refresh_effective_reserves().is_err());
+        assert_eq!(pool.reserves(), (0, 0));
+    }
+
+    #[test]
+    fn new_amm_info_invalidates_old_vault_balances_until_both_are_refreshed() {
+        let base_vault = Pubkey::new_unique();
+        let quote_vault = Pubkey::new_unique();
+        let base_mint = Pubkey::new_unique();
+        let quote_mint = Pubkey::new_unique();
+        let authority = RaydiumV4Pool::amm_authority();
+        let mut pool = RaydiumV4Pool::new(
+            PoolId::new([4; 32]),
+            MintId::new([1; 32]),
+            MintId::new([2; 32]),
+            base_vault,
+            quote_vault,
+            Pubkey::default(),
+        );
+        pool.base_vault_balance = 10_000;
+        pool.quote_vault_balance = 20_000;
+        pool.base_reserve = 10_000;
+        pool.quote_reserve = 20_000;
+
+        let mut amm_info = vec![0u8; RAYDIUM_V4_LAYOUT_SIZE];
+        amm_info[0..8].copy_from_slice(&6u64.to_le_bytes());
+        amm_info[176..184].copy_from_slice(&25u64.to_le_bytes());
+        amm_info[184..192].copy_from_slice(&10_000u64.to_le_bytes());
+        amm_info[192..200].copy_from_slice(&100u64.to_le_bytes());
+        amm_info[200..208].copy_from_slice(&200u64.to_le_bytes());
+        amm_info[336..368].copy_from_slice(base_vault.as_ref());
+        amm_info[368..400].copy_from_slice(quote_vault.as_ref());
+        amm_info[400..432].copy_from_slice(base_mint.as_ref());
+        amm_info[432..464].copy_from_slice(quote_mint.as_ref());
+
+        pool.update_from_account(&amm_info).unwrap();
+        assert_eq!(pool.base_vault_balance, 0);
+        assert_eq!(pool.quote_vault_balance, 0);
+        assert_eq!(pool.reserves(), (0, 0));
+
+        let mut base_account = vec![0u8; 165];
+        base_account[0..32].copy_from_slice(base_mint.as_ref());
+        base_account[32..64].copy_from_slice(authority.as_ref());
+        base_account[64..72].copy_from_slice(&1_000u64.to_le_bytes());
+        base_account[108] = 1;
+        let mut quote_account = vec![0u8; 165];
+        quote_account[0..32].copy_from_slice(quote_mint.as_ref());
+        quote_account[32..64].copy_from_slice(authority.as_ref());
+        quote_account[64..72].copy_from_slice(&2_000u64.to_le_bytes());
+        quote_account[108] = 1;
+
+        assert!(
+            pool.apply_dependency_account(&base_vault, &base_account)
+                .unwrap()
+        );
+        assert_eq!(pool.reserves(), (0, 0));
+        assert!(
+            pool.apply_dependency_account(&quote_vault, &quote_account)
+                .unwrap()
+        );
+        assert_eq!(pool.reserves(), (900, 1_800));
+    }
+}
+
+#[cfg(test)]
+mod raydium_v4_v2_dependency_tests {
+    use super::*;
+
+    #[test]
+    fn v2_dependency_set_excludes_legacy_openbook_market() {
+        let base_vault = Pubkey::new_unique();
+        let quote_vault = Pubkey::new_unique();
+        let legacy_market = Pubkey::new_unique();
+        let pool = RaydiumV4Pool::new(
+            PoolId::new([5; 32]),
+            MintId::new([1; 32]),
+            MintId::new([2; 32]),
+            base_vault,
+            quote_vault,
+            legacy_market,
+        );
+        let dependencies = pool.required_dependency_pubkeys();
+        assert_eq!(dependencies, vec![base_vault, quote_vault]);
+        assert!(!dependencies.contains(&legacy_market));
     }
 }

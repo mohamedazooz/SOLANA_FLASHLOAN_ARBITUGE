@@ -600,6 +600,8 @@ async fn main() -> Result<()> {
         hurdle: u64,
         priority_fee: u64,
         impact_bps: u64,
+        probe_attempts: usize,
+        probe_rejections: usize,
         analytical_seed: Option<u64>,
     }
 
@@ -650,15 +652,32 @@ async fn main() -> Result<()> {
             probes.dedup();
 
             let mut best: Option<RouteEdgeResult> = None;
-            let evaluate = |size: u64| -> Option<RouteEdgeResult> {
+            let mut probe_attempts = 0usize;
+            let mut probe_rejections = 0usize;
+            let mut evaluate = |size: u64| -> Option<RouteEdgeResult> {
+                probe_attempts += 1;
                 if size == 0 || size > max_probe_lamports {
+                    probe_rejections += 1;
                     return None;
                 }
-                let q1 = quote_via_dispatcher(pool_a, size, a_to_b_1).ok()?;
+                let q1 = match quote_via_dispatcher(pool_a, size, a_to_b_1) {
+                    Ok(quote) => quote,
+                    Err(_) => {
+                        probe_rejections += 1;
+                        return None;
+                    }
+                };
                 if q1.amount_out_raw == 0 {
+                    probe_rejections += 1;
                     return None;
                 }
-                let q2 = quote_via_dispatcher(pool_b, q1.amount_out_raw, a_to_b_2).ok()?;
+                let q2 = match quote_via_dispatcher(pool_b, q1.amount_out_raw, a_to_b_2) {
+                    Ok(quote) => quote,
+                    Err(_) => {
+                        probe_rejections += 1;
+                        return None;
+                    }
+                };
                 let back = q2.amount_out_raw;
                 let gross = i128::from(back) - i128::from(size);
                 let retained_1 = 10_000u64.saturating_sub(u64::from(q1.price_impact.0));
@@ -681,8 +700,14 @@ async fn main() -> Result<()> {
                 // A fee-calculation error or signed-PnL overflow invalidates this
                 // candidate. Never turn either error into a fabricated maximum fee
                 // or a synthetic i128::MIN loss that can contaminate ranking.
-                let flash_fee = calculate_flash_fee_raw(size, sf).ok()?;
-                let net = arb_math::economic::calculate_net_profit_raw_signed(
+                let flash_fee = match calculate_flash_fee_raw(size, sf) {
+                    Ok(fee) => fee,
+                    Err(_) => {
+                        probe_rejections += 1;
+                        return None;
+                    }
+                };
+                let net = match arb_math::economic::calculate_net_profit_raw_signed(
                     back,
                     size,
                     flash_fee,
@@ -695,9 +720,17 @@ async fn main() -> Result<()> {
                     Lamports(tip_lamports),
                     1,
                     1,
-                )
-                .ok()?;
-                let costs = gross.checked_sub(net)?;
+                ) {
+                    Ok(net) => net,
+                    Err(_) => {
+                        probe_rejections += 1;
+                        return None;
+                    }
+                };
+                let Some(costs) = gross.checked_sub(net) else {
+                    probe_rejections += 1;
+                    return None;
+                };
                 let edge_bps = net as f64 / size as f64 * 10_000.0;
                 let hurdle = minimum_net_profit_hurdle_lamports(
                     Lamports(size),
@@ -715,6 +748,8 @@ async fn main() -> Result<()> {
                     hurdle,
                     priority_fee,
                     impact_bps: route_impact_bps,
+                    probe_attempts: 0,
+                    probe_rejections: 0,
                     analytical_seed,
                 })
             };
@@ -731,8 +766,6 @@ async fn main() -> Result<()> {
 
             // The closed-form CPMM result is not accepted as the optimum. Refine
             // around the best exact-quote candidate in four bounded scales.
-            // This preserves protocol-specific fees/rounding and catches the
-            // optimum between the coarse ladder's six original points.
             if pool_a.kind == PoolKind::Cpmm && pool_b.kind == PoolKind::Cpmm {
                 for round in 0..4u32 {
                     let Some(center) = best.as_ref().map(|candidate| candidate.size) else {
@@ -758,14 +791,20 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            if let Some(candidate) = best {
+            drop(evaluate);
+            if let Some(mut candidate) = best {
+                candidate.probe_attempts = probe_attempts;
+                candidate.probe_rejections = probe_rejections;
                 results_summary.push(candidate);
+            } else {
+                warn!(
+                    "Route {} produced no valid exact-quote candidate: probes={}, rejected={}",
+                    name, probe_attempts, probe_rejections
+                );
             }
         }
 
-        // Maximize absolute net PnL under the configured cap; edge bps is diagnostic only.
         results_summary.sort_by_key(|result| std::cmp::Reverse(result.net));
-
         info!("\n================================================================================");
         info!(
             "📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, PROTOCOL-NATIVE EXACT QUOTES; bounded size refinement)"
@@ -773,11 +812,13 @@ async fn main() -> Result<()> {
         info!("================================================================================");
         for res in &results_summary {
             info!(
-                "\n💠 EDGE [{}]\n   best exact-quote probe size = {:.6} SOL (analytical CPMM seed, heuristic only = {:?})\n   curve impact = {} bps\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
+                "\n💠 EDGE [{}]\n   best exact-quote probe size = {:.6} SOL (analytical CPMM seed, heuristic only = {:?})\n   quote probes = {} attempted / {} rejected\n   curve impact = {} bps\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
                 res.name,
                 res.size as f64 / 1e9,
                 res.analytical_seed
                     .map(|seed| format!("{:.6} SOL", seed as f64 / 1e9)),
+                res.probe_attempts,
+                res.probe_rejections,
                 res.impact_bps,
                 res.gross,
                 res.costs,

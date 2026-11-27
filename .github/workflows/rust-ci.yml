@@ -11,7 +11,8 @@ on:
       - develop
   # Weekly re-scan: RustSec advisories appear without any repo push, so
   # push-triggered cargo-deny alone lets vulnerabilities accumulate silently.
-  # Scheduled runs only execute the two security jobs.
+  # Scheduled runs execute the advisory scan; secret scanning runs on PRs,
+  # pushes, and explicitly selected workflow_dispatch refs.
   schedule:
     - cron: "0 4 * * 1"
   workflow_dispatch:
@@ -122,6 +123,7 @@ jobs:
 
   secrets:
     name: Secret scanning (gitleaks)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -131,13 +133,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: gitleaks (full history, policy .gitleaks.toml)
+      - name: gitleaks (PR/push history, policy .gitleaks.toml)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
-        # v2 exits non-zero on any finding; the repo policy file keeps all
-        # default rules active and allowlists only verified false positives.
+        # The action scopes pull_request/push scans to the triggering commit range.
+
+      - name: gitleaks (manual dispatch, selected ref only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: docker://ghcr.io/gitleaks/gitleaks:v8.24.3
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /github/workspace
+        with:
+          # Do not use the default --all refs scan on workflow_dispatch: the
+          # checkout fetches every remote branch, which would make unrelated
+          # draft branches fail this run. Scan this ref against the base branch.
+          args: >-
+            git
+            --config .gitleaks.toml
+            --redact
+            --exit-code 2
+            --report-format sarif
+            --report-path gitleaks-results.sarif
+            --log-opts=origin/main^..HEAD
+            .
 
   web:
     name: Web app build (React + Vite)

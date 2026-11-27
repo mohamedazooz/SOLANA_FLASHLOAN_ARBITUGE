@@ -2537,6 +2537,20 @@ impl MultiDexRegistry {
                 continue;
             };
             let token_programs = [base_token_program, quote_token_program];
+            if p.protocol == DexProtocol::RaydiumV4 {
+                let Some(accounting) =
+                    pool_bytes.and_then(crate::decoders::decode_raydium_v4_pool_accounting)
+                else {
+                    continue;
+                };
+                if token_programs != [TokenProgramKind::SplToken, TokenProgramKind::SplToken]
+                    || verified_decimals_a != accounting.coin_decimals
+                    || verified_decimals_b != accounting.pc_decimals
+                {
+                    skip_reasons.insert(p.pool_id, "raydium_v4_mint_program_or_decimals_mismatch");
+                    continue;
+                }
+            }
             let token2022_fee_context = if token_programs.contains(&TokenProgramKind::Token2022) {
                 clock_snapshot.and_then(|(clock_slot, epoch)| {
                     let base_fee = verified_mint_transfer_fee(
@@ -2988,7 +3002,9 @@ impl MultiDexRegistry {
 
             let state_slot = if p.protocol == DexProtocol::RaydiumV4 {
                 let Some(slot) = v4_coherent_slots.get(&p.pool_id).copied() else {
-                    skip_reasons.insert(p.pool_id, "raydium_v4_dependencies_not_same_slot");
+                    skip_reasons
+                        .entry(p.pool_id)
+                        .or_insert("raydium_v4_dependencies_not_same_slot");
                     continue;
                 };
                 Slot(slot)

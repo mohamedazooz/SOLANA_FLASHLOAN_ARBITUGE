@@ -790,14 +790,17 @@ pub async fn fetch_accounts_chunked(
 
 /// Authoritative Raydium AMM v4 state needed for a quote.
 ///
-/// Offsets follow the official AmmInfo repr(C, packed) layout (752 bytes):
-/// status @0, swap fee ratio @176/@184, need_take_pnl_coin/pc @192/@200,
-/// pool_open_time @224, coin/pc vaults @336/@368, coin/pc mints @400/@432.
+/// Offsets follow the official `AmmInfo` repr(C, packed) layout (752 bytes):
+/// status @0, authority_bump @8, coin/pc decimals @32/@40, swap fee ratio @176/@184,
+/// need_take_pnl_coin/pc @192/@200, pool_open_time @224,
+/// coin/pc vaults @336/@368, coin/pc mints @400/@432.
 /// Reserves are vault balances less accrued protocol PnL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RaydiumV4PoolAccounting {
     pub status: u64,
     pub authority_bump: u8,
+    pub coin_decimals: u8,
+    pub pc_decimals: u8,
     pub swap_fee_numerator: u64,
     pub swap_fee_denominator: u64,
     pub need_take_pnl_coin: u64,
@@ -832,7 +835,7 @@ impl RaydiumV4PoolAccounting {
 }
 
 /// Decode a complete Raydium AMM v4 AmmInfo account. Invalid status, fee ratio,
-/// or missing pool identities are rejected before any state can be published.
+/// decimals, or missing pool identities are rejected before any state can be published.
 pub fn decode_raydium_v4_pool_accounting(data: &[u8]) -> Option<RaydiumV4PoolAccounting> {
     const AMM_INFO_LEN: usize = 752;
     if data.len() != AMM_INFO_LEN {
@@ -851,15 +854,23 @@ pub fn decode_raydium_v4_pool_accounting(data: &[u8]) -> Option<RaydiumV4PoolAcc
     if status > 7 {
         return None;
     }
+    let authority_bump = u8::try_from(u64_at(8)?).ok()?;
+    let coin_decimals = u8::try_from(u64_at(32)?)
+        .ok()
+        .filter(|value| *value <= 18)?;
+    let pc_decimals = u8::try_from(u64_at(40)?)
+        .ok()
+        .filter(|value| *value <= 18)?;
     let swap_fee_numerator = u64_at(176)?;
     let swap_fee_denominator = u64_at(184)?;
     if swap_fee_denominator == 0 || swap_fee_numerator >= swap_fee_denominator {
         return None;
     }
-    let authority_bump = u8::try_from(u64_at(8)?).ok()?;
     let accounting = RaydiumV4PoolAccounting {
         status,
         authority_bump,
+        coin_decimals,
+        pc_decimals,
         swap_fee_numerator,
         swap_fee_denominator,
         need_take_pnl_coin: u64_at(192)?,
@@ -2491,6 +2502,8 @@ mod raydium_v4_accounting_tests {
         let mut data = vec![0u8; 752];
         data[0..8].copy_from_slice(&6u64.to_le_bytes()); // SwapOnly
         data[8..16].copy_from_slice(&254u64.to_le_bytes()); // canonical AMM authority bump
+        data[32..40].copy_from_slice(&9u64.to_le_bytes());
+        data[40..48].copy_from_slice(&6u64.to_le_bytes());
         data[176..184].copy_from_slice(&25u64.to_le_bytes());
         data[184..192].copy_from_slice(&10_000u64.to_le_bytes());
         data[192..200].copy_from_slice(&500u64.to_le_bytes());
@@ -2508,6 +2521,8 @@ mod raydium_v4_accounting_tests {
         let state = decode_raydium_v4_pool_accounting(&data).unwrap();
         assert_eq!(state.status, 6);
         assert_eq!(state.authority_bump, 254);
+        assert_eq!(state.coin_decimals, 9);
+        assert_eq!(state.pc_decimals, 6);
         assert_eq!(state.swap_fee_numerator, 25);
         assert_eq!(state.swap_fee_denominator, 10_000);
         assert_eq!(state.need_take_pnl_coin, 500);
@@ -2517,7 +2532,7 @@ mod raydium_v4_accounting_tests {
     }
 
     #[test]
-    fn rejects_truncated_invalid_status_and_invalid_fee_ratio() {
+    fn rejects_truncated_invalid_status_decimals_and_fee_ratio() {
         let data = fixture();
         assert!(decode_raydium_v4_pool_accounting(&data[..751]).is_none());
         let mut oversized = data.clone();
@@ -2530,6 +2545,10 @@ mod raydium_v4_accounting_tests {
 
         let mut invalid = fixture();
         invalid[8..16].copy_from_slice(&256u64.to_le_bytes());
+        assert!(decode_raydium_v4_pool_accounting(&invalid).is_none());
+
+        let mut invalid = fixture();
+        invalid[32..40].copy_from_slice(&19u64.to_le_bytes());
         assert!(decode_raydium_v4_pool_accounting(&invalid).is_none());
 
         let mut invalid = fixture();
