@@ -11,7 +11,7 @@
 - **Route contract:** the active `MarketGraph` scanner/evaluator and Supervisor opportunity gate now admit only closed cycles with 2 or 3 distinct pools. Four-pool cycles are pruned before quote/size evaluation. The discovery-universe `max_pools` setting remains independent.
 - **Funding contract:** `use_flash_loan=false` is rejected by config validation; opportunity processing and transaction assembly fail closed rather than using the old non-flash fallback. Cross-DEX classification/validation also rejects routes above three legs.
 - **Verification:** `cargo test -p arb-config -p arb-engine -p arb-tx --locked` passed; `cargo test -p arb-bot --all-targets --locked` passed (114 library + 1 webhook + 8 main + 2 live-scanner + 4 validator + 8 Supervisor integration + 5 shadow-soak tests); the focused cross-DEX four-pool regression passed (1/1); `cargo check -p arb-bot --locked`, `cargo fmt --all -- --check`, and targeted Clippy for `arb-config`, `arb-engine`, `arb-tx`, and `arb-bot` passed.
-- **Evidence boundary:** local Windows host checks only. Linux CI, RPC `simulateTransaction`, shadow soak, live landing, and realized PnL are not claimed. No live transaction was submitted. PR/CI status is pending.
+- **Evidence boundary:** local Windows host checks only. Linux CI, RPC `simulateTransaction`, shadow soak, live landing, and realized PnL are not claimed. No live transaction was submitted. PR #203 is open against `main`; Rust CI, webhook CI, cargo-deny, gitleaks, Web Build, and Vercel all passed on head `91497b9` (2026-11-27). The PR remains open and is not merged.
 
 ## Merged on 2026-11-26 — PRs #167 and #168
 

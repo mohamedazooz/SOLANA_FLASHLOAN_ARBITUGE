@@ -436,14 +436,14 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **References:** https://github.com/raydium-io/raydium-amm/blob/master/program/src/state.rs and https://github.com/raydium-io/raydium-amm/blob/master/program/src/processor.rs.
 
 
-## Resolved locally on 2026-11-27 ? branch `fix/flashloan-2-3-pool-route-gates-20261127` (PR pending)
+## Resolved in PR #203 on 2026-11-27 ? branch `fix/flashloan-2-3-pool-route-gates-20261127` (open; checks passing)
 
 ### ROUTE-CORR-2026-11-27-N1: Active execution route and funding contract exceeded the operator limits
 
-- **Status:** Fixed locally; PR/CI pending. Not merged.
+- **Status:** Fixed in PR #203; all required checks passed. Not merged.
 - **Observed behavior:** The canonical `MarketGraph` path allowed callers to request up to six hops; config validation accepted up to four; the cross-DEX validator also accepted four legs. The Supervisor still contained a non-flash fallback when `use_flash_loan=false`.
 - **Root cause:** The route scanner, configuration validator, cross-DEX builder, and Supervisor/transaction assembly did not enforce one shared execution contract.
 - **Fix:** Cap the active graph scanner/evaluator at 2..=3 pools; reject non-closed, discontinuous, or pool-reusing opportunities at the Supervisor boundary; reject `max_route_hops > 3` and `use_flash_loan=false`; remove the non-flash transaction-assembly fallback; and align cross-DEX validation/classification plus TOML/JSON-schema documentation.
 - **Regression coverage:** Four-pool graph and cross-protocol cycles are rejected; config tests reject four hops and disabled flash loans; cross-DEX validation rejects four-pool opportunities.
 - **Verification:** `cargo test -p arb-config -p arb-engine -p arb-tx --locked` passed; `cargo test -p arb-bot --all-targets --locked` passed (142 tests across the bot library, binaries, and integration targets); focused cross-DEX four-pool regression passed (1/1); `cargo check -p arb-bot --locked`, `cargo fmt --all -- --check`, targeted Clippy with `-D warnings`, and `git diff --check` passed.
-- **Remaining:** No Linux CI, RPC simulation, shadow soak, mainnet transaction, or realized-PnL evidence. The legacy four-leg builder remains disconnected from the active Supervisor and was not wired into the execution path.
+- **Remaining:** No RPC simulation, shadow soak, mainnet transaction, or realized-PnL evidence. The legacy four-leg builder remains disconnected from the active Supervisor and was not wired into the execution path.
