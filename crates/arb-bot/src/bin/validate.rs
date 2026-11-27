@@ -218,12 +218,45 @@ async fn main() -> Result<()> {
         });
     }
 
+    let app_config = Some(
+        arb_bot::config::load("config/base.toml")
+            .context("failed to load config/base.toml for read-only validation")?,
+    );
+    let configured_max_tip_lamports = app_config
+        .as_ref()
+        .map(|config| config.jito.max_tip_lamports)
+        .unwrap_or(u64::MAX);
+
+    // Resolve one bounded discovery tip estimate before constructing the graph
+    // so the canonical cycle gate and explicit edge report price the same
+    // liability. On oracle failure, use the configured ceiling, never the
+    // protocol minimum; dispatch still reprices from fresh landing data.
+    let (tip_lamports, tip_floor_available) = {
+        let oracle = arb_land::TipOracle::new(5_000);
+        match oracle.refresh().await {
+            Ok(f) => {
+                let bounded_tip = f.p75.0.min(configured_max_tip_lamports);
+                info!(
+                    "Jito tip floor (p75) = {} lamports; bounded estimate = {} lamports",
+                    f.p75.0, bounded_tip
+                );
+                (bounded_tip, true)
+            }
+            Err(e) => {
+                warn!(
+                    "tip floor unavailable ({e}); using configured maximum {configured_max_tip_lamports} lamports for conservative diagnostics"
+                );
+                (configured_max_tip_lamports, false)
+            }
+        }
+    };
+
     let verified = match verified_config::build_verified_inputs_from_snapshots(
         &store,
         &MintId(wsol),
         &reserve,
         &wsol,
-        Lamports(0), // tip not needed for validation
+        Lamports(tip_lamports),
         slot,
         None,
     ) {
@@ -245,11 +278,6 @@ async fn main() -> Result<()> {
     };
 
     // ── 3. Build MarketGraph with the authoritative config ──
-    let app_config = Some(
-        arb_bot::config::load("config/base.toml")
-            .context("failed to load config/base.toml for read-only validation")?,
-    );
-
     // Match the read-only scan size to the same caps used by the running bot.
     // The previous 1..100 SOL stress ladder was unrelated to this wallet's
     // 0.02 SOL / USD caps and could make the diagnostic look artificially bad.
@@ -395,9 +423,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // ── 4. MATH VALIDATION: our cpmm_out vs Jupiter venue quote ──
-    // Pick the live SOL/USDC pool with the largest reserves and compare our
-    // constant-product quote against Jupiter's quote restricted to that venue.
+    // ── 4. MATH VALIDATION: native adapter quote vs Jupiter same-pool quote ──
+    // Pick the live SOL/USDC pool with the largest reserves and compare the
+    // protocol-native quote (including CLMM ticks when applicable) against Jupiter.
     let amount_in = max_probe_lamports;
     let sol_usdc = live_pools
         .iter()
@@ -499,19 +527,6 @@ async fn main() -> Result<()> {
     // ── 5. LIVE EDGE ANALYSIS (both directions) ──
     // The question the whole system exists to answer: after the VERIFIED flash
     // fee + market tip + network/priority fee, is there any edge left?
-    let (tip_lamports, tip_floor_available) = {
-        let oracle = arb_land::TipOracle::new(5_000);
-        match oracle.refresh().await {
-            Ok(f) => {
-                info!("Jito tip floor (p75) = {} lamports", f.p75.0);
-                (f.p75.0, true)
-            }
-            Err(e) => {
-                warn!("tip floor unavailable ({e}); using protocol minimum only for diagnostics");
-                (arb_land::MIN_JITO_TIP_LAMPORTS, false)
-            }
-        }
-    };
     // Solana base fee is charged per transaction signature. This route builder
     // uses one payer signature and no signature precompiles.
     let base_fee = arb_constants::SOLANA_BASE_FEE_LAMPORTS;
@@ -529,8 +544,27 @@ async fn main() -> Result<()> {
             || (p.base_mint.0 == usdc && p.quote_mint.0 == wsol)
     };
 
-    let sol_usdc_pools: Vec<&arb_types::PoolState> =
-        live_pools.iter().filter(|p| is_sol_usdc(p)).collect();
+    // This reserve-based cross-check uses the constant-product formula only.
+    // Never feed Orca/CLMM or Meteora/DLMM reserves into cpmm_out: those curves
+    // require their native tick/bin quote engines. The exact MarketGraph scan
+    // above is authoritative for every supported venue.
+    let all_sol_usdc_pool_count = live_pools.iter().filter(|p| is_sol_usdc(p)).count();
+    let sol_usdc_pools: Vec<&arb_types::PoolState> = live_pools
+        .iter()
+        .filter(|p| {
+            is_sol_usdc(p)
+                && p.kind == arb_types::PoolKind::Cpmm
+                && matches!(
+                    p.protocol,
+                    arb_types::DexProtocol::RaydiumV4 | arb_types::DexProtocol::RaydiumCpmm
+                )
+        })
+        .collect();
+    info!(
+        "CPMM-only reserve cross-check includes {}/{} SOL/USDC pools; CLMM/DLMM and non-Raydium curves excluded",
+        sol_usdc_pools.len(),
+        all_sol_usdc_pool_count
+    );
 
     // Every ordered pair of venues (a: buy SOL -> USDC, b: sell USDC -> SOL),
     // priced with each venue's exact protocol math (CLMM ticks, DLMM bins, CPMM).

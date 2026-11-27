@@ -1,8 +1,10 @@
 //! Verified on-chain economic inputs for the authoritative `EconomicConfig`.
 //!
 //! Every on-chain value is read from Yellowstone account snapshots and carries
-//! provenance + freshness. The Jito cost input is the configured conservative tip
-//! ceiling. Any unverifiable account fails closed; no JSON-RPC fallback is used.
+//! provenance + freshness. The Jito cost input is caller-supplied and must be
+//! bounded by the configured conservative ceiling (fresh p75 for discovery,
+//! configured ceiling on oracle failure). Any unverifiable account fails closed;
+//! no JSON-RPC fallback is used.
 
 use arb_ingest::AccountSnapshotStore;
 use arb_math::economic::EconomicConfig;
@@ -403,6 +405,8 @@ mod tests {
         assert_eq!(inputs.lamports_per_base_raw.value, 1);
         assert_eq!(inputs.lamports_per_base_denom.value, 1);
         assert_eq!(inputs.tip_lamports.value, Lamports(50_000));
+        let economic = inputs.to_economic_config(TokenAmount(10_000), 10);
+        assert_eq!(economic.jito_tip_lamports, Lamports(50_000));
     }
 
     #[test]
