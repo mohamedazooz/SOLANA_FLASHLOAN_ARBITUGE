@@ -1284,10 +1284,12 @@ impl MarketGraph {
                     .as_ref()
                     .is_none_or(|(_, best_gross, _)| gross > *best_gross);
                 if replace {
-                    let mut amounts = Vec::with_capacity(hop_inputs.len() + 1);
-                    amounts.push(size_in);
-                    amounts.extend(hop_inputs.iter().copied());
-                    *best_gross_sample.borrow_mut() = Some((size_in, gross, amounts));
+                    // quote_route_input_ladder already returns [route input,
+                    // hop_1 output, ..., final output]. Do not prepend size_in
+                    // again: the diagnostic dispatcher compares outputs against
+                    // this ladder after skipping its first (input) element.
+                    debug_assert_eq!(hop_inputs.first().copied(), Some(size_in));
+                    *best_gross_sample.borrow_mut() = Some((size_in, gross, hop_inputs.clone()));
                 }
 
                 let impact = route_quote.route_price_impact_bps;
@@ -2768,6 +2770,67 @@ mod tests {
             token_programs: Default::default(),
             token2022_fee_context: None,
             execution_accounts: None,
+        }
+    }
+
+    #[test]
+    fn route_quote_ladder_contains_input_once_then_each_hop_output() {
+        let wsol = MintId(arb_constants::wsol_mint());
+        let intermediate = MintId::new([77; 32]);
+        let mut first_pool = make_pool(71, 1, 2, 1_000_000_000_000, 2_000_000_000_000);
+        first_pool.base_mint = wsol;
+        first_pool.quote_mint = intermediate;
+        let mut second_pool = make_pool(72, 2, 1, 2_000_000_000_000, 1_100_000_000_000);
+        second_pool.base_mint = intermediate;
+        second_pool.quote_mint = wsol;
+
+        let mut graph = MarketGraph::new(vec![wsol]);
+        graph.build_from_pools(&[first_pool, second_pool]);
+        let first = graph
+            .edges_by_from
+            .get(&wsol)
+            .unwrap()
+            .iter()
+            .find(|edge| edge.pool_id == PoolId::new([71; 32]) && edge.to_mint == intermediate)
+            .unwrap();
+        let second = graph
+            .edges_by_from
+            .get(&intermediate)
+            .unwrap()
+            .iter()
+            .find(|edge| edge.pool_id == PoolId::new([72; 32]) && edge.to_mint == wsol)
+            .unwrap();
+
+        let ladder = MarketGraph::quote_route_input_ladder(
+            &[first, second],
+            10_000_000_000,
+            &[None, None],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(ladder.amounts.len(), 3);
+        assert_eq!(ladder.amounts[0], 10_000_000_000);
+        assert!(ladder.amounts[1] > 0);
+        assert!(ladder.amounts[2] > 0);
+
+        let mut diagnostic_pools = vec![first.to_pool_state(), second.to_pool_state()];
+        let requests = vec![
+            HopRequest {
+                pool_id: first.pool_id,
+                mint_in: first.from_mint,
+            },
+            HopRequest {
+                pool_id: second.pool_id,
+                mint_in: second.from_mint,
+            },
+        ];
+        let dispatched = quote_route(&mut diagnostic_pools, &requests, 10_000_000_000).unwrap();
+        assert_eq!(dispatched.amount_in, ladder.amounts[0]);
+        assert_eq!(dispatched.amount_out, *ladder.amounts.last().unwrap());
+        assert_eq!(dispatched.hops.len(), 2);
+        for (hop, expected_output) in dispatched.hops.iter().zip(ladder.amounts.iter().skip(1)) {
+            assert_eq!(hop.amount_out, *expected_output);
         }
     }
 
