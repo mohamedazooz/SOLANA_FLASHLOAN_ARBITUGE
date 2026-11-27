@@ -246,6 +246,12 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
                 "Raydium CPMM fee snapshot is missing or invalid".into(),
             ));
         }
+        if !state.is_active {
+            return Err(ArbError::PoolDisabled(format!(
+                "Raydium CPMM pool {} is disabled",
+                state.pool_id.0
+            )));
+        }
         let cpmm_fees = state.raydium_cpmm_fee.ok_or_else(|| {
             ArbError::IncompleteState("Raydium CPMM exact fee mode is missing".into())
         })?;

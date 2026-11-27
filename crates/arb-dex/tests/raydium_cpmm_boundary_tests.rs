@@ -252,7 +252,13 @@ fn test_cpmm_quote_engine_disabled_pool_fails_closed() {
         Err(ArbError::PoolDisabled(msg)) => {
             assert!(msg.contains("disabled"));
         }
-        other => panic!("expected PoolDisabled, got {:?}", other),
+        other => panic!("expected PoolDisabled for exact-in, got {:?}", other),
+    }
+    match engine.quote_exact_out(&pool, &req) {
+        Err(ArbError::PoolDisabled(msg)) => {
+            assert!(msg.contains("disabled"));
+        }
+        other => panic!("expected PoolDisabled for exact-out, got {:?}", other),
     }
 }
 
