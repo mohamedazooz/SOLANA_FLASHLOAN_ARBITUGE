@@ -24,6 +24,7 @@ fn economic_config() -> EconomicConfig {
     EconomicConfig {
         flash_loan_fee_sf: 0,
         jito_tip_lamports: Lamports::ZERO,
+        priority_fee_micro_lamports: 0,
         base_decimals: 9,
         lamports_to_base_mint_rate: 1,
         lamports_to_base_rate_denom: 1,
@@ -223,10 +224,14 @@ fn orca_clmm_pool(id: u8, a: MintId, b: MintId) -> PoolState {
             tick_arrays: vec![
                 ClmmTickArray {
                     start_tick_index: -88 * 4,
+                    account_pubkey: None,
+                    account_slot: None,
                     ticks: vec![],
                 },
                 ClmmTickArray {
                     start_tick_index: 0,
+                    account_pubkey: None,
+                    account_slot: None,
                     ticks: vec![],
                 },
             ],

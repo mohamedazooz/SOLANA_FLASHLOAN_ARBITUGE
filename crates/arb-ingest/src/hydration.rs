@@ -949,6 +949,8 @@ impl MultiDexRegistry {
             std::collections::HashMap::new();
         let mut clmm_ticks: std::collections::HashMap<PoolId, Vec<arb_types::ClmmTickArray>> =
             std::collections::HashMap::new();
+        let mut clmm_coherent_slots: std::collections::HashMap<PoolId, Slot> =
+            std::collections::HashMap::new();
 
         for p in &self.pools {
             if let Some((_, data)) = pool_data_map.get(&p.pool_id.0) {
@@ -1108,34 +1110,80 @@ impl MultiDexRegistry {
                         if let Some(c) = decode_clmm_state(data) {
                             let (keys, starts) =
                                 clmm_tick_array_pdas(&p.pool_id, c.tick_current, c.tick_spacing);
-                            let mut arrays = Vec::new();
+                            let pool_slot = pool_data_map
+                                .get(&p.pool_id.0)
+                                .map(|(slot, _)| *slot)
+                                .unwrap_or(0);
+                            let expected_owner =
+                                Pubkey::from_str(arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID)
+                                    .unwrap_or_default();
+                            let pool_owner_ok = pool_owner_map
+                                .get(&p.pool_id.0)
+                                .is_some_and(|owner| *owner == expected_owner);
+                            let expected_array_count = keys.len();
+                            let mut arrays = Vec::with_capacity(expected_array_count);
+                            let mut min_slot = pool_slot;
+                            let mut max_slot = pool_slot;
+                            let mut complete = pool_slot > 0
+                                && pool_owner_ok
+                                && !keys.is_empty()
+                                && keys.len() == starts.len();
                             for (key, start_tick) in keys.into_iter().zip(starts) {
-                                if let Some((_, bytes)) = derived_data_map.get(&key) {
-                                    if let Ok(facade) = arb_math::clmm::parse_tick_array_account(
-                                        bytes,
-                                        c.tick_spacing,
-                                    ) {
-                                        if facade.start_tick_index == start_tick {
-                                            arrays.push(arb_types::ClmmTickArray {
-                                                start_tick_index: facade.start_tick_index,
-                                                ticks: facade
-                                                    .ticks
-                                                    .into_iter()
-                                                    .filter(|t| t.initialized)
-                                                    .map(|t| arb_types::ClmmTick {
-                                                        tick_index: t.tick_index,
-                                                        initialized: true,
-                                                        liquidity_net: t.liquidity_net,
-                                                        limit_order_unfilled: t
-                                                            .limit_order_unfilled,
-                                                    })
-                                                    .collect(),
-                                            });
-                                        }
-                                    }
+                                let (Some((array_slot, bytes)), Some(owner)) =
+                                    (derived_data_map.get(&key), derived_owner_map.get(&key))
+                                else {
+                                    complete = false;
+                                    break;
+                                };
+                                if *array_slot == 0
+                                    || *array_slot != pool_slot
+                                    || *owner != expected_owner
+                                {
+                                    complete = false;
+                                    break;
                                 }
+                                min_slot = min_slot.min(*array_slot);
+                                max_slot = max_slot.max(*array_slot);
+                                let Ok(facade) =
+                                    arb_math::clmm::parse_tick_array_account(bytes, c.tick_spacing)
+                                else {
+                                    complete = false;
+                                    break;
+                                };
+                                if facade.start_tick_index != start_tick {
+                                    complete = false;
+                                    break;
+                                }
+                                arrays.push(arb_types::ClmmTickArray {
+                                    start_tick_index: facade.start_tick_index,
+                                    account_pubkey: Some(key.to_bytes()),
+                                    account_slot: Some(*array_slot),
+                                    ticks: facade
+                                        .ticks
+                                        .into_iter()
+                                        .filter(|tick| tick.initialized)
+                                        .map(|tick| arb_types::ClmmTick {
+                                            tick_index: tick.tick_index,
+                                            initialized: true,
+                                            liquidity_net: tick.liquidity_net,
+                                            limit_order_unfilled: tick.limit_order_unfilled,
+                                        })
+                                        .collect(),
+                                });
                             }
-                            clmm_ticks.insert(p.pool_id, arrays);
+                            // Do not mix pool/tick-array states from materially
+                            // different slots or expose partial account windows.
+                            if max_slot.saturating_sub(min_slot) > 2
+                                || arrays.len() != expected_array_count
+                            {
+                                complete = false;
+                            }
+                            if complete {
+                                clmm_coherent_slots.insert(p.pool_id, Slot(pool_slot));
+                                clmm_ticks.insert(p.pool_id, arrays);
+                            } else {
+                                clmm_ticks.insert(p.pool_id, Vec::new());
+                            }
                         }
                     }
                     DexProtocol::RaydiumClmm => {
@@ -1154,6 +1202,8 @@ impl MultiDexRegistry {
                                         if facade.start_tick_index == start_tick {
                                             arrays.push(arb_types::ClmmTickArray {
                                                 start_tick_index: facade.start_tick_index,
+                                                account_pubkey: None,
+                                                account_slot: None,
                                                 ticks: facade
                                                     .ticks
                                                     .into_iter()
@@ -1912,6 +1962,13 @@ impl MultiDexRegistry {
                 let Some(slot) = dlmm_coherent_slots.get(&p.pool_id).copied() else {
                     // Do not publish a DLMM PoolState without a coherent,
                     // owner-verified pool/bitmap/bin-array dependency snapshot.
+                    continue;
+                };
+                slot
+            } else if p.protocol == DexProtocol::OrcaWhirlpool {
+                let Some(slot) = clmm_coherent_slots.get(&p.pool_id).copied() else {
+                    // Whirlpool quotes require the pool and every selected tick
+                    // array from the same RPC context slot.
                     continue;
                 };
                 slot

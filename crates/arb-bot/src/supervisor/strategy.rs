@@ -215,10 +215,29 @@ impl Supervisor {
                 return Ok(());
             }
         };
-        let economic_config = verified.to_economic_config(
+        // The graph's economic gate must use the same live adaptive CU-price
+        // source as opportunity ranking/dispatch. Use the uncapped desired price
+        // here as a conservative upper bound; the per-opportunity path may cap it
+        // by the configured share of gross profit before building the transaction.
+        let recent_landed_cu = self.recent_landed_cu.lock().clone();
+        let fresh_market = {
+            let market = self.recent_priority_market_cu.lock();
+            market
+                .as_ref()
+                .filter(|(_, sampled_at)| {
+                    sampled_at.elapsed() <= std::time::Duration::from_secs(12)
+                })
+                .map(|(samples, _)| samples.clone())
+                .unwrap_or_default()
+        };
+        let desired_cu_price = self
+            .tip_strategy
+            .adaptive_cu_price_with_market(&recent_landed_cu, &fresh_market);
+        let mut economic_config = verified.to_economic_config(
             TokenAmount(self.config.strategy.min_net_profit_abs),
             self.config.strategy.hop_slippage_bps,
         );
+        economic_config.priority_fee_micro_lamports = desired_cu_price;
         {
             let mut graph = self.graph.lock();
             graph.set_economic_config(economic_config);

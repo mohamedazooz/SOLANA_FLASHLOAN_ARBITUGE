@@ -1697,22 +1697,9 @@ mod tests {
         assert!(protocols.contains(&DexProtocol::RaydiumCpmm));
         assert!(protocols.contains(&DexProtocol::OrcaWhirlpool));
         assert!(protocols.contains(&DexProtocol::MeteoraDlmm));
-        // At least one sub-5 bps Orca tier must be present (the low-fee route).
-        let orca_fees: Vec<u16> = reg
-            .pools()
-            .iter()
-            .filter(|p| p.protocol == DexProtocol::OrcaWhirlpool)
-            .map(|p| p.fee_bps)
-            .collect();
-        assert!(orca_fees.iter().any(|f| *f <= 2));
-        // Raydium CPMM 1 bps tier must be present.
-        let cpmm_fees: Vec<u16> = reg
-            .pools()
-            .iter()
-            .filter(|p| p.protocol == DexProtocol::RaydiumCpmm)
-            .map(|p| p.fee_bps)
-            .collect();
-        assert!(cpmm_fees.contains(&1));
+        // The static catalog carries no fee assumptions. Every live fee is
+        // decoded from the corresponding on-chain pool/config during hydration.
+        assert!(reg.pools().iter().all(|pool| pool.fee_bps == 0));
     }
 
     #[test]
