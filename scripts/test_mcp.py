@@ -1,8 +1,10 @@
 import urllib.request
+import os
 import json
 
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjcmVhdGVkQXQiOjE3OTUwOTA3MTE4OTgsImVtYWlsIjoibWVkb19zb2xkcjE1QHlhaG9vLmNvbSIsImFjdGlvbiI6InRva2VuLWFwaSIsImFwaVZlcnNpb24iOiJ2MiIsImlhdCI6MTc5NTA5MDcxMX0.qAcxzbutCvO6J5atOYTUajJkB3tgvSRa9kPWAd-a8q4"
-
+TOKEN = os.environ.get("MCP_TEST_TOKEN", "").strip()
+if not TOKEN:
+    raise SystemExit("Set MCP_TEST_TOKEN to a fresh, scoped test bearer token.")
 def test_mcp(url):
     print(f"\n--- Testing MCP endpoint: {url} ---")
     body = json.dumps({

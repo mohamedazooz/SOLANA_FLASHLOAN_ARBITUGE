@@ -45,12 +45,12 @@ def load_api_key():
                                 return line.split("=", 1)[1].strip().strip('"').strip("'")
             except Exception:
                 pass
-    return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJjcmVhdGVkQXQiOjE3OTUwOTA3MTE4OTgsImVtYWlsIjoibWVkb19zb2xkcjE1QHlhaG9vLmNvbSIsImFjdGlvbiI6InRva2VuLWFwaSIsImFwaVZlcnNpb24iOiJ2MiIsImlhdCI6MTc5NTA5MDcxMX0.qAcxzbutCvO6J5atOYTUajJkB3tgvSRa9kPWAd-a8q4"
-
-
+    return None
 class SolscanSDK:
     def __init__(self, api_key=None, base_url=DEFAULT_API_URL):
         self.api_key = api_key or load_api_key()
+        if not self.api_key:
+            raise RuntimeError("Solscan API key missing; configure SOLSCAN_API_KEY or a local key file.")
         self.base_url = base_url.rstrip("/")
         self.last_req_time = 0.0
 
