@@ -75,3 +75,10 @@ Final local verification: `cargo test -p arb-math -p arb-dex` passed 557 tests (
 - The tests are deterministic local quote tests. They do not prove account hydration, transaction compilation, RPC simulation, Jito ingress acceptance, landing, or realized PnL.
 - `.env`, wallet files, credentials, runtime configuration, and live-execution flags were not modified.
 - No transaction was broadcast and no PR was merged.
+
+## Publication status
+
+- Pushed branch: `fix/economic-accounting-audit-20261127`.
+- Rebased feature commit: `3132e09` on current `main` base `6cbc9b6`.
+- PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
+- No merge was performed; CI and human review remain operator actions.

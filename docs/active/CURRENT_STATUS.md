@@ -195,3 +195,10 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - Feature commit: `3132e09`.
 - PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
 - The initial GitHub API PR creation attempt returned 403; the authenticated local GitHub CLI then created PR #204 successfully. The local fetch was retried and the feature commit was rebased; no conflicts remain.
+
+## Publication status — 2026-11-27
+
+- Branch `fix/economic-accounting-audit-20261127` is pushed and rebased on current `main` commit `6cbc9b6108c27a984a97b2a41265ed707b0c21ce`.
+- Feature commit: `3132e09`.
+- PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
+- No merge was performed; CI/review remain operator actions.
