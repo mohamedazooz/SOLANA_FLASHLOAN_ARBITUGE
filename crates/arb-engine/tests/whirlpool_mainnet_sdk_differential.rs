@@ -274,6 +274,10 @@ fn load_pair(snapshot_path: &Path, quotes_path: &Path) -> (Snapshot, Quotes, Vec
         snap.sdk_core_version, quotes.sdk_core_version,
         "sdk version mismatch"
     );
+    assert_eq!(
+        quotes.sdk_core_version, WHIRLPOOL_CORE_FIXTURE_VERSION,
+        "refresh the lockfile and review fixtures before changing the SDK oracle version"
+    );
 
     // Classic-pool verdict re-derived from the RAW account bytes (fail-closed).
     assert_eq!(
@@ -372,6 +376,10 @@ fn load_pair(snapshot_path: &Path, quotes_path: &Path) -> (Snapshot, Quotes, Vec
 /// Official Whirlpool program id (orca-so/whirlpools, whirlpools-sdk 0.22.0
 /// `public/constants`).
 const WHIRLPOOL_PROGRAM_ID: &str = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc";
+
+/// Pin the fixture oracle to the exact npm package-lock version. A fixture
+/// refresh with a different Orca core must be an explicit reviewable change.
+const WHIRLPOOL_CORE_FIXTURE_VERSION: &str = "3.1.1";
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
