@@ -144,6 +144,10 @@ jobs:
       - name: gitleaks (manual dispatch, selected ref only)
         if: github.event_name == 'workflow_dispatch'
         uses: docker://ghcr.io/gitleaks/gitleaks:v8.24.3
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: safe.directory
+          GIT_CONFIG_VALUE_0: /github/workspace
         with:
           # Do not use the default --all refs scan on workflow_dispatch: the
           # checkout fetches every remote branch, which would make unrelated
