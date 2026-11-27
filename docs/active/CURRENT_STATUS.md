@@ -188,3 +188,10 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - **Evidence:** `cargo test -p arb-dex official_fee_rounding_parity_tests` — 2 passed. Final verification: `cargo fmt --all -- --check` passed; all 1,258 tests across `arb-math`, `arb-dex`, `arb-tx`, `arb-land`, and `arb-bot` passed (0 failures; 5 live-RPC tests ignored). Clippy passed for `arb-math` and `arb-dex`; Clippy for `arb-tx`/`arb-land`/`arb-bot` did not complete because Cargo waited on a build-directory lock.
 - **Limit:** Local tests only; no RPC simulation, Jito ingress canary, landed transaction, or realized PnL claim.
 - **Report:** `reports/ECONOMIC_COST_AUDIT_2026-11-27.md`.
+
+## Publication status — 2026-11-27
+
+- Branch `fix/economic-accounting-audit-20261127` is pushed and rebased on current `main` commit `6cbc9b6108c27a984a97b2a41265ed707b0c21ce`.
+- Feature commit: `3132e09`.
+- PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
+- The initial GitHub API PR creation attempt returned 403; the authenticated local GitHub CLI then created PR #204 successfully. The local fetch was retried and the feature commit was rebased; no conflicts remain.

@@ -100,3 +100,10 @@ GitHub Actions run `45919281241` completed successfully on synthetic merge commi
 - Canonical CPMM/CLMM/DLMM impact, Kamino flash premium, base/priority fees, Jito tip, and net-profit accounting were reviewed. No production formula rewrite was justified in this pass.
 - Final verification: all 1,258 tests across `arb-math`, `arb-dex`, `arb-tx`, `arb-land`, and `arb-bot` passed (0 failures; 5 live-RPC tests ignored); `cargo fmt --all -- --check` and Clippy for `arb-math`/`arb-dex` passed. Clippy for `arb-tx`/`arb-land`/`arb-bot` did not complete because Cargo waited on a build-directory lock. Commit/PR identifiers will be appended after publication.
 - Audit: `reports/ECONOMIC_COST_AUDIT_2026-11-27.md`.
+
+## Publication status — 2026-11-27 (final)
+
+- Branch: `fix/economic-accounting-audit-20261127`, rebased onto `main` at `6cbc9b6108c27a984a97b2a41265ed707b0c21ce`.
+- Feature commit: `3132e09`.
+- PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
+- No merge was performed. CI/review and merge remain operator actions.

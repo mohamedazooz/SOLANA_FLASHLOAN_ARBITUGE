@@ -687,10 +687,10 @@ CURRENT_BEHAVIOR: CPMM input creator fees use the official combined-rate ceiling
 ROOT_CAUSE: No production formula defect was confirmed in the canonical path. The review found a documentation ambiguity around CPMM creator fee rounding that warranted a source-pinned regression test.
 REQUIRED_CHANGE: Preserve the verified formulas; add regression tests for CPMM fee split, exact-out inverse, round-trip, and fee-exclusive price impact; document the economic audit and legacy-path reachability.
 TEST_PLAN: cargo fmt --all -- --check; cargo test -p arb-math -p arb-dex; cargo clippy -p arb-math -p arb-dex --all-targets -- -D warnings.
-ACCEPTANCE_CRITERIA: Official formula parity pinned by tests; all targeted math/DEX tests pass; no fee double-counting; no `.env` or live-execution changes; all work remains on a new feature branch.
+ACCEPTANCE_CRITERIA: Official formula parity pinned by tests; all targeted math/DEX tests pass; no fee double-counting; no `.env` or live-execution changes; all work remains on a new feature branch rebased on current main.
 ACTUAL_RESULT: Two Raydium CPMM official-fee-rounding parity tests pass; All 1,258 tests across `arb-math`, `arb-dex`, `arb-tx`, `arb-land`, and `arb-bot` passed (0 failures; 5 live-RPC tests ignored); `cargo fmt --all -- --check` and Clippy for `arb-math`/`arb-dex` passed. Clippy for `arb-tx`/`arb-land`/`arb-bot` did not complete because Cargo waited on a build-directory lock. No production formula rewrite was applied because the existing code matches the official source.
-COMMIT: Pending feature commit.
-PR: Pending.
+BRANCH: fix/economic-accounting-audit-20261127`r`nBASE_COMMIT: 6cbc9b6108c27a984a97b2a41265ed707b0c21ce`r`nCOMMIT: 3132e09 (rebased feature commit).
+PR: #204 (open; https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204).
 REMAINING_RISKS: No RPC simulation, Jito ingress canary, mainnet landing, or realized PnL evidence was produced. Legacy Bellman-Ford helper remains disconnected and requires a separate deprecation decision.
-NEXT_TASK: Operator review of PR; do not merge automatically.
+NEXT_TASK: Review PR #204 CI and human review; update branch if needed; do not merge automatically.
 ```

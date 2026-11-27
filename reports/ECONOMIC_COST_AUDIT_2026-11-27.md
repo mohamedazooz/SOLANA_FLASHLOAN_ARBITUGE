@@ -1,7 +1,7 @@
 ﻿# Economic Cost & Quote Revalidation — 2026-11-27
 
 **Branch:** `fix/economic-accounting-audit-20261127`
-**Base:** `origin/main` at `3319b7e`
+**Base:** `origin/main` at `6cbc9b6`
 **Scope:** Price impact, protocol swap fees, Kamino flash-loan premium, Solana network fees, Jito tip, and canonical net-profit accounting.
 
 ## Executive result
