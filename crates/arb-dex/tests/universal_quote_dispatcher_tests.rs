@@ -53,6 +53,7 @@ fn create_test_pool(protocol: DexProtocol, is_active: bool) -> (PoolState, MintI
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: None,
         last_update_slot: 200,
         last_update_ms: 1_700_000_000_000,

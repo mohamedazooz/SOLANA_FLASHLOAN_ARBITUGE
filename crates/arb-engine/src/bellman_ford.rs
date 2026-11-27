@@ -22,14 +22,9 @@
 //!   - Product of exchange rates along a cycle > 1  →  negative cycle  →  profit
 //!   - No floating-point threshold magic numbers: the cycle IS the proof
 
-use arb_math::{
-    Leg,
-    cpmm::clamp_at_marginal_ceiling_two_pool,
-    economic::{
-        EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
-        slippage_haircut_min_final,
-    },
-    optimal_four_pool, optimal_three_pool, optimal_two_pool,
+use arb_math::economic::{
+    EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
+    slippage_haircut_min_final,
 };
 use arb_types::{
     DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolId, PoolKind, RouteId, Slot, SwapHop,
@@ -38,8 +33,70 @@ use arb_types::{
 use std::collections::HashMap;
 use tracing::debug;
 
+/// Return the conservative fee-retention multiplier used only by the floating-point
+/// negative-cycle pre-screen. Exact amount sizing and profitability are evaluated
+/// separately with protocol-native integer quotes.
+///
+/// CLMM fee rates are stored in their native millionth denominator; all other
+/// protocols use the exact numerator/denominator carried by the verified snapshot.
+/// Raydium CPMM creator fees are an additional volume fee and may be collected
+/// on either side of the swap, depending on the pool's creator-fee mode.
+fn exact_fee_retention(
+    protocol: DexProtocol,
+    kind: PoolKind,
+    fee_numerator: u64,
+    fee_denominator: u64,
+    clmm_fee_rate: Option<u16>,
+    raydium_cpmm_fee: Option<&arb_types::RaydiumCpmmFeeState>,
+    a_to_b: bool,
+) -> Option<f64> {
+    let (numerator, denominator) = if kind == PoolKind::Clmm {
+        (u64::from(clmm_fee_rate?), 1_000_000u64)
+    } else {
+        (fee_numerator, fee_denominator)
+    };
+    if denominator == 0 || numerator >= denominator {
+        return None;
+    }
+    let trade_retention = 1.0 - numerator as f64 / denominator as f64;
+    if !trade_retention.is_finite() || trade_retention <= 0.0 {
+        return None;
+    }
+
+    if protocol != DexProtocol::RaydiumCpmm {
+        return Some(trade_retention);
+    }
+
+    let fees = raydium_cpmm_fee?;
+    if !fees.is_valid() {
+        return None;
+    }
+    let creator_rate = fees.effective_creator_fee_rate();
+    if creator_rate == 0 {
+        return Some(trade_retention);
+    }
+    let creator_retention = 1.0 - creator_rate as f64 / 1_000_000.0;
+    if creator_retention <= 0.0 {
+        return None;
+    }
+    match fees.creator_fee_on_input(a_to_b)? {
+        // The two input-denominated volume rates are both deducted before
+        // curve math; their exact quote implementation remains authoritative.
+        true => {
+            let combined = numerator.checked_add(creator_rate)?;
+            if combined >= denominator {
+                None
+            } else {
+                Some(1.0 - combined as f64 / denominator as f64)
+            }
+        }
+        // Output-side creator fees compound after the curve output.
+        false => Some(trade_retention * creator_retention),
+    }
+}
+
 /// A directed edge in the exchange-rate graph for Bellman-Ford.
-/// Weight = -ln(rate × gamma) where rate = R_out / R_in and gamma = (10000 - fee_bps) / 10000.
+/// Weight = -ln(rate × exact fee-retention estimate); BPS is metadata only.
 #[derive(Debug, Clone)]
 pub struct BfEdge {
     pub pool_id: PoolId,
@@ -64,26 +121,45 @@ pub struct BfEdge {
     pub damm_v2: Option<arb_types::DammV2State>,
     pub transfer_fee_bps: u16,
     pub token_programs: [arb_types::TokenProgramKind; 2],
+    pub token2022_fee_context: Option<arb_types::Token2022FeeContext>,
     pub execution_accounts: Option<arb_types::PoolExecutionAccounts>,
     pub active_bin_id: Option<i32>,
 }
 
 impl BfEdge {
+    fn fee_retention(&self) -> Option<f64> {
+        exact_fee_retention(
+            self.protocol,
+            self.kind,
+            self.fee_numerator,
+            self.fee_denominator,
+            self.clmm.as_ref().map(|state| state.fee_rate),
+            self.raydium_cpmm_fee.as_ref(),
+            self.from_mint == self.pool_base,
+        )
+    }
+
     pub fn from_pool_state(p: &arb_types::PoolState) -> Self {
-        // Conservative graph metadata must not understate a valid fee. Invalid
-        // ratios receive the maximum fee and are rejected by exact quote validation.
+        // BPS is retained for telemetry and legacy API compatibility only.
+        // The screening weight uses the protocol's native fee precision.
         let fee = p.fee_bps().unwrap_or(10_000);
-        let gamma = if p.fee_denominator > 0 && p.fee_numerator <= p.fee_denominator {
-            (p.fee_denominator - p.fee_numerator) as f64 / p.fee_denominator as f64
-        } else {
-            0.0
-        };
+        let gamma = exact_fee_retention(
+            p.protocol,
+            p.kind,
+            p.fee_numerator,
+            p.fee_denominator,
+            p.clmm.as_ref().map(|state| state.fee_rate),
+            p.raydium_cpmm_fee.as_ref(),
+            true,
+        )
+        .unwrap_or(0.0);
         let rate = if p.reserve_in > 0 {
             p.reserve_out as f64 / p.reserve_in as f64
         } else {
             0.0
         };
-        // weight = -ln(rate × gamma). If rate × gamma > 1, weight is negative (favourable).
+        // This is a candidate-discovery pre-screen only. Every accepted cycle is
+        // sized and gated by protocol-native integer quotes below.
         let rg = (rate * gamma).max(1e-18);
         let weight = -rg.ln();
         let active_bin_id = p.dlmm.as_ref().map(|d| d.active_bin_id);
@@ -108,6 +184,7 @@ impl BfEdge {
             damm_v2: p.damm_v2.clone(),
             transfer_fee_bps: p.transfer_fee_bps,
             token_programs: p.token_programs,
+            token2022_fee_context: p.token2022_fee_context,
             execution_accounts: p.execution_accounts.clone(),
             active_bin_id,
         }
@@ -134,6 +211,7 @@ impl BfEdge {
             damm_v2: self.damm_v2.clone(),
             transfer_fee_bps: self.transfer_fee_bps,
             token_programs: self.token_programs,
+            token2022_fee_context: self.token2022_fee_context,
             execution_accounts: self.execution_accounts.clone(),
             active_bin_id: self.active_bin_id,
         }
@@ -182,29 +260,48 @@ impl BellmanFordEngine {
         let mut node_set = std::collections::HashSet::with_capacity(est_capacity);
 
         for p in pools {
-            if !p.is_active || p.reserve_in == 0 || p.reserve_out == 0 || p.has_risky_token {
+            if !p.is_active
+                || p.reserve_in == 0
+                || p.reserve_out == 0
+                || p.has_risky_token
+                || !crate::pool_token_context_supported(p)
+                || !p.is_fee_valid()
+            {
                 continue;
             }
+            let Some(_forward_gamma) = exact_fee_retention(
+                p.protocol,
+                p.kind,
+                p.fee_numerator,
+                p.fee_denominator,
+                p.clmm.as_ref().map(|state| state.fee_rate),
+                p.raydium_cpmm_fee.as_ref(),
+                true,
+            ) else {
+                continue;
+            };
+            let Some(reverse_gamma) = exact_fee_retention(
+                p.protocol,
+                p.kind,
+                p.fee_numerator,
+                p.fee_denominator,
+                p.clmm.as_ref().map(|state| state.fee_rate),
+                p.raydium_cpmm_fee.as_ref(),
+                false,
+            ) else {
+                continue;
+            };
             // Forward edge: base_mint → quote_mint
             let fwd = BfEdge::from_pool_state(p);
             node_set.insert(fwd.from_mint);
             node_set.insert(fwd.to_mint);
             graph.entry(fwd.from_mint).or_default().push(fwd.clone());
 
-            // Reverse edge: quote_mint → base_mint (swap reserves)
+            // Reverse edge: quote_mint → base_mint (swap reserves). Creator-fee
+            // collection can be side-dependent, so recompute its exact-rate screen.
             let fee = fwd.fee_bps;
-            let gamma = if p.fee_denominator > 0 && p.fee_numerator <= p.fee_denominator {
-                (p.fee_denominator - p.fee_numerator) as f64 / p.fee_denominator as f64
-            } else {
-                0.0
-            };
-            let rev_rate = if p.reserve_out > 0 {
-                p.reserve_in as f64 / p.reserve_out as f64
-            } else {
-                0.0
-            };
-            let rg = (rev_rate * gamma).max(1e-18);
-            let rev_weight = -rg.ln();
+            let rev_rate = p.reserve_in as f64 / p.reserve_out as f64;
+            let rev_weight = -((rev_rate * reverse_gamma).max(1e-18)).ln();
             let rev = BfEdge {
                 pool_id: p.pool_id,
                 protocol: p.protocol,
@@ -226,6 +323,7 @@ impl BellmanFordEngine {
                 damm_v2: p.damm_v2.clone(),
                 transfer_fee_bps: p.transfer_fee_bps,
                 token_programs: [p.token_programs[1], p.token_programs[0]],
+                token2022_fee_context: p.token2022_fee_context,
                 execution_accounts: p.execution_accounts.clone(),
                 active_bin_id: fwd.active_bin_id,
             };
@@ -443,20 +541,18 @@ impl BellmanFordEngine {
         max_trade_size: u64,
         route_counter: u32,
     ) -> Option<ExecutionOpportunity> {
-        let product: f64 = cycle
-            .iter()
-            .map(|e| {
-                let gamma = (10_000u32 - e.fee_bps as u32) as f64 / 10_000.0;
-                let rate = if e.reserve_in > 0 {
-                    e.reserve_out as f64 / e.reserve_in as f64
-                } else {
-                    0.0
-                };
-                (rate * gamma).max(1e-18)
-            })
-            .product();
+        let mut product = 1.0f64;
+        for edge in cycle {
+            let gamma = edge.fee_retention()?;
+            let rate = if edge.reserve_in > 0 {
+                edge.reserve_out as f64 / edge.reserve_in as f64
+            } else {
+                return None;
+            };
+            product *= (rate * gamma).max(1e-18);
+        }
 
-        if product <= 1.0 {
+        if !product.is_finite() || product <= 1.0 {
             return None;
         }
 
@@ -578,246 +674,59 @@ impl BellmanFordEngine {
     }
 }
 
-/// Compute the gross profit for a cycle using the existing optimal sizing math.
-/// For 2-hop cycles: uses optimal_two_pool (closed-form).
-/// For 3-hop: uses optimal_three_pool (closed-form).
-/// For 4+: uses binary search (bisection) — same as the DFS engine.
+/// Optimize one route against the same protocol-native integer quote path used
+/// by the final cycle evaluator. The bounded search is explicit: it reports its
+/// best observed candidate rather than claiming a global proof outside an
+/// exhaustively enumerated raw-unit domain.
 fn compute_cycle_profit(
     path: &[BfEdge],
     max_trade_size: u64,
     flash_loan_fee_sf: u64,
 ) -> (u64, u64) {
-    match path.len() {
-        2 => {
-            let l1 = Leg {
-                r_in: path[0].reserve_in,
-                r_out: path[0].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[0].fee_bps as u128),
-            };
-            let l2 = Leg {
-                r_in: path[1].reserve_in,
-                r_out: path[1].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[1].fee_bps as u128),
-            };
-            if let Some(opt_size) = optimal_two_pool(&l1, &l2) {
-                let size_in = opt_size.min(max_trade_size);
-                if size_in == 0 {
-                    return (0, 0);
-                }
-                // Clamp at marginal degradation ceiling
-                let flash_fee_raw =
-                    calculate_flash_fee_raw(size_in, flash_loan_fee_sf).unwrap_or(0);
-                let flash_fee_bps = if size_in > 0 {
-                    ((flash_fee_raw as u128 * 10_000) / size_in as u128) as u64
-                } else {
-                    0
-                };
-                let clamped_size =
-                    clamp_at_marginal_ceiling_two_pool(size_in, &l1, &l2, flash_fee_bps)
-                        .unwrap_or(size_in);
-                if clamped_size == 0 {
-                    return (0, 0);
-                }
-                let me0 = path[0].to_market_edge();
-                let me1 = path[1].to_market_edge();
-                let out1 = crate::quote_pool(
-                    path[0].kind,
-                    clamped_size as u128,
-                    l1.r_in,
-                    l1.r_out,
-                    l1.gamma,
-                    Some(&me0),
-                );
-                let out2 =
-                    crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, Some(&me1));
-                if out2 > clamped_size as u128 {
-                    (clamped_size, (out2 - clamped_size as u128) as u64)
-                } else {
-                    (0, 0)
-                }
-            } else {
-                (0, 0)
-            }
-        }
-        3 => {
-            let l1 = Leg {
-                r_in: path[0].reserve_in,
-                r_out: path[0].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[0].fee_bps as u128),
-            };
-            let l2 = Leg {
-                r_in: path[1].reserve_in,
-                r_out: path[1].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[1].fee_bps as u128),
-            };
-            let l3 = Leg {
-                r_in: path[2].reserve_in,
-                r_out: path[2].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[2].fee_bps as u128),
-            };
-            if let Some(opt_size) = optimal_three_pool(&l1, &l2, &l3) {
-                let size_in = opt_size.min(max_trade_size);
-                if size_in == 0 {
-                    return (0, 0);
-                }
-                let me0 = path[0].to_market_edge();
-                let me1 = path[1].to_market_edge();
-                let me2 = path[2].to_market_edge();
-                // For 3-hop, use a heuristic clamp: if flash fee > 50% of gross profit, halve
-                let flash_fee_raw =
-                    calculate_flash_fee_raw(size_in, flash_loan_fee_sf).unwrap_or(0);
-                let clamped_size = {
-                    let out1 = crate::quote_pool(
-                        path[0].kind,
-                        size_in as u128,
-                        l1.r_in,
-                        l1.r_out,
-                        l1.gamma,
-                        Some(&me0),
-                    );
-                    let out2 = crate::quote_pool(
-                        path[1].kind,
-                        out1,
-                        l2.r_in,
-                        l2.r_out,
-                        l2.gamma,
-                        Some(&me1),
-                    );
-                    let out3 = crate::quote_pool(
-                        path[2].kind,
-                        out2,
-                        l3.r_in,
-                        l3.r_out,
-                        l3.gamma,
-                        Some(&me2),
-                    );
-                    let gross_profit = if out3 > size_in as u128 {
-                        out3 - size_in as u128
-                    } else {
-                        return (0, 0);
-                    };
-                    if u128::from(flash_fee_raw) * 2 > gross_profit && size_in > 1_000 {
-                        size_in / 2
-                    } else {
-                        size_in
-                    }
-                };
-                if clamped_size == 0 {
-                    return (0, 0);
-                }
-                let out1 = crate::quote_pool(
-                    path[0].kind,
-                    clamped_size as u128,
-                    l1.r_in,
-                    l1.r_out,
-                    l1.gamma,
-                    Some(&me0),
-                );
-                let out2 =
-                    crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, Some(&me1));
-                let out3 =
-                    crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, Some(&me2));
-                if out3 > clamped_size as u128 {
-                    (clamped_size, (out3 - clamped_size as u128) as u64)
-                } else {
-                    (0, 0)
-                }
-            } else {
-                (0, 0)
-            }
-        }
-        4 => {
-            let l1 = Leg {
-                r_in: path[0].reserve_in,
-                r_out: path[0].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[0].fee_bps as u128),
-            };
-            let l2 = Leg {
-                r_in: path[1].reserve_in,
-                r_out: path[1].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[1].fee_bps as u128),
-            };
-            let l3 = Leg {
-                r_in: path[2].reserve_in,
-                r_out: path[2].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[2].fee_bps as u128),
-            };
-            let l4 = Leg {
-                r_in: path[3].reserve_in,
-                r_out: path[3].reserve_out,
-                gamma: 10_000u128.saturating_sub(path[3].fee_bps as u128),
-            };
-            if let Some(opt_size) = optimal_four_pool(&l1, &l2, &l3, &l4) {
-                let size_in = opt_size.min(max_trade_size);
-                if size_in == 0 {
-                    return (0, 0);
-                }
-                let me0 = path[0].to_market_edge();
-                let me1 = path[1].to_market_edge();
-                let me2 = path[2].to_market_edge();
-                let me3 = path[3].to_market_edge();
-                let out1 = crate::quote_pool(
-                    path[0].kind,
-                    size_in as u128,
-                    l1.r_in,
-                    l1.r_out,
-                    l1.gamma,
-                    Some(&me0),
-                );
-                let out2 =
-                    crate::quote_pool(path[1].kind, out1, l2.r_in, l2.r_out, l2.gamma, Some(&me1));
-                let out3 =
-                    crate::quote_pool(path[2].kind, out2, l3.r_in, l3.r_out, l3.gamma, Some(&me2));
-                let out4 =
-                    crate::quote_pool(path[3].kind, out3, l4.r_in, l4.r_out, l4.gamma, Some(&me3));
-                if out4 > size_in as u128 {
-                    (size_in, (out4 - size_in as u128) as u64)
-                } else {
-                    (0, 0)
-                }
-            } else {
-                (0, 0)
-            }
-        }
-        _ => {
-            // 4+ hops: binary search (bisection) — same as arb-engine DFS engine
-            let mut low = 1_000u64;
-            let mut high = max_trade_size;
-            let mut best_size = 0u64;
-            let mut best_profit = 0u64;
-            let mes: Vec<crate::MarketEdge> = path.iter().map(|e| e.to_market_edge()).collect();
+    if path.is_empty() || max_trade_size == 0 {
+        return (0, 0);
+    }
 
-            for _ in 0..16 {
-                let mid = low + (high - low) / 2;
-                let mut curr = mid as u128;
-                for (i, e) in path.iter().enumerate() {
-                    let gamma = 10_000u128.saturating_sub(e.fee_bps as u128);
-                    curr = crate::quote_pool(
-                        e.kind,
-                        curr,
-                        e.reserve_in,
-                        e.reserve_out,
-                        gamma,
-                        Some(&mes[i]),
-                    );
-                }
-                if curr > mid as u128 {
-                    let profit = (curr - mid as u128) as u64;
-                    if profit > best_profit {
-                        best_profit = profit;
-                        best_size = mid;
-                    }
-                    low = mid + 1;
-                } else {
-                    high = mid.saturating_sub(1);
+    let market_edges: Vec<crate::MarketEdge> = path.iter().map(BfEdge::to_market_edge).collect();
+    let best = crate::route_sizing::optimize_bounded_non_monotonic_with_budget(
+        max_trade_size,
+        24,
+        8,
+        10,
+        &[],
+        crate::ROUTE_SIZE_SEARCH_BUDGET,
+        |size| {
+            let mut amount = u128::from(size);
+            for (edge, market_edge) in path.iter().zip(&market_edges) {
+                let quote = crate::quote_pool_detailed(
+                    edge.kind,
+                    amount,
+                    edge.reserve_in,
+                    edge.reserve_out,
+                    10_000,
+                    Some(market_edge),
+                )?;
+                amount = quote.amount_out;
+                if amount == 0 {
+                    return None;
                 }
             }
-            if best_profit == 0 {
-                (0, 0)
-            } else {
-                (best_size, best_profit)
-            }
-        }
+
+            let final_output = u64::try_from(amount).ok()?;
+            let flash_fee = calculate_flash_fee_raw(size, flash_loan_fee_sf).ok()?;
+            let net_score = i128::from(final_output) - i128::from(size) - i128::from(flash_fee);
+            Some((final_output, net_score))
+        },
+    );
+
+    let Some(best) = best.filter(|candidate| candidate.score > 0) else {
+        return (0, 0);
+    };
+    let gross_profit = best.candidate.saturating_sub(best.input);
+    if gross_profit == 0 {
+        (0, 0)
+    } else {
+        (best.input, gross_profit)
     }
 }
 
@@ -865,6 +774,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
         }
     }
@@ -934,5 +844,72 @@ mod tests {
         let edge = BfEdge::from_pool_state(&p);
         // weight = -ln(2.0 × 1.0) = -ln(2) ≈ -0.693
         assert!((edge.weight - (-2.0_f64.ln())).abs() < 0.001);
+    }
+
+    #[test]
+    fn bellman_ford_weight_uses_native_sub_bps_fee_ratio() {
+        let mut pool = make_pool(10, 1, 2, 100, 200, 1);
+        pool.fee_numerator = 50;
+        pool.fee_denominator = 1_000_000;
+
+        let edge = BfEdge::from_pool_state(&pool);
+        let exact = -(2.0f64 * (1.0 - 50.0 / 1_000_000.0)).ln();
+        let rounded_bps = -(2.0f64 * (1.0 - 1.0 / 10_000.0)).ln();
+
+        assert!((edge.weight - exact).abs() < 1e-12);
+        assert!(
+            (edge.weight - rounded_bps).abs() > 1e-6,
+            "BPS ceiling must not replace the native sub-bps fee ratio"
+        );
+    }
+
+    #[test]
+    fn cycle_sizing_uses_protocol_quotes_for_every_candidate_size() {
+        let mut first = make_pool(10, 1, 2, 1_000_000, 1_100_000, 1);
+        let mut second = make_pool(20, 2, 1, 1_000_000, 1_100_000, 1);
+        first.fee_numerator = 50;
+        first.fee_denominator = 1_000_000;
+        second.fee_numerator = 50;
+        second.fee_denominator = 1_000_000;
+
+        let path = [
+            BfEdge::from_pool_state(&first),
+            BfEdge::from_pool_state(&second),
+        ];
+        let (selected_size, selected_profit) = compute_cycle_profit(&path, 64, 0);
+        assert!(selected_size > 0);
+        assert!(selected_profit > 0);
+
+        let market_edges: Vec<_> = path.iter().map(BfEdge::to_market_edge).collect();
+        let selected_score = i128::from(selected_profit);
+        for size in 1..=64u64 {
+            let mut amount = u128::from(size);
+            let mut valid = true;
+            for (edge, market) in path.iter().zip(&market_edges) {
+                match crate::quote_pool_detailed(
+                    edge.kind,
+                    amount,
+                    edge.reserve_in,
+                    edge.reserve_out,
+                    10_000,
+                    Some(market),
+                ) {
+                    Some(quote) => amount = quote.amount_out,
+                    None => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if valid {
+                if let Ok(final_output) = u64::try_from(amount) {
+                    let score = i128::from(final_output) - i128::from(size);
+                    assert!(
+                        selected_score >= score,
+                        "selected exact-quote score {selected_score} was worse than size {size} score {score}"
+                    );
+                }
+            }
+        }
     }
 }

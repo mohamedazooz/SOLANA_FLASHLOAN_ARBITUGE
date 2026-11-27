@@ -39,6 +39,7 @@ fn make_pool(index: usize) -> PoolState {
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [arb_types::TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: None,
         last_update_slot: 100_000 + index as u64,
         last_update_ms: 0,

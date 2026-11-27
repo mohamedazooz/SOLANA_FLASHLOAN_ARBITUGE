@@ -135,17 +135,42 @@ fn compose_route_price_impact(retained_spot_bps: u128, hop_impact: Bps) -> u128 
     (numerator / 10_000).min(10_000)
 }
 
-/// Route edges do not carry verified Token-2022 epoch schedules or
-/// TransferHook account metas. Never price one as a legacy SPL token.
+/// Validate the canonical PoolState Token-2022 context. SPL-only pools need
+/// no context; every Token-2022 side must have a current-epoch, same-context
+/// fee schedule and no unsupported mint extension.
+pub(crate) fn pool_token_context_supported(pool: &PoolState) -> bool {
+    if pool.transfer_fee_bps != 0 || pool.has_risky_token {
+        return false;
+    }
+    if pool.token_programs == [TokenProgramKind::SplToken; 2] {
+        return pool.token2022_fee_context.is_none();
+    }
+    pool.token2022_fee_context
+        .as_ref()
+        .is_some_and(|context| context.is_valid_for(pool.token_programs))
+}
+
+/// MarketEdge token programs are oriented `(from_mint, to_mint)`, whereas the
+/// verified Token-2022 fee context is kept in canonical `(base, quote)` order.
 fn route_token_context_supported(edge: &MarketEdge) -> bool {
-    edge.transfer_fee_bps == 0 && !edge.token_programs.contains(&TokenProgramKind::Token2022)
+    if edge.transfer_fee_bps != 0 {
+        return false;
+    }
+    let canonical_programs = if edge.from_mint == edge.pool_base {
+        edge.token_programs
+    } else {
+        [edge.token_programs[1], edge.token_programs[0]]
+    };
+    if canonical_programs == [TokenProgramKind::SplToken; 2] {
+        return edge.token2022_fee_context.is_none();
+    }
+    edge.token2022_fee_context
+        .as_ref()
+        .is_some_and(|context| context.is_valid_for(canonical_programs))
 }
 
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteComponents> {
-    if edge.protocol != DexProtocol::MeteoraDlmm
-        || edge.transfer_fee_bps != 0
-        || edge.token_programs.contains(&TokenProgramKind::Token2022)
-    {
+    if edge.protocol != DexProtocol::MeteoraDlmm || !route_token_context_supported(edge) {
         return None;
     }
     let dlmm = edge.dlmm.as_ref()?;
@@ -237,19 +262,15 @@ fn quote_pool_with_dlmm_cache(
             // sentinel so the candidate cannot pass the production risk gate.
             if edge.protocol == DexProtocol::RaydiumClmm {
                 let state = edge.clmm.as_ref()?;
+                // Raydium's live AmmConfig + dynamic-fee upper bound is already
+                // preserved in ClmmState::fee_rate at its native 1_000_000
+                // denominator. Never reconstruct it from rounded BPS metadata.
+                let fee_rate = state.fee_rate;
                 if state.liquidity == 0
                     || state.sqrt_price == 0
                     || state.tick_arrays.is_empty()
-                    || gamma > 10_000
+                    || fee_rate == 0
                 {
-                    return None;
-                }
-                let fee_rate = if edge.fee_denominator == 1_000_000 && edge.fee_numerator > 0 {
-                    u16::try_from(edge.fee_numerator).ok()?
-                } else {
-                    u16::try_from(10_000u128.checked_sub(gamma)?.checked_mul(100)?).ok()?
-                };
-                if fee_rate == 0 {
                     return None;
                 }
                 let arrays: Vec<TickArrayFacade> = state
@@ -313,6 +334,19 @@ fn quote_pool_with_dlmm_cache(
             let edge = edge?;
             let amount = u64::try_from(dx).ok()?;
             let a_to_b = edge.pool_base == edge.from_mint;
+            // Cached bin views omit Token-2022 mint schedules. Use the canonical
+            // dispatcher path for those pools so inbound/outbound transfer fees
+            // are deducted exactly once with the active epoch/max-fee context.
+            if edge.token_programs.contains(&TokenProgramKind::Token2022) {
+                let pool = edge.to_pool_state();
+                let quote = crate::adapters::quote_via_dispatcher(&pool, amount, a_to_b).ok()?;
+                return Some(PoolQuote {
+                    amount_out: u128::from(quote.amount_out_raw),
+                    price_impact_bps: quote.price_impact,
+                    discrete_bins_crossed: quote.dlmm_bins_crossed,
+                    clmm_steps_taken: None,
+                });
+            }
             let quote = match dlmm_cache {
                 Some(cache) => {
                     let (pool, bins) = cache.get(&edge.pool_id)?.as_ref()?;
@@ -395,6 +429,8 @@ pub struct MarketEdge {
     pub transfer_fee_bps: u16,
     /// Token programs for (from_mint, to_mint).
     pub token_programs: [TokenProgramKind; 2],
+    /// Active per-mint transfer-fee context in canonical base/quote mint order.
+    pub token2022_fee_context: Option<arb_types::Token2022FeeContext>,
     /// Verified on-chain execution accounts resolved for this pool.
     pub execution_accounts: Option<PoolExecutionAccounts>,
     /// Active bin ID for DLMM pools.
@@ -430,14 +466,20 @@ impl MarketEdge {
             fee_denominator: self.fee_denominator,
             raydium_cpmm_fee: self.raydium_cpmm_fee,
             is_active: true,
-            has_risky_token: self.token_programs.contains(&TokenProgramKind::Token2022),
+            has_risky_token: self.token_programs.contains(&TokenProgramKind::Token2022)
+                && self.token2022_fee_context.is_none(),
             kind: self.kind,
             clmm: self.clmm.clone(),
             dlmm: self.dlmm.clone(),
             pump_fun: self.pump_fun.clone(),
             damm_v2: self.damm_v2.clone(),
             transfer_fee_bps: self.transfer_fee_bps,
-            token_programs: self.token_programs,
+            token_programs: if self.from_mint == self.pool_base {
+                self.token_programs
+            } else {
+                [self.token_programs[1], self.token_programs[0]]
+            },
+            token2022_fee_context: self.token2022_fee_context,
             execution_accounts: self.execution_accounts.clone(),
             last_update_slot: 0,
             last_update_ms: 0,
@@ -678,7 +720,19 @@ pub struct RejectedCycleDiagnostic {
     pub gross_profit_raw: u64,
     /// Amount at each route boundary: borrow input followed by each hop output.
     pub hop_amounts_raw: Vec<u64>,
+    /// Why the canonical dispatcher did not produce matching per-hop fee diagnostics.
+    /// This is diagnostic only and does not alter the optimizer or economic gate.
+    pub quote_dispatch_error: Option<String>,
     pub hops: Vec<RejectedHopDiagnostic>,
+}
+
+#[derive(Debug, Clone)]
+struct GrossProfitableSample {
+    borrow_amount_raw: u64,
+    gross_profit_raw: u64,
+    hop_amounts_raw: Vec<u64>,
+    hops: Vec<RejectedHopDiagnostic>,
+    quote_dispatch_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -847,7 +901,7 @@ pub fn estimate_route_unique_accounts_v1(hops: &[&MarketEdge]) -> usize {
 
 struct RouteOptimizationOutcome {
     opportunity: Option<ExecutionOpportunity>,
-    gross_profitable_sample: Option<(u64, u64, Vec<u64>, Vec<RejectedHopDiagnostic>)>,
+    gross_profitable_sample: Option<GrossProfitableSample>,
     had_valid_quote: bool,
 }
 
@@ -1198,8 +1252,7 @@ impl MarketGraph {
             }
         }
         boundary_seeds = arb_math::dlmm::dlmm_breakpoint_seed_sizes(&boundary_seeds, 1, upper, 48);
-        let best_gross_sample =
-            std::cell::RefCell::new(None::<(u64, u64, Vec<u64>, Vec<RejectedHopDiagnostic>)>);
+        let best_gross_sample = std::cell::RefCell::new(None::<(u64, u64, Vec<u64>)>);
         let had_valid_quote = std::cell::Cell::new(false);
         let result = route_sizing::optimize_bounded_non_monotonic_with_budget(
             upper,
@@ -1229,59 +1282,12 @@ impl MarketGraph {
                 let replace = best_gross_sample
                     .borrow()
                     .as_ref()
-                    .is_none_or(|(_, best, _, _)| gross > *best);
+                    .is_none_or(|(_, best_gross, _)| gross > *best_gross);
                 if replace {
                     let mut amounts = Vec::with_capacity(hop_inputs.len() + 1);
                     amounts.push(size_in);
                     amounts.extend(hop_inputs.iter().copied());
-
-                    // Ask the canonical dispatcher for fee components on the same
-                    // immutable route snapshot. Only attach fee values if every hop
-                    // output and the final route output exactly match the optimizer.
-                    let mut diagnostic_pools: Vec<PoolState> =
-                        edges.iter().map(|edge| edge.to_pool_state()).collect();
-                    let requests: Vec<HopRequest> = edges
-                        .iter()
-                        .map(|edge| HopRequest {
-                            pool_id: edge.pool_id,
-                            mint_in: edge.from_mint,
-                        })
-                        .collect();
-                    let dispatched = quote_route(&mut diagnostic_pools, &requests, size_in).ok();
-                    let fee_quotes_match = dispatched.as_ref().is_some_and(|quote| {
-                        quote.amount_out == *hop_inputs.last().unwrap_or(&0)
-                            && quote.hops.len() == edges.len()
-                            && quote
-                                .hops
-                                .iter()
-                                .zip(hop_inputs.iter())
-                                .all(|(hop, output)| hop.amount_out == *output)
-                    });
-                    let fee_diagnostics: Vec<RejectedHopDiagnostic> = edges
-                        .iter()
-                        .enumerate()
-                        .map(|(index, edge)| {
-                            let quote = fee_quotes_match
-                                .then(|| {
-                                    dispatched.as_ref().and_then(|route| route.hops.get(index))
-                                })
-                                .flatten();
-                            RejectedHopDiagnostic {
-                                pool_id: edge.pool_id,
-                                protocol: edge.protocol,
-                                kind: edge.kind,
-                                from_mint: edge.from_mint,
-                                to_mint: edge.to_mint,
-                                fee_bps: edge.fee_bps,
-                                amount_in_raw: quote.map(|hop| hop.amount_in),
-                                amount_out_raw: quote.map(|hop| hop.amount_out),
-                                dex_fee_paid_raw: quote.map(|hop| hop.fee_paid),
-                                transfer_fee_paid_raw: quote.map(|hop| hop.transfer_fee_paid),
-                            }
-                        })
-                        .collect();
-                    *best_gross_sample.borrow_mut() =
-                        Some((size_in, gross, amounts, fee_diagnostics));
+                    *best_gross_sample.borrow_mut() = Some((size_in, gross, amounts));
                 }
 
                 let impact = route_quote.route_price_impact_bps;
@@ -1329,9 +1335,95 @@ impl MarketGraph {
             debug_assert_eq!(result.score, i128::from(result.candidate.net_profit.0));
             result.candidate
         });
+        // Run the diagnostic dispatcher once, after sizing has selected its
+        // best gross-positive sample. Never add dispatcher work to each sizing
+        // evaluation, and never use its result to change route eligibility.
+        let gross_profitable_sample = best_gross_sample
+            .into_inner()
+            .map(|(borrow_amount_raw, gross_profit_raw, hop_amounts_raw)| {
+                let mut diagnostic_pools: Vec<PoolState> =
+                    edges.iter().map(|edge| edge.to_pool_state()).collect();
+                let requests: Vec<HopRequest> = edges
+                    .iter()
+                    .map(|edge| HopRequest {
+                        pool_id: edge.pool_id,
+                        mint_in: edge.from_mint,
+                    })
+                    .collect();
+                let (dispatched, dispatch_error) =
+                    match quote_route(&mut diagnostic_pools, &requests, borrow_amount_raw) {
+                        Ok(quote) => (Some(quote), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    };
+                let expected_final = hop_amounts_raw.last().copied().unwrap_or_default();
+                let fee_quotes_match = dispatched.as_ref().is_some_and(|quote| {
+                    quote.amount_in == borrow_amount_raw
+                        && quote.amount_out == expected_final
+                        && quote.hops.len() == edges.len()
+                        && quote
+                            .hops
+                            .iter()
+                            .zip(hop_amounts_raw.iter().skip(1))
+                            .all(|(hop, output)| hop.amount_out == *output)
+                });
+                let dispatch_error = dispatch_error.or_else(|| {
+                    let quote = dispatched.as_ref()?;
+                    if fee_quotes_match {
+                        return None;
+                    }
+                    let first_hop_mismatch = quote
+                        .hops
+                        .iter()
+                        .zip(hop_amounts_raw.iter().skip(1))
+                        .position(|(hop, output)| hop.amount_out != *output)
+                        .map(|index| {
+                            format!(
+                                "index={index}, expected={}, actual={}",
+                                hop_amounts_raw[index + 1],
+                                quote.hops[index].amount_out
+                            )
+                        })
+                        .unwrap_or_else(|| "none".to_owned());
+                    Some(format!(
+                        "quote_output_mismatch: input_expected={borrow_amount_raw}, input_actual={}, route_out_expected={expected_final}, route_out_actual={}, hop_count_expected={}, hop_count_actual={}, first_hop_mismatch={first_hop_mismatch}",
+                        quote.amount_in,
+                        quote.amount_out,
+                        edges.len(),
+                        quote.hops.len()
+                    ))
+                });
+                let hops = edges
+                    .iter()
+                    .enumerate()
+                    .map(|(index, edge)| {
+                        let quote = fee_quotes_match
+                            .then(|| dispatched.as_ref().and_then(|route| route.hops.get(index)))
+                            .flatten();
+                        RejectedHopDiagnostic {
+                            pool_id: edge.pool_id,
+                            protocol: edge.protocol,
+                            kind: edge.kind,
+                            from_mint: edge.from_mint,
+                            to_mint: edge.to_mint,
+                            fee_bps: edge.fee_bps,
+                            amount_in_raw: quote.map(|hop| hop.amount_in),
+                            amount_out_raw: quote.map(|hop| hop.amount_out),
+                            dex_fee_paid_raw: quote.map(|hop| hop.fee_paid),
+                            transfer_fee_paid_raw: quote.map(|hop| hop.transfer_fee_paid),
+                        }
+                    })
+                    .collect();
+                GrossProfitableSample {
+                    borrow_amount_raw,
+                    gross_profit_raw,
+                    hop_amounts_raw,
+                    hops,
+                    quote_dispatch_error: dispatch_error,
+                }
+            });
         Some(RouteOptimizationOutcome {
             opportunity,
-            gross_profitable_sample: best_gross_sample.borrow().clone(),
+            gross_profitable_sample,
             had_valid_quote: had_valid_quote.get(),
         })
     }
@@ -1541,6 +1633,10 @@ impl MarketGraph {
                 stats.excluded_unmodeled_transfer_fee += 1;
                 continue;
             }
+            if !pool_token_context_supported(p) {
+                stats.excluded_risky_token += 1;
+                continue;
+            }
             if !p.is_fee_valid() {
                 stats.excluded_invalid_fee += 1;
                 continue;
@@ -1571,6 +1667,7 @@ impl MarketGraph {
                     damm_v2: p.damm_v2.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
                     token_programs: p.token_programs,
+                    token2022_fee_context: p.token2022_fee_context,
                     execution_accounts: p.execution_accounts.clone(),
                     active_bin_id: p.dlmm.as_ref().map(|d| d.active_bin_id),
                 });
@@ -1597,6 +1694,7 @@ impl MarketGraph {
                     damm_v2: p.damm_v2.clone(),
                     transfer_fee_bps: p.transfer_fee_bps,
                     token_programs: [p.token_programs[1], p.token_programs[0]],
+                    token2022_fee_context: p.token2022_fee_context,
                     execution_accounts: p.execution_accounts.clone(),
                     active_bin_id: p.dlmm.as_ref().map(|d| d.active_bin_id),
                 });
@@ -1882,18 +1980,20 @@ impl MarketGraph {
                     }
                     if let Some(opportunity) = outcome.opportunity {
                         results.push(opportunity);
-                    } else if let Some((borrow, gross, hop_amounts, fee_diagnostics)) = gross_sample
-                    {
+                    } else if let Some(sample) = gross_sample {
                         stats.gate_rejected += 1;
                         if stats.rejected_cycles.len() < 32 {
                             stats.rejected_cycles.push(RejectedCycleDiagnostic {
                                 route_id: route_id.0,
                                 base_mint: base_anchor,
-                                borrow_amount_raw: borrow,
-                                expected_final_amount_raw: borrow.saturating_add(gross),
-                                gross_profit_raw: gross,
-                                hop_amounts_raw: hop_amounts,
-                                hops: fee_diagnostics,
+                                borrow_amount_raw: sample.borrow_amount_raw,
+                                expected_final_amount_raw: sample
+                                    .borrow_amount_raw
+                                    .saturating_add(sample.gross_profit_raw),
+                                gross_profit_raw: sample.gross_profit_raw,
+                                hop_amounts_raw: sample.hop_amounts_raw,
+                                quote_dispatch_error: sample.quote_dispatch_error,
+                                hops: sample.hops,
                             });
                         }
                     } else if outcome.had_valid_quote {
@@ -2014,8 +2114,8 @@ mod tests {
         let quote = MintId::new([3; 32]);
         MarketEdge {
             pool_id: PoolId::new([1; 32]),
-            protocol: DexProtocol::RaydiumClmm,
-            kind: PoolKind::Clmm,
+            protocol: DexProtocol::RaydiumV4,
+            kind: PoolKind::Cpmm,
             from_mint: base,
             to_mint: quote,
             pool_base: base,
@@ -2032,17 +2132,45 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps,
             token_programs,
+            token2022_fee_context: None,
             execution_accounts: None,
             active_bin_id: None,
         }
     }
 
     #[test]
-    fn route_token_context_gate_rejects_token_2022_and_transfer_fees() {
+    fn route_token_context_requires_verified_epoch_fee_schedule() {
         let spl = token_edge([TokenProgramKind::SplToken; 2], 0);
         assert!(route_token_context_supported(&spl));
-        let token_2022 = token_edge([TokenProgramKind::Token2022, TokenProgramKind::SplToken], 0);
+
+        let mut token_2022 =
+            token_edge([TokenProgramKind::Token2022, TokenProgramKind::SplToken], 0);
         assert!(!route_token_context_supported(&token_2022));
+        token_2022.token2022_fee_context = Some(arb_types::Token2022FeeContext {
+            snapshot_slot: 123,
+            epoch: 456,
+            base: Some(arb_types::Token2022TransferFee {
+                basis_points: 125,
+                maximum_fee: 10_000,
+            }),
+            quote: None,
+        });
+        assert!(route_token_context_supported(&token_2022));
+        let quote = quote_pool_detailed(
+            PoolKind::Cpmm,
+            10_000,
+            token_2022.reserve_in,
+            token_2022.reserve_out,
+            10_000,
+            Some(&token_2022),
+        )
+        .expect("graph route must use the verified epoch-aware fee schedule");
+        assert!(quote.amount_out > 0);
+
+        let mut stale = token_2022.clone();
+        stale.token2022_fee_context.as_mut().unwrap().snapshot_slot = 0;
+        assert!(!route_token_context_supported(&stale));
+
         let transfer_fee = token_edge([TokenProgramKind::SplToken; 2], 1);
         assert!(!route_token_context_supported(&transfer_fee));
     }
@@ -2083,6 +2211,7 @@ mod tests {
                 arb_types::TokenProgramKind::SplToken,
                 arb_types::TokenProgramKind::SplToken,
             ],
+            token2022_fee_context: None,
             is_active: true,
             has_risky_token: false,
             slot: Slot(100),
@@ -2353,6 +2482,7 @@ mod tests {
             damm_v2: Some(state),
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: None,
             execution_accounts: Some(PoolExecutionAccounts::MeteoraDammV2 {
                 token_a_mint: mint_a.0,
                 token_b_mint: mint_b.0,
@@ -2402,6 +2532,8 @@ mod tests {
             damm_v2: pool.damm_v2.clone(),
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: pool.token2022_fee_context,
+
             execution_accounts: pool.execution_accounts.clone(),
             active_bin_id: None,
         }
@@ -2536,6 +2668,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 100,
             last_update_ms: 1_700_000_000_000,
@@ -2592,6 +2725,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
             active_bin_id: None,
         };
@@ -2632,6 +2766,7 @@ mod tests {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: Default::default(),
+            token2022_fee_context: None,
             execution_accounts: None,
         }
     }

@@ -953,6 +953,7 @@ impl MeteoraDlmmFreshStatePipeline {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken, TokenProgramKind::SplToken],
+            token2022_fee_context: None,
             execution_accounts: Some(exec),
             last_update_slot: slot,
             last_update_ms: std::time::SystemTime::now()

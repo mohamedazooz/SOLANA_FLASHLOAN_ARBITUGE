@@ -70,6 +70,7 @@ fn phase_c_and_a1_multimint_and_newly_enabled_dexes_enter_market_graph() {
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: Some(PoolExecutionAccounts::PumpSwap {
             global_config: Pubkey::new_unique(),
             pool_base_vault: Pubkey::new_unique(),
@@ -125,6 +126,7 @@ fn phase_c_and_a1_multimint_and_newly_enabled_dexes_enter_market_graph() {
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: Some(PoolExecutionAccounts::RaydiumClmm {
             amm_config: Pubkey::new_unique(),
             vault_0: Pubkey::new_unique(),
@@ -169,6 +171,7 @@ fn phase_c_and_a1_multimint_and_newly_enabled_dexes_enter_market_graph() {
         }),
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: Some(PoolExecutionAccounts::MeteoraDammV2 {
             token_a_mint: meme.0,
             token_b_mint: usdc.0,
@@ -223,6 +226,7 @@ fn phase_b_v1_account_filter_rejects_heavy_3hop_raydium_v4_routes_before_quoting
         damm_v2: None,
         transfer_fee_bps: 0,
         token_programs: [TokenProgramKind::SplToken; 2],
+        token2022_fee_context: None,
         execution_accounts: Some(PoolExecutionAccounts::RaydiumV4 {
             amm_authority: Pubkey::new_unique(),
             open_orders: Pubkey::new_unique(),
@@ -359,6 +363,7 @@ fn phase_e_benchmark_4096_cycle_discovery_under_budget() {
             damm_v2: None,
             transfer_fee_bps: 0,
             token_programs: [TokenProgramKind::SplToken; 2],
+            token2022_fee_context: None,
             execution_accounts: None,
             last_update_slot: 500,
             last_update_ms: 1_700_000_000_000,
