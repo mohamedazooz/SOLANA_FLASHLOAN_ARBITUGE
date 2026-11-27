@@ -410,3 +410,111 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         })
     }
 }
+
+#[cfg(test)]
+mod official_fee_rounding_parity_tests {
+    use super::*;
+    use arb_types::{MintId, PoolId, PoolKind, RaydiumCpmmFeeState, Slot};
+    use solana_pubkey::Pubkey;
+
+    fn pool() -> PoolState {
+        PoolState {
+            pool_id: PoolId::new([9; 32]),
+            protocol: DexProtocol::RaydiumCpmm,
+            slot: Slot(1),
+            write_version: 1,
+            base_mint: MintId(Pubkey::new_from_array([1; 32])),
+            quote_mint: MintId(Pubkey::new_from_array([2; 32])),
+            decimals_a: 6,
+            decimals_b: 6,
+            reserve_in: 1_000_000,
+            reserve_out: 1_000_000,
+            fee_numerator: 2_500,
+            fee_denominator: CPMM_FEE_RATE_DENOMINATOR as u64,
+            raydium_cpmm_fee: Some(RaydiumCpmmFeeState {
+                trade_fee_rate_ppm: 2_500,
+                creator_fee_rate_ppm: 1_000,
+                protocol_fee_rate: 120_000,
+                fund_fee_rate: 80_000,
+                enable_creator_fee: true,
+                creator_fee_on: 0,
+            }),
+            is_active: true,
+            has_risky_token: false,
+            kind: PoolKind::Cpmm,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: None,
+            transfer_fee_bps: 0,
+            token_programs: Default::default(),
+            token2022_fee_context: None,
+            execution_accounts: None,
+            last_update_slot: 1,
+            last_update_ms: 0,
+        }
+    }
+
+    fn request(amount: u64) -> QuoteRequest {
+        let state = pool();
+        QuoteRequest {
+            input_mint: state.base_mint,
+            output_mint: state.quote_mint,
+            amount,
+            slippage_bps: 50,
+            input_transfer_fee_config: None,
+            output_transfer_fee_config: None,
+        }
+    }
+
+    #[test]
+    fn exact_in_matches_official_combined_ceil_then_creator_split() {
+        // Official CP-Swap: ceil(input * (trade + creator) / 1e6),
+        // then floor(total_fee * creator / (trade + creator)).
+        let quote = RaydiumCpmmQuoteEngine::new()
+            .quote_exact_in(&pool(), &request(100_001))
+            .unwrap();
+
+        assert_eq!(quote.fees_breakdown.total_fee, 351);
+        assert_eq!(quote.fees_breakdown.creator_fee, 100);
+        assert_eq!(quote.fees_breakdown.lp_fee, 201);
+        assert_eq!(quote.fees_breakdown.protocol_fee, 30);
+        assert_eq!(quote.fees_breakdown.fund_fee, 20);
+        assert_eq!(quote.transfer_fee_breakdown.input_net_into_pool, 100_001);
+        assert_eq!(
+            quote.transfer_fee_breakdown.output_curve_reserve_debit,
+            90_619
+        );
+        // Curve impact is calculated from 99,650 after input-side fees, not
+        // from gross input (100,001); swap fees are not counted as price impact.
+        assert_eq!(quote.price_impact.0, 907);
+    }
+
+    #[test]
+    fn exact_out_matches_official_pre_fee_inverse_and_round_trips() {
+        let state = pool();
+        let exact_out = RaydiumCpmmQuoteEngine::new()
+            .quote_exact_out(
+                &state,
+                &QuoteRequest {
+                    input_mint: state.base_mint,
+                    output_mint: state.quote_mint,
+                    amount: 1_000,
+                    slippage_bps: 50,
+                    input_transfer_fee_config: None,
+                    output_transfer_fee_config: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(exact_out.amount_in_raw, 1_006);
+        assert_eq!(exact_out.fees_breakdown.total_fee, 4);
+        assert_eq!(exact_out.fees_breakdown.creator_fee, 1);
+        assert_eq!(exact_out.transfer_fee_breakdown.input_net_into_pool, 1_002);
+
+        let exact_in = RaydiumCpmmQuoteEngine::new()
+            .quote_exact_in(&state, &request(exact_out.amount_in_raw))
+            .unwrap();
+        assert_eq!(exact_in.amount_out_raw, 1_000);
+    }
+}
