@@ -652,33 +652,19 @@ impl MultiDexRegistry {
         let mut derived_pubkeys: Vec<Pubkey> = Vec::new();
         for p in &self.pools {
             if let Some((_, data)) = pool_data_map.get(&p.pool_id.0) {
-                match p.protocol {
-                    DexProtocol::MeteoraDlmm => {
-                        if decode_dlmm_state(data).is_some() {
-                            // The extension must be fetched before bin-array
-                            // selection; its bitmap, not a guessed price span,
-                            // determines which arrays actually exist.
-                            let ext = bitmap_extension_pda(&p.pool_id.0);
-                            if !derived_pubkeys.contains(&ext) {
-                                derived_pubkeys.push(ext);
-                            }
-                        }
+                if p.protocol == DexProtocol::MeteoraDlmm && decode_dlmm_state(data).is_some() {
+                    // The extension must be fetched before bin-array
+                    // selection; its bitmap, not a guessed price span,
+                    // determines which arrays actually exist.
+                    let ext = bitmap_extension_pda(&p.pool_id.0);
+                    if !derived_pubkeys.contains(&ext) {
+                        derived_pubkeys.push(ext);
                     }
-                    DexProtocol::OrcaWhirlpool => {
-                        if let Some(c) = decode_clmm_state(data) {
-                            let (keys, _) =
-                                clmm_tick_array_pdas(&p.pool_id, c.tick_current, c.tick_spacing);
-                            for key in keys {
-                                if !derived_pubkeys.contains(&key) {
-                                    derived_pubkeys.push(key);
-                                }
-                            }
-                        }
-                    }
-                    // Raydium CLMM is currently telemetry-only: catalog fee metadata is not
-                    // a verified AmmConfig snapshot, and dynamic-fee state is not joined.
-                    _ => {}
                 }
+                // Orca tick arrays are fetched together with their pool below.
+                // A separate request here would make their context slots incomparable.
+                // Raydium CLMM remains telemetry-only until live AmmConfig and dynamic-fee state
+                // are joined into the coherent snapshot.
             }
         }
 
@@ -694,6 +680,160 @@ impl MultiDexRegistry {
         )
         .await;
         max_observed_slot = max_observed_slot.max(derived_slot);
+
+        // Orca pool state and its three writable tick arrays must come from one
+        // getMultipleAccounts context. Fetching the pool in the first hydration
+        // pass and arrays in a later request almost always creates a slot skew,
+        // which correctly but permanently rejected every Whirlpool in the watch set.
+        // Keep each pool's four-account dependency group contiguous when batching.
+        let orca_program =
+            Pubkey::from_str(arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID).unwrap_or_default();
+        type OrcaDependencyGroupEntry = (PoolId, Vec<Pubkey>, Vec<i32>, u16);
+        let mut orca_groups: Vec<Vec<OrcaDependencyGroupEntry>> = Vec::new();
+        let mut current_orca_group = Vec::new();
+        let mut current_orca_group_size = 0usize;
+        for p in &self.pools {
+            if p.protocol != DexProtocol::OrcaWhirlpool {
+                continue;
+            }
+            let Some((_, pool_bytes)) = pool_data_map.get(&p.pool_id.0) else {
+                skip_reasons.insert(p.pool_id, "orca_whirlpool_pool_account_unavailable");
+                continue;
+            };
+            let Some(initial_state) = decode_clmm_state(pool_bytes) else {
+                skip_reasons.insert(p.pool_id, "orca_whirlpool_pool_state_decode_failed");
+                continue;
+            };
+            let (tick_keys, starts) = clmm_tick_array_pdas(
+                &p.pool_id,
+                initial_state.tick_current,
+                initial_state.tick_spacing,
+            );
+            if tick_keys.is_empty() || tick_keys.len() != starts.len() {
+                skip_reasons.insert(p.pool_id, "orca_whirlpool_tick_array_pda_set_invalid");
+                continue;
+            }
+            let mut dependency_keys = Vec::with_capacity(tick_keys.len() + 1);
+            dependency_keys.push(p.pool_id.0);
+            dependency_keys.extend(tick_keys);
+            if !current_orca_group.is_empty()
+                && current_orca_group_size + dependency_keys.len() > 100
+            {
+                orca_groups.push(std::mem::take(&mut current_orca_group));
+                current_orca_group_size = 0;
+            }
+            current_orca_group_size += dependency_keys.len();
+            current_orca_group.push((
+                p.pool_id,
+                dependency_keys,
+                starts,
+                initial_state.tick_spacing,
+            ));
+        }
+        if !current_orca_group.is_empty() {
+            orca_groups.push(current_orca_group);
+        }
+
+        for group in orca_groups {
+            let dependency_keys: Vec<Pubkey> = group
+                .iter()
+                .flat_map(|(_, keys, _, _)| keys.iter().copied())
+                .collect();
+            let mut coherent_data = std::collections::HashMap::new();
+            let mut coherent_owners = std::collections::HashMap::new();
+            let coherent_slot = Self::batch_fetch_accounts(
+                &self.rpc,
+                &dependency_keys,
+                &mut coherent_data,
+                Some(&mut coherent_owners),
+            )
+            .await;
+            max_observed_slot = max_observed_slot.max(coherent_slot);
+
+            for (pool_id, keys, starts, tick_spacing) in group {
+                let pool_key = pool_id.0;
+                let Some((pool_slot, pool_bytes)) = coherent_data.get(&pool_key) else {
+                    skip_reasons.insert(pool_id, "orca_whirlpool_coherent_pool_account_missing");
+                    continue;
+                };
+                let Some(pool_owner) = coherent_owners.get(&pool_key) else {
+                    skip_reasons.insert(pool_id, "orca_whirlpool_coherent_pool_owner_missing");
+                    continue;
+                };
+                let Some(refreshed_state) = decode_clmm_state(pool_bytes) else {
+                    skip_reasons.insert(pool_id, "orca_whirlpool_coherent_pool_decode_failed");
+                    continue;
+                };
+                if *pool_slot == 0 || *pool_owner != orca_program {
+                    skip_reasons.insert(
+                        pool_id,
+                        "orca_whirlpool_coherent_pool_owner_or_slot_invalid",
+                    );
+                    continue;
+                }
+                if refreshed_state.tick_spacing != tick_spacing {
+                    skip_reasons.insert(
+                        pool_id,
+                        "orca_whirlpool_tick_spacing_changed_during_refresh",
+                    );
+                    continue;
+                }
+                let (refreshed_keys, refreshed_starts) = clmm_tick_array_pdas(
+                    &pool_id,
+                    refreshed_state.tick_current,
+                    refreshed_state.tick_spacing,
+                );
+                let fetched_tick_keys: Vec<Pubkey> = keys.iter().skip(1).copied().collect();
+                if refreshed_keys != fetched_tick_keys || refreshed_starts != starts {
+                    skip_reasons.insert(
+                        pool_id,
+                        "orca_whirlpool_tick_array_window_changed_during_refresh",
+                    );
+                    continue;
+                }
+
+                let mut complete = true;
+                for (key, start_tick) in keys.iter().skip(1).zip(starts.iter()) {
+                    let (Some((array_slot, bytes)), Some(owner)) =
+                        (coherent_data.get(key), coherent_owners.get(key))
+                    else {
+                        complete = false;
+                        break;
+                    };
+                    if *array_slot != *pool_slot || *owner != orca_program {
+                        complete = false;
+                        break;
+                    }
+                    let Ok(facade) = arb_math::clmm::parse_tick_array_account(bytes, tick_spacing)
+                    else {
+                        complete = false;
+                        break;
+                    };
+                    if facade.start_tick_index != *start_tick {
+                        complete = false;
+                        break;
+                    }
+                }
+                if !complete {
+                    skip_reasons.insert(
+                        pool_id,
+                        "orca_whirlpool_tick_arrays_not_same_slot_or_invalid",
+                    );
+                    continue;
+                }
+
+                pool_data_map.insert(pool_key, (*pool_slot, pool_bytes.clone()));
+                pool_owner_map.insert(pool_key, *pool_owner);
+                for key in keys.iter().skip(1) {
+                    if let (Some((slot, bytes)), Some(owner)) =
+                        (coherent_data.get(key), coherent_owners.get(key))
+                    {
+                        derived_data_map.insert(*key, (*slot, bytes.clone()));
+                        derived_owner_map.insert(*key, *owner);
+                    }
+                }
+            }
+        }
 
         // Resolve actual initialized DLMM arrays from the LbPair inline bitmap
         // plus the existence- and owner-validated extension account. We fetch
@@ -1988,7 +2128,9 @@ impl MultiDexRegistry {
                 slot
             } else if p.protocol == DexProtocol::OrcaWhirlpool {
                 let Some(slot) = clmm_coherent_slots.get(&p.pool_id).copied() else {
-                    skip_reasons.insert(p.pool_id, "orca_whirlpool_tick_arrays_not_same_slot");
+                    skip_reasons
+                        .entry(p.pool_id)
+                        .or_insert("orca_whirlpool_tick_arrays_not_same_slot");
                     // Whirlpool quotes require the pool and every selected tick
                     // array from the same RPC context slot.
                     continue;
