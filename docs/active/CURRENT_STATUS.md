@@ -1,4 +1,4 @@
-# Current Verified Status
+﻿# Current Verified Status
 
 **Authoritative Git Baseline**: Commit `2ed2261` on `main` (merge of PR #168, 2026-11-26)
 **Current Branch**: `main` (PRs #165, #166, #167, #168 all merged)
@@ -178,6 +178,30 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - **Fix:** Both exact-out quote adapters now return `ArbError::PoolDisabled` before reserve/quote math. Existing boundary tests assert the inactive-pool behavior for both exact-in and exact-out.
 - **Verification on branch `fix/protocol-parity-hardening-20261127-v2`, base `4dc530a`:** `cargo fmt --all -- --check` passed; CPMM boundary suite 8/8; V4 boundary suite 5/5; `cargo clippy -p arb-dex --all-targets -- -D warnings` passed; `cargo test -p arb-dex --all-targets` passed 168/168; `git diff --check` passed.
 - **Evidence boundary:** No workspace-wide CI, RPC simulation, live transaction, landing, or realized-PnL claim is made here. Existing quote-only/unexecutable gates and safety defaults are unchanged.
+
+## Economic / Fee Revalidation — 2026-11-27
+
+- **Result:** Canonical production formulas for CPMM price impact, Raydium CPMM fees, Kamino flash-loan premium, Solana network fees, Jito tip, and net-profit rollup were revalidated. No production formula rewrite was justified by the official sources reviewed.
+- **Raydium CPMM:** Two regression tests were added for official combined-fee ceiling + creator split, exact-out gross-up/round-trip, and fee-exclusive price impact. The initial independent-ceiling hypothesis was rejected after checking the current official `raydium-cp-swap` calculator source and Raydium's current CPMM fee documentation.
+- **Flash/Jito:** Existing checked Kamino fixed-point math and dynamic Jito bidding/cost separation were retained. No hardcoded lender percentage or duplicate tip liability was introduced.
+- **Legacy Bellman-Ford:** No production runtime call site was found. Keep disconnected; do not route production opportunities through its legacy zero-cost fallback.
+- **Evidence:** `cargo test -p arb-dex official_fee_rounding_parity_tests` — 2 passed. Final verification: `cargo fmt --all -- --check` passed; all 1,258 tests across `arb-math`, `arb-dex`, `arb-tx`, `arb-land`, and `arb-bot` passed (0 failures; 5 live-RPC tests ignored). Clippy passed for `arb-math` and `arb-dex`; Clippy for `arb-tx`/`arb-land`/`arb-bot` did not complete because Cargo waited on a build-directory lock.
+- **Limit:** Local tests only; no RPC simulation, Jito ingress canary, landed transaction, or realized PnL claim.
+- **Report:** `reports/ECONOMIC_COST_AUDIT_2026-11-27.md`.
+
+## Publication status — 2026-11-27
+
+- Branch `fix/economic-accounting-audit-20261127` is pushed and rebased on current `main` commit `6cbc9b6108c27a984a97b2a41265ed707b0c21ce`.
+- Feature commit: `3132e09`.
+- PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
+- The initial GitHub API PR creation attempt returned 403; the authenticated local GitHub CLI then created PR #204 successfully. The local fetch was retried and the feature commit was rebased; no conflicts remain.
+
+## Publication status — 2026-11-27
+
+- Branch `fix/economic-accounting-audit-20261127` is pushed and rebased on current `main` commit `6cbc9b6108c27a984a97b2a41265ed707b0c21ce`.
+- Feature commit: `3132e09`.
+- PR #204 is open: https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/204
+- No merge was performed; CI/review remain operator actions.
 
 ## 2026-11-27 — RPC account-response cardinality
 
