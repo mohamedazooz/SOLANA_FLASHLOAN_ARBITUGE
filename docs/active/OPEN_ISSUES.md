@@ -447,3 +447,10 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Regression coverage:** Four-pool graph and cross-protocol cycles are rejected; config tests reject four hops and disabled flash loans; cross-DEX validation rejects four-pool opportunities.
 - **Verification:** `cargo test -p arb-config -p arb-engine -p arb-tx --locked` passed; `cargo test -p arb-bot --all-targets --locked` passed (142 tests across the bot library, binaries, and integration targets); focused cross-DEX four-pool regression passed (1/1); `cargo check -p arb-bot --locked`, `cargo fmt --all -- --check`, targeted Clippy with `-D warnings`, and `git diff --check` passed.
 - **Remaining:** No RPC simulation, shadow soak, mainnet transaction, or realized-PnL evidence. The legacy four-leg builder remains disconnected from the active Supervisor and was not wired into the execution path.
+
+## RPC getMultipleAccounts response cardinality — 2026-11-27
+
+- **Finding:** RpcPool::get_multiple_accounts_with_slots trusted the provider value array length and downstream code zipped returned accounts against requested pubkeys. A short response could shift subsequent account bytes onto the wrong address; an oversized response could be silently ignored.
+- **Fix:** Every batch and fallback response now requires exactly one result per requested pubkey. A malformed large batch is retried as bounded five-key requests; malformed fallback responses return an error and are never mapped to keys.
+- **Regression coverage:** Short batch response retries and preserves per-response slots; oversized arrays are rejected. Existing per-account slot regression remains green.
+- **Safety:** No partial account set is promoted. No RPC endpoint credentials or account secrets are written to logs or fixtures.

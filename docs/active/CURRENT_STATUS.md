@@ -178,3 +178,9 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - **Fix:** Both exact-out quote adapters now return `ArbError::PoolDisabled` before reserve/quote math. Existing boundary tests assert the inactive-pool behavior for both exact-in and exact-out.
 - **Verification on branch `fix/protocol-parity-hardening-20261127-v2`, base `4dc530a`:** `cargo fmt --all -- --check` passed; CPMM boundary suite 8/8; V4 boundary suite 5/5; `cargo clippy -p arb-dex --all-targets -- -D warnings` passed; `cargo test -p arb-dex --all-targets` passed 168/168; `git diff --check` passed.
 - **Evidence boundary:** No workspace-wide CI, RPC simulation, live transaction, landing, or realized-PnL claim is made here. Existing quote-only/unexecutable gates and safety defaults are unchanged.
+
+## 2026-11-27 — RPC account-response cardinality
+
+- RpcPool::get_multiple_accounts_with_slots now validates that each JSON-RPC value array has exactly the requested number of entries before associating entries with pubkeys.
+- Malformed large batches retry through checked five-key sub-batches; malformed fallback responses fail closed.
+- Focused regression tests cover truncated and oversized arrays plus per-account slot preservation.
