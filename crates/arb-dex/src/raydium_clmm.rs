@@ -33,9 +33,13 @@ pub const RAYDIUM_CLMM_AMM_CONFIG_DISCRIMINATOR: [u8; 8] = [218, 244, 33, 104, 2
 pub const RAYDIUM_CLMM_TICK_ARRAY_DISCRIMINATOR: [u8; 8] = [192, 155, 85, 205, 49, 249, 129, 42];
 pub const RAYDIUM_CLMM_BITMAP_EXTENSION_DISCRIMINATOR: [u8; 8] =
     [60, 150, 36, 219, 97, 128, 139, 153];
+pub const RAYDIUM_CLMM_OBSERVATION_DISCRIMINATOR: [u8; 8] = [122, 174, 197, 53, 129, 9, 165, 132];
+pub const RAYDIUM_CLMM_OBSERVATION_MIN_SIZE: usize = 4_483;
 
-pub const RAYDIUM_CLMM_POOL_STATE_MIN_SIZE: usize =
-    RAYDIUM_CLMM_DYNAMIC_FEE_INFO_OFFSET + RAYDIUM_CLMM_DYNAMIC_FEE_INFO_LEN;
+/// Full deployed PoolState allocation, including trailing padding fields.
+/// The dynamic-fee header ends at byte 1,176, but the current account layout
+/// continues through padding1/padding2 to 1,544 bytes.
+pub const RAYDIUM_CLMM_POOL_STATE_MIN_SIZE: usize = 1_544;
 pub const RAYDIUM_CLMM_AMM_CONFIG_SIZE: usize = 117;
 pub const RAYDIUM_CLMM_TICK_ARRAY_MIN_SIZE: usize =
     8 + 32 + 4 + (RAYDIUM_CLMM_TICK_ARRAY_SIZE * RAYDIUM_CLMM_TICK_STATE_SIZE) + 1 + 115;
@@ -94,6 +98,63 @@ impl RaydiumClmmAmmConfig {
         }
         Ok(config)
     }
+}
+
+/// Validate PoolState identity against its stored bump and canonical PDA seeds.
+/// A zero seed_index is retained as the legacy empty seed; non-zero values
+/// identify CreateCustomizablePoolV2 pools.
+pub fn validate_raydium_clmm_pool_pda(
+    data: &[u8],
+    expected_pool: &Pubkey,
+    program_id: &Pubkey,
+) -> bool {
+    if data.len() < RAYDIUM_CLMM_POOL_STATE_MIN_SIZE
+        || data.get(..8) != Some(RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR.as_slice())
+    {
+        return false;
+    }
+    let amm_config = Pubkey::new_from_array(data[9..41].try_into().expect("32-byte config"));
+    let mint_0 = Pubkey::new_from_array(data[73..105].try_into().expect("32-byte mint"));
+    let mint_1 = Pubkey::new_from_array(data[105..137].try_into().expect("32-byte mint"));
+    if mint_0 >= mint_1 {
+        return false;
+    }
+    let seed_index = &data[391..393];
+    let seed_index_seed: &[u8] = if seed_index == [0, 0] {
+        &[]
+    } else {
+        seed_index
+    };
+    let bump = [data[8]];
+    let seeds: [&[u8]; 6] = [
+        b"pool",
+        amm_config.as_ref(),
+        mint_0.as_ref(),
+        mint_1.as_ref(),
+        seed_index_seed,
+        &bump,
+    ];
+    Pubkey::create_program_address(&seeds, program_id)
+        .is_ok_and(|derived| derived == *expected_pool)
+        && Pubkey::find_program_address(
+            &[
+                b"pool",
+                amm_config.as_ref(),
+                mint_0.as_ref(),
+                mint_1.as_ref(),
+                seed_index_seed,
+            ],
+            program_id,
+        )
+        .1 == bump[0]
+}
+
+/// Validate an initialized ObservationState and its embedded PoolState key.
+pub fn validate_raydium_clmm_observation(data: &[u8], expected_pool: &Pubkey) -> bool {
+    data.len() >= RAYDIUM_CLMM_OBSERVATION_MIN_SIZE
+        && data.get(..8) == Some(RAYDIUM_CLMM_OBSERVATION_DISCRIMINATOR.as_slice())
+        && data.get(8) == Some(&1)
+        && data.get(19..51) == Some(expected_pool.as_ref())
 }
 
 /// Pool bitmap-selected Raydium tick arrays, ordered from the first usable array
@@ -392,7 +453,14 @@ impl RaydiumClmmPool {
     }
 
     pub fn tick_array_pdas_around_current(&self) -> Vec<Pubkey> {
-        let spacing = i32::from(self.tick_spacing.max(1));
+        if self.tick_spacing == 0
+            || self.tick_spacing > 1_000
+            || !(arb_math::clmm::MIN_TICK_INDEX..=arb_math::clmm::MAX_TICK_INDEX)
+                .contains(&self.tick_current)
+        {
+            return Vec::new();
+        }
+        let spacing = i32::from(self.tick_spacing);
         let span = (RAYDIUM_CLMM_TICK_ARRAY_SIZE as i32) * spacing;
         if span == 0 {
             return Vec::new();
@@ -733,7 +801,12 @@ impl AmmPool for RaydiumClmmPool {
         self.observation_key = read_pk(201)?;
         self.mint_decimals_0 = data[233];
         self.mint_decimals_1 = data[234];
-        self.tick_spacing = u16::from_le_bytes(data[235..237].try_into().unwrap()).max(1);
+        self.tick_spacing = u16::from_le_bytes(data[235..237].try_into().unwrap());
+        if self.tick_spacing == 0 || self.tick_spacing > 1_000 {
+            return Err(ArbError::InvalidInput(
+                "Raydium CLMM tick_spacing is outside the protocol range".into(),
+            ));
+        }
         self.liquidity = u128::from_le_bytes(data[237..253].try_into().unwrap());
         self.sqrt_price_x64 = u128::from_le_bytes(data[253..269].try_into().unwrap());
         if self.sqrt_price_x64 != 0 && !sqrt_price_x64_in_raydium_clmm_bounds(self.sqrt_price_x64) {
@@ -743,6 +816,13 @@ impl AmmPool for RaydiumClmmPool {
             )));
         }
         self.tick_current = i32::from_le_bytes(data[269..273].try_into().unwrap());
+        if !(arb_math::clmm::MIN_TICK_INDEX..=arb_math::clmm::MAX_TICK_INDEX)
+            .contains(&self.tick_current)
+        {
+            return Err(ArbError::InvalidInput(
+                "Raydium CLMM tick_current is outside the protocol range".into(),
+            ));
+        }
         if data.len() > RAYDIUM_CLMM_STATUS_OFFSET {
             self.status = data[RAYDIUM_CLMM_STATUS_OFFSET];
         }
@@ -913,6 +993,82 @@ mod tests {
             },
         ];
         pool
+    }
+
+    #[test]
+    fn pool_decoder_rejects_invalid_tick_spacing_and_current_tick() {
+        let pool_id = PoolId(Pubkey::new_unique());
+        let mut invalid_spacing = pool_state_bytes(0, false);
+        invalid_spacing[235..237].copy_from_slice(&0u16.to_le_bytes());
+        assert!(RaydiumClmmPool::from_account(pool_id, &invalid_spacing).is_err());
+
+        let mut oversized_spacing = pool_state_bytes(0, false);
+        oversized_spacing[235..237].copy_from_slice(&1_001u16.to_le_bytes());
+        assert!(RaydiumClmmPool::from_account(pool_id, &oversized_spacing).is_err());
+
+        let mut invalid_tick = pool_state_bytes(0, false);
+        invalid_tick[269..273].copy_from_slice(&(arb_math::clmm::MAX_TICK_INDEX + 1).to_le_bytes());
+        assert!(RaydiumClmmPool::from_account(pool_id, &invalid_tick).is_err());
+    }
+
+    #[test]
+    fn pool_pda_validation_handles_legacy_and_customizable_v2_seed_indices() {
+        let program = Pubkey::new_unique();
+        for seed_index in [0u16, 7u16] {
+            let config = Pubkey::new_unique();
+            let mut mint_0 = Pubkey::new_unique();
+            let mut mint_1 = Pubkey::new_unique();
+            if mint_0 > mint_1 {
+                std::mem::swap(&mut mint_0, &mut mint_1);
+            }
+            let seed_index_bytes = seed_index.to_le_bytes();
+            let seed_component: &[u8] = if seed_index == 0 {
+                &[]
+            } else {
+                &seed_index_bytes
+            };
+            let (pool_key, bump) = Pubkey::find_program_address(
+                &[
+                    b"pool",
+                    config.as_ref(),
+                    mint_0.as_ref(),
+                    mint_1.as_ref(),
+                    seed_component,
+                ],
+                &program,
+            );
+            let mut data = vec![0u8; RAYDIUM_CLMM_POOL_STATE_MIN_SIZE];
+            data[..8].copy_from_slice(&RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR);
+            data[8] = bump;
+            data[9..41].copy_from_slice(config.as_ref());
+            data[73..105].copy_from_slice(mint_0.as_ref());
+            data[105..137].copy_from_slice(mint_1.as_ref());
+            data[391..393].copy_from_slice(&seed_index_bytes);
+            assert!(validate_raydium_clmm_pool_pda(&data, &pool_key, &program));
+            assert!(!validate_raydium_clmm_pool_pda(
+                &data,
+                &Pubkey::new_unique(),
+                &program
+            ));
+            data[8] = data[8].wrapping_sub(1);
+            assert!(!validate_raydium_clmm_pool_pda(&data, &pool_key, &program));
+        }
+    }
+
+    #[test]
+    fn observation_state_requires_initialized_flag_and_correct_pool_link() {
+        let pool_key = Pubkey::new_unique();
+        let mut data = vec![0u8; RAYDIUM_CLMM_OBSERVATION_MIN_SIZE];
+        data[..8].copy_from_slice(&RAYDIUM_CLMM_OBSERVATION_DISCRIMINATOR);
+        data[8] = 1;
+        data[19..51].copy_from_slice(pool_key.as_ref());
+        assert!(validate_raydium_clmm_observation(&data, &pool_key));
+        assert!(!validate_raydium_clmm_observation(
+            &data,
+            &Pubkey::new_unique()
+        ));
+        data[8] = 0;
+        assert!(!validate_raydium_clmm_observation(&data, &pool_key));
     }
 
     #[test]

@@ -11,6 +11,23 @@ use tracing::{debug, info, warn};
 const SOLANA_CLOCK_SYSVAR_ADDRESS: &str = "SysvarC1ock11111111111111111111111111111111";
 const SOLANA_SYSVAR_OWNER_ADDRESS: &str = "Sysvar1111111111111111111111111111111111111";
 
+/// Validate the base SPL/Token-2022 token-account fields used by a Raydium CLMM
+/// vault. Extension TLV bytes are deliberately left to the mint/program gates.
+fn validate_raydium_clmm_vault_account(
+    data: &[u8],
+    actual_owner: &Pubkey,
+    expected_owner: &Pubkey,
+    expected_mint: &Pubkey,
+    pool_authority: &Pubkey,
+) -> bool {
+    data.len() >= 165
+        && actual_owner == expected_owner
+        && data.get(0..32) == Some(expected_mint.as_ref())
+        && data.get(32..64) == Some(pool_authority.as_ref())
+        && data.get(108) == Some(&1)
+        && crate::decoders::decode_spl_token_amount_bytes(data).is_some()
+}
+
 /// Decode the canonical 40-byte Clock sysvar only when its RPC account owner
 /// and per-account response slot agree with the embedded bank slot.
 fn decode_clock_epoch(owner: &Pubkey, data: &[u8], response_slot: u64) -> Option<(u64, u64)> {
@@ -21,6 +38,43 @@ fn decode_clock_epoch(owner: &Pubkey, data: &[u8], response_slot: u64) -> Option
     let slot = u64::from_le_bytes(data.get(0..8)?.try_into().ok()?);
     let epoch = u64::from_le_bytes(data.get(16..24)?.try_into().ok()?);
     (slot == response_slot).then_some((slot, epoch))
+}
+
+/// Decode Clock.unix_timestamp from the same verified RPC context as a V4
+/// pool and both vaults. WaitingTrade cannot be promoted without this value.
+fn decode_clock_unix_timestamp(owner: &Pubkey, data: &[u8], response_slot: u64) -> Option<i64> {
+    decode_clock_epoch(owner, data, response_slot)?;
+    Some(i64::from_le_bytes(data.get(32..40)?.try_into().ok()?))
+}
+
+/// Verify the nonce stored in AmmInfo and derive the canonical Raydium AMM
+/// v4 vault authority. The official mainnet bump is 254; never guess it.
+fn raydium_v4_authority(stored_bump: u8) -> Option<Pubkey> {
+    let program = Pubkey::from_str(arb_constants::RAYDIUM_V4_PROGRAM_ID).ok()?;
+    let (canonical, bump) = Pubkey::find_program_address(&[b"amm authority"], &program);
+    if bump != stored_bump {
+        return None;
+    }
+    let bump_seed = [stored_bump];
+    let derived = Pubkey::create_program_address(&[b"amm authority", &bump_seed], &program).ok()?;
+    (derived == canonical).then_some(derived)
+}
+
+/// Validate legacy SPL token vault fields used by AMM v4. Frozen, delegated,
+/// or close-authority vaults are rejected before reserves enter a quote.
+fn decode_v4_token_vault(data: &[u8], mint: Pubkey, authority: Pubkey) -> Option<u64> {
+    if data.len() != 165
+        || data.get(0..32)? != mint.as_ref()
+        || data.get(32..64)? != authority.as_ref()
+        || data.get(72..76)? != [0, 0, 0, 0]
+        || data.get(108).copied()? != 1
+        || data.get(109..113)? != [0, 0, 0, 0]
+        || data.get(121..129)? != [0, 0, 0, 0, 0, 0, 0, 0]
+        || data.get(129..133)? != [0, 0, 0, 0]
+    {
+        return None;
+    }
+    Some(u64::from_le_bytes(data.get(64..72)?.try_into().ok()?))
 }
 
 /// Select and normalize the active Token-2022 fee schedule. A mint without a
@@ -490,6 +544,12 @@ impl MultiDexRegistry {
             std::collections::HashMap::new();
         let mut vault_owner_map: std::collections::HashMap<Pubkey, Pubkey> =
             std::collections::HashMap::new();
+        // Raydium v4 quote states are promoted only from a coherent Pool +
+        // both vaults + Clock snapshot, never from independent discovery reads.
+        let mut v4_coherent_slots: std::collections::HashMap<PoolId, u64> =
+            std::collections::HashMap::new();
+        let mut v4_tradeable: std::collections::HashMap<PoolId, bool> =
+            std::collections::HashMap::new();
         let mut vault_pubkeys: Vec<Pubkey> = Vec::new();
         for p in &self.pools {
             if matches!(
@@ -624,7 +684,146 @@ impl MultiDexRegistry {
             max_observed_slot = max_observed_slot.max(coherent_slot);
         }
 
-        // 2d. Refresh every DAMM v2 dependency set in one getMultipleAccounts
+        // 2d. Refresh every Raydium AMM v4 dependency set in one
+        // getMultipleAccounts context: AmmInfo + coin/pc vaults + Clock.
+        // Pool vault/mint addresses are decoded from AmmInfo, not trusted
+        // from the discovery catalog. No discovery snapshot is promoted.
+        let v4_program = Pubkey::from_str(arb_constants::RAYDIUM_V4_PROGRAM_ID).ok();
+        let spl_token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok();
+        let v4_candidates: Vec<_> = self
+            .pools
+            .iter()
+            .filter(|pool| pool.protocol == DexProtocol::RaydiumV4)
+            .filter_map(|pool| {
+                let (_, bytes) = pool_data_map.get(&pool.pool_id.0)?;
+                let state = crate::decoders::decode_raydium_v4_pool_accounting(bytes)?;
+                Some((
+                    pool.pool_id,
+                    [pool.pool_id.0, state.coin_vault, state.pc_vault, clock_key?],
+                ))
+            })
+            .collect();
+        for group in v4_candidates.chunks(20) {
+            let mut keys = Vec::with_capacity(group.len() * 4);
+            for (_, group_keys) in group {
+                for key in group_keys {
+                    if !keys.contains(key) {
+                        keys.push(*key);
+                    }
+                }
+            }
+            let mut coherent_data = std::collections::HashMap::new();
+            let mut coherent_owners = std::collections::HashMap::new();
+            let coherent_slot = Self::batch_fetch_accounts(
+                &self.rpc,
+                &keys,
+                &mut coherent_data,
+                Some(&mut coherent_owners),
+            )
+            .await;
+            if coherent_slot == 0 {
+                debug!(
+                    "Raydium AMM v4 coherent dependency refresh failed for group of {} pools",
+                    group.len()
+                );
+                continue;
+            }
+            for (pool_id, [pool_key, coin_vault, pc_vault, clock_key]) in group {
+                let required = [*pool_key, *coin_vault, *pc_vault, *clock_key];
+                if required.iter().any(|key| {
+                    coherent_data
+                        .get(key)
+                        .is_none_or(|(slot, _)| *slot != coherent_slot)
+                        || !coherent_owners.contains_key(key)
+                }) {
+                    skip_reasons.insert(*pool_id, "raydium_v4_incomplete_or_incoherent_snapshot");
+                    continue;
+                }
+                let Some((_, pool_bytes)) = coherent_data.get(pool_key) else {
+                    continue;
+                };
+                let Some(accounting) =
+                    crate::decoders::decode_raydium_v4_pool_accounting(pool_bytes)
+                else {
+                    skip_reasons.insert(*pool_id, "raydium_v4_pool_state_invalid");
+                    continue;
+                };
+                let Some(expected_program) = v4_program else {
+                    continue;
+                };
+                let Some(expected_token_program) = spl_token_program else {
+                    continue;
+                };
+                if coherent_owners.get(pool_key) != Some(&expected_program)
+                    || accounting.coin_vault != *coin_vault
+                    || accounting.pc_vault != *pc_vault
+                    || coherent_owners.get(coin_vault) != Some(&expected_token_program)
+                    || coherent_owners.get(pc_vault) != Some(&expected_token_program)
+                {
+                    skip_reasons.insert(*pool_id, "raydium_v4_pool_or_vault_owner_mismatch");
+                    continue;
+                }
+                let Some((_, coin_data)) = coherent_data.get(coin_vault) else {
+                    continue;
+                };
+                let Some((_, pc_data)) = coherent_data.get(pc_vault) else {
+                    continue;
+                };
+                let Some(v4_authority) = raydium_v4_authority(accounting.authority_bump) else {
+                    skip_reasons.insert(*pool_id, "raydium_v4_authority_configuration_invalid");
+                    continue;
+                };
+                let (Some(coin_amount), Some(pc_amount)) = (
+                    decode_v4_token_vault(coin_data, accounting.coin_mint, v4_authority),
+                    decode_v4_token_vault(pc_data, accounting.pc_mint, v4_authority),
+                ) else {
+                    skip_reasons
+                        .insert(*pool_id, "raydium_v4_vault_mint_authority_or_state_invalid");
+                    continue;
+                };
+                let Some((_, clock_data)) = coherent_data.get(clock_key) else {
+                    continue;
+                };
+                let Some(clock_owner) = coherent_owners.get(clock_key) else {
+                    continue;
+                };
+                let Some(unix_timestamp) =
+                    decode_clock_unix_timestamp(clock_owner, clock_data, coherent_slot)
+                else {
+                    skip_reasons.insert(*pool_id, "raydium_v4_clock_snapshot_invalid");
+                    continue;
+                };
+                if !accounting.is_swap_enabled_at(unix_timestamp) {
+                    skip_reasons
+                        .insert(*pool_id, "raydium_v4_pool_status_or_open_time_blocks_swap");
+                    continue;
+                }
+                if accounting.curve_reserves(coin_amount, pc_amount).is_none() {
+                    skip_reasons.insert(*pool_id, "raydium_v4_accrued_pnl_exceeds_vault_balance");
+                    continue;
+                }
+                for key in required {
+                    let Some((slot, bytes)) = coherent_data.get(&key).cloned() else {
+                        continue;
+                    };
+                    let Some(owner) = coherent_owners.get(&key).copied() else {
+                        continue;
+                    };
+                    if key == *pool_key {
+                        pool_data_map.insert(key, (slot, bytes));
+                        pool_owner_map.insert(key, owner);
+                    } else if key != *clock_key {
+                        vault_data_map.insert(key, (slot, bytes));
+                        vault_owner_map.insert(key, owner);
+                    }
+                }
+                v4_coherent_slots.insert(*pool_id, coherent_slot);
+                v4_tradeable.insert(*pool_id, true);
+            }
+            max_observed_slot = max_observed_slot.max(coherent_slot);
+        }
+
+        // 2e. Refresh every DAMM v2 dependency set in one getMultipleAccounts
         // request context: Pool + vault A/B + mint A/B + Clock. The earlier
         // pool discovery read is never promoted as a quote snapshot.
         let damm_program = Pubkey::from_str(arb_constants::METEORA_DAMM_V2_PROGRAM_ID).ok();
@@ -1245,8 +1444,14 @@ impl MultiDexRegistry {
             let Some(program) = raydium_program else {
                 continue;
             };
-            if pool_owner_map.get(&p.pool_id.0) != Some(&program) {
-                skip_reasons.insert(p.pool_id, "raydium_clmm_pool_owner_mismatch");
+            if pool_owner_map.get(&p.pool_id.0) != Some(&program)
+                || !arb_dex::raydium_clmm::validate_raydium_clmm_pool_pda(
+                    pool_bytes,
+                    &p.pool_id.0,
+                    &program,
+                )
+            {
+                skip_reasons.insert(p.pool_id, "raydium_clmm_pool_owner_or_pda_mismatch");
                 continue;
             }
             let Ok(pool) =
@@ -1306,7 +1511,41 @@ impl MultiDexRegistry {
                 skip_reasons.insert(p.pool_id, "raydium_clmm_no_initialized_tick_arrays");
                 continue;
             }
-            let mut keys = vec![p.pool_id.0, pool.amm_config, extension_key];
+            let (expected_vault_0, _) = Pubkey::find_program_address(
+                &[
+                    b"pool_vault",
+                    p.pool_id.0.as_ref(),
+                    pool.token_mint_0.0.as_ref(),
+                ],
+                &program,
+            );
+            let (expected_vault_1, _) = Pubkey::find_program_address(
+                &[
+                    b"pool_vault",
+                    p.pool_id.0.as_ref(),
+                    pool.token_mint_1.0.as_ref(),
+                ],
+                &program,
+            );
+            let (expected_observation, _) =
+                Pubkey::find_program_address(&[b"observation", p.pool_id.0.as_ref()], &program);
+            if pool.token_vault_0 != expected_vault_0
+                || pool.token_vault_1 != expected_vault_1
+                || pool.observation_key != expected_observation
+            {
+                skip_reasons.insert(p.pool_id, "raydium_clmm_vault_or_observation_pda_mismatch");
+                continue;
+            }
+            let mut keys = vec![
+                p.pool_id.0,
+                pool.amm_config,
+                extension_key,
+                pool.token_vault_0,
+                pool.token_vault_1,
+                pool.observation_key,
+                pool.token_mint_0.0,
+                pool.token_mint_1.0,
+            ];
             keys.extend(arrays.iter().map(|(key, _)| *key));
             keys.sort_unstable();
             keys.dedup();
@@ -1351,6 +1590,42 @@ impl MultiDexRegistry {
                 skip_reasons.insert(pool_id, "raydium_clmm_coherent_pool_decode_failed");
                 continue;
             };
+            if !arb_dex::raydium_clmm::validate_raydium_clmm_pool_pda(
+                &pool_bytes,
+                &pool_key,
+                &program,
+            ) {
+                skip_reasons.insert(pool_id, "raydium_clmm_coherent_pool_pda_invalid");
+                continue;
+            }
+            let (expected_vault_0, _) = Pubkey::find_program_address(
+                &[
+                    b"pool_vault",
+                    pool_key.as_ref(),
+                    pool.token_mint_0.0.as_ref(),
+                ],
+                &program,
+            );
+            let (expected_vault_1, _) = Pubkey::find_program_address(
+                &[
+                    b"pool_vault",
+                    pool_key.as_ref(),
+                    pool.token_mint_1.0.as_ref(),
+                ],
+                &program,
+            );
+            let (expected_observation, _) =
+                Pubkey::find_program_address(&[b"observation", pool_key.as_ref()], &program);
+            if pool.token_vault_0 != expected_vault_0
+                || pool.token_vault_1 != expected_vault_1
+                || pool.observation_key != expected_observation
+            {
+                skip_reasons.insert(
+                    pool_id,
+                    "raydium_clmm_coherent_vault_or_observation_pda_invalid",
+                );
+                continue;
+            }
             let config_key = pool.amm_config;
             let extension_key =
                 arb_dex::raydium_clmm::derive_raydium_clmm_bitmap_extension_pda(&pool_key);
@@ -1401,6 +1676,71 @@ impl MultiDexRegistry {
                 skip_reasons.insert(
                     pool_id,
                     "raydium_clmm_bitmap_extension_owner_slot_or_layout_invalid",
+                );
+                continue;
+            }
+            let spl_token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok();
+            let token_2022_program = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).ok();
+            let expected_token_program_0 = match pool.token_0_program {
+                arb_types::TokenProgramKind::SplToken => spl_token_program,
+                arb_types::TokenProgramKind::Token2022 => token_2022_program,
+            };
+            let expected_token_program_1 = match pool.token_1_program {
+                arb_types::TokenProgramKind::SplToken => spl_token_program,
+                arb_types::TokenProgramKind::Token2022 => token_2022_program,
+            };
+            let vault_is_valid = |key: &Pubkey, mint: &Pubkey, expected_owner: Option<Pubkey>| {
+                let Some((vault_slot, bytes)) = snapshot.get(key) else {
+                    return false;
+                };
+                *vault_slot == slot
+                    && expected_owner.is_some_and(|owner| {
+                        owners.get(key).is_some_and(|actual_owner| {
+                            validate_raydium_clmm_vault_account(
+                                bytes,
+                                actual_owner,
+                                &owner,
+                                mint,
+                                &pool_key,
+                            )
+                        })
+                    })
+            };
+            let mint_is_valid = |key: &Pubkey, expected_decimals: u8| {
+                snapshot
+                    .get(key)
+                    .zip(owners.get(key))
+                    .is_some_and(|((mint_slot, bytes), owner)| {
+                        *mint_slot == slot
+                            && decode_mint_program_and_decimals(owner, bytes)
+                                == Some((TokenProgramKind::SplToken, expected_decimals))
+                    })
+            };
+            let observation_valid =
+                snapshot
+                    .get(&pool.observation_key)
+                    .is_some_and(|(observation_slot, bytes)| {
+                        *observation_slot == slot
+                            && owners.get(&pool.observation_key) == Some(&program)
+                            && arb_dex::raydium_clmm::validate_raydium_clmm_observation(
+                                bytes, &pool_key,
+                            )
+                    });
+            if !vault_is_valid(
+                &pool.token_vault_0,
+                &pool.token_mint_0.0,
+                expected_token_program_0,
+            ) || !vault_is_valid(
+                &pool.token_vault_1,
+                &pool.token_mint_1.0,
+                expected_token_program_1,
+            ) || !mint_is_valid(&pool.token_mint_0.0, pool.mint_decimals_0)
+                || !mint_is_valid(&pool.token_mint_1.0, pool.mint_decimals_1)
+                || !observation_valid
+            {
+                skip_reasons.insert(
+                    pool_id,
+                    "raydium_clmm_mint_vault_or_observation_owner_slot_layout_invalid",
                 );
                 continue;
             }
@@ -2053,8 +2393,30 @@ impl MultiDexRegistry {
             // that flooded the pipeline with implausible-ROI rejections
             // (soak13/14: 4,276 + 1,058, p50 ROI 1,535,076 bps = 153.5x).
             let (state_base, state_quote, _catalog_dec_a, _catalog_dec_b) = if p.protocol
-                == DexProtocol::RaydiumCpmm
+                == DexProtocol::RaydiumV4
             {
+                let Some(accounting) =
+                    pool_bytes.and_then(crate::decoders::decode_raydium_v4_pool_accounting)
+                else {
+                    skip_reasons.insert(p.pool_id, "raydium_v4_pool_accounting_missing");
+                    continue;
+                };
+                let catalog_matches = (p.base_mint.0 == accounting.coin_mint
+                    && p.quote_mint.0 == accounting.pc_mint)
+                    || (p.base_mint.0 == accounting.pc_mint
+                        && p.quote_mint.0 == accounting.coin_mint);
+                if !catalog_matches {
+                    skip_reasons
+                        .insert(p.pool_id, "raydium_v4_catalog_mints_mismatch_onchain_order");
+                    continue;
+                }
+                (
+                    MintId(accounting.coin_mint),
+                    MintId(accounting.pc_mint),
+                    0,
+                    0,
+                )
+            } else if p.protocol == DexProtocol::RaydiumCpmm {
                 let Some(accounting) = cpmm_accounting else {
                     continue;
                 };
@@ -2206,6 +2568,72 @@ impl MultiDexRegistry {
             };
 
             let (reserve_in, reserve_out) = match p.protocol {
+                DexProtocol::RaydiumV4 => {
+                    let Some(snapshot_slot) = v4_coherent_slots.get(&p.pool_id).copied() else {
+                        skip_reasons.insert(p.pool_id, "raydium_v4_coherent_snapshot_missing");
+                        continue;
+                    };
+                    if v4_tradeable.get(&p.pool_id) != Some(&true) {
+                        skip_reasons.insert(p.pool_id, "raydium_v4_pool_not_tradeable");
+                        continue;
+                    }
+                    let Some(accounting) =
+                        pool_bytes.and_then(crate::decoders::decode_raydium_v4_pool_accounting)
+                    else {
+                        skip_reasons.insert(p.pool_id, "raydium_v4_pool_state_invalid");
+                        continue;
+                    };
+                    let Some(program) = v4_program else {
+                        continue;
+                    };
+                    let Some(token_program) = spl_token_program else {
+                        continue;
+                    };
+                    let Some(authority) = raydium_v4_authority(accounting.authority_bump) else {
+                        continue;
+                    };
+                    if pool_owner_map.get(&p.pool_id.0) != Some(&program)
+                        || token_programs
+                            != [TokenProgramKind::SplToken, TokenProgramKind::SplToken]
+                        || vault_owner_map.get(&accounting.coin_vault) != Some(&token_program)
+                        || vault_owner_map.get(&accounting.pc_vault) != Some(&token_program)
+                        || pool_data_map.get(&p.pool_id.0).map(|(slot, _)| *slot)
+                            != Some(snapshot_slot)
+                    {
+                        skip_reasons
+                            .insert(p.pool_id, "raydium_v4_owner_or_token_program_mismatch");
+                        continue;
+                    }
+                    let Some((coin_slot, coin_data)) = vault_data_map.get(&accounting.coin_vault)
+                    else {
+                        continue;
+                    };
+                    let Some((pc_slot, pc_data)) = vault_data_map.get(&accounting.pc_vault) else {
+                        continue;
+                    };
+                    if *coin_slot != snapshot_slot || *pc_slot != snapshot_slot {
+                        skip_reasons.insert(p.pool_id, "raydium_v4_vault_slot_mismatch");
+                        continue;
+                    }
+                    let (Some(coin_amount), Some(pc_amount)) = (
+                        decode_v4_token_vault(coin_data, accounting.coin_mint, authority),
+                        decode_v4_token_vault(pc_data, accounting.pc_mint, authority),
+                    ) else {
+                        skip_reasons.insert(
+                            p.pool_id,
+                            "raydium_v4_vault_mint_authority_or_state_invalid",
+                        );
+                        continue;
+                    };
+                    let Some((coin_reserve, pc_reserve)) =
+                        accounting.curve_reserves(coin_amount, pc_amount)
+                    else {
+                        skip_reasons
+                            .insert(p.pool_id, "raydium_v4_accrued_pnl_exceeds_vault_balance");
+                        continue;
+                    };
+                    (u128::from(coin_reserve), u128::from(pc_reserve))
+                }
                 DexProtocol::RaydiumCpmm => {
                     let Some(accounting) = cpmm_accounting else {
                         continue;
@@ -2558,7 +2986,13 @@ impl MultiDexRegistry {
                 _ => None,
             };
 
-            let state_slot = if p.protocol == DexProtocol::RaydiumCpmm {
+            let state_slot = if p.protocol == DexProtocol::RaydiumV4 {
+                let Some(slot) = v4_coherent_slots.get(&p.pool_id).copied() else {
+                    skip_reasons.insert(p.pool_id, "raydium_v4_dependencies_not_same_slot");
+                    continue;
+                };
+                Slot(slot)
+            } else if p.protocol == DexProtocol::RaydiumCpmm {
                 let Some(slot) = cpmm_coherent_slot else {
                     continue;
                 };
@@ -2592,7 +3026,18 @@ impl MultiDexRegistry {
                 effective_slot
             };
             let wv = next_pool_write_version();
-            let (fee_numerator, fee_denominator) = if p.protocol == DexProtocol::RaydiumCpmm {
+            let (fee_numerator, fee_denominator) = if p.protocol == DexProtocol::RaydiumV4 {
+                let Some(accounting) =
+                    pool_bytes.and_then(crate::decoders::decode_raydium_v4_pool_accounting)
+                else {
+                    skip_reasons.insert(p.pool_id, "raydium_v4_fee_state_missing_after_validation");
+                    continue;
+                };
+                (
+                    accounting.swap_fee_numerator,
+                    accounting.swap_fee_denominator,
+                )
+            } else if p.protocol == DexProtocol::RaydiumCpmm {
                 let Some(config) = cpmm_fee_config else {
                     skip_reasons.insert(
                         p.pool_id,
@@ -2637,7 +3082,11 @@ impl MultiDexRegistry {
                 } else {
                     None
                 },
-                is_active: true,
+                is_active: if p.protocol == DexProtocol::RaydiumV4 {
+                    v4_tradeable.get(&p.pool_id).copied().unwrap_or(false)
+                } else {
+                    true
+                },
                 // Token-2022 is quote-eligible only with a verified Clock epoch,
                 // same-context mint data, and an allowlisted extension set. Execution
                 // adapters and transaction builders retain their separate hard gate.
@@ -3085,5 +3534,134 @@ mod damm_v2_coherent_account_graph_tests {
         let mut f = fixture();
         f.pool[481] = 1;
         assert!(decode(&f).is_none());
+    }
+}
+
+#[cfg(test)]
+mod raydium_clmm_vault_validation_tests {
+    use super::*;
+
+    #[test]
+    fn clmm_vault_requires_expected_owner_mint_authority_and_initialized_state() {
+        let token_program = Pubkey::new_unique();
+        let mint = Pubkey::new_unique();
+        let pool = Pubkey::new_unique();
+        let mut account = vec![0u8; 165];
+        account[..32].copy_from_slice(mint.as_ref());
+        account[32..64].copy_from_slice(pool.as_ref());
+        account[64..72].copy_from_slice(&123u64.to_le_bytes());
+        account[108] = 1;
+
+        assert!(validate_raydium_clmm_vault_account(
+            &account,
+            &token_program,
+            &token_program,
+            &mint,
+            &pool,
+        ));
+
+        let wrong_mint = Pubkey::new_unique();
+        assert!(!validate_raydium_clmm_vault_account(
+            &account,
+            &token_program,
+            &token_program,
+            &wrong_mint,
+            &pool,
+        ));
+        let wrong_authority = Pubkey::new_unique();
+        assert!(!validate_raydium_clmm_vault_account(
+            &account,
+            &token_program,
+            &token_program,
+            &mint,
+            &wrong_authority,
+        ));
+        let wrong_program = Pubkey::new_unique();
+        assert!(!validate_raydium_clmm_vault_account(
+            &account,
+            &wrong_program,
+            &token_program,
+            &mint,
+            &pool,
+        ));
+        account[108] = 2;
+        assert!(!validate_raydium_clmm_vault_account(
+            &account,
+            &token_program,
+            &token_program,
+            &mint,
+            &pool,
+        ));
+        assert!(!validate_raydium_clmm_vault_account(
+            &account[..164],
+            &token_program,
+            &token_program,
+            &mint,
+            &pool,
+        ));
+    }
+}
+
+#[cfg(test)]
+mod raydium_v4_hydration_tests {
+    use super::*;
+
+    #[test]
+    fn v4_authority_requires_the_canonical_amm_info_bump() {
+        assert!(raydium_v4_authority(254).is_some());
+        assert!(raydium_v4_authority(253).is_none());
+    }
+
+    #[test]
+    fn v4_vault_requires_exact_mint_authority_and_initialized_legacy_account() {
+        let mint = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let mut data = vec![0u8; 165];
+        data[0..32].copy_from_slice(mint.as_ref());
+        data[32..64].copy_from_slice(authority.as_ref());
+        data[64..72].copy_from_slice(&123_456u64.to_le_bytes());
+        data[108] = 1;
+        assert_eq!(decode_v4_token_vault(&data, mint, authority), Some(123_456));
+        assert_eq!(
+            decode_v4_token_vault(&data, Pubkey::new_unique(), authority),
+            None
+        );
+        assert_eq!(
+            decode_v4_token_vault(&data, mint, Pubkey::new_unique()),
+            None
+        );
+
+        data[108] = 2; // frozen
+        assert_eq!(decode_v4_token_vault(&data, mint, authority), None);
+        data[108] = 1;
+        data[72] = 1; // delegate COption::Some
+        assert_eq!(decode_v4_token_vault(&data, mint, authority), None);
+        data[72] = 0;
+        data[109] = 1; // native reserve COption::Some
+        assert_eq!(decode_v4_token_vault(&data, mint, authority), None);
+        data[109] = 0;
+        data[121] = 1; // non-zero delegated_amount
+        assert_eq!(decode_v4_token_vault(&data, mint, authority), None);
+        data[121] = 0;
+        data[129] = 1; // close authority COption::Some
+        assert_eq!(decode_v4_token_vault(&data, mint, authority), None);
+        assert_eq!(decode_v4_token_vault(&data[..164], mint, authority), None);
+    }
+
+    #[test]
+    fn waiting_trade_clock_timestamp_requires_verified_same_slot_clock() {
+        let owner = Pubkey::from_str(SOLANA_SYSVAR_OWNER_ADDRESS).unwrap();
+        let wrong_owner = Pubkey::new_unique();
+        let mut clock = vec![0u8; 40];
+        clock[0..8].copy_from_slice(&777u64.to_le_bytes());
+        clock[16..24].copy_from_slice(&42u64.to_le_bytes());
+        clock[32..40].copy_from_slice(&1_800_000_000i64.to_le_bytes());
+        assert_eq!(
+            decode_clock_unix_timestamp(&owner, &clock, 777),
+            Some(1_800_000_000)
+        );
+        assert_eq!(decode_clock_unix_timestamp(&owner, &clock, 778), None);
+        assert_eq!(decode_clock_unix_timestamp(&wrong_owner, &clock, 777), None);
+        assert_eq!(decode_clock_unix_timestamp(&owner, &clock[..39], 777), None);
     }
 }

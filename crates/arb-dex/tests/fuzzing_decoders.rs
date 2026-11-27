@@ -113,7 +113,9 @@ fn orca_whirlpool_rejects_sqrt_price_outside_official_bounds() {
 fn raydium_clmm_rejects_sqrt_price_outside_official_bounds() {
     let mut data = vec![0u8; arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_MIN_SIZE];
     data[..8].copy_from_slice(&arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR);
+    data[235..237].copy_from_slice(&1u16.to_le_bytes());
     data[237..253].copy_from_slice(&1u128.to_le_bytes());
+    data[269..273].copy_from_slice(&0i32.to_le_bytes());
     let raydium_max = arb_constants::RAYDIUM_CLMM_MAX_SQRT_PRICE_X64;
     data[253..269].copy_from_slice(&(raydium_max + 1).to_le_bytes());
     assert!(RaydiumClmmPool::from_account(PoolId(Pubkey::new_unique()), &data).is_err());

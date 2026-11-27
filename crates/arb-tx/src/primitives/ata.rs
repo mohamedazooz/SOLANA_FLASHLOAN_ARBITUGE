@@ -312,11 +312,18 @@ pub fn parse_transfer_hook_extra_account_metas(
             )).into());
         }
         let pk = Pubkey::new_from_array(entry[1..33].try_into().unwrap());
-        let is_writable = entry[34] != 0;
-        metas.push(if is_writable {
-            AccountMeta::new(pk, false)
+        let is_signer = entry[33];
+        let is_writable = entry[34];
+        if is_signer > 1 || is_writable > 1 {
+            return Err(TxError::InvalidInput(format!(
+                "ExtraAccountMeta entry {i} has non-boolean signer/writable flags"
+            ))
+            .into());
+        }
+        metas.push(if is_writable == 1 {
+            AccountMeta::new(pk, is_signer == 1)
         } else {
-            AccountMeta::new_readonly(pk, false)
+            AccountMeta::new_readonly(pk, is_signer == 1)
         });
     }
     metas.push(AccountMeta::new_readonly(*hook_program_id, false));
