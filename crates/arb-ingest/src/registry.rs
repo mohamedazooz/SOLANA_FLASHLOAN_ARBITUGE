@@ -38,6 +38,15 @@ pub struct RegisteredPool {
     pub fee_bps: u16,
 }
 
+/// One registered pool rejected by the most recent hydration pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolHydrationSkip {
+    pub pool_id: PoolId,
+    pub protocol: DexProtocol,
+    /// Stable machine-readable reason; unknown branches use `unclassified_validation_gate`.
+    pub reason: &'static str,
+}
+
 /// Registry of verified multi-DEX pools that streams live reserve states into the
 /// `MarketStateCache` / `MarketGraph`.
 ///
@@ -53,6 +62,8 @@ pub struct MultiDexRegistry {
     pub(crate) mint_metadata_cache: std::sync::Arc<
         parking_lot::Mutex<std::collections::HashMap<Pubkey, (TokenProgramKind, u8)>>,
     >,
+    /// Per-registry snapshot of pool rejections from the latest hydration pass.
+    pub(crate) last_hydration_skips: std::sync::Arc<parking_lot::Mutex<Vec<PoolHydrationSkip>>>,
 }
 
 impl MultiDexRegistry {
@@ -182,6 +193,7 @@ impl MultiDexRegistry {
             rpc,
             dependency_manifest: Default::default(),
             mint_metadata_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
+            last_hydration_skips: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -199,6 +211,12 @@ impl MultiDexRegistry {
 
     pub fn pools(&self) -> &[RegisteredPool] {
         &self.pools
+    }
+
+    /// Rejections recorded by the most recent `fetch_live_pool_states` call.
+    /// A record is emitted for every registered pool omitted from the returned state set.
+    pub fn last_hydration_skips(&self) -> Vec<PoolHydrationSkip> {
+        self.last_hydration_skips.lock().clone()
     }
 }
 

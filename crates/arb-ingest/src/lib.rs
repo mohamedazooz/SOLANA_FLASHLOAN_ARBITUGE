@@ -44,7 +44,7 @@ pub mod fetcher;
 pub mod hydration;
 pub mod registry;
 pub use registry::{
-    DecodedPoolInfo, MultiDexRegistry, RegisteredPool, clmm_onchain_mints,
+    DecodedPoolInfo, MultiDexRegistry, PoolHydrationSkip, RegisteredPool, clmm_onchain_mints,
     clmm_tick_array_covers_tick, compute_clmm_virtual_reserves, compute_dlmm_reserves,
     decode_account_data, decode_clmm_state, decode_dlmm_fee_bps, decode_dlmm_state,
     decode_orca_fee_bps, decode_orca_vaults, decode_pool_info, decode_raydium_clmm_state,

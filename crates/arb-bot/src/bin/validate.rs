@@ -201,6 +201,12 @@ async fn main() -> Result<()> {
             );
         }
     }
+    for skipped in registry.last_hydration_skips() {
+        warn!(
+            "POOL_HYDRATION_REJECTED protocol={:?} pool={} reason={}",
+            skipped.protocol, skipped.pool_id, skipped.reason
+        );
+    }
 
     let wsol = Pubkey::from_str(arb_tx::WSOL_MINT)?;
     let usdc = Pubkey::from_str(arb_tx::USDC_MINT)?;

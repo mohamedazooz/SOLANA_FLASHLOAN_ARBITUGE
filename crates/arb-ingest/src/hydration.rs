@@ -314,9 +314,12 @@ impl MultiDexRegistry {
     }
 
     pub async fn fetch_live_pool_states(&self, _current_slot: Slot) -> Vec<PoolState> {
+        self.last_hydration_skips.lock().clear();
         if self.pools.is_empty() {
             return Vec::new();
         }
+        let mut skip_reasons: std::collections::HashMap<PoolId, &'static str> =
+            std::collections::HashMap::new();
 
         let mut pool_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
             std::collections::HashMap::new();
@@ -1253,6 +1256,7 @@ impl MultiDexRegistry {
                 if let Some(state) = damm_v2_pool_states.remove(&p.pool_id) {
                     states.push(state);
                 } else {
+                    skip_reasons.insert(p.pool_id, "damm_v2_incomplete_same_context_account_graph");
                     debug!(
                         "Meteora DAMM v2 {} omitted: no complete same-context Pool/Vault/Mint/Clock state",
                         p.pool_id
@@ -1282,6 +1286,7 @@ impl MultiDexRegistry {
                 DexProtocol::RaydiumV4 | DexProtocol::RaydiumCpmm
             );
             if needs_vaults && (base_bal == 0 || quote_bal == 0) {
+                skip_reasons.insert(p.pool_id, "missing_or_zero_live_vault_reserves");
                 debug!(
                     "MultiDexRegistry: {:?} pool {} missing live reserves (base={} quote={}) vault_entry(base={} quote={}) pool_bytes_len={}",
                     p.protocol,
@@ -1325,6 +1330,8 @@ impl MultiDexRegistry {
             };
             if p.protocol == DexProtocol::RaydiumCpmm {
                 if cpmm_coherent_slot.is_none() {
+                    skip_reasons
+                        .insert(p.pool_id, "raydium_cpmm_pool_vault_config_slots_incoherent");
                     debug!(
                         "Raydium CPMM {} coherent snapshot unavailable (pool={:?}, vault0={:?}, vault1={:?}, config={:?}); skipping",
                         p.pool_id,
@@ -1346,6 +1353,7 @@ impl MultiDexRegistry {
                     continue;
                 };
                 let Some(pool_owner) = pool_owner_map.get(&p.pool_id.0) else {
+                    skip_reasons.insert(p.pool_id, "raydium_cpmm_pool_owner_unavailable");
                     debug!(
                         "Raydium CPMM {} pool owner unavailable; skipping",
                         p.pool_id
@@ -1353,11 +1361,14 @@ impl MultiDexRegistry {
                     continue;
                 };
                 let Some(config_key) = cpmm_config_key else {
+                    skip_reasons.insert(p.pool_id, "raydium_cpmm_amm_config_address_missing");
                     continue;
                 };
                 if *pool_owner != cpmm_program
                     || cpmm_config_owner_map.get(&config_key) != Some(&cpmm_program)
                 {
+                    skip_reasons
+                        .insert(p.pool_id, "raydium_cpmm_pool_or_amm_config_owner_mismatch");
                     debug!(
                         "Raydium CPMM {} pool/AmmConfig owner mismatch; skipping",
                         p.pool_id
@@ -1365,6 +1376,10 @@ impl MultiDexRegistry {
                     continue;
                 }
                 let (Some(accounting), Some(fees)) = (cpmm_accounting, cpmm_fee_config) else {
+                    skip_reasons.insert(
+                        p.pool_id,
+                        "raydium_cpmm_pool_state_or_fee_config_decode_failed",
+                    );
                     debug!(
                         "Raydium CPMM {} missing verified PoolState/AmmConfig accounting; skipping",
                         p.pool_id
@@ -1372,6 +1387,7 @@ impl MultiDexRegistry {
                     continue;
                 };
                 if !accounting.swap_enabled {
+                    skip_reasons.insert(p.pool_id, "raydium_cpmm_swap_disabled");
                     debug!("Raydium CPMM {} swap status disabled; skipping", p.pool_id);
                     continue;
                 }
@@ -1382,6 +1398,7 @@ impl MultiDexRegistry {
                 if accounting.token_0_program != spl_token_program
                     || accounting.token_1_program != spl_token_program
                 {
+                    skip_reasons.insert(p.pool_id, "raydium_cpmm_non_legacy_token_program");
                     // Token-2022 remains excluded from the active pilot until
                     // epoch-aware transfer-fee/hook state is wired end-to-end.
                     debug!(
@@ -1404,6 +1421,7 @@ impl MultiDexRegistry {
                         .checked_add(fees.fund_fee_rate)
                         .is_none_or(|r| r > 1_000_000)
                 {
+                    skip_reasons.insert(p.pool_id, "raydium_cpmm_fee_schedule_invalid");
                     debug!("Raydium CPMM {} fee schedule invalid; skipping", p.pool_id);
                     continue;
                 }
@@ -1453,6 +1471,7 @@ impl MultiDexRegistry {
                 _ => None,
             };
             let Some(fee_bps) = onchain_fee_bps else {
+                skip_reasons.insert(p.pool_id, "authoritative_onchain_fee_unavailable");
                 debug!(
                     "MultiDexRegistry: {:?} pool {} — on-chain fee undecodable; skipping (fail closed) pool_bytes_len={} clmm_decoded={} dlmm_decoded={}",
                     p.protocol,
@@ -1498,6 +1517,10 @@ impl MultiDexRegistry {
                     // creator_fee_on and reserve orientation both use token0/token1.
                     (MintId(mint_0), MintId(mint_1), decimals_0, decimals_1)
                 } else {
+                    skip_reasons.insert(
+                        p.pool_id,
+                        "raydium_cpmm_catalog_mints_mismatch_onchain_order",
+                    );
                     debug!(
                         "Raydium CPMM {} catalog mints do not match on-chain token0/token1; skipping",
                         p.pool_id
@@ -1587,6 +1610,7 @@ impl MultiDexRegistry {
             let Some((base_token_program, verified_decimals_a)) =
                 mint_program_and_decimals(state_base.0)
             else {
+                skip_reasons.insert(p.pool_id, "base_mint_owner_or_layout_unverified");
                 debug!(
                     "MultiDexRegistry: {:?} pool {} — base mint owner/layout unavailable; skipping",
                     p.protocol, p.pool_id
@@ -1596,6 +1620,7 @@ impl MultiDexRegistry {
             let Some((quote_token_program, verified_decimals_b)) =
                 mint_program_and_decimals(state_quote.0)
             else {
+                skip_reasons.insert(p.pool_id, "quote_mint_owner_or_layout_unverified");
                 debug!(
                     "MultiDexRegistry: {:?} pool {} — quote mint owner/layout unavailable; skipping",
                     p.protocol, p.pool_id
@@ -1963,6 +1988,7 @@ impl MultiDexRegistry {
                 slot
             } else if p.protocol == DexProtocol::OrcaWhirlpool {
                 let Some(slot) = clmm_coherent_slots.get(&p.pool_id).copied() else {
+                    skip_reasons.insert(p.pool_id, "orca_whirlpool_tick_arrays_not_same_slot");
                     // Whirlpool quotes require the pool and every selected tick
                     // array from the same RPC context slot.
                     continue;
@@ -1974,6 +2000,10 @@ impl MultiDexRegistry {
             let wv = next_pool_write_version();
             let (fee_numerator, fee_denominator) = if p.protocol == DexProtocol::RaydiumCpmm {
                 let Some(config) = cpmm_fee_config else {
+                    skip_reasons.insert(
+                        p.pool_id,
+                        "raydium_cpmm_fee_config_missing_after_validation",
+                    );
                     continue;
                 };
                 (config.trade_fee_rate, 1_000_000)
@@ -2024,6 +2054,26 @@ impl MultiDexRegistry {
                 transfer_fee_bps: 0,
             });
         }
+
+        // Publish one deterministic diagnostic for every registered pool that
+        // did not produce a quoteable state. Specific gates above retain their
+        // reason; remaining early exits are visible instead of silently vanishing.
+        let hydrated: std::collections::HashSet<PoolId> =
+            states.iter().map(|state| state.pool_id).collect();
+        let skips: Vec<crate::registry::PoolHydrationSkip> = self
+            .pools
+            .iter()
+            .filter(|pool| !hydrated.contains(&pool.pool_id))
+            .map(|pool| crate::registry::PoolHydrationSkip {
+                pool_id: pool.pool_id,
+                protocol: pool.protocol,
+                reason: skip_reasons
+                    .get(&pool.pool_id)
+                    .copied()
+                    .unwrap_or("unclassified_validation_gate"),
+            })
+            .collect();
+        *self.last_hydration_skips.lock() = skips;
 
         states
     }
