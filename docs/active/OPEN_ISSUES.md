@@ -143,9 +143,11 @@ This register tracks all identified engineering defects, correctness gaps, and a
 ### FL-F-2026-11-22-N2: DLMM Two-Pool Engine Lacks On-Chain Retained-Profit Floor (P3)
 
 - **File**: `crates/arb-engine/src/dlmm_flash_arbitrage.rs` + `crates/arb-tx/src/flash/dlmm_flash_arb.rs`.
-- **Observed Behavior**: `leg_b.min_amount_out = repay (principal+fee)` — repayment sufficiency guaranteed (no subsidized repayment), but retained profit and tip are enforced only at quote time (`ProfitBelowFloor`), not as an on-chain min-out. Path is NOT reachable from `arb-bot` (tests/examples only).
-- **Required Fix**: when the two-pool engine is wired into supervision, raise `leg_b.min_amount_out` to `max(repay, borrow+fee+tip+min_profit)` and include the tip; then add the FL-15-style regression test to this assembler.
-- **Status**: OPEN (P3); wire-up must not proceed without this.
+- **Observed Behavior (before this PR)**: `leg_b.min_amount_out = repay (principal+fee)` — repayment sufficiency was guaranteed, but costs and retained profit were only checked by the evaluator and were not bound to the final on-chain min-out. The path is NOT reachable from `arb-bot` (tests/examples only).
+- **Correction in this PR**: `FlashArbParams.minimum_retained_profit_raw` is now required by the transaction builder. The builder uses checked arithmetic to require `leg_b.min_amount_out >= principal + flash_fee + minimum_retained_profit_raw`; overflow fails closed. The evaluator derives the retained buffer from its configured network + priority execution cost and minimum-profit floor, carries it in `DlmmFlashArbEvaluation`, and uses the same value for transaction-size estimation and the final Pool B min-out. Regression coverage checks repayment-only rejection, exact economic-floor acceptance, overflow rejection, and evaluator→builder propagation.
+- **Remaining limitation**: this two-pool builder has no Jito tip field or tip instruction. A caller using Jito must include the applicable tip in `minimum_retained_profit_raw` only after its amount and payment instruction are added to the same transaction path; this PR does not claim that capability. The engine also remains unreachable from `arb-bot`.
+- **Required before enablement**: wire only after the tip/payment model is explicit (or the path is demonstrably not paying a Jito tip), prove parity between evaluation and signed transaction inputs, and add same-snapshot non-broadcast rehearsal evidence. Do not connect this engine to the supervisor yet.
+- **Status**: PARTIALLY FIXED by this PR (builder/evaluator floor parity); runtime wire-up and Jito-tip integration remain OPEN.
 
 ### DEX-F-2026-11-22-N1: Protocol-Specific State and Quote Engines for DAMM v2 / DBC / LaunchLab (P1)
 

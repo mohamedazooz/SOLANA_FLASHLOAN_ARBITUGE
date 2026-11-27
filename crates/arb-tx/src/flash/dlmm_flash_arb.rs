@@ -71,6 +71,10 @@ pub enum FlashArbError {
     ClosingTokenProgramMismatch { expected: String, actual: String },
     #[error("pool B minimum output {min_out} is below the repayment {repay}")]
     FinalOutputBelowRepayment { min_out: u64, repay: u64 },
+    #[error("pool B minimum output {min_out} is below the economic floor {required}")]
+    FinalOutputBelowEconomicFloor { min_out: u64, required: u64 },
+    #[error("minimum final output overflowed: repay={repay}, retained={retained}")]
+    RetainedProfitOverflow { repay: u64, retained: u64 },
     #[error("atomicity check failed: {0}")]
     AtomicityFailed(String),
     #[error("transaction too large: {size} bytes, limit {limit}")]
@@ -220,6 +224,12 @@ pub struct FlashArbParams {
     pub borrow_amount: u64,
     /// Kamino flash fee in flash-mint raw units (`ceil(borrow * fee_sf / 2^64)`).
     pub flash_fee: u64,
+    /// Required output to retain above principal + flash fee, in flash-mint raw units.
+    ///
+    /// Callers must include every non-repayment liability (base/network fee,
+    /// priority fee, Jito tip when applicable) plus the configured minimum profit.
+    /// DEX swap fees already reflected in the quoted output must not be counted again.
+    pub minimum_retained_profit_raw: u64,
     /// First DLMM swap leg (Pool A).
     pub leg_a: FlashArbPoolLeg,
     /// Second DLMM swap leg (Pool B).
@@ -240,6 +250,18 @@ impl FlashArbParams {
                 borrow: self.borrow_amount,
                 fee: self.flash_fee,
             })
+    }
+
+    /// Minimum final output required to repay the loan and retain all configured costs/profit.
+    #[inline]
+    pub fn minimum_final_out(&self) -> Result<u64, FlashArbError> {
+        let repay = self.repay_amount()?;
+        repay.checked_add(self.minimum_retained_profit_raw).ok_or(
+            FlashArbError::RetainedProfitOverflow {
+                repay,
+                retained: self.minimum_retained_profit_raw,
+            },
+        )
     }
 }
 
@@ -264,7 +286,7 @@ pub struct FlashTwoPoolArbitrageTx {
     pub repay_amount: u64,
     /// Conservative minimum output of Pool A.
     pub min_hop_a_out: u64,
-    /// Conservative minimum output of Pool B (>= repayment).
+    /// Conservative minimum output of Pool B (>= repayment + retained costs/profit).
     pub min_final_out: u64,
     /// Settlement account (flash mint) used for borrow, final output and repayment.
     pub settlement_account: Pubkey,
@@ -338,11 +360,18 @@ pub fn assemble_flash_funded_two_pool(
             b: params.leg_b.token_in_program().to_string(),
         });
     }
-    // ── Invariant 6: Pool B must be able to fund the repayment ──
+    // ── Invariant 6: Pool B must fund repayment and preserve all required profit/costs ──
     if params.leg_b.min_amount_out < repay_amount {
         return Err(FlashArbError::FinalOutputBelowRepayment {
             min_out: params.leg_b.min_amount_out,
             repay: repay_amount,
+        });
+    }
+    let minimum_final_out = params.minimum_final_out()?;
+    if params.leg_b.min_amount_out < minimum_final_out {
+        return Err(FlashArbError::FinalOutputBelowEconomicFloor {
+            min_out: params.leg_b.min_amount_out,
+            required: minimum_final_out,
         });
     }
 
@@ -559,6 +588,7 @@ mod tests {
             kamino: KaminoFlashParams::default(),
             borrow_amount: 1_000_000,
             flash_fee: 625,
+            minimum_retained_profit_raw: 0,
             leg_a: leg(pool_a(), wsol(), usdc(), true),
             leg_b: leg(pool_b(), wsol(), usdc(), false),
             cu_limit: 400_000,
@@ -620,6 +650,49 @@ mod tests {
         assert!(matches!(
             assemble_flash_funded_two_pool(&p),
             Err(FlashArbError::FinalOutputBelowRepayment { .. })
+        ));
+    }
+
+    #[test]
+    fn final_output_below_retained_economic_floor_is_rejected() {
+        let mut p = params();
+        let repay = p.repay_amount().unwrap();
+        p.minimum_retained_profit_raw = 1_000;
+        p.leg_b.min_amount_out = repay;
+
+        assert!(matches!(
+            assemble_flash_funded_two_pool(&p),
+            Err(FlashArbError::FinalOutputBelowEconomicFloor {
+                min_out,
+                required
+            }) if min_out == repay && required == repay + 1_000
+        ));
+    }
+
+    #[test]
+    fn final_output_at_retained_economic_floor_is_accepted() {
+        let mut p = params();
+        let repay = p.repay_amount().unwrap();
+        p.minimum_retained_profit_raw = 1_000;
+        p.leg_b.min_amount_out = repay + p.minimum_retained_profit_raw;
+
+        assert!(assemble_flash_funded_two_pool(&p).is_ok());
+    }
+
+    #[test]
+    fn retained_economic_floor_overflow_is_rejected() {
+        let mut p = params();
+        p.borrow_amount = u64::MAX - 1_000;
+        p.flash_fee = 500;
+        p.minimum_retained_profit_raw = 501;
+        p.leg_b.min_amount_out = u64::MAX;
+
+        assert!(matches!(
+            assemble_flash_funded_two_pool(&p),
+            Err(FlashArbError::RetainedProfitOverflow {
+                repay,
+                retained: 501
+            }) if repay == u64::MAX - 500
         ));
     }
 

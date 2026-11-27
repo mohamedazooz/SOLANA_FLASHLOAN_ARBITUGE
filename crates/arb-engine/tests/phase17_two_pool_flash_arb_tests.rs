@@ -274,6 +274,17 @@ fn evaluation_reports_a_profitable_cycle() {
     assert!(eval.net_profit > 0);
     assert!(eval.hop_a_out > 0);
     assert!(eval.hop_b_min_out > eval.borrow_amount);
+    assert_eq!(
+        eval.minimum_retained_profit_raw,
+        cfg.execution_cost() + cfg.min_profit_raw
+    );
+    assert!(
+        u128::from(eval.hop_b_min_out)
+            >= u128::from(eval.borrow_amount)
+                + u128::from(eval.flash_fee)
+                + u128::from(eval.minimum_retained_profit_raw),
+        "the conservative final quote must cover repayment plus retained costs/profit"
+    );
     // Kamino main-market WSOL charges `sf = 11_529_215_046_068` on a 2^60
     // scale = 1e-5, i.e. 100 lamports per 1e7 borrowed (round-half-up).
     assert_eq!(eval.flash_fee, 100, "round(1e7 * 11529215046068 / 2^60)");
@@ -346,6 +357,21 @@ fn profit_below_the_floor_is_rejected() {
         eval.rejection,
         Some(arb_engine::dlmm_flash_arbitrage::FlashArbRejection::ProfitBelowFloor { .. })
     ));
+}
+
+#[test]
+fn evaluator_rejects_retained_cost_overflow() {
+    let route = profitable_pair();
+    let mut cfg = config(allowlist());
+    cfg.min_profit_raw = u64::MAX;
+    let evaluator = DlmmFlashArbEvaluator { config: &cfg };
+
+    let eval = evaluator.evaluate(&route, 10_000_000);
+    assert!(!eval.feasible);
+    assert_eq!(
+        eval.rejection,
+        Some(arb_engine::dlmm_flash_arbitrage::FlashArbRejection::EconomicsOverflow)
+    );
 }
 
 #[test]
@@ -461,6 +487,10 @@ fn transaction_is_borrow_swaps_repay_in_one_atomic_unit() {
 
     let params = flash_params(&route, &best);
     let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&params).unwrap();
+    assert_eq!(
+        params.minimum_retained_profit_raw,
+        best.minimum_retained_profit_raw
+    );
     assert_eq!(ixs.len(), 8);
     assert_eq!(borrow_idx, 4);
     assert_eq!(repay_idx, 7);
@@ -493,6 +523,26 @@ fn transaction_is_borrow_swaps_repay_in_one_atomic_unit() {
         "{:?}",
         verification.rejection_reason
     );
+}
+
+#[test]
+fn builder_rejects_minimum_output_that_only_covers_repayment() {
+    let route = profitable_pair();
+    let cfg = config(allowlist());
+    let evaluator = DlmmFlashArbEvaluator { config: &cfg };
+    let best = evaluator.optimize(&route).expect("profitable result");
+    let mut params = flash_params(&route, &best);
+    let repay = params.repay_amount().expect("repayment");
+
+    params.leg_b.min_amount_out = repay;
+    assert!(matches!(
+        assemble_flash_funded_two_pool(&params),
+        Err(arb_tx::flash::dlmm_flash_arb::FlashArbError::FinalOutputBelowEconomicFloor {
+            min_out,
+            required
+        }) if min_out == repay
+            && required == repay + params.minimum_retained_profit_raw
+    ));
 }
 
 #[test]
@@ -657,7 +707,7 @@ fn flash_params(
         token_y_program: route.pool_b.token_y_program.program_id(),
         swap_for_y: hop_b_swap_for_y,
         amount_in: eval.hop_a_min_out,
-        min_amount_out: eval.borrow_amount + eval.flash_fee,
+        min_amount_out: eval.hop_b_min_out,
         bin_array_pdas: plan_b.pdas.clone(),
         bitmap_extension: Some(plan_b.bitmap_extension_pda),
         host_fee_in: None,
@@ -668,6 +718,7 @@ fn flash_params(
         kamino: arb_tx::KaminoFlashParams::default(),
         borrow_amount: eval.borrow_amount,
         flash_fee: eval.flash_fee,
+        minimum_retained_profit_raw: eval.minimum_retained_profit_raw,
         leg_a,
         leg_b,
         cu_limit: 400_000,
