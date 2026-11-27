@@ -146,6 +146,7 @@ fn econ(min_profit: u64) -> EconomicConfig {
     EconomicConfig {
         flash_loan_fee_sf: 0, // deterministic: no flash-loan fee in offline tests
         jito_tip_lamports: Lamports(0),
+        priority_fee_micro_lamports: 0,
         base_decimals: 9,
         lamports_to_base_mint_rate: 1,
         lamports_to_base_rate_denom: 1,

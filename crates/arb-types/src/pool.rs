@@ -332,6 +332,12 @@ pub struct ClmmTick {
 pub struct ClmmTickArray {
     #[serde(default)]
     pub start_tick_index: i32,
+    /// Actual account address when hydrated from chain (None for synthetic/test states).
+    #[serde(default)]
+    pub account_pubkey: Option<[u8; 32]>,
+    /// Common RPC context slot for the batch that supplied this account.
+    #[serde(default)]
+    pub account_slot: Option<u64>,
     #[serde(default)]
     pub ticks: Vec<ClmmTick>,
 }

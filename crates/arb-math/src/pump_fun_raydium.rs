@@ -9,8 +9,6 @@ use crate::cpmm::{U384, isqrt_u384};
 use ruint::aliases::U256;
 use std::cmp;
 
-pub const DEFAULT_FLASH_LOAN_FEE_BPS: u64 = 30;
-pub const DEFAULT_RAYDIUM_FEE_BPS: u64 = 25;
 pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,6 +30,7 @@ pub struct OptimalTrade {
     pub buy_cost: u128,
     pub sell_output: u128,
     pub net_profit: i128,
+    /// Generic percentage-based financing fee supplied by the caller (BPS); not a Kamino U68F60 fee.
     pub flash_loan_fee_bps: u64,
 }
 
@@ -114,7 +113,9 @@ pub fn verify_marginal_decreasing(
     (lhs / denom_left) <= (rhs / denom_right)
 }
 
-/// Pure wide-integer optimal trade sizing for buying on Pump.fun and selling on Raydium.
+/// Pure wide-integer sizing for a generic BPS-financed Pump.fun/Raydium route.
+/// The caller must supply current protocol-specific fee inputs; this helper does
+/// not decode Kamino U68F60 fees or Raydium CPMM/CLMM AmmConfig fees.
 pub fn calculate_optimal_trade_integer(
     pump: PumpFunParams,
     raydium: RaydiumParams,
@@ -218,6 +219,11 @@ pub fn calculate_optimal_trade(
 mod tests {
     use super::*;
 
+    // Synthetic test fixtures only. Production fee inputs must come from the
+    // relevant protocol state; these are not Kamino or universal Raydium rates.
+    const TEST_FINANCING_FEE_BPS: u64 = 30;
+    const TEST_RAYDIUM_FEE_BPS: u64 = 25;
+
     /// Profitable geometry: Pump.fun marginal price 1 lamport/token vs
     /// Raydium 2 lamports/token — a 100% gross spread far above both fees.
     fn profitable_pair() -> (PumpFunParams, RaydiumParams) {
@@ -229,7 +235,7 @@ mod tests {
             RaydiumParams {
                 token_reserve: 1_000_000_000,
                 sol_reserve: 2_000_000_000,
-                fee_bps: DEFAULT_RAYDIUM_FEE_BPS,
+                fee_bps: TEST_RAYDIUM_FEE_BPS,
             },
         )
     }
@@ -308,23 +314,21 @@ mod tests {
         let ray = RaydiumParams {
             token_reserve: 1_000_000_000,
             sol_reserve: 1_000_000_000,
-            fee_bps: DEFAULT_RAYDIUM_FEE_BPS,
+            fee_bps: TEST_RAYDIUM_FEE_BPS,
         };
-        let err = calculate_optimal_trade(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000)
+        let err = calculate_optimal_trade(pump, ray, TEST_FINANCING_FEE_BPS, 1_000_000)
             .expect_err("aligned prices must not produce a trade");
         assert_eq!(err, "No positive optimum under the current curve geometry");
         assert!(
-            calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000)
-                .is_none()
+            calculate_optimal_trade_integer(pump, ray, TEST_FINANCING_FEE_BPS, 1_000_000).is_none()
         );
     }
 
     #[test]
     fn optimal_trade_is_profitable_and_internally_consistent() {
         let (pump, ray) = profitable_pair();
-        let trade =
-            calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, u128::MAX)
-                .expect("profitable geometry must yield a trade");
+        let trade = calculate_optimal_trade_integer(pump, ray, TEST_FINANCING_FEE_BPS, u128::MAX)
+            .expect("profitable geometry must yield a trade");
         assert!(trade.is_profitable());
         assert!(trade.delta_t > 0);
         // Recomputed leg economics must match the reported trade.
@@ -350,25 +354,25 @@ mod tests {
         // At the optimum, marginal revenue == marginal cost (condition holds);
         // well below it, marginal revenue still exceeds marginal cost (false).
         let (pump, ray) = profitable_pair();
-        let trade = calculate_optimal_trade(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, u128::MAX)
+        let trade = calculate_optimal_trade(pump, ray, TEST_FINANCING_FEE_BPS, u128::MAX)
             .expect("optimum exists");
         assert!(verify_marginal_decreasing(
             pump,
             ray,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            TEST_FINANCING_FEE_BPS,
             trade.delta_t
         ));
         assert!(!verify_marginal_decreasing(
             pump,
             ray,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            TEST_FINANCING_FEE_BPS,
             (trade.delta_t / 10).max(1)
         ));
         // Degenerate size beyond supply short-circuits to true (fail-safe).
         assert!(verify_marginal_decreasing(
             pump,
             ray,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            TEST_FINANCING_FEE_BPS,
             pump.supply + 1
         ));
     }

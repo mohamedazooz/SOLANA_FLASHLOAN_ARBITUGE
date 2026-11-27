@@ -438,9 +438,7 @@ mod tests {
 #[cfg(test)]
 mod cross_venue_tests {
     use super::*;
-    use arb_math::pump_fun_raydium::{
-        DEFAULT_FLASH_LOAN_FEE_BPS, RaydiumParams, calculate_optimal_trade,
-    };
+    use arb_math::pump_fun_raydium::{RaydiumParams, calculate_optimal_trade};
     use solana_pubkey::Pubkey;
 
     #[test]
@@ -485,7 +483,7 @@ mod cross_venue_tests {
         let result = calculate_optimal_trade(
             pump_params,
             raydium_params,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            30, // synthetic BPS financing fixture; not the live Kamino fee
             max_delta_t as u128,
         );
 

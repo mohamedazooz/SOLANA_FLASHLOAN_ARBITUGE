@@ -25,6 +25,108 @@ use tracing::{info, warn};
 
 use arb_bot::verified_config;
 
+/// Exact read-only quote for a live pool. Whirlpool quotes require the real
+/// TickArray PDAs and same-slot account provenance; no virtual-reserve CPMM
+/// approximation is permitted for concentrated liquidity.
+fn quote_pool_for_math_check(
+    pool: &arb_types::PoolState,
+    input_mint: Pubkey,
+    amount_in: u64,
+) -> Option<u128> {
+    match pool.protocol {
+        arb_types::DexProtocol::OrcaWhirlpool => {
+            let clmm = pool.clmm.as_ref()?;
+            if clmm.tick_arrays.len() != 3 || clmm.tick_spacing == 0 {
+                return None;
+            }
+            let pool_mint_a = match pool.execution_accounts.as_ref()? {
+                arb_types::PoolExecutionAccounts::OrcaWhirlpool { pool_mint_a, .. }
+                    if *pool_mint_a != Pubkey::default() =>
+                {
+                    *pool_mint_a
+                }
+                _ => return None,
+            };
+            let program_id = Pubkey::from_str(arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID).ok()?;
+            let ticks_per_array = 88i32.checked_mul(i32::from(clmm.tick_spacing))?;
+            let first_start = clmm.tick_current.div_euclid(ticks_per_array) * ticks_per_array;
+            let expected_starts: std::collections::HashSet<i32> = [
+                first_start,
+                first_start - ticks_per_array,
+                first_start + ticks_per_array,
+            ]
+            .into_iter()
+            .collect();
+            let mut arrays = Vec::with_capacity(clmm.tick_arrays.len());
+            let mut seen_starts = std::collections::HashSet::new();
+            for array in &clmm.tick_arrays {
+                let account = array.account_pubkey?;
+                if array.account_slot != Some(pool.slot.0)
+                    || !seen_starts.insert(array.start_tick_index)
+                {
+                    return None;
+                }
+                let start = array.start_tick_index.to_string();
+                let expected = Pubkey::find_program_address(
+                    &[b"tick_array", pool.pool_id.0.as_ref(), start.as_bytes()],
+                    &program_id,
+                )
+                .0;
+                if expected.to_bytes() != account {
+                    return None;
+                }
+                arrays.push(arb_math::clmm::TickArrayFacade {
+                    start_tick_index: array.start_tick_index,
+                    ticks: array
+                        .ticks
+                        .iter()
+                        .map(|tick| arb_math::clmm::TickFacade {
+                            tick_index: tick.tick_index,
+                            initialized: tick.initialized,
+                            liquidity_net: tick.liquidity_net,
+                            liquidity_gross: 0,
+                            limit_order_unfilled: tick.limit_order_unfilled,
+                        })
+                        .collect(),
+                });
+            }
+            if seen_starts != expected_starts {
+                return None;
+            }
+            let a_to_b = input_mint == pool_mint_a;
+            arb_math::compute_whirlpool_swap(
+                clmm.sqrt_price,
+                clmm.tick_current,
+                clmm.liquidity,
+                clmm.tick_spacing,
+                clmm.fee_rate,
+                amount_in,
+                a_to_b,
+                &arrays,
+            )
+            .ok()
+            .map(|quote| u128::from(quote.amount_out_received))
+        }
+        arb_types::DexProtocol::RaydiumV4 => {
+            let (reserve_in, reserve_out) = if pool.base_mint.0 == input_mint {
+                (pool.reserve_in, pool.reserve_out)
+            } else if pool.quote_mint.0 == input_mint {
+                (pool.reserve_out, pool.reserve_in)
+            } else {
+                return None;
+            };
+            let fee_bps = pool.fee_bps()?;
+            cpmm_out(
+                u128::from(amount_in),
+                reserve_in,
+                reserve_out,
+                10_000u128.saturating_sub(u128::from(fee_bps)),
+            )
+        }
+        _ => None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -344,7 +446,7 @@ async fn main() -> Result<()> {
         );
         for (index, hop) in rejected.hops.iter().enumerate() {
             info!(
-                "  REJECTED_HOP route={} leg={} pool={:?} dex={:?} kind={:?} direction={:?}->{:?} dex_fee_bps={}",
+                "  REJECTED_HOP route={} leg={} pool={:?} dex={:?} kind={:?} direction={:?}->{:?} dex_fee_bps={} amount_in_raw={:?} amount_out_raw={:?} dex_fee_paid_raw={:?} transfer_fee_paid_raw={:?}",
                 rejected.route_id,
                 index + 1,
                 hop.pool_id,
@@ -353,6 +455,10 @@ async fn main() -> Result<()> {
                 hop.from_mint,
                 hop.to_mint,
                 hop.fee_bps,
+                hop.amount_in_raw,
+                hop.amount_out_raw,
+                hop.dex_fee_paid_raw,
+                hop.transfer_fee_paid_raw,
             );
         }
     }
@@ -404,64 +510,72 @@ async fn main() -> Result<()> {
     if jupiter.api_keys.is_empty() {
         warn!("JUPITER_API_KEY not set — skipping math-vs-Jupiter comparison");
     } else if let Some(pool) = sol_usdc {
-        // Our quote: SOL -> USDC.
-        let (reserve_in, reserve_out) = if pool.base_mint.0 == wsol {
-            (pool.reserve_in, pool.reserve_out)
-        } else {
-            (pool.reserve_out, pool.reserve_in)
-        };
-        let Some(fee_bps) = pool.fee_bps() else {
-            eprintln!("Pool {} has invalid fee, skipping comparison", pool.pool_id);
-            return Ok(());
-        };
-        let gamma = 10_000u128.saturating_sub(fee_bps as u128);
-        let Some(ours) = cpmm_out(amount_in as u128, reserve_in, reserve_out, gamma) else {
-            eprintln!("CPMM quote overflow for pool {}", pool.pool_id);
-            return Ok(());
-        };
+        // Our quote uses the protocol's actual math. In particular, Whirlpool
+        // must traverse its hydrated TickArrays; never treat virtual reserves as CPMM.
+        let ours = quote_pool_for_math_check(pool, wsol, amount_in);
+        if let Some(ours) = ours {
+            let label = match pool.protocol {
+                arb_types::DexProtocol::RaydiumV4 => "Raydium",
+                arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
+                _ => "Unknown",
+            };
 
-        let label = match pool.protocol {
-            arb_types::DexProtocol::RaydiumV4 => "Raydium",
-            arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
-            _ => "Unknown",
-        };
-
-        match jupiter
-            .get_quote_dexes(
-                &wsol.to_string(),
-                &usdc.to_string(),
-                amount_in,
-                math_check_slippage_bps,
-                Some(&[label]),
-            )
-            .await
-        {
-            Ok(quote) => {
-                let jup_out = quote["outAmount"]
-                    .as_str()
-                    .and_then(|s| s.parse::<u128>().ok())
-                    .unwrap_or(0);
-                let diff = if jup_out > 0 && ours > jup_out {
-                    (ours - jup_out) as f64 / jup_out as f64 * 100.0
-                } else if jup_out > 0 {
-                    (jup_out - ours) as f64 / jup_out as f64 * 100.0
-                } else {
-                    f64::NAN
-                };
-                info!(
-                    "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} jupiter={} diff={:.4}%",
-                    label,
-                    amount_in as f64 / 1e9,
-                    ours,
-                    jup_out,
-                    diff
-                );
-                info!(
-                    "   (a small diff is expected: Jupiter includes its own fee tier / \
+            match jupiter
+                .get_quote_dexes(
+                    &wsol.to_string(),
+                    &usdc.to_string(),
+                    amount_in,
+                    math_check_slippage_bps,
+                    Some(&[label]),
+                )
+                .await
+            {
+                Ok(quote) => {
+                    let expected_pool = pool.pool_id.0.to_string();
+                    let same_single_pool = quote["routePlan"].as_array().is_some_and(|plan| {
+                        plan.len() == 1
+                            && plan[0]["swapInfo"]["ammKey"]
+                                .as_str()
+                                .is_some_and(|key| key == expected_pool)
+                    });
+                    if !same_single_pool {
+                        warn!(
+                            "Jupiter venue reference is not the same single pool (target={}); comparison intentionally skipped",
+                            expected_pool
+                        );
+                    } else {
+                        let jup_out = quote["outAmount"]
+                            .as_str()
+                            .and_then(|s| s.parse::<u128>().ok())
+                            .unwrap_or(0);
+                        let diff = if jup_out > 0 && ours > jup_out {
+                            (ours - jup_out) as f64 / jup_out as f64 * 100.0
+                        } else if jup_out > 0 {
+                            (jup_out - ours) as f64 / jup_out as f64 * 100.0
+                        } else {
+                            f64::NAN
+                        };
+                        info!(
+                            "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} jupiter={} diff={:.4}%",
+                            label,
+                            amount_in as f64 / 1e9,
+                            ours,
+                            jup_out,
+                            diff
+                        );
+                        info!(
+                            "   (a small diff is expected: Jupiter includes its own fee tier / \
                      account state; a LARGE diff flags a math or reserve-decoding bug)"
-                );
+                        );
+                    }
+                }
+                Err(e) => warn!("Jupiter {label} quote failed: {e}"),
             }
-            Err(e) => warn!("Jupiter {label} quote failed: {e}"),
+        } else {
+            warn!(
+                "Skipping math comparison for {:?} pool {}: exact quote state/owner/PDA/same-slot TickArrays unavailable",
+                pool.protocol, pool.pool_id
+            );
         }
     } else {
         warn!("No live SOL/USDC pool found in the registry — cannot run the math check");

@@ -1079,7 +1079,12 @@ impl HeliusWsClient {
                     );
                     let ext = crate::registry::bitmap_extension_pda(&pool_id.0);
                     keys.push(ext);
-                    let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+                    // Fetch the pool and every derived TickArray in ONE RPC batch.
+                    // This gives the quote a common context slot and lets us prove
+                    // the pool bytes used by the local snapshot are unchanged at it.
+                    let mut refs: Vec<String> = Vec::with_capacity(keys.len() + 1);
+                    refs.push(pool_id.0.to_string());
+                    refs.extend(keys.iter().map(|key| key.to_string()));
                     let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
                     let Ok((accounts, hydration_context_slot)) = self
                         .rpc_pool
@@ -1214,13 +1219,45 @@ impl HeliusWsClient {
                     else {
                         continue;
                     };
+                    let Some(pool_account) = accounts.first().and_then(Option::as_ref) else {
+                        continue;
+                    };
+                    let expected_program = if reg.protocol == DexProtocol::OrcaWhirlpool {
+                        arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID
+                    } else {
+                        arb_constants::RAYDIUM_CLMM_PROGRAM_ID
+                    };
+                    let pool_owner_ok = pool_account
+                        .get("owner")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_program);
+                    let pool_bytes_match = pool_account
+                        .get("data")
+                        .and_then(|data| data.get(0))
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|raw| base64::engine::general_purpose::STANDARD.decode(raw).ok())
+                        .is_some_and(|bytes| bytes.as_slice() == snap.data.as_ref());
+                    if !pool_owner_ok || !pool_bytes_match {
+                        continue;
+                    }
+
                     let mut arrays = Vec::new();
-                    for (acc, start_tick) in accounts.into_iter().zip(starts.iter()) {
+                    for ((acc, account_key), start_tick) in accounts
+                        .into_iter()
+                        .skip(1)
+                        .zip(keys.iter())
+                        .zip(starts.iter())
+                    {
                         let Some(acc) = acc else { continue };
+                        let owner_ok = acc.get("owner").and_then(serde_json::Value::as_str)
+                            == Some(expected_program);
+                        if !owner_ok {
+                            continue;
+                        }
                         let Some(raw) = acc
                             .get("data")
-                            .and_then(|d| d.get(0))
-                            .and_then(|s| s.as_str())
+                            .and_then(|data| data.get(0))
+                            .and_then(serde_json::Value::as_str)
                         else {
                             continue;
                         };
@@ -1242,14 +1279,16 @@ impl HeliusWsClient {
                         {
                             arrays.push(arb_types::ClmmTickArray {
                                 start_tick_index: start,
+                                account_pubkey: Some(account_key.to_bytes()),
+                                account_slot: Some(slot),
                                 ticks: ticks
                                     .into_iter()
-                                    .filter(|t| t.initialized)
-                                    .map(|t| arb_types::ClmmTick {
-                                        tick_index: t.tick_index,
+                                    .filter(|tick| tick.initialized)
+                                    .map(|tick| arb_types::ClmmTick {
+                                        tick_index: tick.tick_index,
                                         initialized: true,
-                                        liquidity_net: t.liquidity_net,
-                                        limit_order_unfilled: t.limit_order_unfilled,
+                                        liquidity_net: tick.liquidity_net,
+                                        limit_order_unfilled: tick.limit_order_unfilled,
                                     })
                                     .collect(),
                             });
