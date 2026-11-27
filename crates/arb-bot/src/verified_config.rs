@@ -336,6 +336,8 @@ mod tests {
         assert_eq!(inputs.lamports_per_base_raw.value, 1);
         assert_eq!(inputs.lamports_per_base_denom.value, 1);
         assert_eq!(inputs.tip_lamports.value, Lamports(50_000));
+        let economic = inputs.to_economic_config(TokenAmount(10_000), 10);
+        assert_eq!(economic.jito_tip_lamports, Lamports(50_000));
     }
 
     #[test]
