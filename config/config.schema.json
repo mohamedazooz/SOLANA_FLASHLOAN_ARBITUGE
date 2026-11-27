@@ -3,9 +3,7 @@
   "$id": "https://sentinel.example.com/schemas/arb-config.schema.json",
   "title": "Sentinel Solana Arbitrage Bot Configuration",
   "type": "object",
-  "description": "Strongly-typed configuration for the Solana arbitrage bot. "
-    "Protocol invariants are compiled in (arb-constants) and cannot be overridden "
-    "by operator configuration.",
+  "description": "Strongly-typed configuration for the Solana arbitrage bot. Protocol invariants are compiled in (arb-constants) and cannot be overridden by operator configuration.",
   "required": [
     "bot", "provider", "jito", "jupiter", "wallet", "strategy",
     "risk", "store", "metrics", "admin", "security", "chronos"
@@ -224,8 +222,16 @@
           "description": "Must be >= max_state_age_slots when set."
         },
         "use_flash_loan": {
-          "type": "boolean",
-          "default": true
+          "const": true,
+          "default": true,
+          "description": "Mandatory. Executable arbitrage must use an atomic Kamino flash loan."
+        },
+        "max_route_hops": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3,
+          "default": 3,
+          "description": "Maximum swap legs/pools in one closed route; only 2 or 3 are supported."
         },
         "max_pools": {
           "type": ["integer", "null"],

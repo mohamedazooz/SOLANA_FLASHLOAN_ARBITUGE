@@ -296,7 +296,7 @@ impl TryFrom<DexProtocol> for DexPlatform {
 
 /// Checks whether an opportunity spans two or more distinct DEX platforms.
 pub fn is_cross_dex_opportunity(opp: &ExecutionOpportunity) -> bool {
-    if opp.hops.len() < 2 {
+    if !(2..=3).contains(&opp.hops.len()) {
         return false;
     }
     let mut platforms = std::collections::HashSet::new();
@@ -314,7 +314,7 @@ pub fn is_cross_dex_opportunity(opp: &ExecutionOpportunity) -> bool {
 pub fn validate_cross_dex_opportunity(
     opp: &ExecutionOpportunity,
 ) -> Result<Vec<DexPlatform>, CrossDexFlashArbError> {
-    if opp.hops.len() < 2 || opp.hops.len() > 4 {
+    if !(2..=3).contains(&opp.hops.len()) {
         return Err(CrossDexFlashArbError::InvalidNumberOfLegs(opp.hops.len()));
     }
     if opp.size_in.as_u64() == 0 {

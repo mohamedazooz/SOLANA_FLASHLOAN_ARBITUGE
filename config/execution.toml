@@ -31,7 +31,7 @@ max_concurrent_bundles = 5      # Max inflight bundle IDs
 
 # Route depth
 max_route_hops = 3              # Max hops in an arbitrage route (2 or 3)
-use_flash_loan = true           # Whether Kamino flash loans are enabled
+use_flash_loan = true           # Mandatory: all executable routes use atomic Kamino flash loans
 
 # Route filtering
 min_pool_tvl_usd = 25000.0      # Minimum TVL for a pool to be considered

@@ -220,7 +220,8 @@ pub struct StrategyConfig {
     /// policy as `max_state_age_slots`. Never an arbitrary multiplier.
     #[serde(default)]
     pub graph_max_age_slots: Option<Slot>,
-    /// Whether flash loans are used for execution.
+    /// Flash loans are mandatory for every executable arbitrage route.
+    /// Validation rejects `false`; this flag is retained for config compatibility.
     #[serde(default = "default_true")]
     pub use_flash_loan: bool,
     /// Hard cap on dynamically discovered pools.
@@ -232,10 +233,9 @@ pub struct StrategyConfig {
     /// Minimum TVL (USD) for a discovered pool.
     #[serde(default)]
     pub discovery_min_tvl_usd: Option<UsdMicros>,
-    /// Maximum hops per arbitrage route. Every extra hop stacks another DEX
-    /// trade fee plus another failure point, so routes longer than 4 hops are
-    /// economically dominated (cumulative fees exceed realistic cycle
-    /// spreads). Validated to 2..=4; default 3.
+    /// Maximum pools (swap legs) in one closed flash-loan cycle. The runtime
+    /// supports exactly 2 or 3 distinct pools per route; the broader pool
+    /// discovery universe is controlled separately by `max_pools`.
     #[serde(default = "default_max_route_hops")]
     pub max_route_hops: usize,
     /// HTTP-based pool catalog discovery (Orca/Raydium/Meteora/Dexscreener/

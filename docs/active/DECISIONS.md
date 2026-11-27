@@ -62,6 +62,9 @@ Autonomous agents are prohibited from altering these safety defaults. Live execu
 
 ---
 
+### Invariant 7: Active Flash-Loan Route Contract
+The active Supervisor execution path accepts only closed cycles containing two or three distinct pool hops. Every executable opportunity must use the canonical atomic Kamino flash-loan borrow/swap/repay path; non-flash execution is prohibited. `strategy.max_route_hops` is constrained to 2..=3. `strategy.max_pools` remains a separate discovery-universe limit and must not be confused with the number of pools in a route. Legacy four-leg builders and disconnected graph utilities are not active execution capabilities.
+
 ## 3. Architecture Decision Records (ADRs) Summary
 
 The complete history of formal ADRs is maintained in [`docs/adr/`](../../docs/adr). The active decisions are summarized below:

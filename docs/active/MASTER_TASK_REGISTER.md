@@ -619,3 +619,60 @@ OPEN_QUESTIONS: None for this narrow fix.
 REMAINING_RISKS: Workspace-wide CI remains pending. No RPC simulation, live transaction, landing, or realized PnL was part of this task.
 NEXT_ACTION: Review PR CI and keep merge as an operator action.
 ```
+
+
+```markdown
+TASK_ID: TASK-ROUTE-CONTRACT-20261127-001
+PHASE: Phase 8 ? Route Discovery & Joint Sizing / Phase 10 ? Flash Loan Integration
+PRIORITY: P0
+STATUS: COMPLETED
+BASE_COMMIT: 3319b7eaf8d7c82229ae315a5d501b4d278af3a1
+BRANCH: fix/flashloan-2-3-pool-route-gates-20261127
+PR: #203 (open; all required checks passed)
+OBJECTIVE: Enforce the operator's active execution contract: mandatory atomic Kamino flash loan and only closed 2- or 3-pool cycles, without expanding DEX coverage or changing the operator's existing checkout.
+FILES_CHANGED:
+  - config/base.toml
+  - config/config.example.toml
+  - config/config.schema.json
+  - config/execution.toml
+  - crates/arb-bot/src/config.rs
+  - crates/arb-bot/src/supervisor/execution.rs
+  - crates/arb-bot/src/supervisor/opportunity.rs
+  - crates/arb-config/src/lib.rs
+  - crates/arb-config/src/validation.rs
+  - crates/arb-engine/src/lib.rs
+  - crates/arb-engine/tests/cross_dex_three_pool_live_loop.rs
+  - crates/arb-engine/tests/phase_e_gates_and_bench.rs
+  - crates/arb-tx/src/flash/cross_dex_flash_arb.rs
+  - crates/arb-tx/tests/cross_dex_dlmm_cpmm_v1_atomic_tests.rs
+  - docs/active/DECISIONS.md
+  - docs/active/CURRENT_STATUS.md
+  - docs/active/OPEN_ISSUES.md
+  - docs/active/MASTER_TASK_REGISTER.md
+FUNCTIONS_CHANGED:
+  - validate_strategy
+  - MarketGraph::find_cycles_with_stats
+  - MarketGraph::find_cycles_with_anchor_caps
+  - evaluate_directed_route
+  - Supervisor::process_opportunities
+  - Supervisor::assemble_native_ixs_for_anchor
+  - is_cross_dex_opportunity
+  - validate_cross_dex_opportunity
+OBSERVED_BEHAVIOR: Active route scanning/evaluation accepted up to six hops, config validation accepted up to four, cross-DEX validation accepted four, and the Supervisor/assembler retained a non-flash fallback.
+ROOT_CAUSE: Independent route-depth and funding-mode gates had drifted across the engine, config, cross-DEX validator, and Supervisor.
+IMPLEMENTATION: The active MarketGraph scanner/evaluator is capped at 2..=3; the Supervisor rejects routes outside 2..=3, non-closing/discontinuous cycles, and repeated pools; config validation rejects max_route_hops outside 2..=3 and rejects use_flash_loan=false; the native assembler no longer falls back to non-flash assembly; cross-DEX classification and validation enforce the same 2..=3 bound; config TOML/schema docs were aligned. `max_pools` remains the separate discovery-universe cap. Disconnected legacy graph utilities and the exported four-leg builder were not wired into the active Supervisor.
+TESTS_EXECUTED:
+  - cargo +1.99.1 fmt --all -- --check
+  - cargo +1.99.1 test -p arb-config -p arb-engine -p arb-tx --locked
+  - cargo +1.99.1 check -p arb-bot --locked
+  - cargo +1.99.1 clippy -p arb-config -p arb-engine -p arb-tx -p arb-bot --all-targets --locked -- -D warnings
+  - cargo +1.99.1 test -p arb-bot --all-targets --locked
+  - cargo +1.99.1 test -p arb-tx --test cross_dex_dlmm_cpmm_v1_atomic_tests cross_dex_validator_rejects_four_pool_routes --locked
+  - git diff --check
+TEST_RESULTS: `arb-config`/`arb-engine`/`arb-tx` test suites passed; `arb-bot --all-targets` passed (142 tests across library, binaries, and integration targets); focused cross-DEX four-pool regression passed (1/1); `arb-bot` check passed; targeted Clippy passed with -D warnings; format, JSON schema parse, and `git diff --check` passed.
+CI_STATUS: PASS (PR #203; Rust CI, webhook CI, cargo-deny, gitleaks, Web Build, and Vercel all passed)
+KNOWN_LIMITATIONS: Verification host is Windows with Rust 1.99.1; Linux CI remains required. No RPC simulation, shadow soak, live transaction, landing, or realized PnL was performed. The legacy four-leg builder remains disconnected from the active Supervisor.
+OPEN_QUESTIONS: None for this scoped route/funding contract.
+REMAINING_RISKS: GitHub CI and Linux build must pass before merge; no live execution authorization or profitability claim is implied.
+NEXT_ACTION: PR #203 is open with all required checks passing; human review and merge remain operator actions.
+```

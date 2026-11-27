@@ -202,7 +202,7 @@ fn phase_c_and_a1_multimint_and_newly_enabled_dexes_enter_market_graph() {
 }
 
 #[test]
-fn phase_b_v1_account_filter_rejects_heavy_3hop_raydium_v4_routes_before_quoting() {
+fn phase_b_route_cap_excludes_four_pool_v4_cycles_before_quoting() {
     let make_v4_pool = |id: u8, from: MintId, to: MintId| PoolState {
         pool_id: PoolId::new([id; 32]),
         protocol: DexProtocol::RaydiumV4,
@@ -292,8 +292,19 @@ fn phase_b_v1_account_filter_rejects_heavy_3hop_raydium_v4_routes_before_quoting
         "4 distinct V4 hops must exceed V1 64-account inline cap"
     );
 
-    let (_opps, scan) = graph.find_cycles_with_stats(Slot(500), 1_000_000_000, 4, 64);
-    assert!(scan.excluded_v1_account_limit > 0);
+    let (opps, scan) = graph.find_cycles_with_stats(Slot(500), 1_000_000_000, 4, 64);
+    assert!(
+        opps.is_empty(),
+        "four-pool routes must not become opportunities"
+    );
+    assert_eq!(
+        scan.cycles_evaluated, 0,
+        "four-pool routes must be pruned before quoting"
+    );
+    assert_eq!(
+        scan.excluded_v1_account_limit, 0,
+        "four-pool routes are rejected by the route cap first"
+    );
 }
 
 #[test]

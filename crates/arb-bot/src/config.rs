@@ -264,6 +264,7 @@ pub struct StrategyConfig {
     /// This is an explicit policy, never an arbitrary multiplier.
     #[serde(default)]
     pub graph_max_age_slots: Option<u64>,
+    /// Mandatory for all executable arbitrage; config validation rejects false.
     pub use_flash_loan: bool,
     /// Hard cap on dynamically discovered pools (each costs account reads
     /// every tick). `None` uses the discovery default.
@@ -287,9 +288,8 @@ pub struct StrategyConfig {
     /// resolve a fully executable chain.
     #[serde(default)]
     pub dlmm_three_leg: Option<DlmmThreeLegTuning>,
-    /// Maximum hops per arbitrage route (2..=4, default 3). Each extra hop
-    /// stacks another DEX fee plus another failure point; routes longer than
-    /// 4 hops are economically dominated by cumulative fees.
+    /// Maximum pools (swap legs) per closed flash-loan route (2..=3, default 3).
+    /// The pool discovery universe is bounded separately by `max_pools`.
     #[serde(default = "default_max_route_hops")]
     pub max_route_hops: usize,
     /// HTTP-based pool catalog discovery (REST APIs). Defaults to **false**

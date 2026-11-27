@@ -1844,7 +1844,7 @@ impl MarketGraph {
             base_anchors: self.base_anchors.len(),
             ..Default::default()
         };
-        let max_hops = max_hops.clamp(2, 6);
+        let max_hops = max_hops.clamp(2, 3);
         let max_candidates = max_candidates.min(MAX_ROUTE_CANDIDATES_PER_TICK);
         if max_trade_size == 0
             || max_candidates == 0
@@ -1898,7 +1898,7 @@ impl MarketGraph {
             base_anchors: self.base_anchors.len(),
             ..Default::default()
         };
-        let max_hops = max_hops.clamp(2, 6);
+        let max_hops = max_hops.clamp(2, 3);
         let max_candidates = max_candidates.min(MAX_ROUTE_CANDIDATES_PER_TICK);
         if max_candidates == 0
             || (self.economic_config.is_none() && self.anchor_economic_configs.is_empty())
@@ -2051,7 +2051,7 @@ impl MarketGraph {
         route_id: RouteId,
         hops: &[SwapHop],
     ) -> Option<ExecutionOpportunity> {
-        if !(2..=6).contains(&hops.len()) || max_trade_size == 0 {
+        if !(2..=3).contains(&hops.len()) || max_trade_size == 0 {
             return None;
         }
         let first = hops.first()?;
@@ -3054,7 +3054,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_4hop_multi_detection() {
+    fn graph_4hop_cycle_is_excluded_by_three_pool_cap() {
         let base = MintId::new([1; 32]);
         let make_cpmm = |id: u8, from: u8, to: u8, r_in: u128, r_out: u128| {
             let mut p = make_pool(id, from, to, r_in, r_out);
@@ -3081,16 +3081,9 @@ mod tests {
         graph.build_from_pools(&[p1, p2, p3, p4]);
 
         let opps = graph.find_multi_hop_cycles(Slot(1), 100_000, 4);
-        assert!(!opps.is_empty(), "Must detect 4-hop profitable cycle");
-        let four_hop = opps.iter().find(|o| o.hops.len() == 4);
-        assert!(four_hop.is_some(), "Found 4-hop opportunity");
-        let four_hop = four_hop.unwrap();
-        assert!(four_hop.gross_profit.as_u64() > 0);
-        assert!(four_hop.size_in.as_u64() <= 100_000);
-        assert_eq!(four_hop.hop_inputs.len(), four_hop.hops.len() + 1);
-        assert_eq!(
-            four_hop.hop_inputs.last().copied(),
-            Some(four_hop.expected_out.as_u64())
+        assert!(
+            opps.is_empty(),
+            "a four-pool cycle must not be returned even when a caller requests four hops"
         );
     }
 
