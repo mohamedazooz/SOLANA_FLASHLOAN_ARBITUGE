@@ -210,3 +210,10 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - Verification on the source PR: 559 tests passed across `arb-math` and `arb-dex`; format and Clippy (`-D warnings`) passed for both crates.
 - Remaining gates: exact-out is not exposed through the public `QuoteEngine` contract; trusted bank Clock timestamp for dynamic-fee decay is still required. No live execution was enabled.
 - Report: `reports/DLMM_QUOTE_PARITY_AUDIT_2026-11-27.md`.
+
+## RPC account-batch cardinality hardening — 2026-11-27
+
+- Validate every `getMultipleAccounts` response against the exact requested key count before positional association; malformed large batches retry in bounded five-key chunks, and malformed fallback responses fail closed.
+- Preserve slot attribution and reject provider payloads with missing or excess account values.
+- Regression coverage and detailed source/test notes: `reports/RPC_MULTIPLE_ACCOUNTS_CARDINALITY_AUDIT_2026-11-27.md`.
+- Source PR #206 adds this ingestion hardening; the integration branch combines it with the economic-accounting and DLMM parity slices.

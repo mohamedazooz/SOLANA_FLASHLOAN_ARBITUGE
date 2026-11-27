@@ -460,3 +460,10 @@ The canonical Kamino flash-fee calculation, fee-exclusive per-protocol price-imp
 - **Fix:** Both quote directions now use the same checked fee-exclusion helper, respecting InputOnly and OnlyY fee placement. Regression tests cover both modes.
 - **Verification:** Source PR passed 559 tests across `arb-math` and `arb-dex`, format and Clippy with `-D warnings`.
 - **Unchanged gates:** Exact-out remains unavailable through `QuoteEngine`; DLMM timestamp decay requires a trusted bank Clock snapshot. Unsupported extension modes remain fail-closed.
+
+## RPC `getMultipleAccounts` response cardinality — 2026-11-27
+
+- **Fix:** Verify returned account-value cardinality exactly matches requested pubkeys before zipping/indexing; malformed large batches retry via bounded chunks, malformed fallback data is rejected.
+- **Safety:** Preserve per-response slot metadata and fail closed on invalid provider payloads.
+- **Coverage:** Truncated/oversized response regression tests; source PR #206.
+- **Report:** `reports/RPC_MULTIPLE_ACCOUNTS_CARDINALITY_AUDIT_2026-11-27.md`.
