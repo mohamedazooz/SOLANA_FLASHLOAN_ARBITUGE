@@ -694,7 +694,6 @@ PR: #204 (open; https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/2
 REMAINING_RISKS: No RPC simulation, Jito ingress canary, mainnet landing, or realized PnL evidence was produced. Legacy Bellman-Ford helper remains disconnected and requires a separate deprecation decision.
 NEXT_TASK: Review PR #204 CI and human review; update branch if needed; do not merge automatically.
 ```
-
 ```markdown
 TASK_ID: TASK-DLMM-PRICE-IMPACT-PARITY-20261127-001
 PHASE: Phase 7 — Exact Quote Math & Differential Tests
@@ -723,3 +722,5 @@ TEST_RESULTS: 559 tests passed, 0 failed; format and both crate Clippy gates pas
 KNOWN_LIMITATIONS: QuoteEngine exact-out request/result contract is still exact-in-shaped; trusted Clock timestamp hydration is still absent; unsupported limit-order/extension cases remain fail-closed. This task does not resolve the independent P1/P2 issues listed in OPEN_ISSUES.md.
 NEXT_ACTION: Review PR CI and continue the remaining P1 protocol-parity issues in separate scoped changes.
 ```
+
+- [x] RPC getMultipleAccounts response cardinality validation — 2026-11-27: malformed arrays rejected before positional account mapping; batch path falls back to checked five-key chunks. See reports/RPC_MULTIPLE_ACCOUNTS_CARDINALITY_AUDIT_2026-11-27.md.
