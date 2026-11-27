@@ -346,6 +346,17 @@ impl Supervisor {
         }
     }
 
+    /// Live SOL/USD price along with the exact slot at which it was observed on-chain.
+    pub(super) fn live_sol_price_with_slot(&self) -> Option<(f64, Slot)> {
+        let p = *self.last_known_live_sol_price.read();
+        let slot = *self.last_known_live_sol_price_slot.read();
+        if p > 0.0 && p.is_finite() && slot > 0 {
+            Some((p, Slot(slot)))
+        } else {
+            None
+        }
+    }
+
     /// Build verified on-chain economic inputs for one quoting cycle.
     ///
     /// Reads the Kamino flash-loan fee and base-mint decimals live from the
@@ -478,14 +489,19 @@ impl Supervisor {
             fresh_tip_estimate,
         );
 
-        let inputs = crate::verified_config::build_verified_inputs_from_snapshots(
+        let (sol_price_usd, sol_price_observed_slot) = match self.live_sol_price_with_slot() {
+            Some((price, slot)) => (Some(price), Some(slot)),
+            None => (self.live_sol_price(), None),
+        };
+        let inputs = crate::verified_config::build_verified_inputs_from_snapshots_with_price_slot(
             active_store,
             &base_mint,
             &reserve,
             &base_mint.0,
             discovery_tip,
             eval_slot,
-            self.live_sol_price(),
+            sol_price_usd,
+            sol_price_observed_slot,
         )
         .map_err(anyhow::Error::msg)?;
         if !inputs.is_fresh(arb_constants::KAMINO_RPC_SNAPSHOT_MAX_AGE_SLOTS) {

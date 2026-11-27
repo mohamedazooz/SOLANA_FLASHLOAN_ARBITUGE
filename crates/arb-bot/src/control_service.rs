@@ -558,12 +558,10 @@ impl ControlService {
         self.inner
             .opportunities_recorded_total
             .fetch_add(1, Ordering::Relaxed);
-        record.gross_profit_lamports = i64::try_from(
-            record
-                .expected_output_lamports
-                .saturating_sub(record.borrow_lamports),
-        )
-        .unwrap_or(0);
+        let gross_signed = i128::from(record.expected_output_lamports)
+            .saturating_sub(i128::from(record.borrow_lamports));
+        record.gross_profit_lamports =
+            gross_signed.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
         record.captured_at_unix = now_unix();
         if record.eligible {
             self.inner.profitable_total.fetch_add(1, Ordering::Relaxed);
@@ -1031,6 +1029,29 @@ mod tests {
             svc.status().profitable_total,
             OPPORTUNITY_RING_CAP as u64 + 10
         );
+    }
+
+    #[test]
+    fn record_opportunity_preserves_signed_negative_gross_loss() {
+        let svc = service();
+        svc.record_opportunity(OpportunityRecord {
+            captured_at_unix: 0,
+            slot: 42,
+            route: "raydium_v4 -> raydium_cpmm [SOL/USDC]".into(),
+            protocol: "raydium_v4-to-raydium_cpmm".into(),
+            borrow_lamports: 100_000_000,
+            expected_output_lamports: 99_500_000,
+            gross_profit_lamports: 0,
+            net_profit_lamports: -515_000,
+            eligible: false,
+            reject_reason: Some("BELOW_MIN_PROFIT_HURDLE".into()),
+            hop_quotes: Vec::new(),
+        });
+        let latest = svc.opportunities(1);
+        assert_eq!(latest[0].gross_profit_lamports, -500_000);
+        assert_eq!(latest[0].net_profit_lamports, -515_000);
+        assert!(!latest[0].eligible);
+        assert_eq!(svc.status().profitable_total, 0);
     }
 
     #[test]

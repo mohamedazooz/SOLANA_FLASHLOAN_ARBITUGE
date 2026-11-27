@@ -176,6 +176,39 @@ pub fn build_verified_inputs_from_snapshots(
     current_slot: Slot,
     sol_price_usd: Option<f64>,
 ) -> Result<VerifiedQuoteInputs, String> {
+    build_verified_inputs_from_snapshots_with_price_slot(
+        store,
+        base_mint,
+        reserve,
+        expected_reserve_mint,
+        tip_lamports,
+        current_slot,
+        sol_price_usd,
+        None,
+    )
+}
+
+/// Variant of [`build_verified_inputs_from_snapshots`] that accepts the exact
+/// slot at which `sol_price_usd` was observed on-chain.
+///
+/// For `decimals >= 9` (including WSOL, `9` decimals), the lamport-to-base
+/// ratio is a pure mathematical identity (`1:1` for WSOL) independent of any
+/// market price or reserve snapshot slot, so `lamports_per_base_raw` is
+/// stamped at `current_slot` while reserve/mint staleness remains enforced by
+/// `flash_loan_fee_sf` and `base_decimals`. For `decimals < 9` (e.g. USDC),
+/// the conversion depends on `sol_price_usd`, so it is stamped with
+/// `sol_price_observed_slot` (failing closed if no fresh price was observed).
+#[allow(clippy::too_many_arguments)]
+pub fn build_verified_inputs_from_snapshots_with_price_slot(
+    store: &AccountSnapshotStore,
+    base_mint: &MintId,
+    reserve: &Pubkey,
+    expected_reserve_mint: &Pubkey,
+    tip_lamports: Lamports,
+    current_slot: Slot,
+    sol_price_usd: Option<f64>,
+    sol_price_observed_slot: Option<Slot>,
+) -> Result<VerifiedQuoteInputs, String> {
     let reserve_snapshot = store
         .get(reserve)
         .ok_or_else(|| format!("missing Yellowstone Kamino reserve snapshot: {reserve}"))?;
@@ -215,6 +248,11 @@ pub fn build_verified_inputs_from_snapshots(
         format!("base mint {base_mint} has {decimals} decimals; cannot derive conversion rate (SOL price: {sol_price_usd:?})")
     })?;
     let observed = reserve_snapshot.slot.max(mint_snapshot.slot);
+    let rate_observed_slot = if decimals >= 9 {
+        current_slot
+    } else {
+        sol_price_observed_slot.unwrap_or(Slot(observed))
+    };
 
     Ok(VerifiedQuoteInputs {
         flash_loan_fee_sf: VerifiedValue::new(
@@ -232,13 +270,13 @@ pub fn build_verified_inputs_from_snapshots(
         lamports_per_base_raw: VerifiedValue::new(
             rate_num,
             "lamports-to-base-rate-numerator",
-            Slot(observed),
+            rate_observed_slot,
             current_slot,
         ),
         lamports_per_base_denom: VerifiedValue::new(
             rate_denom,
             "lamports-to-base-rate-denominator",
-            Slot(observed),
+            rate_observed_slot,
             current_slot,
         ),
         tip_lamports: VerifiedValue::new(
@@ -493,5 +531,135 @@ mod tests {
         acc[44] = 6;
         acc[45] = 0; // not initialized
         assert!(decode_mint_decimals(&acc).is_err());
+    }
+
+    #[test]
+    fn wsol_identity_rate_stays_current_while_usdc_tracks_price_slot() {
+        use arb_ingest::{AccountSnapshot, AccountSnapshotStore};
+        use std::sync::Arc;
+
+        let store = AccountSnapshotStore::default();
+        let klend = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID).unwrap();
+        let token_program = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let wsol = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(arb_constants::USDC_MINT).unwrap();
+
+        let make_reserve = |mint: Pubkey| {
+            let mut reserve_data =
+                vec![0u8; arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET + 8];
+            reserve_data[..8].copy_from_slice(&arb_tx::kamino::KAMINO_RESERVE_DISCRIMINATOR);
+            let mint_start = arb_tx::kamino::KAMINO_RESERVE_LIQUIDITY_MINT_OFFSET;
+            reserve_data[mint_start..mint_start + 32].copy_from_slice(mint.as_ref());
+            reserve_data[arb_tx::kamino::KAMINO_RESERVE_STATUS_OFFSET] =
+                arb_tx::kamino::KAMINO_RESERVE_STATUS_ACTIVE;
+            reserve_data[arb_tx::kamino::KAMINO_RESERVE_FLASH_LOAN_FEE_SF_OFFSET..][..8]
+                .copy_from_slice(&12_345u64.to_le_bytes());
+            reserve_data
+        };
+
+        let wsol_reserve = Pubkey::new_unique();
+        let usdc_reserve = Pubkey::new_unique();
+        for (pk, owner, slot, data) in [
+            (wsol_reserve, klend, 100u64, make_reserve(wsol)),
+            (usdc_reserve, klend, 100u64, make_reserve(usdc)),
+            (wsol, token_program, 100u64, {
+                let mut m = vec![0u8; 82];
+                m[44] = 9;
+                m[45] = 1;
+                m
+            }),
+            (usdc, token_program, 100u64, {
+                let mut m = vec![0u8; 82];
+                m[44] = 6;
+                m[45] = 1;
+                m
+            }),
+        ] {
+            store.apply(AccountSnapshot {
+                pubkey: pk,
+                owner,
+                slot,
+                write_version: 1,
+                is_startup: false,
+                provider_id: arb_ingest::ACCOUNT_WEBSOCKET_PROVIDER_ID,
+                bank_id: Some(1),
+                generation: 0,
+                data: Arc::new(data),
+            });
+        }
+
+        // At slot 120 (20 slots after reserve/mint hydration), WSOL's 1:1 identity
+        // rate must remain valid within max_age=2, while USDC must follow the
+        // explicit SOL/USD observation slot.
+        let wsol_inputs = build_verified_inputs_from_snapshots_with_price_slot(
+            &store,
+            &MintId(wsol),
+            &wsol_reserve,
+            &wsol,
+            Lamports(5_000),
+            Slot(120),
+            Some(73.0),
+            Some(Slot(119)),
+        )
+        .unwrap();
+        assert_eq!(wsol_inputs.lamports_per_base_raw.observed_slot, Slot(120));
+        assert!(
+            arb_types::dimensional::lamports_to_base_raw_checked(
+                10_000,
+                wsol_inputs.lamports_per_base_raw.value,
+                wsol_inputs.lamports_per_base_denom.value,
+                wsol_inputs.lamports_per_base_raw.observed_slot.0,
+                120,
+                2,
+            )
+            .is_ok()
+        );
+
+        let usdc_fresh = build_verified_inputs_from_snapshots_with_price_slot(
+            &store,
+            &MintId(usdc),
+            &usdc_reserve,
+            &usdc,
+            Lamports(5_000),
+            Slot(120),
+            Some(73.0),
+            Some(Slot(119)),
+        )
+        .unwrap();
+        assert_eq!(usdc_fresh.lamports_per_base_raw.observed_slot, Slot(119));
+        assert!(
+            arb_types::dimensional::lamports_to_base_raw_checked(
+                10_000,
+                usdc_fresh.lamports_per_base_raw.value,
+                usdc_fresh.lamports_per_base_denom.value,
+                usdc_fresh.lamports_per_base_raw.observed_slot.0,
+                120,
+                2,
+            )
+            .is_ok()
+        );
+
+        let usdc_stale = build_verified_inputs_from_snapshots_with_price_slot(
+            &store,
+            &MintId(usdc),
+            &usdc_reserve,
+            &usdc,
+            Lamports(5_000),
+            Slot(120),
+            Some(73.0),
+            Some(Slot(110)),
+        )
+        .unwrap();
+        assert!(
+            arb_types::dimensional::lamports_to_base_raw_checked(
+                10_000,
+                usdc_stale.lamports_per_base_raw.value,
+                usdc_stale.lamports_per_base_denom.value,
+                usdc_stale.lamports_per_base_raw.observed_slot.0,
+                120,
+                2,
+            )
+            .is_err()
+        );
     }
 }
