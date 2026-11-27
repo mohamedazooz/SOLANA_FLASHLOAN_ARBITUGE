@@ -148,7 +148,9 @@ impl RaydiumPool {
         match self {
             RaydiumPool::AMMv4(p) => (p.base_reserve, p.quote_reserve),
             RaydiumPool::CPMM(p) => (p.reserve_0, p.reserve_1),
-            RaydiumPool::CLMM(p) => (u128::MAX, u128::MAX), // TODO: Proper CLMM reserves
+            // CLMM has no finite CPMM reserve pair. Mark capacity as zero until
+            // this legacy graph is wired to a tick-array-aware CLMM quote adapter.
+            RaydiumPool::CLMM(_) => (0, 0),
         }
     }
 }

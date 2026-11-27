@@ -12,6 +12,7 @@ default = []
 no-entrypoint = []
 
 [dependencies]
+arb-constants = { path = "../../crates/arb-constants" }
 solana-address = { version = "=2.7.0", default-features = false }
 solana-pubkey = { workspace = true }
 solana-instruction = { version = "=3.5.0", default-features = false }
@@ -22,9 +23,6 @@ solana-program-entrypoint = { version = "=3.1.1", default-features = false }
 borsh = { version = "1", features = ["derive"] }
 bytemuck = { version = "1.25", default-features = false, features = ["derive"] }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-arb-constants = { path = "../../crates/arb-constants" }
 
 [lints]
 workspace = true

@@ -1,6 +1,7 @@
 //! Account and balance validation utilities for Arbitrage Executor.
 
 use crate::error::ExecutorError;
+use arb_constants::PUMP_SWAP_PROGRAM_ID as PUMP_SWAP_PROGRAM_ID_STR;
 use solana_account_info::AccountInfo;
 use solana_address::Address;
 use solana_program_error::ProgramError;
@@ -18,11 +19,19 @@ pub const RAYDIUM_CLMM_PROGRAM_ID: Address =
 pub const ORCA_WHIRLPOOL_PROGRAM_ID: Address =
     Address::from_str_const("whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc");
 
-pub const PUMP_SWAP_PROGRAM_ID: Address =
-    Address::from_str_const("PSwapMdSai8tjrEXcxFeQth87xC4rRGQ6ToNCPgAZgU");
+/// Canonical PumpSwap AMM program ID, shared with the off-chain crates.
+pub const PUMP_SWAP_PROGRAM_ID: Address = Address::from_str_const(PUMP_SWAP_PROGRAM_ID_STR);
 
 pub const PUMP_FUN_PROGRAM_ID: Address =
     Address::from_str_const("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+
+/// PumpSwap event-authority PDA for seeds `[b"__event_authority"]`.
+pub const PUMP_SWAP_EVENT_AUTHORITY: Address =
+    Address::from_str_const("GS4CU59F31iL7aR2Q8zVS8DRrcRnXX1yjQ66TqNVQnaR");
+
+/// Pump Fees `fee_config` PDA used by the canonical PumpSwap V2 instructions.
+pub const PUMP_FEES_FEE_CONFIG_ADDRESS: Address =
+    Address::from_str_const("5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx");
 
 pub const SPL_TOKEN_PROGRAM_ID: Address =
     Address::from_str_const("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
@@ -72,7 +81,7 @@ pub fn validate_dex_program(program_id: &Address) -> Result<DexProtocolTag, Exec
         Ok(DexProtocolTag::RaydiumClmm)
     } else if *program_id == ORCA_WHIRLPOOL_PROGRAM_ID {
         Ok(DexProtocolTag::OrcaWhirlpool)
-    } else if *program_id == PUMP_SWAP_PROGRAM_ID || *program_id == PUMP_FUN_PROGRAM_ID {
+    } else if *program_id == PUMP_SWAP_PROGRAM_ID {
         Ok(DexProtocolTag::PumpSwap)
     } else {
         Err(ExecutorError::UnauthorizedProgramId)
@@ -106,7 +115,12 @@ pub fn read_token_account_balance(account: &AccountInfo) -> Result<u64, ProgramE
     }
 
     let data = account.try_borrow_data()?;
-    if data.len() < 72 {
+    // SPL Token accounts have a 165-byte base layout. Token-2022 appends
+    // extensions after that base layout, so longer accounts remain valid.
+    // AccountState is byte 108: only Initialized (1) accounts can participate
+    // in a transfer. Reject uninitialized and frozen accounts here rather
+    // than relying on a later CPI to fail.
+    if data.len() < 165 || data[108] != 1 {
         return Err(ExecutorError::InvalidTokenAccount.into());
     }
 
@@ -413,6 +427,83 @@ mod tests {
             Err(ProgramError::Custom(
                 ExecutorError::InvalidTokenAccount as u32
             ))
+        );
+    }
+}
+
+#[cfg(test)]
+mod token_balance_tests {
+    use super::*;
+
+    fn mock_account<'a>(
+        key: &'a Address,
+        owner: &'a Address,
+        lamports: &'a mut u64,
+        data: &'a mut [u8],
+    ) -> AccountInfo<'a> {
+        AccountInfo::new(key, false, false, lamports, data, owner, false)
+    }
+
+    #[test]
+    fn reads_initialized_spl_token_account_balance() {
+        let mut data = vec![0u8; 165];
+        data[64..72].copy_from_slice(&123_456u64.to_le_bytes());
+        data[108] = 1;
+        let key = Address::from([42u8; 32]);
+        let mut lamports = 1u64;
+        let account = mock_account(&key, &SPL_TOKEN_PROGRAM_ID, &mut lamports, &mut data);
+        assert_eq!(read_token_account_balance(&account), Ok(123_456));
+    }
+
+    #[test]
+    fn reads_initialized_token_2022_account_with_extensions() {
+        let mut data = vec![0u8; 256];
+        data[64..72].copy_from_slice(&987_654u64.to_le_bytes());
+        data[108] = 1;
+        let key = Address::from([42u8; 32]);
+        let mut lamports = 1u64;
+        let account = mock_account(&key, &TOKEN_2022_PROGRAM_ID, &mut lamports, &mut data);
+        assert_eq!(read_token_account_balance(&account), Ok(987_654));
+    }
+
+    #[test]
+    fn rejects_short_token_account_data() {
+        let mut data = vec![0u8; 164];
+        let key = Address::from([42u8; 32]);
+        let mut lamports = 1u64;
+        let account = mock_account(&key, &SPL_TOKEN_PROGRAM_ID, &mut lamports, &mut data);
+        assert_eq!(
+            read_token_account_balance(&account),
+            Err(ExecutorError::InvalidTokenAccount.into())
+        );
+    }
+
+    #[test]
+    fn rejects_uninitialized_and_frozen_token_accounts() {
+        for state in [0u8, 2u8] {
+            let mut data = vec![0u8; 165];
+            data[108] = state;
+            let key = Address::from([42u8; 32]);
+            let mut lamports = 1u64;
+            let account = mock_account(&key, &SPL_TOKEN_PROGRAM_ID, &mut lamports, &mut data);
+            assert_eq!(
+                read_token_account_balance(&account),
+                Err(ExecutorError::InvalidTokenAccount.into())
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_accounts_owned_by_non_token_programs() {
+        let owner = Address::from([9u8; 32]);
+        let key = Address::from([42u8; 32]);
+        let mut lamports = 1u64;
+        let mut data = vec![0u8; 165];
+        data[108] = 1;
+        let account = mock_account(&key, &owner, &mut lamports, &mut data);
+        assert_eq!(
+            read_token_account_balance(&account),
+            Err(ExecutorError::InvalidTokenAccount.into())
         );
     }
 }

@@ -39,8 +39,11 @@ pub fn process_profit_guard<'a>(
     if accounts.is_empty() {
         return Err(ExecutorError::NotEnoughAccountInfos.into());
     }
+    if accounts.len() != 1 {
+        return Err(ExecutorError::InvalidInstructionData.into());
+    }
 
-    if instruction_data.len() < 8 {
+    if instruction_data.len() != 8 {
         return Err(ExecutorError::InvalidInstructionData.into());
     }
 
@@ -75,6 +78,7 @@ mod tests {
         balance: u64,
     ) -> AccountInfo<'a> {
         data[64..72].copy_from_slice(&balance.to_le_bytes());
+        data[108] = 1; // Token account must be initialized and not frozen.
         AccountInfo::new(key, false, false, lamports, data, owner, false)
     }
 
@@ -139,6 +143,22 @@ mod tests {
             Err(ProgramError::Custom(
                 ExecutorError::InsufficientProfit as u32
             ))
+        );
+    }
+
+    #[test]
+    fn rejects_trailing_profit_guard_data() {
+        let key = Address::from([1u8; 32]);
+        let mut lamports = 1_000_000;
+        let mut data = vec![0u8; 165];
+        let owner = SPL_TOKEN_PROGRAM_ID;
+        let acc = create_mock_token_account(&key, &mut lamports, &mut data, &owner, 10_000_000);
+        let accounts = [acc];
+        let mut args = 10_000_000u64.to_le_bytes().to_vec();
+        args.push(0);
+        assert_eq!(
+            process_profit_guard(&accounts, &args),
+            Err(ExecutorError::InvalidInstructionData.into())
         );
     }
 }
