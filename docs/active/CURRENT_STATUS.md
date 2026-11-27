@@ -1,4 +1,4 @@
-﻿# Current Verified Status
+# Current Verified Status
 
 **Authoritative Git Baseline**: Commit `2ed2261` on `main` (merge of PR #168, 2026-11-26)
 **Current Branch**: `main` (PRs #165, #166, #167, #168 all merged)
@@ -211,3 +211,8 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - Verification: 559 tests passed across `arb-math` and `arb-dex`; format and Clippy (`-D warnings`) passed for both crates.
 - Not claimed complete: Raydium CLMM runtime hydration, PumpSwap V2 account parity, Orca adaptive fees, DAMM V2 parity, broader Kamino differential coverage, and legacy reachability/dead-code audit remain separate open work.
 - No `.env`, credentials, live-execution settings, or transaction paths changed. No transaction was signed or broadcast.
+## 2026-11-27 — RPC account-response cardinality
+
+- RpcPool::get_multiple_accounts_with_slots now validates that each JSON-RPC value array has exactly the requested number of entries before associating entries with pubkeys.
+- Malformed large batches retry through checked five-key sub-batches; malformed fallback responses fail closed.
+- Focused regression tests cover truncated and oversized arrays plus per-account slot preservation.
