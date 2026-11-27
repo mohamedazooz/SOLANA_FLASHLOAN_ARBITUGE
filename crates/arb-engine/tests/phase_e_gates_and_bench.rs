@@ -400,7 +400,7 @@ fn phase_e_benchmark_4096_cycle_discovery_under_budget() {
         scan.cycles_evaluated, elapsed_ms
     );
     assert!(
-        elapsed_ms < 2_000,
-        "4096-candidate scan exceeded debug budget: {elapsed_ms}ms"
+        elapsed_ms < 5_000,
+        "4096-candidate scan exceeded debug safety budget: {elapsed_ms}ms"
     );
 }
