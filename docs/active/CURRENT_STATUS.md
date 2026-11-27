@@ -178,3 +178,12 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - **Fix:** Both exact-out quote adapters now return `ArbError::PoolDisabled` before reserve/quote math. Existing boundary tests assert the inactive-pool behavior for both exact-in and exact-out.
 - **Verification on branch `fix/protocol-parity-hardening-20261127-v2`, base `4dc530a`:** `cargo fmt --all -- --check` passed; CPMM boundary suite 8/8; V4 boundary suite 5/5; `cargo clippy -p arb-dex --all-targets -- -D warnings` passed; `cargo test -p arb-dex --all-targets` passed 168/168; `git diff --check` passed.
 - **Evidence boundary:** No workspace-wide CI, RPC simulation, live transaction, landing, or realized-PnL claim is made here. Existing quote-only/unexecutable gates and safety defaults are unchanged.
+
+## DLMM pricing parity slice — 2026-11-27
+
+- Branch: `fix/unified-pricing-dlmm-20261127`, based on `origin/main` at `6cbc9b6`.
+- Fixed exact-out DLMM price impact to exclude trading fees using the same shared checked normalization as exact-in; covered InputOnly and OnlyY fee collection modes.
+- Confirmed the cross-pool route composer and engine adapters delegate to `arb-dex::MeteoraDlmmQuoteEngine` / `UniversalQuoteDispatcher`; did not fork or replace protocol math. Retained account/PDA modules still referenced by validation and transaction code.
+- Verification: 559 tests passed across `arb-math` and `arb-dex`; format and Clippy (`-D warnings`) passed for both crates.
+- Not claimed complete: Raydium CLMM runtime hydration, PumpSwap V2 account parity, Orca adaptive fees, DAMM V2 parity, broader Kamino differential coverage, and legacy reachability/dead-code audit remain separate open work.
+- No `.env`, credentials, live-execution settings, or transaction paths changed. No transaction was signed or broadcast.

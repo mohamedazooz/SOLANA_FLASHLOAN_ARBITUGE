@@ -1,9 +1,9 @@
-use super::error::{DlmmError, dlmm_fee_on_input};
+﻿use super::error::{DlmmError, dlmm_fee_on_input};
 use super::fee::{
     compute_fee_to_add, compute_total_fee_rate, update_references_with_decay,
     update_volatility_accumulator,
 };
-use super::price::{advance_active_id, calculate_price_impact_bps, get_price_from_id};
+use super::price::{advance_active_id, calculate_fee_excluded_price_impact_bps, get_price_from_id};
 use super::swap::{
     bin_max_amount_out, consume_bin_liquidity, input_for_gross_out,
     limit_order_amounts_by_direction,
@@ -241,8 +241,14 @@ pub fn quote_dlmm_exact_out(
         }
     }
 
-    let price_impact_bps =
-        calculate_price_impact_bps(total_in, amount_out, start_price, swap_for_y);
+    let price_impact_bps = calculate_fee_excluded_price_impact_bps(
+        total_in,
+        amount_out,
+        total_fee,
+        fee_on_input,
+        start_price,
+        swap_for_y,
+    )?;
 
     Ok(DlmmSwapQuote {
         amount_in: total_in,

@@ -447,3 +447,11 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Regression coverage:** Four-pool graph and cross-protocol cycles are rejected; config tests reject four hops and disabled flash loans; cross-DEX validation rejects four-pool opportunities.
 - **Verification:** `cargo test -p arb-config -p arb-engine -p arb-tx --locked` passed; `cargo test -p arb-bot --all-targets --locked` passed (142 tests across the bot library, binaries, and integration targets); focused cross-DEX four-pool regression passed (1/1); `cargo check -p arb-bot --locked`, `cargo fmt --all -- --check`, targeted Clippy with `-D warnings`, and `git diff --check` passed.
 - **Remaining:** No RPC simulation, shadow soak, mainnet transaction, or realized-PnL evidence. The legacy four-leg builder remains disconnected from the active Supervisor and was not wired into the execution path.
+
+## DLMM exact-out price-impact parity — 2026-11-27
+
+- **Status:** Fixed on `fix/unified-pricing-dlmm-20261127`; awaiting PR/CI review.
+- **Finding:** Exact-in removed the DLMM swap fee before computing curve price impact; exact-out included the fee in the impact input/output, overstating impact for constant-price fills.
+- **Fix:** Both quote directions now call the same checked fee-exclusion helper, respecting InputOnly and OnlyY fee placement. Added exact-out regression coverage for both collection modes.
+- **Verification:** `cargo test -p arb-math -p arb-dex --all-targets` passed (559 tests); Clippy with `-D warnings` passed for `arb-math` and `arb-dex`; format check passed.
+- **Unchanged gates:** Exact-out is still not exposed through `QuoteEngine` because the shared request/result contract does not yet model target output and max input. DLMM timestamp decay remains conservative until a trusted bank Clock snapshot is available. Limit-order/unsupported extension modes remain fail-closed.
