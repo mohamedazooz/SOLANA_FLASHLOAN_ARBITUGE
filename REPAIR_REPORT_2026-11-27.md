@@ -123,4 +123,4 @@ Do not enable mainnet live mode until those checks pass and the executor deploym
 
 ---
 
-**Delivery status:** committed on `fix/pumpswap-v2-executor-hardening-20261127` and pushed to origin. The remote `main` branch was not modified. Pull request creation is the remaining publication step.
+**Delivery status:** committed and pushed on `fix/pumpswap-v2-executor-hardening-20261127`. Open pull request [#208](https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/208) targets `main`. The pull request remains open and unmerged; the remote `main` branch has not been modified.
