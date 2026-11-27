@@ -600,53 +600,65 @@ async fn main() -> Result<()> {
         hurdle: u64,
         priority_fee: u64,
         impact_bps: u64,
-        optimum: Option<u64>,
+        analytical_seed: Option<u64>,
     }
 
     if !dirs.is_empty() {
         let mut results_summary: Vec<RouteEdgeResult> = Vec::new();
         for (name, pool_a, pool_b) in dirs {
-            let mut probes: Vec<u64> = [10_000u64, 7_500, 5_000, 2_500, 1_000, 500]
+            let a_to_b_1 = pool_a.base_mint.0 == wsol;
+            let a_to_b_2 = pool_b.base_mint.0 == usdc;
+            // This closed-form model is only a seed. It uses rounded BPS and
+            // does not model every CPMM creator-fee mode; final sizing below
+            // always selects from protocol-native exact quotes and full costs.
+            let analytical_seed = if pool_a.kind == PoolKind::Cpmm && pool_b.kind == PoolKind::Cpmm
+            {
+                match (pool_a.fee_bps(), pool_b.fee_bps()) {
+                    (Some(a_fee), Some(b_fee)) => {
+                        let (a_sol, a_usdc) = legs_of(pool_a);
+                        let (b_sol, b_usdc) = legs_of(pool_b);
+                        let l1 = Leg {
+                            r_in: a_sol,
+                            r_out: a_usdc,
+                            gamma: 10_000u128 - u128::from(a_fee),
+                        };
+                        let l2 = Leg {
+                            r_in: b_usdc,
+                            r_out: b_sol,
+                            gamma: 10_000u128 - u128::from(b_fee),
+                        };
+                        optimal_two_pool(&l1, &l2)
+                            .filter(|size| *size > 0 && *size <= max_probe_lamports)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            let mut probes: Vec<u64> = [10_000u64, 7_500, 5_000, 2_500, 1_000, 500, 100, 10, 1]
                 .into_iter()
                 .map(|fraction_bps| {
                     (u128::from(max_probe_lamports) * u128::from(fraction_bps) / 10_000) as u64
                 })
                 .filter(|size| *size > 0)
                 .collect();
-            probes.sort_unstable_by(|a, b| b.cmp(a));
+            if let Some(seed) = analytical_seed {
+                probes.push(seed);
+            }
+            probes.sort_unstable();
             probes.dedup();
+
             let mut best: Option<RouteEdgeResult> = None;
-            let a_to_b_1 = pool_a.base_mint.0 == wsol;
-            let a_to_b_2 = pool_b.base_mint.0 == usdc;
-            let optimum = if pool_a.kind == PoolKind::Cpmm && pool_b.kind == PoolKind::Cpmm {
-                let (a_sol, a_usdc) = legs_of(pool_a);
-                let (b_sol, b_usdc) = legs_of(pool_b);
-                let a_fee = pool_a.fee_bps().unwrap_or(10_000);
-                let b_fee = pool_b.fee_bps().unwrap_or(10_000);
-                let l1 = Leg {
-                    r_in: a_sol,
-                    r_out: a_usdc,
-                    gamma: 10_000u128.saturating_sub(a_fee as u128),
-                };
-                let l2 = Leg {
-                    r_in: b_usdc,
-                    r_out: b_sol,
-                    gamma: 10_000u128.saturating_sub(b_fee as u128),
-                };
-                optimal_two_pool(&l1, &l2).filter(|size| *size <= max_probe_lamports)
-            } else {
-                None
-            };
-            for size in probes {
-                let Ok(q1) = quote_via_dispatcher(pool_a, size, a_to_b_1) else {
-                    continue;
-                };
-                if q1.amount_out_raw == 0 {
-                    continue;
+            let evaluate = |size: u64| -> Option<RouteEdgeResult> {
+                if size == 0 || size > max_probe_lamports {
+                    return None;
                 }
-                let Ok(q2) = quote_via_dispatcher(pool_b, q1.amount_out_raw, a_to_b_2) else {
-                    continue;
-                };
+                let q1 = quote_via_dispatcher(pool_a, size, a_to_b_1).ok()?;
+                if q1.amount_out_raw == 0 {
+                    return None;
+                }
+                let q2 = quote_via_dispatcher(pool_b, q1.amount_out_raw, a_to_b_2).ok()?;
                 let back = q2.amount_out_raw;
                 let gross = i128::from(back) - i128::from(size);
                 let retained_1 = 10_000u64.saturating_sub(u64::from(q1.price_impact.0));
@@ -659,8 +671,6 @@ async fn main() -> Result<()> {
                     .as_ref()
                     .map(|config| config.strategy.priority_fee_max_share_bps)
                     .unwrap_or(500);
-                // Use the production fallback CU price and the configured maximum
-                // fee share, so this diagnostic is conservative under competition.
                 let cu_price = arb_tx::cap_cu_price_by_profit(
                     u64::try_from(gross.max(0)).unwrap_or(0),
                     cu_limit,
@@ -668,7 +678,10 @@ async fn main() -> Result<()> {
                     max_priority_share_bps,
                 );
                 let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
-                let flash_fee = calculate_flash_fee_raw(size, sf).unwrap_or(u64::MAX);
+                // A fee-calculation error or signed-PnL overflow invalidates this
+                // candidate. Never turn either error into a fabricated maximum fee
+                // or a synthetic i128::MIN loss that can contaminate ranking.
+                let flash_fee = calculate_flash_fee_raw(size, sf).ok()?;
                 let net = arb_math::economic::calculate_net_profit_raw_signed(
                     back,
                     size,
@@ -683,8 +696,8 @@ async fn main() -> Result<()> {
                     1,
                     1,
                 )
-                .unwrap_or(i128::MIN);
-                let costs = gross.checked_sub(net).unwrap_or(i128::MAX);
+                .ok()?;
+                let costs = gross.checked_sub(net)?;
                 let edge_bps = net as f64 / size as f64 * 10_000.0;
                 let hurdle = minimum_net_profit_hurdle_lamports(
                     Lamports(size),
@@ -692,19 +705,57 @@ async fn main() -> Result<()> {
                     min_profit_bps,
                 )
                 .as_u64();
-                if best.as_ref().is_none_or(|b| net > b.net) {
-                    best = Some(RouteEdgeResult {
-                        name: name.clone(),
-                        size,
-                        gross,
-                        costs,
-                        net,
-                        edge_bps,
-                        hurdle,
-                        priority_fee,
-                        impact_bps: route_impact_bps,
-                        optimum,
-                    });
+                Some(RouteEdgeResult {
+                    name: name.clone(),
+                    size,
+                    gross,
+                    costs,
+                    net,
+                    edge_bps,
+                    hurdle,
+                    priority_fee,
+                    impact_bps: route_impact_bps,
+                    analytical_seed,
+                })
+            };
+
+            for size in probes {
+                if let Some(candidate) = evaluate(size)
+                    && best
+                        .as_ref()
+                        .is_none_or(|current| candidate.net > current.net)
+                {
+                    best = Some(candidate);
+                }
+            }
+
+            // The closed-form CPMM result is not accepted as the optimum. Refine
+            // around the best exact-quote candidate in four bounded scales.
+            // This preserves protocol-specific fees/rounding and catches the
+            // optimum between the coarse ladder's six original points.
+            if pool_a.kind == PoolKind::Cpmm && pool_b.kind == PoolKind::Cpmm {
+                for round in 0..4u32 {
+                    let Some(center) = best.as_ref().map(|candidate| candidate.size) else {
+                        break;
+                    };
+                    let span = (max_probe_lamports / 10u64.pow(round + 1)).max(1);
+                    let step = (span / 16).max(1);
+                    let start = center.saturating_sub(span).max(1);
+                    let end = center.saturating_add(span).min(max_probe_lamports);
+                    let mut size = start;
+                    loop {
+                        if let Some(candidate) = evaluate(size)
+                            && best
+                                .as_ref()
+                                .is_none_or(|current| candidate.net > current.net)
+                        {
+                            best = Some(candidate);
+                        }
+                        if size >= end {
+                            break;
+                        }
+                        size = size.saturating_add(step).min(end);
+                    }
                 }
             }
             if let Some(candidate) = best {
@@ -717,15 +768,16 @@ async fn main() -> Result<()> {
 
         info!("\n================================================================================");
         info!(
-            "📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, PROTOCOL-NATIVE MATH; route-sized priority fee)"
+            "📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, PROTOCOL-NATIVE EXACT QUOTES; bounded size refinement)"
         );
         info!("================================================================================");
         for res in &results_summary {
             info!(
-                "\n💠 EDGE [{}]\n   best probe size = {:.6} SOL (CPMM optimum within cap = {:?})\n   impact  = {} bps\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
+                "\n💠 EDGE [{}]\n   best exact-quote probe size = {:.6} SOL (analytical CPMM seed, heuristic only = {:?})\n   curve impact = {} bps\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
                 res.name,
                 res.size as f64 / 1e9,
-                res.optimum.map(|o| format!("{:.6} SOL", o as f64 / 1e9)),
+                res.analytical_seed
+                    .map(|seed| format!("{:.6} SOL", seed as f64 / 1e9)),
                 res.impact_bps,
                 res.gross,
                 res.costs,
@@ -737,15 +789,7 @@ async fn main() -> Result<()> {
                 res.hurdle,
                 min_profit_bps,
                 res.edge_bps,
-                if !tip_floor_available {
-                    "⚠️ JITO TIP FLOOR UNAVAILABLE — diagnostic only, not eligible"
-                } else if res.net >= i128::from(res.hurdle) {
-                    "✅ ABOVE CONFIGURED NET-PROFIT FLOOR (still subject to Chronos/landing gate)"
-                } else if res.net > 0 {
-                    "⚠️ POSITIVE BUT BELOW CONFIGURED FLOOR — reject"
-                } else {
-                    "❌ NEGATIVE — fees exceed spread"
-                }
+                route_verdict(res.gross, res.net, res.hurdle, tip_floor_available)
             );
         }
     } else {
@@ -754,6 +798,22 @@ async fn main() -> Result<()> {
 
     info!("✅ Validation path complete — no transactions submitted");
     Ok(())
+}
+
+/// Explain whether a candidate lost before costs or only after costs.
+/// A negative gross route can never be described as fees exceeding the spread.
+fn route_verdict(gross: i128, net: i128, hurdle: u64, tip_floor_available: bool) -> &'static str {
+    if gross <= 0 {
+        "❌ GROSS ROUTE LOSS — protocol quotes return less than the input before execution costs"
+    } else if net <= 0 {
+        "❌ EXECUTION COSTS EXCEED GROSS EDGE — gross route is positive, net is non-positive"
+    } else if net < i128::from(hurdle) {
+        "⚠️ POSITIVE BUT BELOW CONFIGURED NET-PROFIT FLOOR — reject"
+    } else if !tip_floor_available {
+        "⚠️ ABOVE NET-PROFIT FLOOR, BUT JITO TIP FLOOR UNAVAILABLE — diagnostic only, not eligible"
+    } else {
+        "✅ ABOVE CONFIGURED NET-PROFIT FLOOR (still subject to Chronos/landing gate)"
+    }
 }
 
 fn optional_positive_env_f64(name: &str) -> Result<Option<f64>> {
@@ -777,4 +837,32 @@ fn optional_positive_env_f64(name: &str) -> Result<Option<f64>> {
 
 fn positive_env_f64(name: &str, fallback: f64) -> Result<f64> {
     Ok(optional_positive_env_f64(name)?.unwrap_or(fallback))
+}
+
+#[cfg(test)]
+mod route_verdict_tests {
+    use super::route_verdict;
+
+    #[test]
+    fn negative_gross_is_not_misreported_as_fee_loss() {
+        assert!(route_verdict(-10_000, -11_000, 10_000, true).contains("GROSS ROUTE LOSS"));
+        assert!(route_verdict(0, -1, 10_000, true).contains("GROSS ROUTE LOSS"));
+    }
+
+    #[test]
+    fn positive_gross_lost_to_costs_has_distinct_verdict() {
+        assert!(route_verdict(10_000, 0, 1_000, true).contains("COSTS EXCEED GROSS EDGE"));
+        assert!(route_verdict(10_000, -1, 1_000, true).contains("COSTS EXCEED GROSS EDGE"));
+    }
+
+    #[test]
+    fn positive_net_is_compared_with_hurdle() {
+        assert!(route_verdict(20_000, 999, 1_000, true).contains("BELOW CONFIGURED"));
+        assert!(route_verdict(20_000, 1_000, 1_000, true).contains("ABOVE CONFIGURED"));
+    }
+
+    #[test]
+    fn unavailable_tip_floor_never_marks_candidate_eligible() {
+        assert!(route_verdict(20_000, 20_000, 1_000, false).contains("TIP FLOOR UNAVAILABLE"));
+    }
 }

@@ -218,15 +218,23 @@ fn gate_phase_d_token2022_clmm_swap_v2_and_transfer_hook_extra_metas() {
     raw_list[12..16].copy_from_slice(&1u32.to_le_bytes());
     raw_list[16] = 0; // static Pubkey meta
     raw_list[17..49].copy_from_slice(extra_acc.as_ref());
-    raw_list[49] = 0;
-    raw_list[50] = 0;
+    raw_list[49] = 1; // is_signer
+    raw_list[50] = 1; // is_writable
 
     let hook_metas = parse_transfer_hook_extra_account_metas(&raw_list, &mint_0, &hook_program)
         .expect("static ExtraAccountMetaList must parse");
     assert_eq!(hook_metas.len(), 3);
     assert_eq!(hook_metas[0].pubkey, extra_acc);
+    assert!(hook_metas[0].is_signer);
+    assert!(hook_metas[0].is_writable);
     assert_eq!(hook_metas[1].pubkey, hook_program);
     assert_eq!(hook_metas[2].pubkey, list_pda);
+
+    let mut malformed_flags = raw_list.clone();
+    malformed_flags[50] = 2;
+    assert!(
+        parse_transfer_hook_extra_account_metas(&malformed_flags, &mint_0, &hook_program).is_err()
+    );
 
     let ix = arb_tx::build_raydium_clmm_swap_v2_instruction(
         &accounts,

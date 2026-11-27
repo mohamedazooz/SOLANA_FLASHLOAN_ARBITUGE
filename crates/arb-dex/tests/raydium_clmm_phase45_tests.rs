@@ -28,7 +28,8 @@ impl PoolBytes {
     }
 
     fn head(mut self) -> Self {
-        self.data[0..8].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+        self.data[0..8]
+            .copy_from_slice(&arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_DISCRIMINATOR);
         self.data[9] = 9;
         self.data[73] = 10;
         self.data[105] = 11;
@@ -55,15 +56,26 @@ impl PoolBytes {
     }
 
     fn dynamic_fee(mut self, control: u32, max_va: u32, va: u32) -> Self {
-        self.data[1102..1106].copy_from_slice(&control.to_le_bytes());
-        self.data[1106..1110].copy_from_slice(&max_va.to_le_bytes());
-        self.data[1118..1122].copy_from_slice(&va.to_le_bytes());
+        if control != 0 {
+            self.data[1096..1098].copy_from_slice(&10u16.to_le_bytes());
+            self.data[1098..1100].copy_from_slice(&100u16.to_le_bytes());
+            self.data[1100..1102].copy_from_slice(&5_000u16.to_le_bytes());
+            self.data[1102..1106].copy_from_slice(&control.to_le_bytes());
+            self.data[1106..1110].copy_from_slice(&max_va.to_le_bytes());
+            self.data[1118..1122].copy_from_slice(&va.to_le_bytes());
+        }
         self
     }
 
     fn build(self) -> RaydiumClmmPool {
-        RaydiumClmmPool::from_account(PoolId::new([7; 32]), &self.data)
-            .expect("pool account decodes")
+        let mut pool = RaydiumClmmPool::from_account(PoolId::new([7; 32]), &self.data)
+            .expect("pool account decodes");
+        // This fixture represents an already validated AmmConfig snapshot;
+        // hydration integration tests exercise the on-chain PDA/owner checks.
+        pool.amm_config_loaded = true;
+        pool.amm_config_index = Some(0);
+        pool.fee_rate_ppm = 2_500;
+        pool
     }
 }
 
@@ -85,11 +97,12 @@ fn fee_bps_includes_dynamic_fee_upper_bound_with_ceil() {
     // control=10_000, max_va=10_000, ts=1 -> crossed=1e4, num=1e12,
     // denom=1e13 -> dynamic = 1 (ceil); total = 2_500 + 1 = 2501 ppm =
     // 25.01 bps -> rounded up to 26.
-    let pool = PoolBytes::new(FULL_LEN)
+    let mut pool = PoolBytes::new(FULL_LEN)
         .head()
         .fee_on(0)
         .dynamic_fee(10_000, 10_000, 0)
         .build();
+    pool.tick_arrays.push(stub_tick_array());
     assert_eq!(pool.fee_bps(), Some(26));
     let state = pool.clmm_state().expect("clmm state");
     assert_eq!(state.fee_rate, 2_501);
@@ -97,11 +110,12 @@ fn fee_bps_includes_dynamic_fee_upper_bound_with_ceil() {
 
 #[test]
 fn fee_bps_with_disabled_dynamic_fee_is_base_only() {
-    let pool = PoolBytes::new(FULL_LEN)
+    let mut pool = PoolBytes::new(FULL_LEN)
         .head()
         .fee_on(0)
-        .dynamic_fee(0, 10_000, 5_000)
+        .dynamic_fee(0, 0, 0)
         .build();
+    pool.tick_arrays.push(stub_tick_array());
     assert_eq!(pool.fee_bps(), Some(25));
     assert_eq!(pool.clmm_state().expect("clmm state").fee_rate, 2_500);
 }
@@ -173,7 +187,7 @@ fn quote_rejects_short_account_fee_side() {
 
 #[test]
 fn quote_rejects_total_fee_rate_above_u16_domain() {
-    // base 2_500 + dynamic capped at 100_000 -> 102_500 ppm > u16::MAX.
+    // The total (base + dynamic) fee is capped at 100_000 ppm by Raydium.
     let mut pool = PoolBytes::new(FULL_LEN)
         .head()
         .fee_on(0)
@@ -195,7 +209,7 @@ fn quote_rejects_total_fee_rate_above_u16_domain() {
     // clmm_state fails closed when the bounded fee cannot fit u16.
     assert!(pool.clmm_state().is_none());
     // fee_bps still reports the rounded-up bps for observability.
-    assert_eq!(pool.fee_bps(), Some(1_025));
+    assert_eq!(pool.fee_bps(), Some(1_000));
 }
 
 #[test]
