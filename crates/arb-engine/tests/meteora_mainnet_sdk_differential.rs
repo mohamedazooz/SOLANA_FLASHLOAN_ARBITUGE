@@ -522,10 +522,7 @@ fn deep_sdk_verified_paths_traverse_nonzero_limit_order_bins() {
                 let Some(q) = q else { continue };
                 let label = format!("mode{mode} {dirn} {kind}");
                 let e = evaluate_case(&f, &bins, &label, mode, q);
-                let lo = e
-                    .start_bin_id
-                    .min(e.end_bin_id)
-                    ..=e.start_bin_id.max(e.end_bin_id);
+                let lo = e.start_bin_id.min(e.end_bin_id)..=e.start_bin_id.max(e.end_bin_id);
                 if lo.clone().any(|id| lo_bins.contains(&id)) {
                     lo_cases += 1;
                 }

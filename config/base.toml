@@ -63,8 +63,11 @@ discovery_min_tvl_usd = 25000.0
 # Maximum distinct pools (swap legs) in one closed flash-loan route: 2 or 3.
 # This is independent of max_pools, which bounds the discovery universe.
 max_route_hops = 3
-# HTTP catalog discovery off by default: pools arrive via WebSocket only.
-http_discovery_enabled = false
+# HTTP catalog discovery ON: without it the registry holds only the hardcoded
+# baseline pools, so the cycle scan can never see the liquid DLMM core. The
+# official Meteora DLMM Data API (dlmm.datapi.meteora.ag/pools) is the primary
+# source; Orca/Raydium catalogs and DexScreener remain bounded fallbacks.
+http_discovery_enabled = true
 contingency_buffer_lamports = 10000         # lamports: slippage buffer protecting profit floor
 priority_fee_base_share_bps = 200          # bps: baseline 2% share during calm conditions
 priority_fee_max_share_bps = 1000           # bps: maximum 10% ceiling during intense competition

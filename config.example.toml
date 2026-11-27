@@ -54,7 +54,10 @@ max_per_venue = 33
 discovery_refresh_secs = 15
 discovery_min_tvl_usd = 25000.0
 max_route_hops = 3
-http_discovery_enabled = false
+# HTTP catalog discovery (bounded, fail-closed). The official Meteora DLMM
+# Data API ranks pools by TVL; leaving this off means only hardcoded baseline
+# pools are ever scanned.
+http_discovery_enabled = true
 contingency_buffer_lamports = 10000
 
 [risk]

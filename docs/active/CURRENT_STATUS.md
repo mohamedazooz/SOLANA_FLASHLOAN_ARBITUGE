@@ -224,3 +224,12 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - RpcPool::get_multiple_accounts_with_slots now validates that each JSON-RPC value array has exactly the requested number of entries before associating entries with pubkeys.
 - Malformed large batches retry through checked five-key sub-batches; malformed fallback responses fail closed.
 - Focused regression tests cover truncated and oversized arrays plus per-account slot preservation.
+
+## 2026-11-27 — Forensic decomposition of the 0-execution-eligible result + DLMM discovery fix
+
+- Read-only forensic harness (`crates/arb-bot/examples/forensic_edge_decomposition.rs`, never submits) decomposed the 10 gross-profitable 2-hop cycles from the discovery scan at slot 474501741.
+- Findings: (1) all 10 cycles were dust-sized with ≤15 lamports gross and flipped gross-negative within ~20 minutes — transient noise, not persistent mispricing; (2) the headline 53.46 bps inter-DEX spread was phantom, dominated by pool `CgqwPLSF...` (80 bps bin step) whose active bin held zero SOL — any USDC→SOL buy executes ~85 bps above the active-bin mid; (3) fixed-cost breakeven ≈ 25,000–33,754 lamports gross (base 5,000 + tip p75 10,000–18,753 + priority + Kamino fee + 10,000 hurdle) vs ≤15 lamports best gross.
+- Root-cause fix (discovery blind spot): added `discover_meteora_catalog` using the official Meteora DLMM Data API (`dlmm.datapi.meteora.ag/pools`, paginated, TVL-sorted, fail-closed) — 250 DLMM pools above the TVL floor vs 22 from the previous DexScreener-only path. Registered as the primary Meteora source with the DexScreener paths retained as fallback.
+- Root-cause fix (runtime): `http_discovery_enabled = true` in `config/base.toml` + `config.example.toml`. With it off, the runtime registry held only the hardcoded baseline pools and the WebSocket stream subscribed only to those, structurally capping the cycle scan at ~9 pools regardless of market conditions.
+- Honest outcome: the number of opportunities is market-state-dependent. These changes maximize real coverage and detection latency bounds; they do not and cannot manufacture profitable opportunities — the economic gate continues to reject anything below the verified cost stack.
+- No secrets touched; no transaction signed or broadcast.

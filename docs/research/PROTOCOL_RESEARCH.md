@@ -74,7 +74,27 @@ Verified against the repo constant on 2026-11-27; both agree.
    (`DlmmFlashArbConfig::cost_in_flash_mint`), so sub-unit lamport costs are
    never truncated into overstated profit.
 
-## 5. Unverified Assumptions / Limitations
+## 5. Meteora DLMM Official Data API (newly verified — discovery source, 2026-11-27)
+
+| Item | Finding | Source |
+|---|---|---|
+| Canonical pool catalog | `GET https://dlmm.datapi.meteora.ag/pools` — paginated list of all DLMM pools | [Meteora Docs — DLMM Pools API](https://docs.meteora.ag/api-reference/dlmm/pools/pools) (OpenAPI verified live) |
+| Pagination | `page` (1-based) + `page_size` (max 1000); response carries `total` / `pages` / `current_page` / `data[]` | Same OpenAPI; live probe returned `total=137,913` |
+| Ranking / filtering | `sort_by=tvl:desc`; `filter_by` supports `tvl>=N` and `is_blacklisted=false` expressions joined by `&&` | Same OpenAPI |
+| Live behavior | First page (TVL-desc) begins with the liquid SOL/USDC core (`5rCf1DM8...` first); `token_x`/`token_y` objects carry `address` + `decimals`; `tvl` is a number | Live probe 2026-11-27 |
+
+**Engineering consequence (root cause of the thin DLMM watch set):** discovery
+previously used only DexScreener hub/search queries for Meteora, which returned
+a capped fuzzy subset (22 candidates vs 250 above the same TVL floor from the
+official catalog). `discover_meteora_catalog` now pages the official API
+(bounded: `page_size=100`, ≤10 pages, TVL floor + blacklist filter, malformed
+entries skipped fail-closed) and falls back to the existing DexScreener paths on
+failure. `config/base.toml` now enables `http_discovery_enabled`: with it off,
+the runtime registry holds only the hardcoded baseline pools and the WS stream
+subscribes only to those — the scan could structurally never see the liquid
+DLMM core.
+
+## 6. Unverified Assumptions / Limitations
 
 - The tip liability is a **configured input** on the isolated evaluator; when
   (if ever) wired to the runtime, the caller must source it from the live
@@ -85,3 +105,17 @@ Verified against the repo constant on 2026-11-27; both agree.
   now documented at the function site.
 - No live mainnet capture, simulation, shadow run, or transaction was performed
   in this change; local Linux tests only (toolchain 1.99.1).
+- Forensic decomposition (read-only, slots 474501741→474505238) showed the
+  gross-profitable cycles the scan found are transient (all 10 flipped
+  gross-negative ~20 minutes later) and dust-sized (≤15 lamports gross). The
+  53 bps "inter-DEX spread" was dominated by a one-sided DLMM active bin: pool
+  `CgqwPLSF...` (80 bps bin step) had zero SOL in its active bin, so any
+  USDC→SOL buy executed ~85 bps above the active-bin mid. Active-bin mid price
+  is therefore not an executable price for one-sided bins; only exact quotes
+  (which the engine already uses) are decision-grade.
+- The fixed-cost breakeven measured ≈ 25,000–33,754 lamports of gross (base
+  5,000 + tip p75 10,000–18,753 + priority + Kamino fee + 10,000 absolute
+  hurdle) vs ≤15 lamports best gross observed: the SOL/USDC market on these
+  venues is efficiently arbitraged below this bot's cost stack at scan time.
+  Opportunity count is market-state-dependent and cannot be manufactured
+  without loosening safety gates (rejected).
