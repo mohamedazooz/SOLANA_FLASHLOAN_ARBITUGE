@@ -1,4 +1,4 @@
-﻿# Current Verified Status
+# Current Verified Status
 
 **Authoritative Git Baseline**: Commit `2ed2261` on `main` (merge of PR #168, 2026-11-26)
 **Current Branch**: `main` (PRs #165, #166, #167, #168 all merged)

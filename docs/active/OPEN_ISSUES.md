@@ -1,4 +1,4 @@
-﻿# Forensic Defect Register & Open Issues
+# Forensic Defect Register & Open Issues
 
 This register tracks all identified engineering defects, correctness gaps, and architectural vulnerabilities across the codebase. Issues are strictly prioritized and must be resolved before proceeding through phase exit gates.
 
