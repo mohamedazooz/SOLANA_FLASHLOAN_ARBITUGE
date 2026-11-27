@@ -5,6 +5,13 @@
 **CI Status**: GitHub Actions green on both latest main merges — `Merge pull request #168` (2026-11-26T14:37:44Z) and `Merge pull request #167` (2026-11-26T13:17:38Z): format/check/test/clippy, gitleaks, cargo-deny, web build, webhook service, and Vercel all pass.
 **Compilation Baseline**: Latest full local workspace run (post-#167 cleanup, toolchain 1.99.1): 1,814 passed / 0 failed / 7 ignored; `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings` both pass. Targeted post-#168 scanner checks also pass locally: `route_graph_boundary_tests` (5 passed), `canonical_route_scanner_reports_candidate_budget_exhaustion`, `market_graph_excludes_quote_only_protocols_instead_of_using_cpmm_math`.
 
+## DLMM Two-Pool Flash-Lane Cost-Model Completion — 2026-11-27
+
+- **Scope**: isolated `dlmm_flash_arbitrage` evaluator + `arb-tx` two-pool builder only; no runtime wiring, no new execution path, no change to the generic `MarketGraph` route pipeline.
+- **Jito-tip liability (FL-F-2026-11-22-N2)**: `DlmmFlashArbConfig.jito_tip_lamports` (default 0 = not bundled) counted once in `execution_cost()`; sub-minimum tips (< `MIN_JITO_TIP_LAMPORTS` = 1,000 per docs.jito.wtf) rejected fail-closed via the new `JitoTipBelowMinimum` rejection; `FlashArbParams::required_floor()` includes the tip with checked math.
+- **LimitOrder-layer differential coverage (DIAG-F-2026-11-23-N1 residual)**: new `deep_sdk_verified_paths_traverse_nonzero_limit_order_bins` test proves all 8 SDK-verified deep cases on the captured Mainnet snapshot cross ≥1 of its 179 non-zero-LO bins while matching `@meteora-ag/dlmm@1.9.14` exactly.
+- **Verification (local Linux, toolchain 1.99.1)**: `cargo fmt --all -- --check`, `cargo clippy -p arb-tx -p arb-engine -p arb-sim --all-targets --locked -- -D warnings`, and `cargo test --workspace --all-targets --locked` (2,007 passed / 0 failed) all pass. No transaction was signed or submitted; live mainnet capture of a function_type=2 pool remains blocked (no `.env` credentials / node_modules in this environment).
+
 ## Local Route-Contract Hardening ? 2026-11-27 (not merged)
 
 - **Branch:** `fix/flashloan-2-3-pool-route-gates-20261127`, based on `3319b7e` (`origin/main`). The operator's existing dirty/conflicted checkout was left untouched; work was isolated in a separate Git worktree.
@@ -217,3 +224,12 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - RpcPool::get_multiple_accounts_with_slots now validates that each JSON-RPC value array has exactly the requested number of entries before associating entries with pubkeys.
 - Malformed large batches retry through checked five-key sub-batches; malformed fallback responses fail closed.
 - Focused regression tests cover truncated and oversized arrays plus per-account slot preservation.
+
+## 2026-11-27 — Forensic decomposition of the 0-execution-eligible result + DLMM discovery fix
+
+- Read-only forensic harness (`crates/arb-bot/examples/forensic_edge_decomposition.rs`, never submits) decomposed the 10 gross-profitable 2-hop cycles from the discovery scan at slot 474501741.
+- Findings: (1) all 10 cycles were dust-sized with ≤15 lamports gross and flipped gross-negative within ~20 minutes — transient noise, not persistent mispricing; (2) the headline 53.46 bps inter-DEX spread was phantom, dominated by pool `CgqwPLSF...` (80 bps bin step) whose active bin held zero SOL — any USDC→SOL buy executes ~85 bps above the active-bin mid; (3) fixed-cost breakeven ≈ 25,000–33,754 lamports gross (base 5,000 + tip p75 10,000–18,753 + priority + Kamino fee + 10,000 hurdle) vs ≤15 lamports best gross.
+- Root-cause fix (discovery blind spot): added `discover_meteora_catalog` using the official Meteora DLMM Data API (`dlmm.datapi.meteora.ag/pools`, paginated, TVL-sorted, fail-closed) — 250 DLMM pools above the TVL floor vs 22 from the previous DexScreener-only path. Registered as the primary Meteora source with the DexScreener paths retained as fallback.
+- Root-cause fix (runtime): `http_discovery_enabled = true` in `config/base.toml` + `config.example.toml`. With it off, the runtime registry held only the hardcoded baseline pools and the WebSocket stream subscribed only to those, structurally capping the cycle scan at ~9 pools regardless of market conditions.
+- Honest outcome: the number of opportunities is market-state-dependent. These changes maximize real coverage and detection latency bounds; they do not and cannot manufacture profitable opportunities — the economic gate continues to reject anything below the verified cost stack.
+- No secrets touched; no transaction signed or broadcast.

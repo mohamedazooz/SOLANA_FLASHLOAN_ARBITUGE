@@ -875,6 +875,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         leg_b,
         cu_limit: exec_cfg.cu_limit,
         priority_fee_micro_lamports: exec_cfg.priority_fee_micro_lamports,
+        jito_tip_lamports: exec_cfg.jito_tip_lamports,
     };
 
     let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&params)?;

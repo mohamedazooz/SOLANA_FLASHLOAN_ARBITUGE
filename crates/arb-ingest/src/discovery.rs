@@ -47,6 +47,12 @@ pub const RAYDIUM_POOL_LIST_URL: &str = "https://api-v3.raydium.io/pools/info/li
 pub const DEXSCREENER_TOKEN_PAIRS: &str = "https://api.dexscreener.com/token-pairs/v1/solana";
 /// DexScreener: general search endpoint for active DEX pairs.
 pub const DEXSCREENER_SEARCH_URL: &str = "https://api.dexscreener.com/latest/dex/search";
+/// Official Meteora DLMM Data API: paginated pool listing ranked by TVL.
+pub const METEORA_DLMM_DATAPI_POOLS_URL: &str = "https://dlmm.datapi.meteora.ag/pools";
+/// Page size for the DLMM Data API (documented maximum is 1000).
+const METEORA_DLMM_DATAPI_PAGE_SIZE: usize = 100;
+/// Hard cap on catalog pages per discovery pass (bounded, no unbounded loops).
+const METEORA_DLMM_DATAPI_MAX_PAGES: usize = 10;
 
 /// Maximum accounts per `getMultipleAccounts` request (RPC hard limit is 100).
 const RPC_BATCH: usize = 100;
@@ -224,6 +230,22 @@ impl PoolDiscovery {
         }
 
         if cfg.include_meteora {
+            match self
+                .discover_meteora_catalog(cfg.min_tvl_usd, catalog_fetch_limit)
+                .await
+            {
+                Ok(pools) => {
+                    info!(
+                        "  Meteora DLMM official catalog: {} pools above TVL floor",
+                        pools.len()
+                    );
+                    found.extend(pools);
+                }
+                Err(e) => warn!(
+                    "  Meteora DLMM official catalog failed ({e}); DexScreener hub/search remain as fallback"
+                ),
+            }
+
             for hub in &cfg.hub_mints {
                 match self
                     .discover_meteora_meteora_hub(hub, cfg.min_tvl_usd)
@@ -652,6 +674,46 @@ impl PoolDiscovery {
         Ok(out)
     }
 
+    /// Meteora DLMM pools from the official DLMM Data API, ranked by TVL.
+    ///
+    /// The DexScreener search path returns a capped, fuzzy subset (22 pools in
+    /// practice) while the official catalog lists every DLMM pool paginated and
+    /// TVL-sorted, which is the difference between watching a sample of the
+    /// venue and watching its liquid core. Fail-closed: any malformed entry is
+    /// skipped, and a failed catalog leaves the DexScreener paths untouched.
+    async fn discover_meteora_catalog(
+        &self,
+        min_tvl: f64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<DiscoveredPoolState>> {
+        let mut out = Vec::new();
+        for page in 1..=METEORA_DLMM_DATAPI_MAX_PAGES {
+            let url = format!(
+                "{METEORA_DLMM_DATAPI_POOLS_URL}?page={page}&page_size={METEORA_DLMM_DATAPI_PAGE_SIZE}&sort_by=tvl%3Adesc"
+            );
+            let body = self.get_json(&url).await?;
+            let pools = body
+                .get("data")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow::anyhow!("dlmm datapi: missing data array"))?;
+            if pools.is_empty() {
+                break;
+            }
+            for pool in pools {
+                if out.len() >= limit {
+                    return Ok(out);
+                }
+                if let Some(discovered) = parse_dlmm_datapi_pool(pool) {
+                    if discovered.liquidity_usd < min_tvl {
+                        continue;
+                    }
+                    out.push(discovered);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Meteora DLMM pools that trade `hub`. The `DLMM` label separates the
     /// LbPair program from Meteora's DAMM (`DYN`) pools, which have a different
     /// account layout and must not be registered as DLMM.
@@ -881,6 +943,57 @@ impl PoolDiscovery {
     }
 }
 
+/// Parse one pool document from the official DLMM Data API.
+///
+/// Token X maps to the pool's base mint, mirroring the on-chain LbPair decoder
+/// convention (base == token X). Malformed or blacklisted documents yield
+/// `None` and are skipped — never a partially-filled pool.
+fn parse_dlmm_datapi_pool(pool: &serde_json::Value) -> Option<DiscoveredPoolState> {
+    if pool
+        .get("is_blacklisted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let token_mint = |key: &str| -> Option<&str> {
+        match pool.get(key)? {
+            serde_json::Value::String(s) => Some(s),
+            object => object.get("address").and_then(|a| a.as_str()),
+        }
+    };
+    let (Some(addr), Some(base), Some(quote)) = (
+        pool.get("address").and_then(|v| v.as_str()),
+        token_mint("token_x"),
+        token_mint("token_y"),
+    ) else {
+        return None;
+    };
+    let (Ok(pool_pk), Ok(base_pk), Ok(quote_pk)) = (
+        Pubkey::from_str(addr),
+        Pubkey::from_str(base),
+        Pubkey::from_str(quote),
+    ) else {
+        return None;
+    };
+    let tvl = pool.get("tvl").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    Some(DiscoveredPoolState {
+        pool_id: PoolId(pool_pk),
+        protocol: DexProtocol::MeteoraDlmm,
+        base_mint: MintId(base_pk),
+        quote_mint: MintId(quote_pk),
+        // Vaults are not used to price a DLMM (bins are), so the pool
+        // address stands in for them rather than a guessed account.
+        base_vault: pool_pk,
+        quote_vault: pool_pk,
+        // Filled in by `resolve_mint_decimals` below.
+        decimals_a: 0,
+        decimals_b: 0,
+        fee_bps: 0,
+        liquidity_usd: tvl,
+    })
+}
+
 /// Choose the watch set from a TVL-sorted pool list, reserving up to
 /// `max_per_venue` (default 33) most active pools for each DEX venue.
 ///
@@ -1015,6 +1128,48 @@ pub fn register_discovered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    #[test]
+    fn dlmm_datapi_pool_document_parses_to_dlmm_discovery() {
+        let doc: serde_json::Value = serde_json::json!({
+            "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+            "name": "SOL-USDC",
+            "token_x": {"address": "So11111111111111111111111111111111111111112", "decimals": 9},
+            "token_y": {"address": TEST_USDC_MINT, "decimals": 6},
+            "tvl": 1_234_567.0,
+            "is_blacklisted": false,
+        });
+        let parsed = parse_dlmm_datapi_pool(&doc).expect("fixture must parse");
+        assert_eq!(parsed.protocol, DexProtocol::MeteoraDlmm);
+        assert_eq!(
+            parsed.base_mint.0.to_string(),
+            "So11111111111111111111111111111111111111112"
+        );
+        assert_eq!(parsed.quote_mint.0.to_string(), TEST_USDC_MINT);
+        assert!((parsed.liquidity_usd - 1_234_567.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dlmm_datapi_blacklisted_and_malformed_documents_are_skipped() {
+        let blacklisted = serde_json::json!({
+            "address": "5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6",
+            "token_x": "So11111111111111111111111111111111111111112",
+            "token_y": TEST_USDC_MINT,
+            "tvl": 1.0,
+            "is_blacklisted": true,
+        });
+        assert!(parse_dlmm_datapi_pool(&blacklisted).is_none());
+        assert!(parse_dlmm_datapi_pool(&serde_json::json!({"tvl": 1.0})).is_none());
+        let bad_address = serde_json::json!({
+            "address": "not-a-pubkey",
+            "token_x": "So11111111111111111111111111111111111111112",
+            "token_y": TEST_USDC_MINT,
+            "tvl": 1.0,
+        });
+        assert!(parse_dlmm_datapi_pool(&bad_address).is_none());
+    }
 
     #[test]
     fn discovery_config_is_bounded() {

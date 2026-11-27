@@ -489,6 +489,58 @@ fn check_case(f: &SdkFixture, bins: &[DlmmBin], label: &str, mode: u8, q: &SdkQu
     );
 }
 
+/// The captured Mainnet snapshot carries bins with non-zero limit-order
+/// layers (`openOrderAmount` / `processedOrderRemainingAmount`). Every
+/// SDK-verified deep path that crosses at least one such bin exercises the
+/// engine's `Bin::get_limit_order_amounts_by_direction` parity against the
+/// official SDK over real Mainnet bytes, not only the plain-liquidity path./// The fixture losing LO coverage must fail this test so the parity claim
+/// cannot silently regress.
+#[test]
+fn deep_sdk_verified_paths_traverse_nonzero_limit_order_bins() {
+    let f = load();
+    let bins = load_bins();
+    let lo_bins: BTreeSet<i32> = bins
+        .iter()
+        .filter(|b| b.open_order_amount > 0 || b.processed_order_remaining_amount > 0)
+        .map(|b| b.id)
+        .collect();
+    assert!(
+        !lo_bins.is_empty(),
+        "fixture must contain non-zero limit-order layers for this coverage claim"
+    );
+
+    let mut lo_cases = 0usize;
+    for (mode, m) in [
+        (0u8, &f.quotes.mode_0_input_only),
+        (1u8, &f.quotes.mode_1_only_y),
+    ] {
+        for (dirn, set) in [("x_to_y", &m.x_to_y), ("y_to_x", &m.y_to_x)] {
+            for (kind, q) in [
+                ("exact_in_deep", &set.exact_in_deep),
+                ("exact_out_deep", &set.exact_out_deep),
+            ] {
+                let Some(q) = q else { continue };
+                let label = format!("mode{mode} {dirn} {kind}");
+                let e = evaluate_case(&f, &bins, &label, mode, q);
+                let lo = e.start_bin_id.min(e.end_bin_id)..=e.start_bin_id.max(e.end_bin_id);
+                if lo.clone().any(|id| lo_bins.contains(&id)) {
+                    lo_cases += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "{lo_cases} SDK-verified deep cases crossed non-zero limit-order bins \
+         ({} LO bins in the captured window)",
+        lo_bins.len()
+    );
+    assert!(
+        lo_cases > 0,
+        "no SDK-verified deep path crossed a non-zero limit-order bin; \
+         LO-layer parity is not exercised by this fixture"
+    );
+}
+
 /// Multi-pool batch differential over the batch-captured Mainnet pool set in
 /// `fixtures/meteora_dlmm_pools/`: pools across bin steps 1 / 4 / 10 / 50 and
 /// multiple mint pairs (SOL/USDC, TRUMP/USDC), each captured from Mainnet at a

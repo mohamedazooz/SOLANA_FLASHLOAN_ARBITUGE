@@ -192,6 +192,7 @@ fn config(allowlist: DlmmPoolAllowlist) -> DlmmFlashArbConfig {
         network_cost_lamports: 9_000,
         priority_fee_lamports: 4_000,
         priority_fee_micro_lamports: 10_000,
+        jito_tip_lamports: 0,
         payer: Pubkey::new_unique(),
         kamino: arb_tx::KaminoFlashParams::default(),
     }
@@ -289,6 +290,73 @@ fn evaluation_reports_a_profitable_cycle() {
     // Kamino main-market WSOL charges `sf = 11_529_215_046_068` on a 2^60
     // scale = 1e-5, i.e. 100 lamports per 1e7 borrowed (round-half-up).
     assert_eq!(eval.flash_fee, 100, "round(1e7 * 11529215046068 / 2^60)");
+}
+
+#[test]
+fn jito_tip_liability_is_counted_once_in_costs_and_floor() {
+    let route = profitable_pair();
+    let mut cfg = config(allowlist());
+    let baseline = DlmmFlashArbEvaluator { config: &cfg }.evaluate(&route, 10_000_000);
+    assert!(baseline.feasible, "rejection: {:?}", baseline.rejection);
+    cfg.jito_tip_lamports = arb_constants::MIN_JITO_TIP_LAMPORTS;
+    let tipped = DlmmFlashArbEvaluator { config: &cfg }.evaluate(&route, 10_000_000);
+    assert!(tipped.feasible, "rejection: {:?}", tipped.rejection);
+    // WSOL flash mint: one lamport is one raw unit, so the tip shifts the
+    // signed net profit and the retained floor by exactly the tip, once.
+    assert_eq!(
+        tipped.net_profit,
+        baseline.net_profit - i64::try_from(cfg.jito_tip_lamports).unwrap()
+    );
+    assert_eq!(
+        tipped.minimum_retained_profit_raw,
+        baseline.minimum_retained_profit_raw + cfg.jito_tip_lamports
+    );
+    assert_eq!(
+        tipped.total_cost,
+        baseline.total_cost + cfg.jito_tip_lamports
+    );
+}
+
+#[test]
+fn jito_tip_liability_can_push_a_marginal_route_below_the_floor() {
+    // A tip larger than the gross edge must flip the evaluation to
+    // ProfitBelowFloor instead of pricing a bundle that cannot retain profit.
+    let route = profitable_pair();
+    let baseline = DlmmFlashArbEvaluator {
+        config: &config(allowlist()),
+    }
+    .evaluate(&route, 10_000_000);
+    assert!(baseline.feasible, "rejection: {:?}", baseline.rejection);
+    assert!(baseline.net_profit > 0);
+    let mut cfg = config(allowlist());
+    cfg.jito_tip_lamports = u64::try_from(baseline.net_profit).unwrap() + 1;
+    let tipped = DlmmFlashArbEvaluator { config: &cfg }.evaluate(&route, 10_000_000);
+    assert!(matches!(
+        tipped.rejection,
+        Some(arb_engine::dlmm_flash_arbitrage::FlashArbRejection::ProfitBelowFloor { .. })
+    ));
+    assert!(!tipped.feasible);
+}
+
+#[test]
+fn sub_minimum_jito_tip_is_rejected_fail_closed() {
+    // docs.jito.wtf: the block engine enforces a 1,000-lamport minimum bundle
+    // tip. A configured tip below that can never land, so pricing it as if the
+    // bundle will execute would be an optimistic estimate; it must be rejected.
+    let route = profitable_pair();
+    let mut cfg = config(allowlist());
+    cfg.jito_tip_lamports = arb_constants::MIN_JITO_TIP_LAMPORTS - 1;
+    let eval = DlmmFlashArbEvaluator { config: &cfg }.evaluate(&route, 10_000_000);
+    assert_eq!(
+        eval.rejection,
+        Some(
+            arb_engine::dlmm_flash_arbitrage::FlashArbRejection::JitoTipBelowMinimum {
+                tip: cfg.jito_tip_lamports,
+                min: arb_constants::MIN_JITO_TIP_LAMPORTS,
+            }
+        )
+    );
+    assert!(!eval.feasible);
 }
 
 #[test]
@@ -724,6 +792,7 @@ fn flash_params(
         leg_b,
         cu_limit: 400_000,
         priority_fee_micro_lamports: 10_000,
+        jito_tip_lamports: 0,
     }
 }
 
