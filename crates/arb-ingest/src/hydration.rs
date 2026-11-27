@@ -773,10 +773,28 @@ impl MultiDexRegistry {
                         derived_pubkeys.push(ext);
                     }
                 }
+                if p.protocol == DexProtocol::RaydiumClmm
+                    && pool_owner_map.get(&p.pool_id.0).is_some_and(|owner| {
+                        Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID)
+                            .is_ok_and(|program| *owner == program)
+                    })
+                {
+                    if let Ok(pool) =
+                        arb_dex::raydium_clmm::RaydiumClmmPool::from_account(p.pool_id, data)
+                    {
+                        let extension =
+                            arb_dex::raydium_clmm::derive_raydium_clmm_bitmap_extension_pda(
+                                &p.pool_id.0,
+                            );
+                        for key in [pool.amm_config, extension] {
+                            if !derived_pubkeys.contains(&key) {
+                                derived_pubkeys.push(key);
+                            }
+                        }
+                    }
+                }
                 // Orca tick arrays are fetched together with their pool below.
                 // A separate request here would make their context slots incomparable.
-                // Raydium CLMM remains telemetry-only until live AmmConfig and dynamic-fee state
-                // are joined into the coherent snapshot.
             }
         }
 
@@ -1207,6 +1225,305 @@ impl MultiDexRegistry {
         let mut clmm_coherent_slots: std::collections::HashMap<PoolId, Slot> =
             std::collections::HashMap::new();
 
+        // Raydium CLMM dependencies are hydrated as one pool-specific snapshot:
+        // PoolState + AmmConfig + optional bitmap extension + every selected TickArray.
+        // Discovery data is used only to select candidate PDAs; no candidate is
+        // quoteable until the final snapshot revalidates the bitmap and all accounts.
+        let raydium_program = Pubkey::from_str(arb_constants::RAYDIUM_CLMM_PROGRAM_ID).ok();
+        let mut raydium_selected: std::collections::HashMap<PoolId, Vec<(Pubkey, i32)>> =
+            std::collections::HashMap::new();
+        let mut raydium_groups: Vec<(PoolId, Vec<Pubkey>)> = Vec::new();
+        for p in self
+            .pools
+            .iter()
+            .filter(|p| p.protocol == DexProtocol::RaydiumClmm)
+        {
+            let Some((_, pool_bytes)) = pool_data_map.get(&p.pool_id.0) else {
+                skip_reasons.insert(p.pool_id, "raydium_clmm_pool_account_unavailable");
+                continue;
+            };
+            let Some(program) = raydium_program else {
+                continue;
+            };
+            if pool_owner_map.get(&p.pool_id.0) != Some(&program) {
+                skip_reasons.insert(p.pool_id, "raydium_clmm_pool_owner_mismatch");
+                continue;
+            }
+            let Ok(pool) =
+                arb_dex::raydium_clmm::RaydiumClmmPool::from_account(p.pool_id, pool_bytes)
+            else {
+                skip_reasons.insert(p.pool_id, "raydium_clmm_pool_state_invalid");
+                continue;
+            };
+            let extension_key =
+                arb_dex::raydium_clmm::derive_raydium_clmm_bitmap_extension_pda(&p.pool_id.0);
+            let extension_bytes = derived_data_map
+                .get(&extension_key)
+                .zip(derived_owner_map.get(&extension_key))
+                .filter(|(_, owner)| **owner == program)
+                .map(|((_, bytes), _)| bytes.as_slice());
+            let selection = match arb_dex::raydium_clmm::select_raydium_clmm_tick_array_starts(
+                p.pool_id.0,
+                pool_bytes,
+                extension_bytes,
+                3,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    skip_reasons.insert(p.pool_id, "raydium_clmm_bitmap_selection_invalid");
+                    debug!(
+                        "Raydium CLMM {} bitmap selection rejected: {}",
+                        p.pool_id, error
+                    );
+                    continue;
+                }
+            };
+            // Preserve direction order: zero-for-one nearest-to-farthest,
+            // followed by one-for-zero nearest-to-farthest. The on-chain swap
+            // handler scans the supplied array accounts for the first valid
+            // start in the requested direction and then consumes its successors.
+            let mut seen_starts = std::collections::HashSet::new();
+            let starts: Vec<i32> = selection
+                .zero_for_one_starts
+                .iter()
+                .chain(selection.one_for_zero_starts.iter())
+                .copied()
+                .filter(|start| seen_starts.insert(*start))
+                .collect();
+            let arrays: Vec<(Pubkey, i32)> = starts
+                .into_iter()
+                .map(|start| {
+                    (
+                        arb_dex::raydium_clmm::derive_raydium_clmm_tick_array_pda(
+                            &p.pool_id.0,
+                            start,
+                        ),
+                        start,
+                    )
+                })
+                .collect();
+            if arrays.is_empty() {
+                skip_reasons.insert(p.pool_id, "raydium_clmm_no_initialized_tick_arrays");
+                continue;
+            }
+            let mut keys = vec![p.pool_id.0, pool.amm_config, extension_key];
+            keys.extend(arrays.iter().map(|(key, _)| *key));
+            keys.sort_unstable();
+            keys.dedup();
+            raydium_selected.insert(p.pool_id, arrays);
+            raydium_groups.push((p.pool_id, keys));
+        }
+
+        let mut raydium_config_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
+            std::collections::HashMap::new();
+        let mut raydium_tick_arrays: std::collections::HashMap<
+            PoolId,
+            Vec<arb_types::ClmmTickArray>,
+        > = std::collections::HashMap::new();
+        let mut raydium_validated_bitmap_extensions: std::collections::HashMap<
+            PoolId,
+            Option<Pubkey>,
+        > = std::collections::HashMap::new();
+        let mut raydium_coherent_slots: std::collections::HashMap<PoolId, Slot> =
+            std::collections::HashMap::new();
+
+        for (pool_id, keys) in raydium_groups {
+            let mut snapshot = std::collections::HashMap::new();
+            let mut owners = std::collections::HashMap::new();
+            let slot =
+                Self::batch_fetch_accounts(&self.rpc, &keys, &mut snapshot, Some(&mut owners))
+                    .await;
+            let pool_key = pool_id.0;
+            let Some((pool_slot, pool_bytes)) = snapshot.get(&pool_key).cloned() else {
+                skip_reasons.insert(pool_id, "raydium_clmm_coherent_pool_missing");
+                continue;
+            };
+            let Some(program) = raydium_program else {
+                continue;
+            };
+            if slot == 0 || pool_slot != slot || owners.get(&pool_key) != Some(&program) {
+                skip_reasons.insert(pool_id, "raydium_clmm_coherent_pool_owner_or_slot_invalid");
+                continue;
+            }
+            let Ok(mut pool) =
+                arb_dex::raydium_clmm::RaydiumClmmPool::from_account(pool_id, &pool_bytes)
+            else {
+                skip_reasons.insert(pool_id, "raydium_clmm_coherent_pool_decode_failed");
+                continue;
+            };
+            let config_key = pool.amm_config;
+            let extension_key =
+                arb_dex::raydium_clmm::derive_raydium_clmm_bitmap_extension_pda(&pool_key);
+            let Some((config_slot, config_bytes)) = snapshot.get(&config_key) else {
+                skip_reasons.insert(pool_id, "raydium_clmm_amm_config_missing");
+                continue;
+            };
+            if *config_slot != slot || owners.get(&config_key) != Some(&program) {
+                skip_reasons.insert(pool_id, "raydium_clmm_amm_config_owner_or_slot_invalid");
+                continue;
+            }
+            let Ok(config) = arb_dex::raydium_clmm::RaydiumClmmAmmConfig::decode(config_bytes)
+            else {
+                skip_reasons.insert(pool_id, "raydium_clmm_amm_config_decode_failed");
+                continue;
+            };
+            let (canonical_config, canonical_bump) = Pubkey::find_program_address(
+                &[b"amm_config", &config.index.to_be_bytes()],
+                &program,
+            );
+            if canonical_config != config_key
+                || config.bump != canonical_bump
+                || config.tick_spacing != pool.tick_spacing
+                || config.trade_fee_rate == 0
+                || config.trade_fee_rate
+                    > arb_math::raydium_dynamic_fee::RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR
+                || config
+                    .protocol_fee_rate
+                    .checked_add(config.fund_fee_rate)
+                    .is_none_or(|combined| combined > 1_000_000)
+            {
+                skip_reasons.insert(pool_id, "raydium_clmm_amm_config_pda_bump_or_fee_invalid");
+                continue;
+            }
+            let extension_valid = match (snapshot.get(&extension_key), owners.get(&extension_key)) {
+                (Some((extension_slot, bytes)), Some(owner))
+                    if *owner == program && *extension_slot == slot =>
+                {
+                    arb_dex::raydium_clmm::RaydiumClmmTickArrayBitmapExtension::decode(
+                        pool_key, bytes,
+                    )
+                    .is_ok()
+                }
+                (None, _) => true,
+                _ => false,
+            };
+            if !extension_valid {
+                skip_reasons.insert(
+                    pool_id,
+                    "raydium_clmm_bitmap_extension_owner_slot_or_layout_invalid",
+                );
+                continue;
+            }
+            let extension_bytes = snapshot
+                .get(&extension_key)
+                .map(|(_, bytes)| bytes.as_slice());
+            let selection = match arb_dex::raydium_clmm::select_raydium_clmm_tick_array_starts(
+                pool_key,
+                &pool_bytes,
+                extension_bytes,
+                3,
+            ) {
+                Ok(value) => value,
+                Err(_) => {
+                    skip_reasons.insert(pool_id, "raydium_clmm_coherent_bitmap_selection_failed");
+                    continue;
+                }
+            };
+            let mut seen_starts = std::collections::HashSet::new();
+            let expected_starts: Vec<i32> = selection
+                .zero_for_one_starts
+                .iter()
+                .chain(selection.one_for_zero_starts.iter())
+                .copied()
+                .filter(|start| seen_starts.insert(*start))
+                .collect();
+            let expected: Vec<(Pubkey, i32)> = expected_starts
+                .iter()
+                .map(|start| {
+                    (
+                        arb_dex::raydium_clmm::derive_raydium_clmm_tick_array_pda(
+                            &pool_key, *start,
+                        ),
+                        *start,
+                    )
+                })
+                .collect();
+            if raydium_selected.get(&pool_id) != Some(&expected) {
+                skip_reasons.insert(pool_id, "raydium_clmm_bitmap_window_changed_during_refresh");
+                continue;
+            }
+            let mut arrays = Vec::new();
+            let mut facades = Vec::new();
+            let mut complete = true;
+            for (array_key, start) in &expected {
+                let Some((array_slot, bytes)) = snapshot.get(array_key) else {
+                    complete = false;
+                    break;
+                };
+                if *array_slot != slot || owners.get(array_key) != Some(&program) {
+                    complete = false;
+                    break;
+                }
+                let Ok(facade) =
+                    arb_dex::raydium_clmm::RaydiumClmmPool::parse_tick_array_state_for_pool(
+                        bytes,
+                        pool_key,
+                        *array_key,
+                        pool.tick_spacing,
+                    )
+                else {
+                    complete = false;
+                    break;
+                };
+                if facade.start_tick_index != *start {
+                    complete = false;
+                    break;
+                }
+                arrays.push(arb_types::ClmmTickArray {
+                    start_tick_index: facade.start_tick_index,
+                    account_pubkey: Some(array_key.to_bytes()),
+                    account_slot: Some(*array_slot),
+                    ticks: facade
+                        .ticks
+                        .iter()
+                        .filter(|tick| tick.initialized)
+                        .map(|tick| arb_types::ClmmTick {
+                            tick_index: tick.tick_index,
+                            initialized: true,
+                            liquidity_net: tick.liquidity_net,
+                            limit_order_unfilled: tick.limit_order_unfilled,
+                        })
+                        .collect(),
+                });
+                facades.push(facade);
+            }
+            if !complete || arrays.is_empty() {
+                skip_reasons.insert(
+                    pool_id,
+                    "raydium_clmm_tick_arrays_owner_slot_or_layout_invalid",
+                );
+                continue;
+            }
+            if pool.apply_amm_config_data(config_bytes).is_err() {
+                skip_reasons.insert(pool_id, "raydium_clmm_amm_config_apply_failed");
+                continue;
+            }
+            pool.tick_arrays = facades;
+            pool.tick_array_pdas = expected.iter().map(|(key, _)| *key).collect();
+            let validated_extension = snapshot
+                .contains_key(&extension_key)
+                .then_some(extension_key);
+            pool.bitmap_extension = validated_extension;
+            raydium_validated_bitmap_extensions.insert(pool_id, validated_extension);
+            pool_data_map.insert(pool_key, (slot, pool_bytes));
+            pool_owner_map.insert(pool_key, program);
+            raydium_config_map.insert(config_key, (slot, config_bytes.clone()));
+            if let Some((_, bytes)) = snapshot.get(&extension_key) {
+                derived_data_map.insert(extension_key, (slot, bytes.clone()));
+                derived_owner_map.insert(extension_key, program);
+            }
+            for (key, _) in &expected {
+                if let Some((_, bytes)) = snapshot.get(key) {
+                    derived_data_map.insert(*key, (slot, bytes.clone()));
+                    derived_owner_map.insert(*key, program);
+                }
+            }
+            raydium_tick_arrays.insert(pool_id, arrays.clone());
+            clmm_ticks.insert(pool_id, arrays);
+            raydium_coherent_slots.insert(pool_id, Slot(slot));
+            max_observed_slot = max_observed_slot.max(slot);
+        }
+
         for p in &self.pools {
             if let Some((_, data)) = pool_data_map.get(&p.pool_id.0) {
                 match p.protocol {
@@ -1442,42 +1759,7 @@ impl MultiDexRegistry {
                         }
                     }
                     DexProtocol::RaydiumClmm => {
-                        if let Some(c) = decode_raydium_clmm_state(data, p.fee_bps) {
-                            let (keys, starts) = raydium_clmm_tick_array_pdas(
-                                &p.pool_id,
-                                c.tick_current,
-                                c.tick_spacing,
-                            );
-                            let mut arrays = Vec::new();
-                            for (key, start_tick) in keys.into_iter().zip(starts) {
-                                if let Some((_, bytes)) = derived_data_map.get(&key) {
-                                    if let Ok(facade) =
-                                        arb_dex::RaydiumClmmPool::parse_tick_array_state(bytes)
-                                    {
-                                        if facade.start_tick_index == start_tick {
-                                            arrays.push(arb_types::ClmmTickArray {
-                                                start_tick_index: facade.start_tick_index,
-                                                account_pubkey: None,
-                                                account_slot: None,
-                                                ticks: facade
-                                                    .ticks
-                                                    .into_iter()
-                                                    .filter(|t| t.initialized)
-                                                    .map(|t| arb_types::ClmmTick {
-                                                        tick_index: t.tick_index,
-                                                        initialized: true,
-                                                        liquidity_net: t.liquidity_net,
-                                                        limit_order_unfilled: t
-                                                            .limit_order_unfilled,
-                                                    })
-                                                    .collect(),
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            clmm_ticks.insert(p.pool_id, arrays);
-                        }
+                        // Already populated from the owner-validated coherent snapshot above.
                     }
                     _ => {}
                 }
@@ -1690,9 +1972,19 @@ impl MultiDexRegistry {
 
             let mut clmm = match (p.protocol, pool_bytes) {
                 (DexProtocol::OrcaWhirlpool, Some(data)) => decode_clmm_state(data),
-                (DexProtocol::RaydiumClmm, Some(data)) => {
-                    decode_raydium_clmm_state(data, p.fee_bps)
-                }
+                (DexProtocol::RaydiumClmm, Some(data)) => data
+                    .get(9..41)
+                    .and_then(|slice| <[u8; 32]>::try_from(slice).ok())
+                    .map(Pubkey::new_from_array)
+                    .and_then(|config_key| raydium_config_map.get(&config_key))
+                    .and_then(|(_, config_bytes)| {
+                        decode_raydium_clmm_state_with_amm_config(
+                            p.pool_id,
+                            data,
+                            Some(config_bytes),
+                            p.fee_bps,
+                        )
+                    }),
                 _ => None,
             };
             let mut dlmm = match (p.protocol, pool_bytes) {
@@ -2034,22 +2326,30 @@ impl MultiDexRegistry {
                         observation_state,
                     })
                 }
-                (DexProtocol::RaydiumClmm, Some(d)) if d.len() >= 273 => {
+                (DexProtocol::RaydiumClmm, Some(d))
+                    if d.len() >= arb_dex::raydium_clmm::RAYDIUM_CLMM_POOL_STATE_MIN_SIZE
+                        && clmm.is_some()
+                        && raydium_tick_arrays.contains_key(&p.pool_id) =>
+                {
                     let amm_config = Pubkey::new_from_array(d[9..41].try_into().unwrap());
                     let vault_0 = Pubkey::new_from_array(d[137..169].try_into().unwrap());
                     let vault_1 = Pubkey::new_from_array(d[169..201].try_into().unwrap());
                     let observation_state = Pubkey::new_from_array(d[201..233].try_into().unwrap());
-                    // Raydium CLMM is telemetry-only until tick arrays and the
-                    // optional bitmap extension are fetched, owner-validated,
-                    // and joined with this pool at one coherent slot. A derived
-                    // PDA alone is not an executable account.
+                    let tick_array_pdas = raydium_selected
+                        .get(&p.pool_id)
+                        .map(|arrays| arrays.iter().map(|(key, _)| *key).collect())
+                        .unwrap_or_default();
+                    let bitmap_extension = raydium_validated_bitmap_extensions
+                        .get(&p.pool_id)
+                        .copied()
+                        .flatten();
                     Some(arb_types::PoolExecutionAccounts::RaydiumClmm {
                         amm_config,
                         vault_0,
                         vault_1,
                         observation_state,
-                        tick_array_pdas: Vec::new(),
-                        bitmap_extension: None,
+                        tick_array_pdas,
+                        bitmap_extension,
                         pool_mint_0: Pubkey::new_from_array(d[73..105].try_into().unwrap()),
                     })
                 }
@@ -2277,6 +2577,14 @@ impl MultiDexRegistry {
                         .or_insert("orca_whirlpool_tick_arrays_not_same_slot");
                     // Whirlpool quotes require the pool and every selected tick
                     // array from the same RPC context slot.
+                    continue;
+                };
+                slot
+            } else if p.protocol == DexProtocol::RaydiumClmm {
+                let Some(slot) = raydium_coherent_slots.get(&p.pool_id).copied() else {
+                    skip_reasons
+                        .entry(p.pool_id)
+                        .or_insert("raydium_clmm_dependencies_not_same_slot");
                     continue;
                 };
                 slot
