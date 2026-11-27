@@ -71,6 +71,44 @@ fn critical_strategy_defaults_match_across_all_toml_files() {
 }
 
 #[test]
+fn env_example_risk_and_economic_overrides_match_production_contract() {
+    use std::collections::HashMap;
+    let mut values = HashMap::<String, String>::new();
+    for line in ENV_EXAMPLE.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            values.insert(key.trim().to_owned(), value.trim().to_owned());
+        }
+    }
+    let expected = [
+        ("MAX_TRADE_SIZE_USD", "1.5"),
+        ("MAX_FLASH_BORROW_USD", "1.5"),
+        ("MAX_SLIPPAGE_BPS", "10"),
+        ("MIN_NET_PROFIT_LAMPORTS", "10000"),
+        ("MIN_NET_PROFIT_BPS", "1"),
+        ("MAX_PRICE_IMPACT_BPS", "40"),
+        ("MAX_DAILY_LOSS_USD", "0.10"),
+        ("MAX_HOURLY_LOSS_USD", "0.03"),
+        ("MAX_INFLIGHT_BUNDLES", "1"),
+        ("MAX_CONSECUTIVE_FAILURES", "3"),
+        ("MAX_PRIORITY_FEE_SHARE_BPS", "1000"),
+        ("JITO_MAX_TIP_SHARE_BPS", "1000"),
+        ("ARB_MAX_IMPLAUSIBLE_ROI_BPS", "1500"),
+        ("MIN_SOL_RESERVE_LAMPORTS", "10000000"),
+    ];
+    for (key, expected_value) in expected {
+        assert_eq!(
+            values.get(key).map(String::as_str),
+            Some(expected_value),
+            ".env.example {key} must match the canonical production safety policy"
+        );
+    }
+}
+
+#[test]
 fn graph_horizon_is_coherent_with_state_age_everywhere() {
     for (name, raw) in [
         ("base.toml", BASE),

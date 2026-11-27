@@ -52,20 +52,15 @@ fn resolve_token_program<'a>(
 
 /// Return the pool mint opposite `input_mint`. A valid DLMM hop must contain
 /// the expected input mint exactly once; absent or duplicated input mints fail.
+/// The two mints may legitimately be owned by different token programs.
 fn output_mint_for_input<'a>(
     input_mint: &'a AccountInfo<'a>,
     token_x_mint: &'a AccountInfo<'a>,
     token_y_mint: &'a AccountInfo<'a>,
 ) -> Result<&'a AccountInfo<'a>, solana_program_error::ProgramError> {
-    if token_x_mint.key == input_mint.key
-        && token_y_mint.key != input_mint.key
-        && token_x_mint.owner == input_mint.owner
-    {
+    if token_x_mint.key == input_mint.key && token_y_mint.key != input_mint.key {
         Ok(token_y_mint)
-    } else if token_y_mint.key == input_mint.key
-        && token_x_mint.key != input_mint.key
-        && token_y_mint.owner == input_mint.owner
-    {
+    } else if token_y_mint.key == input_mint.key && token_x_mint.key != input_mint.key {
         Ok(token_x_mint)
     } else {
         Err(ExecutorError::InvalidTokenAccount.into())
@@ -99,7 +94,7 @@ fn resolve_route_mint_accounts<'a>(
     let meme_a_mint = output_mint_for_input(wsol_mint, leg1_x, leg1_y)?;
     let meme_b_mint = output_mint_for_input(meme_a_mint, leg2_x, leg2_y)?;
     let closing_mint = output_mint_for_input(meme_b_mint, leg3_x, leg3_y)?;
-    if closing_mint.key != &WSOL_MINT || closing_mint.owner != wsol_mint.owner {
+    if closing_mint.key != &WSOL_MINT {
         return Err(ExecutorError::InvalidTokenAccount.into());
     }
     Ok((wsol_mint, meme_a_mint, meme_b_mint))
@@ -110,6 +105,20 @@ pub fn process_execute_three_leg<'a>(
     accounts: &'a [AccountInfo<'a>],
     args: ExecuteThreeLegArgs,
 ) -> ProgramResult {
+    // Reject zero-size / zero-floor legs before constructing any CPI. A zero
+    // amount can otherwise turn a malformed route into a protocol-dependent
+    // no-op while still exercising downstream account validation paths.
+    if args.leg1_amount_in == 0
+        || args.leg1_min_amount_out == 0
+        || args.leg2_amount_in == 0
+        || args.leg2_min_amount_out == 0
+        || args.leg3_amount_in == 0
+        || args.leg3_min_amount_out == 0
+        || args.min_final_wsol_delta == 0
+    {
+        return Err(ExecutorError::InvalidInstructionData.into());
+    }
+
     // 1. Validate invariant: previous hop guaranteed min output must cover next hop amount in
     if args.leg1_min_amount_out < args.leg2_amount_in {
         return Err(ExecutorError::Leg2InputExceedsLeg1Output.into());
@@ -128,6 +137,9 @@ pub fn process_execute_three_leg<'a>(
     let required_accounts = 33 + c1 + c2 + c3;
     if accounts.len() < required_accounts {
         return Err(ExecutorError::NotEnoughAccountInfos.into());
+    }
+    if accounts.len() > required_accounts {
+        return Err(ExecutorError::InvalidInstructionData.into());
     }
 
     // Unpack Header Accounts
@@ -433,6 +445,39 @@ mod route_mint_tests {
         let a4 = AccountInfo::new(&meme_b, false, false, &mut l4, &mut d4, &owner, false);
         let a5 = AccountInfo::new(&meme_b, false, false, &mut l5, &mut d5, &owner, false);
         let a6 = AccountInfo::new(&wsol, false, false, &mut l6, &mut d6, &owner, false);
+
+        let (resolved_wsol, resolved_a, resolved_b) =
+            resolve_route_mint_accounts(&a1, &a2, &a3, &a4, &a5, &a6).unwrap();
+        assert_eq!(resolved_wsol.key, &wsol);
+        assert_eq!(resolved_a.key, &meme_a);
+        assert_eq!(resolved_b.key, &meme_b);
+    }
+
+    #[test]
+    fn resolves_route_with_mixed_spl_and_token_2022_mints() {
+        let wsol = WSOL_MINT;
+        let meme_a = solana_address::Address::from([11u8; 32]);
+        let meme_b = solana_address::Address::from([22u8; 32]);
+        let spl = SPL_TOKEN_PROGRAM_ID;
+        let token_2022 = crate::validation::TOKEN_2022_PROGRAM_ID;
+        let mut l1 = 1;
+        let mut l2 = 1;
+        let mut l3 = 1;
+        let mut l4 = 1;
+        let mut l5 = 1;
+        let mut l6 = 1;
+        let mut d1 = [];
+        let mut d2 = [];
+        let mut d3 = [];
+        let mut d4 = [];
+        let mut d5 = [];
+        let mut d6 = [];
+        let a1 = AccountInfo::new(&wsol, false, false, &mut l1, &mut d1, &spl, false);
+        let a2 = AccountInfo::new(&meme_a, false, false, &mut l2, &mut d2, &token_2022, false);
+        let a3 = AccountInfo::new(&meme_a, false, false, &mut l3, &mut d3, &token_2022, false);
+        let a4 = AccountInfo::new(&meme_b, false, false, &mut l4, &mut d4, &spl, false);
+        let a5 = AccountInfo::new(&meme_b, false, false, &mut l5, &mut d5, &spl, false);
+        let a6 = AccountInfo::new(&wsol, false, false, &mut l6, &mut d6, &spl, false);
 
         let (resolved_wsol, resolved_a, resolved_b) =
             resolve_route_mint_accounts(&a1, &a2, &a3, &a4, &a5, &a6).unwrap();

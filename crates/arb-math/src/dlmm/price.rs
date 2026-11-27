@@ -101,6 +101,40 @@ pub fn bin_array_index_for_bin(bin_id: i32) -> i64 {
     (bin_id as i64).div_euclid(70)
 }
 
+/// Normalize a DLMM quote to fee-excluded pool-side amounts before computing
+/// curve impact. `total_fee` is a component of the quote, not a second cost
+/// to fold into price impact. This helper is shared by exact-in and exact-out
+/// so InputOnly and OnlyY collection modes cannot drift apart.
+pub(super) fn calculate_fee_excluded_price_impact_bps(
+    amount_in: u64,
+    amount_out: u64,
+    total_fee: u64,
+    fee_on_input: bool,
+    start_price_q64: u128,
+    swap_for_y: bool,
+) -> Result<Bps, DlmmError> {
+    let (curve_input, curve_output) = if fee_on_input {
+        (
+            amount_in
+                .checked_sub(total_fee)
+                .ok_or(DlmmError::MathOverflow)?,
+            amount_out,
+        )
+    } else {
+        (
+            amount_in,
+            amount_out
+                .checked_add(total_fee)
+                .ok_or(DlmmError::MathOverflow)?,
+        )
+    };
+    Ok(calculate_price_impact_bps(
+        curve_input,
+        curve_output,
+        start_price_q64,
+        swap_for_y,
+    ))
+}
 /// Calculate execution price impact against starting spot price in basis points.
 pub(super) fn calculate_price_impact_bps(
     amount_in: u64,

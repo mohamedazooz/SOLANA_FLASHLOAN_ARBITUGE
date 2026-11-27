@@ -694,4 +694,33 @@ PR: #204 (open; https://github.com/mohamedazooz/SOLANA_FLASHLOAN_ARBITUGE/pull/2
 REMAINING_RISKS: No RPC simulation, Jito ingress canary, mainnet landing, or realized PnL evidence was produced. Legacy Bellman-Ford helper remains disconnected and requires a separate deprecation decision.
 NEXT_TASK: Review PR #204 CI and human review; update branch if needed; do not merge automatically.
 ```
+```markdown
+TASK_ID: TASK-DLMM-PRICE-IMPACT-PARITY-20261127-001
+PHASE: Phase 7 — Exact Quote Math & Differential Tests
+PRIORITY: P1
+STATUS: COMPLETED (scoped math defect)
+BASE_COMMIT: 6cbc9b6108c27a984a97b2a41265ed707b0c21ce
+BRANCH: fix/unified-pricing-dlmm-20261127
+PR: Pending publication
+OBJECTIVE: Make exact-in and exact-out DLMM curve price impact use identical fee-excluded pool-side amounts without changing protocol fee math.
+ROOT_CAUSE: Exact-out passed fee-inclusive amounts to calculate_price_impact_bps while exact-in normalized InputOnly/OnlyY fees first.
+IMPLEMENTATION: Added shared checked calculate_fee_excluded_price_impact_bps and wired both exact-in and exact-out to it; added constant-price single-bin exact-out regression for both collection modes.
+FILES_CHANGED:
+  - crates/arb-math/src/dlmm/price.rs
+  - crates/arb-math/src/dlmm/quote_exact_in.rs
+  - crates/arb-math/src/dlmm/quote_exact_out.rs
+  - crates/arb-math/src/dlmm/tests.rs
+  - reports/DLMM_QUOTE_PARITY_AUDIT_2026-11-27.md
+  - docs/active/OPEN_ISSUES.md
+  - docs/active/CURRENT_STATUS.md
+TESTS_EXECUTED:
+  - cargo fmt --all -- --check
+  - cargo test -p arb-math -p arb-dex --all-targets
+  - cargo clippy -p arb-math --all-targets -- -D warnings
+  - cargo clippy -p arb-dex --all-targets -- -D warnings
+TEST_RESULTS: 559 tests passed, 0 failed; format and both crate Clippy gates passed.
+KNOWN_LIMITATIONS: QuoteEngine exact-out request/result contract is still exact-in-shaped; trusted Clock timestamp hydration is still absent; unsupported limit-order/extension cases remain fail-closed. This task does not resolve the independent P1/P2 issues listed in OPEN_ISSUES.md.
+NEXT_ACTION: Review PR CI and continue the remaining P1 protocol-parity issues in separate scoped changes.
+```
+
 - [x] RPC getMultipleAccounts response cardinality validation — 2026-11-27: malformed arrays rejected before positional account mapping; batch path falls back to checked five-key chunks. See reports/RPC_MULTIPLE_ACCOUNTS_CARDINALITY_AUDIT_2026-11-27.md.

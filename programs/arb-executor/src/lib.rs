@@ -66,21 +66,11 @@ pub fn process_instruction<'a>(
         return Err(ExecutorError::InvalidInstructionData.into());
     }
 
-    // 1-byte discriminator routing
-    match instruction_data[0] {
-        DISCRIMINATOR_EXECUTE_SWAP => {
-            return process_execute_route(accounts, &instruction_data[1..]);
-        }
-        DISCRIMINATOR_EXECUTE_ROUTE => {
-            return process_execute_route(accounts, &instruction_data[1..]);
-        }
-        DISCRIMINATOR_PROFIT_GUARD => {
-            return process_profit_guard(accounts, &instruction_data[1..]);
-        }
-        _ => {}
-    }
-
-    // 8-byte discriminator routing (backward compatibility)
+    // Check the full-width discriminators before the legacy 1-byte tags.
+    // In particular, EXECUTE_ROUTE_DISCRIMINATOR and
+    // PROFIT_GUARD_DISCRIMINATOR begin with 1 and 2 respectively; dispatching
+    // on the first byte first would consume those instructions as legacy data
+    // and make the 8-byte compatibility paths unreachable.
     if instruction_data.len() >= 8 {
         let (disc, data) = instruction_data.split_at(8);
 
@@ -103,6 +93,17 @@ pub fn process_instruction<'a>(
         if disc == EXECUTE_ROUTE_DISCRIMINATOR {
             return process_execute_route(accounts, data);
         }
+    }
+
+    // 1-byte legacy discriminator routing.
+    match instruction_data[0] {
+        DISCRIMINATOR_EXECUTE_SWAP | DISCRIMINATOR_EXECUTE_ROUTE => {
+            return process_execute_route(accounts, &instruction_data[1..]);
+        }
+        DISCRIMINATOR_PROFIT_GUARD => {
+            return process_profit_guard(accounts, &instruction_data[1..]);
+        }
+        _ => {}
     }
 
     Err(ExecutorError::InvalidInstructionData.into())

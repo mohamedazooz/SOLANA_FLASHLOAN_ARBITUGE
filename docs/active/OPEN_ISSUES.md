@@ -453,6 +453,14 @@ The current Raydium CPMM input-side creator-fee calculation was checked against 
 
 The canonical Kamino flash-fee calculation, fee-exclusive per-protocol price-impact math, and separation of base fee / priority fee / Jito tip were revalidated. No additional production formula defect was confirmed in this pass. See `reports/ECONOMIC_COST_AUDIT_2026-11-27.md` for source links, formulas, test evidence, and limits.
 
+## DLMM exact-out price-impact parity — 2026-11-27
+
+- **Status:** Fixed on `fix/unified-pricing-dlmm-20261127`; awaiting PR/CI review.
+- **Finding:** Exact-in removed the DLMM swap fee before computing curve price impact; exact-out included the fee in the impact input/output, overstating impact for constant-price fills.
+- **Fix:** Both quote directions now call the same checked fee-exclusion helper, respecting InputOnly and OnlyY fee placement. Added exact-out regression coverage for both collection modes.
+- **Verification:** `cargo test -p arb-math -p arb-dex --all-targets` passed (559 tests); Clippy with `-D warnings` passed for `arb-math` and `arb-dex`; format check passed.
+- **Unchanged gates:** Exact-out is still not exposed through `QuoteEngine` because the shared request/result contract does not yet model target output and max input. DLMM timestamp decay remains conservative until a trusted bank Clock snapshot is available. Limit-order/unsupported extension modes remain fail-closed.
+
 ## RPC getMultipleAccounts response cardinality — 2026-11-27
 
 - **Finding:** RpcPool::get_multiple_accounts_with_slots trusted the provider value array length and downstream code zipped returned accounts against requested pubkeys. A short response could shift subsequent account bytes onto the wrong address; an oversized response could be silently ignored.
