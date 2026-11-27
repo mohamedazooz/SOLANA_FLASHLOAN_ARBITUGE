@@ -247,6 +247,38 @@ impl Store for PostgresStore {
         let failure = failure_reason.map(|s| s.to_string());
 
         self.block_on(async move {
+            let terminal = matches!(
+                status.as_str(),
+                "landed"
+                    | "failed"
+                    | "dropped"
+                    | "expired"
+                    | "failed_onchain"
+                    | "expired_unconfirmed"
+            );
+            if terminal {
+                let updated = client
+                    .execute(
+                        "UPDATE outcomes SET
+                            realized_net = CASE WHEN provenance = 'actual' AND $4 = 'estimated' THEN realized_net ELSE $3 END,
+                            provenance = CASE WHEN provenance = 'actual' AND $4 = 'estimated' THEN provenance ELSE $4 END,
+                            actual_output_raw = CASE WHEN provenance = 'actual' AND $4 = 'estimated' THEN actual_output_raw ELSE $5 END,
+                            failure_reason = CASE WHEN provenance = 'actual' AND $4 = 'estimated' THEN failure_reason ELSE $6 END
+                         WHERE id = (
+                            SELECT id FROM outcomes
+                            WHERE attempt_id = $1 AND status = $2
+                            ORDER BY id DESC LIMIT 1
+                         )",
+                        &[&attempt_id, &status, &net, &provenance, &actual, &failure],
+                    )
+                    .await
+                    .map_err(|e| {
+                        ArbError::Internal(format!("Failed to update PG terminal outcome: {e}"))
+                    })?;
+                if updated > 0 {
+                    return Ok(());
+                }
+            }
             client
                 .execute(
                     "INSERT INTO outcomes (attempt_id, status, realized_net, provenance,
@@ -336,9 +368,9 @@ impl Store for PostgresStore {
                 "1=1".to_string()
             };
             let query_str = format!(
-                "SELECT COUNT(*)::BIGINT,
-                        COALESCE(SUM(CASE WHEN status = 'landed' THEN 1 ELSE 0 END),0)::BIGINT,
-                        COALESCE(SUM(realized_net) FILTER (WHERE status = 'landed' AND provenance = 'actual'), 0)::BIGINT,
+                "SELECT COUNT(DISTINCT attempt_id)::BIGINT,
+                        COUNT(DISTINCT CASE WHEN status = 'landed' THEN attempt_id END)::BIGINT,
+                        COALESCE(SUM(realized_net) FILTER (WHERE status IN ('landed', 'failed') AND provenance = 'actual'), 0)::BIGINT,
                         COALESCE(SUM(realized_net) FILTER (WHERE status IN ('canary', 'simulated')), 0)::BIGINT
                  FROM outcomes WHERE {filter}"
             );

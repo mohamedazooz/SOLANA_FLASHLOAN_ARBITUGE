@@ -84,7 +84,7 @@ pub struct PnlDaily {
 /// (MATH-01 / PIPE-01 fix).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetProvenance {
-    /// Decoded from on-chain transaction metadata (balance changes).
+    /// Decoded from on-chain transaction metadata (balance or charged-fee changes).
     Actual,
     /// Pre-dispatch estimate / simulation. No on-chain evidence.
     Estimated,
@@ -421,6 +421,36 @@ impl Store for SqliteStore {
             .map_err(|_| {
                 ArbError::InvalidInput("actual_output_raw exceeds SQLite INTEGER range".into())
             })?;
+        let terminal = matches!(
+            status,
+            "landed" | "failed" | "dropped" | "expired" | "failed_onchain" | "expired_unconfirmed"
+        );
+        if terminal {
+            let updated = conn
+                .execute(
+                    "UPDATE outcomes SET realized_net = ?3, provenance = ?4,
+                                     actual_output_raw = ?5, failure_reason = ?6
+                 WHERE id = (
+                    SELECT id FROM outcomes
+                    WHERE attempt_id = ?1 AND status = ?2
+                    ORDER BY id DESC LIMIT 1
+                 )",
+                    params![
+                        attempt_id,
+                        status,
+                        realized_net.map(|n| n.as_i64()),
+                        provenance.as_str(),
+                        actual,
+                        failure_reason,
+                    ],
+                )
+                .map_err(|e| {
+                    ArbError::Internal(format!("Failed to update terminal outcome: {e}"))
+                })?;
+            if updated > 0 {
+                return Ok(());
+            }
+        }
         conn.execute(
             "INSERT INTO outcomes (attempt_id, status, realized_net, provenance,
                                    actual_output_raw, failure_reason)
@@ -562,9 +592,9 @@ impl Store for SqliteStore {
             "1=1".to_string()
         };
         let query = format!(
-            "SELECT COUNT(*),
-                    SUM(CASE WHEN status = 'landed' THEN 1 ELSE 0 END),
-                    COALESCE(SUM(realized_net) FILTER (WHERE status = 'landed' AND provenance = 'actual'), 0),
+            "SELECT COUNT(DISTINCT attempt_id),
+                    COUNT(DISTINCT CASE WHEN status = 'landed' THEN attempt_id END),
+                    COALESCE(SUM(realized_net) FILTER (WHERE status IN ('landed', 'failed') AND provenance = 'actual'), 0),
                     COALESCE(SUM(realized_net) FILTER (
                         WHERE provenance = 'estimated'
                           AND status IN ('landed', 'canary', 'simulated')
@@ -1169,6 +1199,20 @@ impl Store for MemoryStore {
             .outcomes
             .lock()
             .map_err(|_| ArbError::Internal("lock".into()))?;
+        let terminal = matches!(
+            status,
+            "landed" | "failed" | "dropped" | "expired" | "failed_onchain" | "expired_unconfirmed"
+        );
+        if terminal {
+            if let Some(existing) = o
+                .iter_mut()
+                .rev()
+                .find(|(id, existing_status, _, _)| *id == attempt_id && existing_status == status)
+            {
+                *existing = (attempt_id, status.to_string(), realized_net, provenance);
+                return Ok(());
+            }
+        }
         o.push((attempt_id, status.to_string(), realized_net, provenance));
         Ok(())
     }
@@ -1209,19 +1253,19 @@ impl Store for MemoryStore {
     fn pnl_daily(&self, _day: &str) -> Result<PnlDaily> {
         let mut realized = 0i64;
         let mut simulated = 0i64;
-        let mut n = 0u64;
-        let mut successful = 0u64;
+        let mut attempts = std::collections::HashSet::new();
+        let mut successful_attempts = std::collections::HashSet::new();
         let o = self
             .outcomes
             .lock()
             .map_err(|_| ArbError::Internal("lock".into()))?;
-        for (_, status, rn, prov) in o.iter() {
-            n += 1;
+        for (attempt_id, status, rn, prov) in o.iter() {
+            attempts.insert(*attempt_id);
             if status == "landed" {
-                successful += 1;
+                successful_attempts.insert(*attempt_id);
             }
             match (status.as_str(), prov) {
-                ("landed", NetProvenance::Actual) => {
+                ("landed" | "failed", NetProvenance::Actual) => {
                     if let Some(v) = rn {
                         realized = realized.saturating_add(v.as_i64());
                     }
@@ -1237,8 +1281,8 @@ impl Store for MemoryStore {
         Ok(PnlDaily {
             realized_net: SignedLamports::new(realized),
             simulated_net: SignedLamports::new(simulated),
-            attempts: n,
-            successful,
+            attempts: attempts.len() as u64,
+            successful: successful_attempts.len() as u64,
         })
     }
 
@@ -1382,6 +1426,60 @@ mod tests {
         let recent = store.get_recent_attempts(10).expect("invariant");
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].id, 101);
+    }
+
+    #[test]
+    fn pnl_counts_unique_attempts_and_includes_actual_failed_fees() {
+        let store = SqliteStore::open_in_memory().expect("invariant");
+        for id in 1..=2i64 {
+            store
+                .record_attempt(&AttemptRecord {
+                    id,
+                    slot: 1,
+                    route_id: "r".into(),
+                    expected_net: Lamports(50_000),
+                    tip_lamports: None,
+                    decision: "sent".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        store
+            .record_outcome(1, "sent", None, NetProvenance::Estimated)
+            .unwrap();
+        store
+            .record_outcome(
+                1,
+                "landed",
+                Some(SignedLamports::new(40_000)),
+                NetProvenance::Actual,
+            )
+            .unwrap();
+        // A retry after a crash updates the same terminal row, not a second PnL.
+        store
+            .record_outcome(
+                1,
+                "landed",
+                Some(SignedLamports::new(40_000)),
+                NetProvenance::Actual,
+            )
+            .unwrap();
+        store
+            .record_outcome(2, "sent", None, NetProvenance::Estimated)
+            .unwrap();
+        store
+            .record_outcome(
+                2,
+                "failed",
+                Some(SignedLamports::new(-7_500)),
+                NetProvenance::Actual,
+            )
+            .unwrap();
+
+        let pnl = store.pnl_daily("today").unwrap();
+        assert_eq!(pnl.attempts, 2);
+        assert_eq!(pnl.successful, 1);
+        assert_eq!(pnl.realized_net.as_i64(), 32_500);
     }
 
     /// MATH-01 regression: a landed transaction that realized a NET LOSS must

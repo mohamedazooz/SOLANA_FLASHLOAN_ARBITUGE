@@ -1,4 +1,4 @@
-//! Startup reconciliation of durable dispatch intents (R12).
+﻿//! Startup and periodic reconciliation of durable dispatch intents (R12).
 //!
 //! Best practice (solana.com retry guide + nyk.dev failover pattern): an RPC
 //! timeout is ambiguous, never a failure. The safe unit of retry is the signed
@@ -14,10 +14,9 @@
 //!    `getBlockHeight`. Slot arithmetic is never used as a substitute.
 //! 3. Otherwise resolve as `unresolved_after_poll` — honest, no invention.
 use super::*;
+use arb_store::NetProvenance;
 
-const MAX_PENDING_INTENTS: i64 = 256;
-const POLL_ATTEMPTS: usize = 20;
-const POLL_INTERVAL: Duration = Duration::from_millis(400);
+const MAX_PENDING_INTENTS: i64 = 8;
 
 /// Deterministic reconciliation decision for one pending dispatch intent.
 ///
@@ -73,57 +72,129 @@ pub(super) fn classify_send_error(
 }
 
 impl Supervisor {
-    /// Reconcile every pending dispatch intent persisted by a previous run.
-    /// Called once at startup, before the run loop starts dispatching.
+    /// Reconcile pending dispatch intents once. Ambiguous/unconfirmed intents
+    /// remain pending and are retried by the background reconciler.
     pub async fn reconcile_pending_dispatches(&self) {
-        let pending = match self.store.pending_dispatch_intents(MAX_PENDING_INTENTS) {
-            Ok(p) => p,
-            Err(err) => {
-                warn!(?err, "dispatch-intent reconciliation: store unavailable");
-                return;
+        reconcile_pending_dispatches_with(self.store.clone(), self.rpc_pool.clone()).await;
+    }
+
+    /// Spawn a bounded periodic reconciliation worker. It is deliberately
+    /// outside the strategy hot path and only reads signatures already sent.
+    pub fn spawn_pending_dispatch_reconciler(&self) {
+        let store = self.store.clone();
+        let rpc_pool = self.rpc_pool.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                reconcile_pending_dispatches_with(store.clone(), rpc_pool.clone()).await;
             }
-        };
-        if pending.is_empty() {
+        });
+    }
+}
+
+async fn reconcile_pending_dispatches_with(store: Arc<dyn Store>, rpc_pool: arb_ingest::RpcPool) {
+    let pending = match store.pending_dispatch_intents(MAX_PENDING_INTENTS) {
+        Ok(p) => p,
+        Err(err) => {
+            warn!(?err, "dispatch-intent reconciliation: store unavailable");
             return;
         }
-        warn!(
-            count = pending.len(),
-            "reconciling dispatch intents left pending by a previous run"
-        );
-        let current_block_height = self
-            .rpc_pool
-            .get_block_height()
-            .await
-            .ok()
-            .map(|h| h as i64);
-        for intent in pending {
-            let poll = self
-                .rpc_pool
-                .poll_signature_until_terminal(&intent.signature, POLL_ATTEMPTS, POLL_INTERVAL)
-                .await
-                .ok();
-            let block_height_evidence = match (current_block_height, intent.last_valid_block_height)
-            {
-                (Some(current), Some(last_valid)) => Some((current, last_valid)),
-                _ => None,
-            };
-            let status = classify_reconciliation(poll, block_height_evidence);
+    };
+    if pending.is_empty() {
+        return;
+    }
+
+    let current_block_height = rpc_pool.get_block_height().await.ok().map(|h| h as i64);
+    for intent in pending {
+        let poll = rpc_pool.get_signature_status(&intent.signature).await.ok();
+        let block_height_evidence = match (current_block_height, intent.last_valid_block_height) {
+            (Some(current), Some(last_valid)) => Some((current, last_valid)),
+            _ => None,
+        };
+        let status = classify_reconciliation(poll, block_height_evidence);
+
+        // Unknown or merely processed is not terminal. Keep the intent pending
+        // so the next periodic sweep can observe confirmed/finalized/failed.
+        if status == "unresolved_after_poll" {
+            debug!(
+                attempt_id = intent.attempt_id,
+                provider = %intent.provider,
+                "dispatch intent remains pending; no terminal chain evidence yet"
+            );
+            continue;
+        }
+
+        let (outcome, realized_net, provenance) = match status {
+            "landed" => {
+                let attempt = match store.get_attempt(intent.attempt_id) {
+                    Ok(Some(attempt)) => attempt,
+                    Ok(None) => {
+                        warn!(
+                            attempt_id = intent.attempt_id,
+                            "landed dispatch intent has no parent attempt; leaving pending"
+                        );
+                        continue;
+                    }
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            attempt_id = intent.attempt_id,
+                            "cannot load landed attempt"
+                        );
+                        continue;
+                    }
+                };
+                let estimate = i64::try_from(attempt.expected_net.as_u64())
+                    .ok()
+                    .map(SignedLamports::new);
+                ("landed", estimate, NetProvenance::Estimated)
+            }
+            "failed_onchain" => {
+                let fee = rpc_pool
+                    .get_transaction_with_metadata(&intent.signature)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|meta| arb_sim::meta_fee_lamports(&meta));
+                let realized = fee
+                    .and_then(|value| i64::try_from(value).ok())
+                    .and_then(i64::checked_neg)
+                    .map(SignedLamports::new);
+                let provenance = if realized.is_some() {
+                    NetProvenance::Actual
+                } else {
+                    NetProvenance::Estimated
+                };
+                ("failed", realized, provenance)
+            }
+            "expired_unconfirmed" => ("dropped", None, NetProvenance::Estimated),
+            _ => continue,
+        };
+
+        if let Err(err) = store.record_outcome(intent.attempt_id, outcome, realized_net, provenance)
+        {
             warn!(
+                ?err,
+                attempt_id = intent.attempt_id,
+                "terminal dispatch outcome could not be persisted; intent remains pending"
+            );
+            continue;
+        }
+        if let Err(err) = store.resolve_dispatch_intent(intent.attempt_id, status) {
+            warn!(
+                ?err,
+                attempt_id = intent.attempt_id,
+                "terminal outcome persisted but dispatch intent resolution failed; retry is idempotent"
+            );
+        } else {
+            info!(
                 attempt_id = intent.attempt_id,
                 provider = %intent.provider,
                 status,
-                "dispatch intent reconciled (no resubmission — new opportunities dispatch fresh transactions)"
+                "dispatch intent reconciled from chain evidence"
             );
-            if let Err(err) = self
-                .store
-                .resolve_dispatch_intent(intent.attempt_id, status)
-            {
-                warn!(
-                    ?err,
-                    attempt_id = intent.attempt_id,
-                    "failed to persist reconciliation"
-                );
-            }
         }
     }
 }

@@ -233,3 +233,11 @@ References: [Solana fee structure](https://solana.com/docs/core/fees/fee-structu
 - Root-cause fix (runtime): `http_discovery_enabled = true` in `config/base.toml` + `config.example.toml`. With it off, the runtime registry held only the hardcoded baseline pools and the WebSocket stream subscribed only to those, structurally capping the cycle scan at ~9 pools regardless of market conditions.
 - Honest outcome: the number of opportunities is market-state-dependent. These changes maximize real coverage and detection latency bounds; they do not and cannot manufacture profitable opportunities — the economic gate continues to reject anything below the verified cost stack.
 - No secrets touched; no transaction signed or broadcast.
+
+
+## 2026-11-27 ? Unified execution spine audit
+
+- Branch: fix/unified-arbitrage-spine-20261127, local worktree from latest fetched origin/main.
+- Added docs/active/UNIFIED_EXECUTION_SPINE.md and reports/UNIFIED_EXECUTION_SPINE_AUDIT_2026-11-27.md.
+- Corrected Processed-vs-Confirmed settlement mapping, Jito/RPC confirmation cross-check, base-mint-aware landed balance accounting, persistent ambiguous-intent reconciliation, idempotent terminal outcomes, distinct-attempt PnL aggregation, and actual failed-transaction fee accounting.
+- No mainnet send or live PnL claim. Remaining: persist base-mint/payer/conversion metadata in dispatch intents for crash-time actual PnL recovery.

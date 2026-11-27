@@ -587,6 +587,7 @@ impl Supervisor {
         self.start_wallet_balance_monitor().await?;
 
         self.reconcile_pending_dispatches().await;
+        self.spawn_pending_dispatch_reconciler();
 
         // PIPE-04: verify the hardcoded tip constants against the live
         // `getTipAccounts` set before any tip-bearing dispatch. In Live mode

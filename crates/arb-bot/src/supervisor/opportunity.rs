@@ -1999,6 +1999,8 @@ impl Supervisor {
                 tx_bytes: &tx_bytes,
                 record: &record,
                 real_net_profit: real_net_profit_lamports,
+                lamports_per_base_raw: opp_verified.lamports_per_base_raw.value,
+                lamports_per_base_denom: opp_verified.lamports_per_base_denom.value,
                 payer,
                 route_sig: &route_sig,
                 t_ingest_to_quote_us,
