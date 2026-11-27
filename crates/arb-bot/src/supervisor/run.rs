@@ -3,19 +3,16 @@ use super::*;
 use arb_types::{Bps, RouteId};
 
 impl Supervisor {
-    /// Accept only correctly owned legacy SPL Token WSOL accounts for bootstrap hydration.
+    /// Accept only correctly owned legacy SPL Token accounts matching `expected_mint`.
     /// This validates the owner program and mint before account bytes enter the shared store.
-    fn is_verified_spl_wsol_account(owner: &Pubkey, data: &[u8]) -> bool {
+    fn is_verified_spl_token_account(owner: &Pubkey, data: &[u8], expected_mint: &Pubkey) -> bool {
         let Ok(token_program) = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID) else {
             return false;
         };
         if owner != &token_program {
             return false;
         }
-        let Ok(wsol_mint) = Pubkey::from_str(arb_tx::WSOL_MINT) else {
-            return false;
-        };
-        arb_tx::kamino::decode_supply_vault_liquidity(data, &wsol_mint).is_ok()
+        arb_tx::kamino::decode_supply_vault_liquidity(data, expected_mint).is_ok()
     }
     /// Cumulative user+system CPU ticks for this process (Linux `/proc/self/stat`).
     /// Field indices 11/12 after `(comm)` correspond to utime/stime (fields 14/15).
@@ -84,39 +81,66 @@ impl Supervisor {
         &self,
         current_slot: Slot,
     ) -> Result<u64, &'static str> {
-        let supply_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT)
-            .map_err(|_| "configured Kamino WSOL supply-vault address is invalid")?;
-        let snap = self
-            .ingest
-            .account_store()
-            .get(&supply_vault)
-            .ok_or("supply-vault snapshot is missing from the live account store")?;
+        let wsol = crate::verified_config::wsol_mint();
+        self.kamino_available_flash_liquidity_for_mint_detailed(&wsol, current_slot)
+    }
 
-        const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
-        if snap.slot > current_slot.0 {
-            return Err("supply-vault snapshot slot is ahead of the current stream slot");
-        }
-        let age = current_slot.0.saturating_sub(snap.slot);
-        if age > MAX_SNAPSHOT_AGE_SLOTS {
-            return Err("supply-vault snapshot is stale beyond the configured slot-age limit");
-        }
-
+    /// Detailed fail-closed Kamino supply-vault liquidity check for any
+    /// supported anchor mint (`WSOL` or `USDC`).
+    pub fn kamino_available_flash_liquidity_for_mint_detailed(
+        &self,
+        base_mint: &Pubkey,
+        current_slot: Slot,
+    ) -> Result<u64, &'static str> {
+        let anchor = crate::verified_config::kamino_anchor_for_mint(base_mint)
+            .ok_or("unsupported Kamino flash-loan anchor mint")?;
         let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)
             .map_err(|_| "configured SPL Token program id is invalid")?;
-        if snap.owner != spl {
-            return Err("supply-vault account owner is not the SPL Token program");
+
+        let validate_snap = |snap: arb_ingest::AccountSnapshot| -> Result<u64, &'static str> {
+            const MAX_SNAPSHOT_AGE_SLOTS: u64 = arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS;
+            if snap.slot > current_slot.0 {
+                return Err("supply-vault snapshot slot is ahead of the current stream slot");
+            }
+            let age = current_slot.0.saturating_sub(snap.slot);
+            if age > MAX_SNAPSHOT_AGE_SLOTS {
+                return Err("supply-vault snapshot is stale beyond the configured slot-age limit");
+            }
+            if snap.owner != spl {
+                return Err("supply-vault account owner is not the SPL Token program");
+            }
+            arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &anchor.mint)
+                .map_err(|_| "supply-vault token account failed mint/layout validation")
+        };
+
+        let primary = self.ingest.account_store().get(&anchor.supply_vault);
+        match primary.map(validate_snap) {
+            Some(Ok(amount)) => Ok(amount),
+            primary_res => {
+                if let Some(fallback) = self.kamino_fallback_store.get(&anchor.supply_vault) {
+                    if let Ok(amount) = validate_snap(fallback) {
+                        return Ok(amount);
+                    }
+                }
+                primary_res.unwrap_or(Err(
+                    "supply-vault snapshot is missing from the live account store",
+                ))
+            }
         }
-        let wsol =
-            Pubkey::from_str(arb_tx::WSOL_MINT).map_err(|_| "configured WSOL mint is invalid")?;
-        arb_tx::kamino::decode_supply_vault_liquidity(&snap.data, &wsol)
-            .map_err(|_| "supply-vault token account failed mint/layout validation")
     }
 
     fn three_leg_network_cost_lamports(&self, tip_lamports: u64) -> u64 {
         self.jito_service
             .oracle()
             .current(arb_land::now_ms())
-            .map(|f| f.p50.0.min(tip_lamports))
+            .map(|f| {
+                crate::verified_config::tip_floor_for_percentile(
+                    &f,
+                    &self.config.jito.tip_floor_percentile,
+                )
+                .0
+                .min(tip_lamports)
+            })
             .unwrap_or(tip_lamports)
     }
 
@@ -791,27 +815,27 @@ impl Supervisor {
             );
         }
         if let Some(helius_ws) = helius_ws_client {
-            let wsol_mint = crate::verified_config::wsol_mint();
-            let usdc_mint = Pubkey::from_str(arb_tx::USDC_MINT).unwrap();
-            let kamino_reserve = crate::verified_config::wsol_reserve();
-            let kamino_supply_vault =
-                Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
             let kamino_owner = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID).unwrap();
             let token_prog = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
-            helius_ws.track_account(kamino_reserve, kamino_owner);
-            helius_ws.track_account(wsol_mint, token_prog);
-            helius_ws.track_account(kamino_supply_vault, token_prog);
-            helius_ws.track_account(usdc_mint, token_prog);
+            for anchor_mint in [
+                crate::verified_config::wsol_mint(),
+                crate::verified_config::usdc_mint(),
+            ] {
+                if let Some(anchor) = crate::verified_config::kamino_anchor_for_mint(&anchor_mint) {
+                    helius_ws.track_account(anchor.reserve, kamino_owner);
+                    helius_ws.track_account(anchor.mint, token_prog);
+                    helius_ws.track_account(anchor.supply_vault, token_prog);
 
-            // Track payer WSOL settlement ATA so ata_rent is recognized as 0 without unnecessary fee penalties
-            if let Some(ref kp) = self.keypair {
-                let payer_pk = kp.pubkey();
-                let settlement_ata = arb_tx::get_associated_token_address_with_program_id(
-                    &payer_pk,
-                    &wsol_mint,
-                    &token_prog,
-                );
-                helius_ws.track_account(settlement_ata, token_prog);
+                    if let Some(ref kp) = self.keypair {
+                        let payer_pk = kp.pubkey();
+                        let settlement_ata = arb_tx::get_associated_token_address_with_program_id(
+                            &payer_pk,
+                            &anchor.mint,
+                            &token_prog,
+                        );
+                        helius_ws.track_account(settlement_ata, token_prog);
+                    }
+                }
             }
 
             // Register multi-DEX pool vaults/accounts so live WS accountNotification frames
@@ -875,33 +899,39 @@ impl Supervisor {
             "Successfully seeded {seeded_cache_count} verified live pools into MarketStateCache (slot={reported_seed_slot})"
         );
 
-        // Pre-hydrate Kamino WSOL supply vault and payer WSOL settlement ATA immediately at startup
-        let startup_vault = Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
-        let startup_vault_str = startup_vault.to_string();
-        let mut startup_accounts_to_fetch = vec![startup_vault_str];
-
-        let mut payer_settlement_ata_opt = None;
-        if let Some(ref kp) = self.keypair {
-            let payer_pk = kp.pubkey();
-            let wsol_mint = Pubkey::from_str(arb_constants::WSOL_MINT).unwrap();
-            let token_prog = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
-            let settlement_ata = arb_tx::get_associated_token_address_with_program_id(
-                &payer_pk,
-                &wsol_mint,
-                &token_prog,
-            );
-            payer_settlement_ata_opt = Some(settlement_ata);
-            startup_accounts_to_fetch.push(settlement_ata.to_string());
+        // Pre-hydrate Kamino supply vaults (WSOL + USDC) and payer settlement ATAs immediately at startup
+        let token_prog = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let mut startup_targets: Vec<(Pubkey, Pubkey, &'static str)> = Vec::new();
+        for anchor_mint in [
+            crate::verified_config::wsol_mint(),
+            crate::verified_config::usdc_mint(),
+        ] {
+            if let Some(anchor) = crate::verified_config::kamino_anchor_for_mint(&anchor_mint) {
+                startup_targets.push((anchor.supply_vault, anchor.mint, "Kamino supply vault"));
+                if let Some(ref kp) = self.keypair {
+                    let payer_pk = kp.pubkey();
+                    let settlement_ata = arb_tx::get_associated_token_address_with_program_id(
+                        &payer_pk,
+                        &anchor.mint,
+                        &token_prog,
+                    );
+                    startup_targets.push((settlement_ata, anchor.mint, "Payer settlement ATA"));
+                }
+            }
         }
-
+        let startup_accounts_to_fetch: Vec<String> = startup_targets
+            .iter()
+            .map(|(pk, _, _)| pk.to_string())
+            .collect();
         let fetch_strs: Vec<&str> = startup_accounts_to_fetch
             .iter()
             .map(|s| s.as_str())
             .collect();
-        if let Ok((accounts, account_slots)) = self
-            .rpc_pool
-            .get_multiple_accounts_with_slots(&fetch_strs)
-            .await
+        if !fetch_strs.is_empty()
+            && let Ok((accounts, account_slots)) = self
+                .rpc_pool
+                .get_multiple_accounts_with_slots(&fetch_strs)
+                .await
         {
             use base64::prelude::*;
             for (idx, (acc_opt, context_slot)) in
@@ -911,11 +941,7 @@ impl Supervisor {
                 if context_slot == 0 {
                     continue;
                 }
-                let target_pk = if idx == 0 {
-                    startup_vault
-                } else if let Some(ata) = payer_settlement_ata_opt {
-                    ata
-                } else {
+                let Some(&(target_pk, expected_mint, label)) = startup_targets.get(idx) else {
                     continue;
                 };
 
@@ -928,11 +954,13 @@ impl Supervisor {
                         data_arr.first().and_then(|s| s.as_str()),
                     ) {
                         if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
-                            if !Self::is_verified_spl_wsol_account(&owner, &bytes) {
+                            if !Self::is_verified_spl_token_account(&owner, &bytes, &expected_mint)
+                            {
                                 warn!(
                                     pubkey = %target_pk,
                                     owner = %owner,
-                                    "Rejected startup WSOL hydration: unexpected token program or mint"
+                                    mint = %expected_mint,
+                                    "Rejected startup token account hydration: unexpected token program or mint"
                                 );
                                 continue;
                             }
@@ -950,15 +978,9 @@ impl Supervisor {
                                 data: Arc::new(bytes),
                             };
                             if self.ingest.account_store().apply(snap) {
-                                if idx == 0 {
-                                    info!(
-                                        "💧 Kamino WSOL supply vault successfully hydrated at startup (slot={context_slot})"
-                                    );
-                                } else {
-                                    info!(
-                                        "💧 Payer WSOL settlement ATA successfully hydrated at startup ({target_pk}, slot={context_slot})"
-                                    );
-                                }
+                                info!(
+                                    "💧 {label} successfully hydrated at startup ({target_pk}, mint={expected_mint}, slot={context_slot})"
+                                );
                             } else {
                                 debug!(
                                     pubkey = %target_pk,
@@ -1091,68 +1113,84 @@ impl Supervisor {
                         let _ = ingest_worker_res.apply_pool_update(pool);
                     }
 
-                    // Periodically hydrate Kamino WSOL supply vault snapshot if stale (> 100 slots).
-                    let supply_vault =
-                        Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT).unwrap();
-                    let is_vault_stale = match ingest_worker_res.account_store().get(&supply_vault)
-                    {
-                        Some(snap) => s.saturating_sub(snap.slot) > 100,
-                        None => true,
-                    };
-                    if is_vault_stale {
-                        let vault_str = supply_vault.to_string();
-                        if let Ok((mut accounts, mut account_slots)) = rpc_worker
-                            .get_multiple_accounts_with_slots(&[&vault_str])
-                            .await
-                        {
-                            if let Some((Some(acc), context_slot)) =
-                                accounts.pop().zip(account_slots.pop())
+                    // Periodically hydrate Kamino supply vaults (WSOL + USDC) if stale (> 100 slots).
+                    for anchor_mint in [
+                        crate::verified_config::wsol_mint(),
+                        crate::verified_config::usdc_mint(),
+                    ] {
+                        let Some(anchor) =
+                            crate::verified_config::kamino_anchor_for_mint(&anchor_mint)
+                        else {
+                            continue;
+                        };
+                        let supply_vault = anchor.supply_vault;
+                        let is_vault_stale =
+                            match ingest_worker_res.account_store().get(&supply_vault) {
+                                Some(snap) => s.saturating_sub(snap.slot) > 100,
+                                None => true,
+                            };
+                        if is_vault_stale {
+                            let vault_str = supply_vault.to_string();
+                            if let Ok((mut accounts, mut account_slots)) = rpc_worker
+                                .get_multiple_accounts_with_slots(&[&vault_str])
+                                .await
                             {
-                                if context_slot == 0 {
-                                    continue;
-                                }
-                                if let (Some(owner_str), Some(data_arr)) = (
-                                    acc.get("owner").and_then(|o| o.as_str()),
-                                    acc.get("data").and_then(|d| d.as_array()),
-                                ) {
-                                    if let (Ok(owner), Some(raw_b64)) = (
-                                        Pubkey::from_str(owner_str),
-                                        data_arr.first().and_then(|s| s.as_str()),
+                                if let Some((Some(acc), context_slot)) =
+                                    accounts.pop().zip(account_slots.pop())
+                                {
+                                    if context_slot == 0 {
+                                        continue;
+                                    }
+                                    if let (Some(owner_str), Some(data_arr)) = (
+                                        acc.get("owner").and_then(|o| o.as_str()),
+                                        acc.get("data").and_then(|d| d.as_array()),
                                     ) {
-                                        use base64::prelude::*;
-                                        if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
-                                            if Supervisor::is_verified_spl_wsol_account(
-                                                &owner, &bytes,
-                                            ) {
-                                                let snap = arb_ingest::AccountSnapshot {
-                                                    pubkey: supply_vault,
-                                                    owner,
-                                                    slot: context_slot,
-                                                    write_version:
-                                                        arb_ingest::next_pool_write_version(),
-                                                    // RPC refreshes can seed a missing
-                                                    // snapshot, but cannot masquerade as
-                                                    // live WebSocket state.
-                                                    is_startup: true,
-                                                    provider_id: arb_ingest::HTTP_RPC_PROVIDER_ID,
-                                                    bank_id: None,
-                                                    generation: ingest_worker_res
-                                                        .stream_generation(),
-                                                    data: Arc::new(bytes),
-                                                };
-                                                if !ingest_worker_res.account_store().apply(snap) {
-                                                    debug!(
+                                        if let (Ok(owner), Some(raw_b64)) = (
+                                            Pubkey::from_str(owner_str),
+                                            data_arr.first().and_then(|s| s.as_str()),
+                                        ) {
+                                            use base64::prelude::*;
+                                            if let Ok(bytes) = BASE64_STANDARD.decode(raw_b64) {
+                                                if Supervisor::is_verified_spl_token_account(
+                                                    &owner,
+                                                    &bytes,
+                                                    &anchor.mint,
+                                                ) {
+                                                    let snap = arb_ingest::AccountSnapshot {
+                                                        pubkey: supply_vault,
+                                                        owner,
+                                                        slot: context_slot,
+                                                        write_version:
+                                                            arb_ingest::next_pool_write_version(),
+                                                        // RPC refreshes can seed a missing
+                                                        // snapshot, but cannot masquerade as
+                                                        // live WebSocket state.
+                                                        is_startup: true,
+                                                        provider_id:
+                                                            arb_ingest::HTTP_RPC_PROVIDER_ID,
+                                                        bank_id: None,
+                                                        generation: ingest_worker_res
+                                                            .stream_generation(),
+                                                        data: Arc::new(bytes),
+                                                    };
+                                                    if !ingest_worker_res
+                                                        .account_store()
+                                                        .apply(snap)
+                                                    {
+                                                        debug!(
+                                                            pubkey = %supply_vault,
+                                                            slot = context_slot,
+                                                            "Kamino RPC refresh was not applied; live/newer state or invalidation was retained"
+                                                        );
+                                                    }
+                                                } else {
+                                                    warn!(
                                                         pubkey = %supply_vault,
-                                                        slot = context_slot,
-                                                        "Kamino RPC refresh was not applied; live/newer state or invalidation was retained"
+                                                        owner = %owner,
+                                                        mint = %anchor.mint,
+                                                        "Rejected Kamino supply-vault refresh: unexpected token program or mint"
                                                     );
                                                 }
-                                            } else {
-                                                warn!(
-                                                    pubkey = %supply_vault,
-                                                    owner = %owner,
-                                                    "Rejected Kamino WSOL refresh: unexpected token program or mint"
-                                                );
                                             }
                                         }
                                     }
@@ -1467,16 +1505,17 @@ impl Supervisor {
             ));
         }
 
-        // 4. Net profit must be positive and exceed the minimum floor.
+        // 4. Net profit (`opp.net_profit` is canonical Lamports) must be
+        //    positive and exceed the minimum Lamports floor.
         if opp.net_profit.as_u64() == 0 {
             return Err("net profit is zero".to_string());
         }
-        let min_net_base_raw = self.config.strategy.min_net_profit_abs;
-        if opp.net_profit.as_u64() < min_net_base_raw {
+        let min_net_lamports = self.config.strategy.min_net_profit_abs;
+        if opp.net_profit.as_u64() < min_net_lamports {
             return Err(format!(
-                "net profit {} below minimum floor {}",
+                "net profit {} lamports below minimum floor {} lamports",
                 opp.net_profit.as_u64(),
-                min_net_base_raw
+                min_net_lamports
             ));
         }
 
@@ -1515,12 +1554,14 @@ impl Supervisor {
             ));
         }
 
-        // 6. Tip must not exceed net profit (no negative ROI after tip).
+        // 6. Tip must not exceed pre-tip net profit (or gross profit when
+        //    `opp.net_profit` is already net of discovery tip). Reject only if
+        //    gross profit cannot cover tip or post-tip net is zero.
         let tip_as_u64 = tip.as_u64();
-        if opp.net_profit.as_u64() <= tip_as_u64 {
+        if opp.gross_profit.as_u64() <= tip_as_u64 {
             return Err(format!(
-                "tip {tip_as_u64} >= net profit {}: negative ROI after tip",
-                opp.net_profit.as_u64()
+                "tip {tip_as_u64} >= gross profit {}: negative ROI after tip",
+                opp.gross_profit.as_u64()
             ));
         }
 

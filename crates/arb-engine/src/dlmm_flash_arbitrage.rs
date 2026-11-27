@@ -1003,6 +1003,9 @@ impl DlmmFlashArbEvaluator<'_> {
                 .then_some(plan_a.bitmap_extension_pda),
             host_fee_in: None,
         };
+        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS.saturating_add(
+            arb_tx::priority_fee_lamports(cfg.priority_fee_micro_lamports, cfg.cu_limit),
+        );
         let leg_b = FlashArbPoolLeg {
             lb_pair: route.pool_b.pool_id,
             reserve_x: route.pool_b.reserve_x,
@@ -1014,7 +1017,7 @@ impl DlmmFlashArbEvaluator<'_> {
             token_y_program: route.pool_b.token_y_program.program_id(),
             swap_for_y: swap_b_for_y,
             amount_in: hop_a_min_out,
-            min_amount_out: minimum_final_out,
+            min_amount_out: minimum_final_out.max(repay.saturating_add(network_fee_raw)),
             bin_array_pdas: plan_b.pdas.clone(),
             bitmap_extension: plan_b
                 .requires_bitmap_extension

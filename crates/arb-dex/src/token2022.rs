@@ -22,6 +22,95 @@ pub const EXTENSION_NON_TRANSFERABLE: u16 = 7;
 pub const EXTENSION_INTEREST_BEARING_MINT: u16 = 8;
 pub const EXTENSION_PERMANENT_DELEGATE: u16 = 10;
 pub const EXTENSION_TRANSFER_HOOK: u16 = 12;
+pub const EXTENSION_METADATA_POINTER: u16 = 18;
+pub const EXTENSION_TOKEN_METADATA: u16 = 19;
+
+/// Solana Clock sysvar `epoch` offset (`slot: u64 @0, epoch_start_timestamp: i64 @8, epoch: u64 @16`).
+pub fn decode_clock_epoch(clock_data: &[u8]) -> Option<u64> {
+    let bytes: [u8; 8] = clock_data.get(16..24)?.try_into().ok()?;
+    let epoch = u64::from_le_bytes(bytes);
+    (epoch > 0).then_some(epoch)
+}
+
+/// Walk Token-2022 TLV extension records starting at offset 166 (`AccountType::Mint = 1`)
+/// and invoke `visitor(ext_type, payload)` for each valid TLV entry.
+pub fn visit_mint_tlv_extensions<F>(data: &[u8], mut visitor: F) -> std::result::Result<(), String>
+where
+    F: FnMut(u16, &[u8]),
+{
+    if data.len() == BASE_MINT_DATA_SIZE {
+        return Ok(());
+    }
+    const ACCOUNT_TYPE_MINT: u8 = 1;
+    const TLV_START: usize = 166;
+    if data.len() < TLV_START || data.get(165).copied() != Some(ACCOUNT_TYPE_MINT) {
+        return Err("Malformed Token-2022 mint: missing padding/account-type header".into());
+    }
+    let mut offset = TLV_START;
+    while offset + 4 <= data.len() {
+        let ext_type = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let ext_len = usize::from(u16::from_le_bytes([data[offset + 2], data[offset + 3]]));
+        if ext_type == EXTENSION_UNINITIALIZED && ext_len == 0 {
+            break;
+        }
+        let payload_start = offset + 4;
+        let payload_end = payload_start
+            .checked_add(ext_len)
+            .ok_or_else(|| "Token-2022 TLV length overflow".to_string())?;
+        if payload_end > data.len() {
+            return Err(format!("Token-2022 extension {ext_type} is truncated"));
+        }
+        visitor(ext_type, &data[payload_start..payload_end]);
+        offset = payload_end;
+    }
+    Ok(())
+}
+
+/// Parse Token-2022 `TransferFeeConfig` selecting `newer_transfer_fee` when
+/// `current_epoch >= newer_transfer_fee.epoch`, otherwise `older_transfer_fee`.
+pub fn parse_transfer_fee_for_epoch(data: &[u8], current_epoch: u64) -> Option<TransferFeeConfig> {
+    if current_epoch == 0 {
+        return None;
+    }
+    let mut found = None;
+    let _ = visit_mint_tlv_extensions(data, |ext_type, payload| {
+        if ext_type == EXTENSION_TRANSFER_FEE_CONFIG && payload.len() >= 108 {
+            let older_max = u64::from_le_bytes(payload[80..88].try_into().unwrap());
+            let older_bps = u16::from_le_bytes(payload[88..90].try_into().unwrap());
+            let newer_epoch = u64::from_le_bytes(payload[72..80].try_into().unwrap());
+            let newer_eff_epoch = u64::from_le_bytes(payload[90..98].try_into().unwrap());
+            let _ = newer_epoch;
+            let newer_max = u64::from_le_bytes(payload[98..106].try_into().unwrap());
+            let newer_bps = u16::from_le_bytes(payload[106..108].try_into().unwrap());
+            found = Some(if current_epoch >= newer_eff_epoch {
+                TransferFeeConfig {
+                    transfer_fee_basis_points: newer_bps,
+                    maximum_fee: newer_max,
+                }
+            } else {
+                TransferFeeConfig {
+                    transfer_fee_basis_points: older_bps,
+                    maximum_fee: older_max,
+                }
+            });
+        }
+    });
+    found
+}
+
+/// Detect the configured `TransferHook.program_id` on a Token-2022 mint TLV (if non-default).
+pub fn detect_transfer_hook_program(data: &[u8]) -> Option<Pubkey> {
+    let mut hook_program = None;
+    let _ = visit_mint_tlv_extensions(data, |ext_type, payload| {
+        if ext_type == EXTENSION_TRANSFER_HOOK && payload.len() >= 64 {
+            let pk = Pubkey::new_from_array(payload[32..64].try_into().unwrap());
+            if pk != Pubkey::default() {
+                hook_program = Some(pk);
+            }
+        }
+    });
+    hook_program
+}
 
 /// Standard SPL Token mint data size (without extensions).
 pub const BASE_MINT_DATA_SIZE: usize = 82;
@@ -224,6 +313,95 @@ impl TokenSemantics {
             mint,
             is_token_2022: true,
             transfer_fee_config: TransferFeeConfig::ZERO,
+            detected_extensions,
+            is_execution_eligible: true,
+            rejection_reason: None,
+        }
+    }
+
+    /// Epoch-aware Token-2022 mint parser used when live `Clock.epoch` is verified.
+    /// Permits safe metadata extensions (`ImmutableOwner`, `MetadataPointer`,
+    /// `TokenMetadata`) and epoch-resolved `TransferFeeConfig`, while failing closed
+    /// on all dangerous extensions (`MintCloseAuthority`, `DefaultAccountState`,
+    /// `NonTransferable`, `PermanentDelegate`, unverified `TransferHook`, or unknown TLV types).
+    pub fn parse_with_epoch(mint: Pubkey, data: &[u8], current_epoch: Option<u64>) -> Self {
+        let base = Self::parse(mint, data);
+        if data.len() == BASE_MINT_DATA_SIZE {
+            return base;
+        }
+        let mut detected_extensions = Vec::new();
+        let mut transfer_fee_config = TransferFeeConfig::ZERO;
+        let mut has_transfer_fee = false;
+        let mut dangerous_reason: Option<String> = None;
+
+        if let Err(err) = visit_mint_tlv_extensions(data, |ext_type, _payload| {
+            detected_extensions.push(ext_type);
+            match ext_type {
+                EXTENSION_TRANSFER_FEE_CONFIG => {
+                    has_transfer_fee = true;
+                }
+                EXTENSION_IMMUTABLE_OWNER
+                | EXTENSION_METADATA_POINTER
+                | EXTENSION_TOKEN_METADATA => {}
+                EXTENSION_TRANSFER_HOOK => {
+                    if let Some(hook_pk) = detect_transfer_hook_program(data) {
+                        dangerous_reason.get_or_insert_with(|| {
+                            format!(
+                                "Token-2022 TransferHook program {hook_pk} requires per-tx ExtraAccountMeta resolution"
+                            )
+                        });
+                    }
+                }
+                other => {
+                    dangerous_reason.get_or_insert_with(|| {
+                        format!("Token-2022 extension {other} is unsupported or dangerous")
+                    });
+                }
+            }
+        }) {
+            return Self {
+                mint,
+                is_token_2022: true,
+                transfer_fee_config: TransferFeeConfig::ZERO,
+                detected_extensions,
+                is_execution_eligible: false,
+                rejection_reason: Some(err),
+            };
+        }
+
+        if has_transfer_fee {
+            match current_epoch.and_then(|epoch| parse_transfer_fee_for_epoch(data, epoch)) {
+                Some(cfg) => transfer_fee_config = cfg,
+                None => {
+                    return Self {
+                        mint,
+                        is_token_2022: true,
+                        transfer_fee_config: TransferFeeConfig::ZERO,
+                        detected_extensions,
+                        is_execution_eligible: false,
+                        rejection_reason: Some(
+                            "Token-2022 TransferFeeConfig requires verified Clock.epoch > 0".into(),
+                        ),
+                    };
+                }
+            }
+        }
+
+        if let Some(reason) = dangerous_reason {
+            return Self {
+                mint,
+                is_token_2022: true,
+                transfer_fee_config,
+                detected_extensions,
+                is_execution_eligible: false,
+                rejection_reason: Some(reason),
+            };
+        }
+
+        Self {
+            mint,
+            is_token_2022: true,
+            transfer_fee_config,
             detected_extensions,
             is_execution_eligible: true,
             rejection_reason: None,

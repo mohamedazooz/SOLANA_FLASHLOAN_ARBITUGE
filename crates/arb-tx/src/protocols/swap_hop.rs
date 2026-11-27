@@ -266,16 +266,43 @@ pub fn build_swap_hop_instruction(
                     reason: "Orca tick_array_pdas resolved to the zero pubkey".into(),
                 });
             }
-            // Orca Whirlpool's swap instruction has a single token-program
-            // account for both sides. Mixed SPL/Token-2022 pools cannot be
-            // represented by this instruction layout and must fail closed.
-            if token_program_in != token_program_out {
-                return Err(TxError::InvalidExecutionAccounts {
-                    pool_id: hop.pool_id.0,
-                    reason: "Orca Whirlpool requires one shared token program for both mints"
-                        .into(),
-                });
-            }
+            let spl_token = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+            let (token_owner_a, token_owner_b, token_prog_a, token_prog_b, mint_a, mint_b) =
+                if a_to_b {
+                    (
+                        get_associated_token_address_with_program_id(
+                            &user_authority,
+                            &hop.mint_in.0,
+                            &token_program_in,
+                        ),
+                        get_associated_token_address_with_program_id(
+                            &user_authority,
+                            &hop.mint_out.0,
+                            &token_program_out,
+                        ),
+                        token_program_in,
+                        token_program_out,
+                        hop.mint_in.0,
+                        hop.mint_out.0,
+                    )
+                } else {
+                    (
+                        get_associated_token_address_with_program_id(
+                            &user_authority,
+                            &hop.mint_out.0,
+                            &token_program_out,
+                        ),
+                        get_associated_token_address_with_program_id(
+                            &user_authority,
+                            &hop.mint_in.0,
+                            &token_program_in,
+                        ),
+                        token_program_out,
+                        token_program_in,
+                        hop.mint_out.0,
+                        hop.mint_in.0,
+                    )
+                };
             let mut accounts = OrcaWhirlpoolAccounts::with_tick_arrays(
                 hop.pool_id.0,
                 *vault_a,
@@ -288,43 +315,34 @@ pub fn build_swap_hop_instruction(
             accounts.token_program = token_program_in;
             let is_adaptive_fee = false;
 
-            let (token_owner_a, token_owner_b) = if a_to_b {
-                (
-                    get_associated_token_address_with_program_id(
-                        &user_authority,
-                        &hop.mint_in.0,
-                        &token_program_in,
-                    ),
-                    get_associated_token_address_with_program_id(
-                        &user_authority,
-                        &hop.mint_out.0,
-                        &token_program_out,
-                    ),
+            if token_program_in != spl_token || token_program_out != spl_token {
+                build_orca_whirlpool_swap_v2_instruction(
+                    &accounts,
+                    token_prog_a,
+                    token_prog_b,
+                    mint_a,
+                    mint_b,
+                    user_authority,
+                    token_owner_a,
+                    token_owner_b,
+                    amount_in,
+                    min_amount_out,
+                    a_to_b,
+                    is_adaptive_fee,
+                    &[],
                 )
             } else {
-                (
-                    get_associated_token_address_with_program_id(
-                        &user_authority,
-                        &hop.mint_out.0,
-                        &token_program_out,
-                    ),
-                    get_associated_token_address_with_program_id(
-                        &user_authority,
-                        &hop.mint_in.0,
-                        &token_program_in,
-                    ),
+                build_orca_whirlpool_swap_instruction_11(
+                    &accounts,
+                    user_authority,
+                    token_owner_a,
+                    token_owner_b,
+                    amount_in,
+                    min_amount_out,
+                    a_to_b,
+                    is_adaptive_fee,
                 )
-            };
-            build_orca_whirlpool_swap_instruction_11(
-                &accounts,
-                user_authority,
-                token_owner_a,
-                token_owner_b,
-                amount_in,
-                min_amount_out,
-                a_to_b,
-                is_adaptive_fee,
-            )
+            }
         }
         DexProtocol::MeteoraDlmm => {
             if let Some(PoolExecutionAccounts::MeteoraDlmm {
@@ -554,13 +572,31 @@ pub fn build_swap_hop_instruction(
             } else {
                 arb_constants::RAYDIUM_CLMM_MAX_SQRT_PRICE_X64 - 1
             };
-            build_raydium_clmm_swap_instruction(
-                &accounts,
-                amount_in,
-                min_amount_out,
-                sqrt_price_limit,
-                true,
-            )
+            let spl_token = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+            if token_program_in != spl_token
+                || token_program_out != spl_token
+                || bitmap_extension.is_some()
+            {
+                build_raydium_clmm_swap_v2_instruction(
+                    &accounts,
+                    hop.mint_in.0,
+                    hop.mint_out.0,
+                    *bitmap_extension,
+                    &[],
+                    amount_in,
+                    min_amount_out,
+                    sqrt_price_limit,
+                    true,
+                )
+            } else {
+                build_raydium_clmm_swap_instruction(
+                    &accounts,
+                    amount_in,
+                    min_amount_out,
+                    sqrt_price_limit,
+                    true,
+                )
+            }
         }
         DexProtocol::PumpFun => {
             if hop.token_programs[0] != arb_types::TokenProgramKind::SplToken
@@ -676,7 +712,20 @@ pub fn build_swap_hop_instruction(
                     &hop.mint_out.0,
                     &token_program_out,
                 );
-                let is_buy = hop.mint_in.0 == Pubkey::from_str(WSOL_MINT).unwrap_or(hop.mint_in.0);
+                let wsol = Pubkey::from_str(WSOL_MINT).unwrap_or_default();
+                let usdc = Pubkey::from_str(USDC_MINT).unwrap_or_default();
+                let usdt = Pubkey::from_str(arb_constants::USDT_MINT).unwrap_or_default();
+                let in_is_quote =
+                    hop.mint_in.0 == wsol || hop.mint_in.0 == usdc || hop.mint_in.0 == usdt;
+                let out_is_quote =
+                    hop.mint_out.0 == wsol || hop.mint_out.0 == usdc || hop.mint_out.0 == usdt;
+                if in_is_quote == out_is_quote {
+                    return Err(TxError::InvalidExecutionAccounts {
+                        pool_id: hop.pool_id.0,
+                        reason: "Raydium LaunchLab direction cannot be determined unambiguously from mints".into(),
+                    });
+                }
+                let is_buy = in_is_quote;
 
                 let mut data = Vec::with_capacity(24);
                 let disc = if is_buy {

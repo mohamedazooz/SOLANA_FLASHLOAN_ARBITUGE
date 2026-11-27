@@ -252,6 +252,21 @@ impl FlashArbParams {
             })
     }
 
+    /// Minimum economically sound Pool-B return floor (`principal + flash_fee + network_fee`).
+    #[inline]
+    pub fn required_floor(&self) -> Result<u64, FlashArbError> {
+        let repay = self.repay_amount()?;
+        let network_fee = arb_constants::SOLANA_BASE_FEE_LAMPORTS.saturating_add(
+            crate::priority_fee_lamports(self.priority_fee_micro_lamports, self.cu_limit),
+        );
+        repay
+            .checked_add(network_fee)
+            .ok_or(FlashArbError::ArithmeticOverflow {
+                borrow: repay,
+                fee: network_fee,
+            })
+    }
+
     /// Minimum final output required to repay the loan and retain all configured costs/profit.
     #[inline]
     pub fn minimum_final_out(&self) -> Result<u64, FlashArbError> {
@@ -360,7 +375,7 @@ pub fn assemble_flash_funded_two_pool(
             b: params.leg_b.token_in_program().to_string(),
         });
     }
-    // ── Invariant 6: Pool B must fund repayment and preserve all required profit/costs ──
+    // ── Invariant 6: Pool B must fund repayment + retained economic floor + network fee ──
     if params.leg_b.min_amount_out < repay_amount {
         return Err(FlashArbError::FinalOutputBelowRepayment {
             min_out: params.leg_b.min_amount_out,
@@ -372,6 +387,13 @@ pub fn assemble_flash_funded_two_pool(
         return Err(FlashArbError::FinalOutputBelowEconomicFloor {
             min_out: params.leg_b.min_amount_out,
             required: minimum_final_out,
+        });
+    }
+    let required_floor = params.required_floor()?;
+    if params.leg_b.min_amount_out < required_floor {
+        return Err(FlashArbError::FinalOutputBelowRepayment {
+            min_out: params.leg_b.min_amount_out,
+            repay: required_floor,
         });
     }
 
@@ -654,18 +676,29 @@ mod tests {
     }
 
     #[test]
+    fn final_output_below_repayment_plus_network_fee_is_rejected() {
+        let mut p = params();
+        p.leg_b.min_amount_out = p.repay_amount().unwrap();
+        assert!(matches!(
+            assemble_flash_funded_two_pool(&p),
+            Err(FlashArbError::FinalOutputBelowRepayment { .. })
+        ));
+    }
+
+    #[test]
     fn final_output_below_retained_economic_floor_is_rejected() {
         let mut p = params();
+        let floor = p.required_floor().unwrap();
         let repay = p.repay_amount().unwrap();
-        p.minimum_retained_profit_raw = 1_000;
-        p.leg_b.min_amount_out = repay;
+        p.minimum_retained_profit_raw = floor.saturating_sub(repay).saturating_add(1_000);
+        p.leg_b.min_amount_out = floor;
 
         assert!(matches!(
             assemble_flash_funded_two_pool(&p),
             Err(FlashArbError::FinalOutputBelowEconomicFloor {
                 min_out,
                 required
-            }) if min_out == repay && required == repay + 1_000
+            }) if min_out == floor && required == repay + p.minimum_retained_profit_raw
         ));
     }
 
@@ -673,8 +706,11 @@ mod tests {
     fn final_output_at_retained_economic_floor_is_accepted() {
         let mut p = params();
         let repay = p.repay_amount().unwrap();
-        p.minimum_retained_profit_raw = 1_000;
-        p.leg_b.min_amount_out = repay + p.minimum_retained_profit_raw;
+        p.minimum_retained_profit_raw = 10_000;
+        p.leg_b.min_amount_out = p
+            .required_floor()
+            .unwrap()
+            .max(repay + p.minimum_retained_profit_raw);
 
         assert!(assemble_flash_funded_two_pool(&p).is_ok());
     }
@@ -699,7 +735,7 @@ mod tests {
     #[test]
     fn layout_is_borrow_swaps_repay() {
         let mut p = params();
-        p.leg_b.min_amount_out = p.repay_amount().unwrap();
+        p.leg_b.min_amount_out = p.required_floor().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&p).unwrap();
         assert_eq!(ixs.len(), 8);
         assert_eq!(borrow_idx, 4);
@@ -716,7 +752,7 @@ mod tests {
     #[test]
     fn atomicity_verification_passes() {
         let mut p = params();
-        p.leg_b.min_amount_out = p.repay_amount().unwrap();
+        p.leg_b.min_amount_out = p.required_floor().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&p).unwrap();
         let v = verify_atomic_integrity(
             ExecutionMode::SingleTransaction,
@@ -740,7 +776,7 @@ mod tests {
         p.leg_b = leg(pool_b(), usdc(), wsol(), true);
         p.leg_a.min_amount_out = 1_000_000;
         p.leg_b.amount_in = 1_000_000;
-        p.leg_b.min_amount_out = p.repay_amount().unwrap();
+        p.leg_b.min_amount_out = p.required_floor().unwrap();
         let (ixs, borrow_idx, repay_idx) = assemble_flash_funded_two_pool(&p).unwrap();
         assert_eq!(borrow_idx, 4);
         assert_eq!(repay_idx, 7);
@@ -750,7 +786,7 @@ mod tests {
     #[test]
     fn v0_size_estimate_is_below_the_packet_limit_with_a_table() {
         let mut p = params();
-        p.leg_b.min_amount_out = p.repay_amount().unwrap();
+        p.leg_b.min_amount_out = p.required_floor().unwrap();
         let (ixs, _, _) = assemble_flash_funded_two_pool(&p).unwrap();
         let mut addrs: Vec<Pubkey> = Vec::new();
         for ix in &ixs {

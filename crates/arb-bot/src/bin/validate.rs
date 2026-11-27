@@ -12,120 +12,19 @@
 
 use anyhow::{Context, Result};
 use arb_engine::MarketGraph;
+use arb_engine::adapters::quote_via_dispatcher;
 use arb_ingest::{AccountSnapshot, AccountSnapshotStore, MultiDexRegistry, RpcPool};
 use arb_math::economic::calculate_flash_fee_raw;
-use arb_math::{Leg, cpmm_out, optimal_two_pool};
+use arb_math::{Leg, optimal_two_pool};
 use arb_risk::minimum_net_profit_hurdle_lamports;
 use arb_tx::JupiterClient;
-use arb_types::{Lamports, MintId, Slot, TokenAmount};
+use arb_types::{Lamports, MintId, PoolKind, PoolState, Slot, TokenAmount};
 use base64::Engine as _;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 use tracing::{info, warn};
 
 use arb_bot::verified_config;
-
-/// Exact read-only quote for a live pool. Whirlpool quotes require the real
-/// TickArray PDAs and same-slot account provenance; no virtual-reserve CPMM
-/// approximation is permitted for concentrated liquidity.
-fn quote_pool_for_math_check(
-    pool: &arb_types::PoolState,
-    input_mint: Pubkey,
-    amount_in: u64,
-) -> Option<u128> {
-    match pool.protocol {
-        arb_types::DexProtocol::OrcaWhirlpool => {
-            let clmm = pool.clmm.as_ref()?;
-            if clmm.tick_arrays.len() != 3 || clmm.tick_spacing == 0 {
-                return None;
-            }
-            let pool_mint_a = match pool.execution_accounts.as_ref()? {
-                arb_types::PoolExecutionAccounts::OrcaWhirlpool { pool_mint_a, .. }
-                    if *pool_mint_a != Pubkey::default() =>
-                {
-                    *pool_mint_a
-                }
-                _ => return None,
-            };
-            let program_id = Pubkey::from_str(arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID).ok()?;
-            let ticks_per_array = 88i32.checked_mul(i32::from(clmm.tick_spacing))?;
-            let first_start = clmm.tick_current.div_euclid(ticks_per_array) * ticks_per_array;
-            let expected_starts: std::collections::HashSet<i32> = [
-                first_start,
-                first_start - ticks_per_array,
-                first_start + ticks_per_array,
-            ]
-            .into_iter()
-            .collect();
-            let mut arrays = Vec::with_capacity(clmm.tick_arrays.len());
-            let mut seen_starts = std::collections::HashSet::new();
-            for array in &clmm.tick_arrays {
-                let account = array.account_pubkey?;
-                if array.account_slot != Some(pool.slot.0)
-                    || !seen_starts.insert(array.start_tick_index)
-                {
-                    return None;
-                }
-                let start = array.start_tick_index.to_string();
-                let expected = Pubkey::find_program_address(
-                    &[b"tick_array", pool.pool_id.0.as_ref(), start.as_bytes()],
-                    &program_id,
-                )
-                .0;
-                if expected.to_bytes() != account {
-                    return None;
-                }
-                arrays.push(arb_math::clmm::TickArrayFacade {
-                    start_tick_index: array.start_tick_index,
-                    ticks: array
-                        .ticks
-                        .iter()
-                        .map(|tick| arb_math::clmm::TickFacade {
-                            tick_index: tick.tick_index,
-                            initialized: tick.initialized,
-                            liquidity_net: tick.liquidity_net,
-                            liquidity_gross: 0,
-                            limit_order_unfilled: tick.limit_order_unfilled,
-                        })
-                        .collect(),
-                });
-            }
-            if seen_starts != expected_starts {
-                return None;
-            }
-            let a_to_b = input_mint == pool_mint_a;
-            arb_math::compute_whirlpool_swap(
-                clmm.sqrt_price,
-                clmm.tick_current,
-                clmm.liquidity,
-                clmm.tick_spacing,
-                clmm.fee_rate,
-                amount_in,
-                a_to_b,
-                &arrays,
-            )
-            .ok()
-            .map(|quote| u128::from(quote.amount_out_received))
-        }
-        arb_types::DexProtocol::RaydiumV4 => {
-            let (reserve_in, reserve_out) = if pool.base_mint.0 == input_mint {
-                (pool.reserve_in, pool.reserve_out)
-            } else if pool.quote_mint.0 == input_mint {
-                (pool.reserve_out, pool.reserve_in)
-            } else {
-                return None;
-            };
-            let fee_bps = pool.fee_bps()?;
-            cpmm_out(
-                u128::from(amount_in),
-                reserve_in,
-                reserve_out,
-                10_000u128.saturating_sub(u128::from(fee_bps)),
-            )
-        }
-        _ => None,
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -433,10 +332,12 @@ async fn main() -> Result<()> {
 
     let (opportunities, cycle_stats) = graph.find_base_cycles_with_stats(slot, max_probe_lamports);
     info!(
-        "Cycle scan: {} base anchor(s), {} gross-profitable 2-hop, {} gross-profitable 3-hop, {} rejected by verified economic gate, {} execution-eligible",
+        "Cycle scan: {} base anchor(s), {} gross-profitable 2-hop, {} gross-profitable 3-hop, {} gross-negative, {} quote-rejected, {} rejected by verified economic gate, {} execution-eligible",
         cycle_stats.base_anchors,
         cycle_stats.two_hop_gross_profitable,
         cycle_stats.three_hop_gross_profitable,
+        cycle_stats.gross_negative,
+        cycle_stats.quote_rejected,
         cycle_stats.gate_rejected,
         cycle_stats.opportunities,
     );
@@ -517,72 +418,79 @@ async fn main() -> Result<()> {
     if jupiter.api_keys.is_empty() {
         warn!("JUPITER_API_KEY not set — skipping math-vs-Jupiter comparison");
     } else if let Some(pool) = sol_usdc {
-        // Our quote uses the protocol's actual math. In particular, Whirlpool
-        // must traverse its hydrated TickArrays; never treat virtual reserves as CPMM.
-        let ours = quote_pool_for_math_check(pool, wsol, amount_in);
-        if let Some(ours) = ours {
-            let label = match pool.protocol {
-                arb_types::DexProtocol::RaydiumV4 => "Raydium",
-                arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
-                _ => "Unknown",
-            };
+        // Our quote: SOL -> USDC via protocol-native dispatcher (CLMM/DLMM/CPMM).
+        let a_to_b = pool.base_mint.0 == wsol;
+        match quote_via_dispatcher(pool, amount_in, a_to_b) {
+            Ok(quote_res) => {
+                let ours = u128::from(quote_res.amount_out_raw);
+                let label = match pool.protocol {
+                    arb_types::DexProtocol::RaydiumV4 => "Raydium",
+                    arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
+                    arb_types::DexProtocol::MeteoraDlmm => "Meteora DLMM",
+                    arb_types::DexProtocol::RaydiumCpmm => "Raydium CPMM",
+                    _ => "Unknown",
+                };
 
-            match jupiter
-                .get_quote_dexes(
-                    &wsol.to_string(),
-                    &usdc.to_string(),
-                    amount_in,
-                    math_check_slippage_bps,
-                    Some(&[label]),
-                )
-                .await
-            {
-                Ok(quote) => {
-                    let expected_pool = pool.pool_id.0.to_string();
-                    let same_single_pool = quote["routePlan"].as_array().is_some_and(|plan| {
-                        plan.len() == 1
-                            && plan[0]["swapInfo"]["ammKey"]
-                                .as_str()
-                                .is_some_and(|key| key == expected_pool)
-                    });
-                    if !same_single_pool {
-                        warn!(
-                            "Jupiter venue reference is not the same single pool (target={}); comparison intentionally skipped",
-                            expected_pool
-                        );
-                    } else {
-                        let jup_out = quote["outAmount"]
-                            .as_str()
-                            .and_then(|s| s.parse::<u128>().ok())
-                            .unwrap_or(0);
-                        let diff = if jup_out > 0 && ours > jup_out {
-                            (ours - jup_out) as f64 / jup_out as f64 * 100.0
-                        } else if jup_out > 0 {
-                            (jup_out - ours) as f64 / jup_out as f64 * 100.0
+                match jupiter
+                    .get_quote_dexes(
+                        &wsol.to_string(),
+                        &usdc.to_string(),
+                        amount_in,
+                        math_check_slippage_bps,
+                        Some(&[label]),
+                    )
+                    .await
+                {
+                    Ok(quote) => {
+                        let expected_pool = pool.pool_id.0.to_string();
+                        let same_single_pool = quote["routePlan"].as_array().is_some_and(|plan| {
+                            plan.len() == 1
+                                && plan[0]["swapInfo"]["ammKey"]
+                                    .as_str()
+                                    .is_some_and(|key| key == expected_pool)
+                        });
+                        if !same_single_pool {
+                            warn!(
+                                "Jupiter venue reference is not the same single pool (target={}); comparison intentionally skipped",
+                                expected_pool
+                            );
                         } else {
-                            f64::NAN
-                        };
-                        info!(
-                            "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} jupiter={} diff={:.4}%",
-                            label,
-                            amount_in as f64 / 1e9,
-                            ours,
-                            jup_out,
-                            diff
-                        );
-                        info!(
-                            "   (a small diff is expected: Jupiter includes its own fee tier / \
-                     account state; a LARGE diff flags a math or reserve-decoding bug)"
-                        );
+                            let jup_out = quote["outAmount"]
+                                .as_str()
+                                .and_then(|s| s.parse::<u128>().ok())
+                                .unwrap_or(0);
+                            let diff = if jup_out > 0 && ours > jup_out {
+                                (ours - jup_out) as f64 / jup_out as f64 * 100.0
+                            } else if jup_out > 0 {
+                                (jup_out - ours) as f64 / jup_out as f64 * 100.0
+                            } else {
+                                f64::NAN
+                            };
+                            info!(
+                                "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} (fee_raw={} impact={}bps) jupiter={} diff={:.4}%",
+                                label,
+                                amount_in as f64 / 1e9,
+                                ours,
+                                quote_res.fees_breakdown.total_fee,
+                                quote_res.price_impact.0,
+                                jup_out,
+                                diff
+                            );
+                            info!(
+                                "   (a small diff is expected: Jupiter includes its own fee tier / \
+                             account state; a LARGE diff flags a math or reserve-decoding bug)"
+                            );
+                        }
                     }
+                    Err(e) => warn!("Jupiter {label} quote failed: {e}"),
                 }
-                Err(e) => warn!("Jupiter {label} quote failed: {e}"),
             }
-        } else {
-            warn!(
-                "Skipping math comparison for {:?} pool {}: exact quote state/owner/PDA/same-slot TickArrays unavailable",
-                pool.protocol, pool.pool_id
-            );
+            Err(e) => {
+                warn!(
+                    "Skipping math comparison for {:?} pool {}: protocol-native quote failed ({e})",
+                    pool.protocol, pool.pool_id
+                );
+            }
         }
     } else {
         warn!("No live SOL/USDC pool found in the registry — cannot run the math check");
@@ -624,29 +532,20 @@ async fn main() -> Result<()> {
     let sol_usdc_pools: Vec<&arb_types::PoolState> =
         live_pools.iter().filter(|p| is_sol_usdc(p)).collect();
 
-    // Every ordered pair of venues (a: buy SOL -> USDC, b: sell USDC -> SOL), so
-    // the LOW-FEE routes (e.g. Orca 4 bps + Meteora 4 bps) are evaluated too.
-    let mut dirs: Vec<(
-        String,
-        Leg,
-        Leg,
-        arb_types::DexProtocol,
-        arb_types::DexProtocol,
-    )> = Vec::new();
+    // Every ordered pair of venues (a: buy SOL -> USDC, b: sell USDC -> SOL),
+    // priced with each venue's exact protocol math (CLMM ticks, DLMM bins, CPMM).
+    let mut dirs: Vec<(String, &PoolState, &PoolState)> = Vec::new();
     for a in &sol_usdc_pools {
         for b in &sol_usdc_pools {
             if a.pool_id == b.pool_id {
                 continue;
             }
-            let (a_sol, a_usdc) = legs_of(a);
-            let (b_sol, b_usdc) = legs_of(b);
             let Some(a_fee) = a.fee_bps() else {
                 continue;
             };
             let Some(b_fee) = b.fee_bps() else {
                 continue;
             };
-            // These are valid because we're in a loop and continue diverges
             let a_id = a.pool_id.0.to_string();
             let b_id = b.pool_id.0.to_string();
             dirs.push((
@@ -659,18 +558,8 @@ async fn main() -> Result<()> {
                     b_fee,
                     &b_id[..4.min(b_id.len())]
                 ),
-                Leg {
-                    r_in: a_sol,
-                    r_out: a_usdc,
-                    gamma: 10_000u128.saturating_sub(a_fee as u128),
-                },
-                Leg {
-                    r_in: b_usdc,
-                    r_out: b_sol,
-                    gamma: 10_000u128.saturating_sub(b_fee as u128),
-                },
-                a.protocol,
-                b.protocol,
+                *a,
+                *b,
             ));
         }
     }
@@ -684,15 +573,13 @@ async fn main() -> Result<()> {
         edge_bps: f64,
         hurdle: u64,
         priority_fee: u64,
+        impact_bps: u64,
         optimum: Option<u64>,
     }
 
     if !dirs.is_empty() {
         let mut results_summary: Vec<RouteEdgeResult> = Vec::new();
-        for (name, l1, l2, protocol_a, protocol_b) in dirs {
-            // Probe fractions of the configured maximum and report the BEST net PnL. A negative
-            // best net is the honest answer "no arbitrage"; the numbers are shown
-            // so the equation is visible, not hidden behind a boolean.
+        for (name, pool_a, pool_b) in dirs {
             let mut probes: Vec<u64> = [10_000u64, 7_500, 5_000, 2_500, 1_000, 500]
                 .into_iter()
                 .map(|fraction_bps| {
@@ -702,16 +589,44 @@ async fn main() -> Result<()> {
                 .collect();
             probes.sort_unstable_by(|a, b| b.cmp(a));
             probes.dedup();
-            let mut best: Option<(u64, i128, i128, i128, f64, u64, u64)> = None;
+            let mut best: Option<RouteEdgeResult> = None;
+            let a_to_b_1 = pool_a.base_mint.0 == wsol;
+            let a_to_b_2 = pool_b.base_mint.0 == usdc;
+            let optimum = if pool_a.kind == PoolKind::Cpmm && pool_b.kind == PoolKind::Cpmm {
+                let (a_sol, a_usdc) = legs_of(pool_a);
+                let (b_sol, b_usdc) = legs_of(pool_b);
+                let a_fee = pool_a.fee_bps().unwrap_or(10_000);
+                let b_fee = pool_b.fee_bps().unwrap_or(10_000);
+                let l1 = Leg {
+                    r_in: a_sol,
+                    r_out: a_usdc,
+                    gamma: 10_000u128.saturating_sub(a_fee as u128),
+                };
+                let l2 = Leg {
+                    r_in: b_usdc,
+                    r_out: b_sol,
+                    gamma: 10_000u128.saturating_sub(b_fee as u128),
+                };
+                optimal_two_pool(&l1, &l2).filter(|size| *size <= max_probe_lamports)
+            } else {
+                None
+            };
             for size in probes {
-                let Some(mid) = cpmm_out(size as u128, l1.r_in, l1.r_out, l1.gamma) else {
+                let Ok(q1) = quote_via_dispatcher(pool_a, size, a_to_b_1) else {
                     continue;
                 };
-                let Some(back) = cpmm_out(mid, l2.r_in, l2.r_out, l2.gamma) else {
+                if q1.amount_out_raw == 0 {
+                    continue;
+                }
+                let Ok(q2) = quote_via_dispatcher(pool_b, q1.amount_out_raw, a_to_b_2) else {
                     continue;
                 };
-                let gross = back as i128 - size as i128;
-                let route_protocols = [protocol_a, protocol_b];
+                let back = q2.amount_out_raw;
+                let gross = i128::from(back) - i128::from(size);
+                let retained_1 = 10_000u64.saturating_sub(u64::from(q1.price_impact.0));
+                let retained_2 = 10_000u64.saturating_sub(u64::from(q2.price_impact.0));
+                let route_impact_bps = 10_000u64.saturating_sub((retained_1 * retained_2) / 10_000);
+                let route_protocols = [pool_a.protocol, pool_b.protocol];
                 let estimated_cu = arb_tx::estimate_route_cu(true, &route_protocols, 1);
                 let cu_limit = arb_tx::calculate_dynamic_cu_limit(estimated_cu);
                 let max_priority_share_bps = app_config
@@ -728,16 +643,11 @@ async fn main() -> Result<()> {
                 );
                 let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
                 let flash_fee = calculate_flash_fee_raw(size, sf).unwrap_or(u64::MAX);
-                // The diagnostic route is explicitly WSOL-anchored, so its
-                // amounts and all execution liabilities are lamports. Still
-                // delegate PnL to the canonical evaluator: this keeps its
-                // rounding, signed-loss and overflow semantics aligned with
-                // the production Supervisor.
                 let net = arb_math::economic::calculate_net_profit_raw_signed(
-                    u64::try_from(back).unwrap_or(0),
+                    back,
                     size,
                     flash_fee,
-                    0, // DEX fees are reflected in the chained CPMM output
+                    0, // DEX fees are reflected in the protocol-native outputs
                     0, // no separately charged Token-2022 transfer fees in this diagnostic
                     0, // no account creation cost included
                     0, // no additional verified raw costs
@@ -756,23 +666,23 @@ async fn main() -> Result<()> {
                     min_profit_bps,
                 )
                 .as_u64();
-                if best.is_none_or(|b| net > b.3) {
-                    best = Some((size, gross, costs, net, edge_bps, hurdle, priority_fee));
+                if best.as_ref().is_none_or(|b| net > b.net) {
+                    best = Some(RouteEdgeResult {
+                        name: name.clone(),
+                        size,
+                        gross,
+                        costs,
+                        net,
+                        edge_bps,
+                        hurdle,
+                        priority_fee,
+                        impact_bps: route_impact_bps,
+                        optimum,
+                    });
                 }
             }
-            let optimum = optimal_two_pool(&l1, &l2).filter(|size| *size <= max_probe_lamports);
-            if let Some((size, gross, costs, net, edge_bps, hurdle, priority_fee)) = best {
-                results_summary.push(RouteEdgeResult {
-                    name,
-                    size,
-                    gross,
-                    costs,
-                    net,
-                    edge_bps,
-                    hurdle,
-                    priority_fee,
-                    optimum,
-                });
+            if let Some(candidate) = best {
+                results_summary.push(candidate);
             }
         }
 
@@ -780,14 +690,17 @@ async fn main() -> Result<()> {
         results_summary.sort_by_key(|result| std::cmp::Reverse(result.net));
 
         info!("\n================================================================================");
-        info!("📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, CONFIG-CAPPED; route-sized priority fee)");
+        info!(
+            "📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, PROTOCOL-NATIVE MATH; route-sized priority fee)"
+        );
         info!("================================================================================");
         for res in &results_summary {
             info!(
-                "\n💠 EDGE [{}]\n   best probe size = {:.6} SOL (closed-form optimum within cap = {:?})\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
+                "\n💠 EDGE [{}]\n   best probe size = {:.6} SOL (CPMM optimum within cap = {:?})\n   impact  = {} bps\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
                 res.name,
                 res.size as f64 / 1e9,
                 res.optimum.map(|o| format!("{:.6} SOL", o as f64 / 1e9)),
+                res.impact_bps,
                 res.gross,
                 res.costs,
                 tip_lamports,

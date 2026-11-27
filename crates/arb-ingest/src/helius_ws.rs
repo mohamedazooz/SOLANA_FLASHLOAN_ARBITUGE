@@ -658,27 +658,31 @@ impl HeliusWsClient {
         );
         self.seed_initial_accounts(&ingest).await;
 
-        // Event-driven derived-account hydration worker: drains the queue fed
-        // by WS pool updates whose active tick/bin fell outside hydrated
-        // coverage. Fetches ONLY the needed accounts (2-4 small accounts per
-        // crossing) instead of re-polling every pool's tick/bin arrays.
+        // Event-driven derived-account hydration worker: wakes immediately on
+        // `hydration_notify` when a WS pool update hits an unhydrated active
+        // tick/bin array (with a 5s fallback sweep only).
         {
             let hydration_client = Arc::clone(&self);
             let hydration_ingest = Arc::clone(&ingest);
             let hydration_cancel = cancel.clone();
             let hydration_notify = Arc::clone(&self.derived_hydration_notify);
             tokio::spawn(async move {
+                let mut fallback_sweep = tokio::time::interval(Duration::from_secs(5));
+                fallback_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         _ = hydration_cancel.cancelled() => break,
                         _ = hydration_notify.notified() => {
                             // Coalesce bursts from multiple pool updates into one drain.
-                            // This replaces the fixed 500ms polling delay without
-                            // generating one RPC batch per individual notification.
                             tokio::select! {
                                 _ = hydration_cancel.cancelled() => break,
                                 _ = sleep(Duration::from_millis(50)) => {}
                             }
+                            hydration_client
+                                .hydrate_pending_derived(&hydration_ingest)
+                                .await;
+                        }
+                        _ = fallback_sweep.tick() => {
                             hydration_client
                                 .hydrate_pending_derived(&hydration_ingest)
                                 .await;
@@ -1171,6 +1175,17 @@ impl HeliusWsClient {
                                     self.derived_covered
                                         .lock()
                                         .insert(pool_id, (covered, Instant::now()));
+                                    if let Ok(dlmm_owner) =
+                                        Pubkey::from_str(arb_constants::METEORA_DLMM_PROGRAM_ID)
+                                        && self.tracked_accounts.read().len()
+                                            < max_ws_account_subs()
+                                    {
+                                        for k in &keys {
+                                            if *k != ext {
+                                                self.track_account(*k, dlmm_owner);
+                                            }
+                                        }
+                                    }
                                     debug!(
                                         "hydration: DLMM {} rehydrated bins at RPC context slot {}",
                                         pool_id.0, slot
@@ -1333,6 +1348,19 @@ impl HeliusWsClient {
                                         Instant::now(),
                                     ),
                                 );
+                                let array_owner_str = if reg.protocol == DexProtocol::OrcaWhirlpool
+                                {
+                                    arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID
+                                } else {
+                                    arb_constants::RAYDIUM_CLMM_PROGRAM_ID
+                                };
+                                if let Ok(array_owner) = Pubkey::from_str(array_owner_str)
+                                    && self.tracked_accounts.read().len() < max_ws_account_subs()
+                                {
+                                    for k in &keys {
+                                        self.track_account(*k, array_owner);
+                                    }
+                                }
                                 debug!(
                                     "hydration: {:?} {} rehydrated {} tick arrays at RPC context slot {}",
                                     reg.protocol, pool_id.0, n_arrays, slot
@@ -1779,6 +1807,7 @@ impl HeliusWsClient {
                                 };
 
                             if let Some(bytes) = data_bytes {
+                                let decode_start = Instant::now();
                                 self.apply_live_pool_update_from_ws(pk, &bytes, slot, ingest);
                                 let snap = AccountSnapshot {
                                     pubkey: pk,
@@ -1792,6 +1821,9 @@ impl HeliusWsClient {
                                     data: Arc::new(bytes),
                                 };
                                 ingest.account_store().apply(snap);
+                                arb_metrics::observe_state_processing_latency_us(
+                                    decode_start.elapsed().as_micros() as f64,
+                                );
                                 debug!("WS: Applied live account update for {pk} at slot {slot}");
                             }
                         }

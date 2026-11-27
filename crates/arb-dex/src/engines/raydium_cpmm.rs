@@ -257,11 +257,6 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
                 "Raydium CPMM fee snapshot mismatch".into(),
             ));
         }
-        if cpmm_fees.enable_creator_fee && cpmm_fees.creator_fee_rate_ppm > 0 {
-            return Err(ArbError::UnsupportedOperation(
-                "Raydium CPMM exact-out with creator fees is not implemented; use exact-in".into(),
-            ));
-        }
         if request.input_transfer_fee_config.is_some()
             || request.output_transfer_fee_config.is_some()
         {
@@ -275,13 +270,41 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
         } else {
             (state.reserve_out, state.reserve_in)
         };
-        let fee_num = u128::from(state.fee_numerator);
+        let creator_rate = cpmm_fees.effective_creator_fee_rate();
+        let creator_on_input = cpmm_fees.creator_fee_on_input(a_to_b).ok_or_else(|| {
+            ArbError::InvalidInput("Raydium CPMM creator fee mode is invalid".into())
+        })?;
+        let (curve_target_out, creator_fee_output) = if !creator_on_input && creator_rate > 0 {
+            let denom = CPMM_FEE_RATE_DENOMINATOR
+                .checked_sub(u128::from(creator_rate))
+                .filter(|d| *d > 0)
+                .ok_or_else(|| ArbError::InvalidInput("Raydium CPMM creator fee >= 100%".into()))?;
+            let gross_curve = u128::from(request.amount)
+                .checked_mul(CPMM_FEE_RATE_DENOMINATOR)
+                .and_then(|v| v.checked_add(denom - 1))
+                .ok_or(ArbError::Overflow)?
+                / denom;
+            let gross_u64 = u64::try_from(gross_curve).map_err(|_| ArbError::Overflow)?;
+            let c_fee = gross_u64
+                .checked_sub(request.amount)
+                .ok_or(ArbError::Overflow)?;
+            (gross_u64, c_fee)
+        } else {
+            (request.amount, 0)
+        };
+        let input_fee_rate = u128::from(cpmm_fees.trade_fee_rate_ppm)
+            .checked_add(if creator_on_input {
+                u128::from(creator_rate)
+            } else {
+                0
+            })
+            .ok_or(ArbError::Overflow)?;
         let fee_den = u128::from(state.fee_denominator);
         let req_in = arb_math::cpmm::cpmm_in_for_exact_out_upfront_fee_ceil(
-            u128::from(request.amount),
+            u128::from(curve_target_out),
             r_in,
             r_out,
-            fee_num,
+            input_fee_rate,
             fee_den,
         )
         .ok_or_else(|| {
@@ -289,38 +312,82 @@ impl QuoteEngine for RaydiumCpmmQuoteEngine {
                 "Exact out exceeds pool reserve or has an invalid fee ratio".into(),
             )
         })?;
-        let total_fee = arb_math::cpmm::cpmm_fee_ceil(u128::from(req_in), fee_num, fee_den)
-            .ok_or(ArbError::Overflow)?;
+        let total_input_fee =
+            arb_math::cpmm::cpmm_fee_ceil(u128::from(req_in), input_fee_rate, fee_den)
+                .ok_or(ArbError::Overflow)?;
+        let trade_fee = if creator_on_input && creator_rate > 0 {
+            let creator = u128::from(total_input_fee)
+                .checked_mul(u128::from(creator_rate))
+                .ok_or(ArbError::Overflow)?
+                / input_fee_rate;
+            total_input_fee
+                .checked_sub(u64::try_from(creator).map_err(|_| ArbError::Overflow)?)
+                .ok_or(ArbError::Overflow)?
+        } else {
+            total_input_fee
+        };
+        let creator_fee_input = if creator_on_input && creator_rate > 0 {
+            total_input_fee
+                .checked_sub(trade_fee)
+                .ok_or(ArbError::Overflow)?
+        } else {
+            0
+        };
+        let protocol_fee = u64::try_from(
+            u128::from(trade_fee) * u128::from(cpmm_fees.protocol_fee_rate)
+                / CPMM_FEE_RATE_DENOMINATOR,
+        )
+        .map_err(|_| ArbError::Overflow)?;
+        let fund_fee = u64::try_from(
+            u128::from(trade_fee) * u128::from(cpmm_fees.fund_fee_rate) / CPMM_FEE_RATE_DENOMINATOR,
+        )
+        .map_err(|_| ArbError::Overflow)?;
+        let lp_fee = trade_fee
+            .checked_sub(protocol_fee)
+            .and_then(|v| v.checked_sub(fund_fee))
+            .ok_or_else(|| {
+                ArbError::InvalidInput("Raydium CPMM fee splits exceed trade fee".into())
+            })?;
 
         Ok(QuoteResult {
             protocol: DexProtocol::RaydiumCpmm,
             pool_id: state.pool_id,
             total_fee_mint: request.input_mint,
-            creator_fee_mint: request.input_mint,
+            creator_fee_mint: if creator_fee_output > 0 {
+                request.output_mint
+            } else {
+                request.input_mint
+            },
             amount_in_raw: req_in,
             amount_out_raw: request.amount,
             minimum_amount_out_raw: request.amount,
             fees_breakdown: FeesBreakdown {
-                lp_fee: 0,
+                lp_fee,
                 compounding_fee: 0,
-                protocol_fee: 0,
-                fund_fee: 0,
-                creator_fee: 0,
+                protocol_fee,
+                fund_fee,
+                creator_fee: creator_fee_input.saturating_add(creator_fee_output),
                 referral_fee: 0,
                 dynamic_fee: 0,
-                total_fee,
+                total_fee: total_input_fee,
             },
             transfer_fee_breakdown: HopTransferFeeBreakdown {
                 input_gross: req_in,
                 input_transfer_fee: 0,
-                input_net_into_pool: req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?,
-                output_gross_from_pool: request.amount,
-                output_curve_reserve_debit: request.amount,
+                input_net_into_pool: req_in
+                    .checked_sub(total_input_fee)
+                    .ok_or(ArbError::Overflow)?,
+                output_gross_from_pool: curve_target_out,
+                output_curve_reserve_debit: curve_target_out,
                 output_transfer_fee: 0,
                 output_net_to_next_hop: request.amount,
             },
             price_impact: arb_math::cpmm::cpmm_price_impact_bps(
-                u128::from(req_in.checked_sub(total_fee).ok_or(ArbError::Overflow)?),
+                u128::from(
+                    req_in
+                        .checked_sub(total_input_fee)
+                        .ok_or(ArbError::Overflow)?,
+                ),
                 r_in,
                 r_out,
                 0,

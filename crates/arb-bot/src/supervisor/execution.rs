@@ -53,23 +53,47 @@ impl Supervisor {
         flash_loan_fee_sf: u64,
         min_profit_raw: TokenAmount,
     ) -> anyhow::Result<Vec<arb_tx::CompiledInstruction>> {
+        let network_fee_raw = crate::supervisor::BASE_FEE_LAMPORTS
+            .checked_add(arb_tx::priority_fee_lamports(cu_price, cu_limit))
+            .ok_or_else(|| anyhow::anyhow!("network fee arithmetic overflow"))?;
+        self.assemble_native_ixs_for_anchor(
+            payer,
+            tip_account,
+            tip,
+            cu_limit,
+            cu_price,
+            opp,
+            kamino_params,
+            flash_loan_fee_sf,
+            network_fee_raw,
+            tip.as_u64(),
+            min_profit_raw,
+        )
+        .await
+    }
+
+    /// Multi-mint (`WSOL` + `USDC`) instruction assembly with pre-converted
+    /// base-mint raw costs for `network_fee_base_raw` and `tip_base_raw`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn assemble_native_ixs_for_anchor(
+        &self,
+        payer: Pubkey,
+        tip_account: Pubkey,
+        tip: Lamports,
+        cu_limit: u32,
+        cu_price: u64,
+        opp: &ExecutionOpportunity,
+        kamino_params: &KaminoFlashParams,
+        flash_loan_fee_sf: u64,
+        network_fee_base_raw: u64,
+        tip_base_raw: u64,
+        min_profit_raw: TokenAmount,
+    ) -> anyhow::Result<Vec<arb_tx::CompiledInstruction>> {
         if self.config.strategy.use_flash_loan {
-            // The caller supplies the denomination-checked retained-profit
-            // hurdle plus the configured contingency buffer in base-mint raw units.
-            // Do not substitute the graph's discovery floor here: execution must
-            // enforce the exact floor that passed the live economic gate.
-            // Residual-safe ATA lifecycle (F-01, Option B): the atomic arb
-            // transaction NEVER closes intermediate ATAs. A leg's actual
-            // on-chain output can exceed the exact amount consumed by the
-            // next leg (amount_in is clamped to the previous guarantee), and
-            // CloseAccount on a non-empty token account reverts the whole
-            // transaction. Rent reclaim happens post-landing in a separate
-            // settlement tx (`settle_idle_intermediate_atas`), so the
-            // allow-list passed here is always empty.
             let proven_zero_intermediate_mints: Vec<Pubkey> = Vec::new();
 
             if arb_tx::cross_dex_flash_arb::is_cross_dex_opportunity(opp) {
-                return arb_tx::cross_dex_flash_arb::assemble_cross_dex_opportunity(
+                return arb_tx::cross_dex_flash_arb::assemble_cross_dex_opportunity_with_converted_costs(
                     payer,
                     tip_account,
                     tip,
@@ -78,12 +102,14 @@ impl Supervisor {
                     opp,
                     kamino_params,
                     flash_loan_fee_sf,
+                    network_fee_base_raw,
+                    tip_base_raw,
                     min_profit_raw,
                     &proven_zero_intermediate_mints,
                 );
             }
 
-            Ok(TxBuilder::assemble_flash_arbitrage(
+            Ok(TxBuilder::assemble_flash_arbitrage_with_converted_costs(
                 payer,
                 tip_account,
                 tip,
@@ -92,12 +118,12 @@ impl Supervisor {
                 opp,
                 kamino_params,
                 flash_loan_fee_sf,
+                network_fee_base_raw,
+                tip_base_raw,
                 min_profit_raw,
                 &proven_zero_intermediate_mints,
             )?)
         } else {
-            // Use the same live-gate retained-profit hurdle and contingency
-            // buffer as the flash path.
             Ok(TxBuilder::assemble_arbitrage(
                 payer,
                 tip_account,
@@ -330,39 +356,47 @@ impl Supervisor {
         &self,
         current_slot: Slot,
     ) -> anyhow::Result<VerifiedQuoteInputs> {
-        let base_mint = MintId(crate::verified_config::wsol_mint());
-        let reserve = crate::verified_config::wsol_reserve();
+        self.build_verified_inputs_for_mint(crate::verified_config::wsol_mint(), current_slot)
+            .await
+    }
 
-        // Ensure Kamino reserve & WSOL mint snapshots exist and stay fresh.
+    /// Build verified on-chain economic inputs for a supported Kamino anchor
+    /// mint (`WSOL` or `USDC`). Fail closed on unsupported mints or stale data.
+    pub async fn build_verified_inputs_for_mint(
+        &self,
+        anchor_mint: Pubkey,
+        current_slot: Slot,
+    ) -> anyhow::Result<VerifiedQuoteInputs> {
+        let anchor = crate::verified_config::kamino_anchor_for_mint(&anchor_mint)
+            .ok_or_else(|| anyhow::anyhow!("unsupported Kamino anchor mint {anchor_mint}"))?;
+        let base_mint = MintId(anchor.mint);
+        let reserve = anchor.reserve;
+        let supply_vault = anchor.supply_vault;
+
+        // Ensure Kamino reserve, WSOL mint, and supply-vault snapshots exist and
+        // stay fresh.
         // Note: `AccountSnapshotStore::apply` refuses `is_startup: true` overwrites
         // once a live WS write (`ACCOUNT_WEBSOCKET_PROVIDER_ID`, `is_startup: false`) exists, so we
         // evaluate fresh RPC reads against `self.kamino_fallback_store` if needed
         // while preserving `store`'s stream provenance invariants.
         let store = self.ingest.account_store();
-        let primary_fresh = matches!(
-            (store.get(&reserve), store.get(&base_mint.0)),
-            (Some(r), Some(m))
-                if r.slot <= current_slot.0
-                    && m.slot <= current_slot.0
-                    && current_slot.0.saturating_sub(r.slot)
-                        <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
-                    && current_slot.0.saturating_sub(m.slot)
-                        <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
-        );
-        let fallback_fresh = !primary_fresh
-            && matches!(
-                (
-                    self.kamino_fallback_store.get(&reserve),
-                    self.kamino_fallback_store.get(&base_mint.0),
-                ),
-                (Some(r), Some(m))
+        let is_set_fresh = |s: &arb_ingest::AccountSnapshotStore| {
+            matches!(
+                (s.get(&reserve), s.get(&base_mint.0), s.get(&supply_vault)),
+                (Some(r), Some(m), Some(v))
                     if r.slot <= current_slot.0
                         && m.slot <= current_slot.0
+                        && v.slot <= current_slot.0
                         && current_slot.0.saturating_sub(r.slot)
                             <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
                         && current_slot.0.saturating_sub(m.slot)
                             <= arb_constants::KAMINO_ZAP_FRESHNESS_TOLERANCE_SLOTS
-            );
+                        && current_slot.0.saturating_sub(v.slot)
+                            <= arb_constants::KAMINO_SUPPLY_VAULT_MAX_AGE_SLOTS
+            )
+        };
+        let primary_fresh = is_set_fresh(&store);
+        let fallback_fresh = !primary_fresh && is_set_fresh(&self.kamino_fallback_store);
 
         let mut use_fallback_store = fallback_fresh;
         let mut eval_slot = current_slot;
@@ -370,14 +404,15 @@ impl Supervisor {
         if !primary_fresh && !fallback_fresh {
             let reserve_key = reserve.to_string();
             let mint_key = base_mint.0.to_string();
-            let keys = [reserve_key.as_str(), mint_key.as_str()];
+            let vault_key = supply_vault.to_string();
+            let keys = [reserve_key.as_str(), mint_key.as_str(), vault_key.as_str()];
             if let Ok((accounts, context_slot)) =
                 self.rpc_pool.get_multiple_accounts_with_slot(&keys).await
             {
                 let klend_owner = Pubkey::from_str(arb_constants::KAMINO_KLEND_PROGRAM_ID)?;
                 let token_owner = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID)?;
-                let account_keys = [reserve, base_mint.0];
-                let expected_owners = [klend_owner, token_owner];
+                let account_keys = [reserve, base_mint.0, supply_vault];
+                let expected_owners = [klend_owner, token_owner, token_owner];
 
                 // Account RPC context is the only acceptable slot provenance.
                 // Never relabel a zero/unknown context as the current WS slot,
@@ -424,17 +459,23 @@ impl Supervisor {
             &store
         };
 
-        // Discovery uses a fresh landed-tip p50 capped by the configured
-        // ceiling. If the oracle is stale/missing, retain the ceiling rather
-        // than assuming a zero tip. The dispatch gate rechecks the actual bid.
-        let fresh_tip_p50 = self
-            .jito_service
-            .oracle()
-            .current(arb_land::now_ms())
-            .map(|floor| floor.p50);
+        // Discovery uses the configured landed-tip percentile (`p75` in
+        // production) capped by the configured ceiling, aligning Discovery with
+        // the execution bidder. If the oracle is stale/missing, retain the
+        // ceiling rather than assuming a zero tip.
+        let fresh_tip_estimate =
+            self.jito_service
+                .oracle()
+                .current(arb_land::now_ms())
+                .map(|floor| {
+                    crate::verified_config::tip_floor_for_percentile(
+                        &floor,
+                        &self.config.jito.tip_floor_percentile,
+                    )
+                });
         let discovery_tip = crate::verified_config::bounded_jito_tip_discovery_estimate(
             Lamports(self.config.jito.max_tip_lamports),
-            fresh_tip_p50,
+            fresh_tip_estimate,
         );
 
         let inputs = crate::verified_config::build_verified_inputs_from_snapshots(

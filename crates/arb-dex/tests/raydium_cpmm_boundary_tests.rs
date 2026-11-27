@@ -355,16 +355,56 @@ fn creator_fee_matches_pool_mode_for_both_swap_directions() {
 }
 
 #[test]
-fn creator_fee_exact_out_fails_closed_until_inverse_fee_path_is_supported() {
+fn creator_fee_exact_out_matches_creator_fee_modes_and_fails_on_invalid_mode() {
     let engine = RaydiumCpmmQuoteEngine::new();
-    let (mut pool, base, quote) = make_cpmm_pool(10_000_000_000, 20_000_000_000, 2_500);
-    pool.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+    for creator_fee_on in [0u8, 1, 2] {
+        for a_to_b in [true, false] {
+            let (mut pool, base, quote) = make_cpmm_pool(10_000_000_000, 20_000_000_000, 2_500);
+            pool.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+                trade_fee_rate_ppm: 2_500,
+                creator_fee_rate_ppm: 500,
+                protocol_fee_rate: 120_000,
+                fund_fee_rate: 40_000,
+                enable_creator_fee: true,
+                creator_fee_on,
+            });
+            let (in_mint, out_mint) = if a_to_b { (base, quote) } else { (quote, base) };
+            let exact_in_req = QuoteRequest {
+                input_mint: in_mint,
+                output_mint: out_mint,
+                amount: 100_000_000,
+                slippage_bps: 0,
+                input_transfer_fee_config: None,
+                output_transfer_fee_config: None,
+            };
+            let forward = engine.quote_exact_in(&pool, &exact_in_req).unwrap();
+            let exact_out_req = QuoteRequest {
+                input_mint: in_mint,
+                output_mint: out_mint,
+                amount: forward.amount_out_raw,
+                slippage_bps: 0,
+                input_transfer_fee_config: None,
+                output_transfer_fee_config: None,
+            };
+            let inverse = engine.quote_exact_out(&pool, &exact_out_req).unwrap();
+            assert!(
+                inverse.amount_in_raw.abs_diff(100_000_000) <= 2,
+                "exact-out inverse must round-trip within rounding dust for creator_fee_on={creator_fee_on} a_to_b={a_to_b}: got {}",
+                inverse.amount_in_raw
+            );
+            assert_eq!(inverse.amount_out_raw, forward.amount_out_raw);
+        }
+    }
+
+    // Invalid creator_fee_on must fail closed.
+    let (mut bad_pool, base, quote) = make_cpmm_pool(10_000_000_000, 20_000_000_000, 2_500);
+    bad_pool.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
         trade_fee_rate_ppm: 2_500,
         creator_fee_rate_ppm: 500,
         protocol_fee_rate: 120_000,
         fund_fee_rate: 40_000,
         enable_creator_fee: true,
-        creator_fee_on: 0,
+        creator_fee_on: 9,
     });
     let request = QuoteRequest {
         input_mint: base,
@@ -375,7 +415,7 @@ fn creator_fee_exact_out_fails_closed_until_inverse_fee_path_is_supported() {
         output_transfer_fee_config: None,
     };
     assert!(matches!(
-        engine.quote_exact_out(&pool, &request),
-        Err(ArbError::UnsupportedOperation(_))
+        engine.quote_exact_out(&bad_pool, &request),
+        Err(ArbError::InvalidInput(_))
     ));
 }

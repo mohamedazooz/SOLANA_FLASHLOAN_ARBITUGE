@@ -14,7 +14,10 @@ pub use arb_constants::{
     jito_tip_account_at, jito_tip_account_for_leader, jito_tip_account_for_slot,
     jito_tip_account_round_robin,
 };
-pub use bidder::{AdaptiveBidder, BidderConfig, MIN_JITO_TIP_LAMPORTS};
+pub use bidder::{
+    AdaptiveBidder, BidderConfig, MIN_JITO_TIP_LAMPORTS, Q32_ONE,
+    calibrated_inclusion_probability_q32, expected_value_lamports_q32, probability_to_q32,
+};
 pub use leader::{JitoValidatorSet, Landability, LeaderSchedule, landability};
 pub use ledger::{LEDGER_SCHEMA, LandingLedger};
 pub use lifecycle::*;
@@ -137,21 +140,20 @@ impl TipStrategy {
         }
     }
 
-    /// Calculate dynamic tip scaling with profit size and market competition.
-    ///
-    /// Note: In the live execution loop, `AdaptiveBidder` (`crates/arb-land/src/bidder.rs`)
-    /// is the authoritative single source of truth for Jito bundle tip pricing.
-    /// This method is retained for legacy reference and simulation benchmarking.
-    pub fn pick_dynamic_tip(
+    /// Integer-only dynamic tip selection with competition factor in basis points (`10_000` = 1.0x).
+    pub fn pick_dynamic_tip_bps(
         &self,
         net_before_tip: u64,
-        competition_factor: f64,
+        competition_factor_bps: u64,
     ) -> Option<Lamports> {
-        let profit_sol = net_before_tip as f64 / 1_000_000_000.0;
-        let scale = (profit_sol * 2.0).min(1.0); // scales from 0 to 1 over 0.5 SOL profit
-        let dynamic_range = self.max_share_bps.saturating_sub(self.share_bps) as f64;
-        let effective_share =
-            ((self.share_bps as f64 + dynamic_range * scale) * competition_factor) as u64;
+        const SCALE_CAP_LAMPORTS: u128 = 500_000_000; // 0.5 SOL full scale
+        let dynamic_range = self.max_share_bps.saturating_sub(self.share_bps);
+        let scaled_range = (u128::from(dynamic_range)
+            * u128::from(net_before_tip).min(SCALE_CAP_LAMPORTS))
+            / SCALE_CAP_LAMPORTS;
+        let base_plus_scaled = u128::from(self.share_bps).saturating_add(scaled_range);
+        let effective_share = ((base_plus_scaled * u128::from(competition_factor_bps)) / 10_000)
+            .min(u128::from(u64::MAX)) as u64;
         let bounded_share = effective_share.min(self.max_share_bps).max(self.share_bps);
 
         pick_tip(
@@ -164,8 +166,27 @@ impl TipStrategy {
         .map(Lamports)
     }
 
+    /// Calculate dynamic tip scaling with profit size and market competition.
+    ///
+    /// Legacy f64-signature shim that converts `competition_factor` to integer BPS
+    /// and delegates to [`Self::pick_dynamic_tip_bps`].
+    pub fn pick_dynamic_tip(
+        &self,
+        net_before_tip: u64,
+        competition_factor: f64,
+    ) -> Option<Lamports> {
+        let bps = if competition_factor.is_finite() && competition_factor > 0.0 {
+            (competition_factor * 10_000.0)
+                .round()
+                .clamp(0.0, u64::MAX as f64) as u64
+        } else {
+            0
+        };
+        self.pick_dynamic_tip_bps(net_before_tip, bps)
+    }
+
     pub fn pick_tip(&self, net_before_tip: u64) -> Option<Lamports> {
-        self.pick_dynamic_tip(net_before_tip, 1.0)
+        self.pick_dynamic_tip_bps(net_before_tip, 10_000)
     }
 
     /// Adaptive compute-unit price from recent landed CU prices.
@@ -249,6 +270,10 @@ pub struct JitoLander {
     /// Explicit block-engine target from `JITO_BLOCK_ENGINE_URL`, resolved
     /// once at construction (see [`JitoLander::resolved_override_url`]).
     override_url: Option<String>,
+    /// Optional Jito BAM Direct Block-Building Interface (`BAM_DBI_URL`)
+    /// supporting V1 (`0x81`) transactions directly, with Block Engine fallback
+    /// during BAM Maintenance Mode.
+    bam_dbi_url: Option<String>,
     /// Jito auth credential from `JITO_AUTH_UUID`, attached as `x-jito-auth`
     /// on every block-engine request. Without it the documented default limit
     /// is 1 request/second per IP per region (HTTP 429 above that) —
@@ -313,6 +338,7 @@ impl JitoLander {
         Self {
             regions,
             override_url: Self::resolved_override_url(),
+            bam_dbi_url: Self::resolved_bam_dbi_url(),
             auth_uuid: resolve_auth_uuid(),
             client,
         }
@@ -463,6 +489,20 @@ impl JitoLander {
         Some(trimmed.trim_end_matches('/').to_string())
     }
 
+    /// Reads optional `BAM_DBI_URL` for Jito BAM Direct Block-Building Interface
+    /// (supporting V1 transactions with Block Engine fallback on maintenance).
+    pub fn resolved_bam_dbi_url() -> Option<String> {
+        let raw = std::env::var("BAM_DBI_URL").ok()?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty()
+            || trimmed.contains("REPLACE_ME")
+            || !(trimmed.starts_with("https://") || trimmed.starts_with("http://"))
+        {
+            return None;
+        }
+        Some(trimmed.trim_end_matches('/').to_string())
+    }
+
     pub fn endpoint(region: &str) -> String {
         let region = region.trim();
         if region.is_empty() || region.eq_ignore_ascii_case("mainnet") {
@@ -513,6 +553,36 @@ impl JitoLander {
             return Err(ArbError::InvalidInput("bundle must have 1..=5 txs".into()));
         }
         let encoded: Vec<String> = txs.iter().map(|t| base64_encode(t)).collect();
+        if let Some(bam_url) = &self.bam_dbi_url {
+            let bam_body = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendBundle",
+                "params": [encoded, {"encoding": "base64"}]
+            });
+            let rb = self.apply_auth(self.client.post(bam_url)).json(&bam_body);
+            match rb.send().await {
+                Ok(r) => {
+                    let status = r.status();
+                    let text = r.text().await.unwrap_or_default();
+                    if status.is_success()
+                        && let Ok(val) = serde_json::from_str::<Value>(&text)
+                        && let Some(res) = val.get("result").and_then(|x| x.as_str())
+                    {
+                        debug!("Bundle accepted by BAM DBI {bam_url}: {res}");
+                        return Ok(res.to_string());
+                    }
+                    tracing::warn!(
+                        "BAM DBI {bam_url} unavailable/rejected (HTTP {status}: {text}); falling back to Jito Block Engine"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "BAM DBI {bam_url} network error ({e}); falling back to Jito Block Engine"
+                    );
+                }
+            }
+        }
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,

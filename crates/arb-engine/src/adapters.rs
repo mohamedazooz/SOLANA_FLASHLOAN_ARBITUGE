@@ -11,7 +11,7 @@ use arb_dex::quote_engine::{QuoteRequest, QuoteResult};
 use arb_dex::token2022::TransferFeeConfig;
 #[cfg(test)]
 use arb_math::clmm::{self, TickArrayFacade};
-use arb_types::{ArbError, DexProtocol, PoolKind, PoolState, Result};
+use arb_types::{ArbError, DexProtocol, PoolExecutionAccounts, PoolKind, PoolState, Result};
 use arb_types::{MintId, PoolId};
 
 /// Human-readable family labels required in logs, reports and configuration.
@@ -138,9 +138,23 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
                 Err("Raydium CPMM missing on-chain fee or reserves")
             }
         }
-        DexProtocol::MeteoraDammV2 => Err(
-            "Meteora DAMM v2 is quote-only until its complete pool, activation, dynamic-fee, collect-fee, and mint snapshot is verified against the official quote model",
-        ),
+        DexProtocol::MeteoraDammV2 => {
+            if pool.is_fee_valid()
+                && pool.reserve_in > 0
+                && pool.reserve_out > 0
+                && pool.damm_v2.as_ref().is_some_and(|d| d.clock_slot > 0)
+                && matches!(
+                    pool.execution_accounts,
+                    Some(PoolExecutionAccounts::MeteoraDammV2 { .. })
+                )
+            {
+                Ok(())
+            } else {
+                Err(
+                    "Meteora DAMM v2 requires a verified same-context Pool/Vault/Mint/Clock snapshot and execution accounts",
+                )
+            }
+        }
         DexProtocol::MeteoraDbc => Err(
             "Meteora DBC is quote-only until VirtualPool/PoolConfig, complete curve segments, migration state, epoch, and transfer-fee context are verified",
         ),
@@ -150,12 +164,38 @@ pub fn execution_capability(pool: &PoolState) -> std::result::Result<(), &'stati
         DexProtocol::PumpFun => Err(
             "Pump.fun is quote-only until the current FeeConfig/creator-fee snapshot, V3 account matrix, and exact fill semantics are verified against the live instruction",
         ),
-        DexProtocol::PumpSwap => Err(
-            "PumpSwap remains quote-only until its dedicated fee/creator-fee quote adapter is accepted",
-        ),
-        DexProtocol::RaydiumClmm => Err(
-            "Raydium CLMM is telemetry-only until the live AmmConfig, dynamic-fee state, and tick arrays are joined at a coherent slot",
-        ),
+        DexProtocol::PumpSwap => {
+            if pool.is_fee_valid()
+                && pool.reserve_in > 0
+                && pool.reserve_out > 0
+                && matches!(
+                    pool.execution_accounts,
+                    Some(PoolExecutionAccounts::PumpSwap { .. })
+                )
+            {
+                Ok(())
+            } else {
+                Err("PumpSwap requires verified fee config, reserves, and execution accounts")
+            }
+        }
+        DexProtocol::RaydiumClmm => {
+            if pool.is_fee_valid()
+                && pool
+                    .clmm
+                    .as_ref()
+                    .is_some_and(|c| c.fee_rate > 0 && c.liquidity > 0 && !c.tick_arrays.is_empty())
+                && matches!(
+                    pool.execution_accounts,
+                    Some(PoolExecutionAccounts::RaydiumClmm { .. })
+                )
+            {
+                Ok(())
+            } else {
+                Err(
+                    "Raydium CLMM requires verified AmmConfig fee, tick arrays, and execution accounts",
+                )
+            }
+        }
         DexProtocol::MeteoraDlmm => {
             if pool.dlmm.is_some()
                 && pool.dlmm.as_ref().unwrap().status == 0
@@ -315,15 +355,56 @@ impl ProtocolQuoteAdapter for QuoteOnlyAdapter {
     }
 }
 
+pub struct PumpSwapQuoteAdapter;
+impl ProtocolQuoteAdapter for PumpSwapQuoteAdapter {
+    fn protocol(&self) -> DexProtocol {
+        DexProtocol::PumpSwap
+    }
+    fn quote_curve(
+        &self,
+        pool: &mut PoolState,
+        amount_in: u64,
+        a_to_b: bool,
+    ) -> Result<(u64, u64, u16)> {
+        execution_capability(pool).map_err(|reason| ArbError::InvalidInput(reason.into()))?;
+        quote_via_dispatcher(pool, amount_in, a_to_b).map(|quote| {
+            (
+                quote.amount_out_raw,
+                quote.fees_breakdown.total_fee,
+                quote.price_impact.0,
+            )
+        })
+    }
+}
+
+pub struct MeteoraDammV2QuoteAdapter;
+impl ProtocolQuoteAdapter for MeteoraDammV2QuoteAdapter {
+    fn protocol(&self) -> DexProtocol {
+        DexProtocol::MeteoraDammV2
+    }
+    fn quote_curve(
+        &self,
+        pool: &mut PoolState,
+        amount_in: u64,
+        a_to_b: bool,
+    ) -> Result<(u64, u64, u16)> {
+        execution_capability(pool).map_err(|reason| ArbError::InvalidInput(reason.into()))?;
+        quote_via_dispatcher(pool, amount_in, a_to_b).map(|quote| {
+            (
+                quote.amount_out_raw,
+                quote.fees_breakdown.total_fee,
+                quote.price_impact.0,
+            )
+        })
+    }
+}
+
 static RAYDIUM_V4_ADAPTER: RaydiumV4QuoteAdapter = RaydiumV4QuoteAdapter;
 static RAYDIUM_CPMM_ADAPTER: RaydiumCpmmQuoteAdapter = RaydiumCpmmQuoteAdapter;
 static RAYDIUM_CLMM_ADAPTER: RaydiumClmmQuoteAdapter = RaydiumClmmQuoteAdapter;
 static ORCA_ADAPTER: OrcaWhirlpoolQuoteAdapter = OrcaWhirlpoolQuoteAdapter;
 static METEORA_DLMM_ADAPTER: MeteoraDlmmQuoteAdapter = MeteoraDlmmQuoteAdapter;
-static METEORA_DAMM_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
-    venue: DexProtocol::MeteoraDammV2,
-    reason: "Meteora DAMM v2 requires the complete official pool/fee/activation snapshot; a CPMM reserve fallback is not valid",
-};
+static METEORA_DAMM_ADAPTER: MeteoraDammV2QuoteAdapter = MeteoraDammV2QuoteAdapter;
 static METEORA_DBC_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::MeteoraDbc,
     reason: "Meteora DBC requires the official VirtualPool/PoolConfig and complete piecewise curve snapshot",
@@ -333,10 +414,7 @@ static RAYDIUM_LAUNCHLAB_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
     venue: DexProtocol::RaydiumLaunchLab,
     reason: "Raydium LaunchLab requires its own platform/global config and bonding-curve state adapter",
 };
-static PUMP_SWAP_ADAPTER: QuoteOnlyAdapter = QuoteOnlyAdapter {
-    venue: DexProtocol::PumpSwap,
-    reason: "PumpSwap requires its own creator/protocol/LP fee and v2 reserve-accounting adapter",
-};
+static PUMP_SWAP_ADAPTER: PumpSwapQuoteAdapter = PumpSwapQuoteAdapter;
 
 pub fn protocol_quote_adapter(protocol: DexProtocol) -> &'static dyn ProtocolQuoteAdapter {
     match protocol {
@@ -401,11 +479,7 @@ fn transfer_fee_config_for_mint(
 
 /// Build the one authoritative exact-in quote used by route planning and adapters.
 /// Fee schedules come only from verified, epoch-aware PoolState context.
-pub(crate) fn quote_via_dispatcher(
-    pool: &PoolState,
-    amount_in: u64,
-    a_to_b: bool,
-) -> Result<QuoteResult> {
+pub fn quote_via_dispatcher(pool: &PoolState, amount_in: u64, a_to_b: bool) -> Result<QuoteResult> {
     let (input_mint, output_mint) = if a_to_b {
         (pool.base_mint, pool.quote_mint)
     } else {
@@ -492,13 +566,12 @@ fn advance_pool_after_quote(pool: &mut PoolState, a_to_b: bool, quote: &QuoteRes
             }
         }
         DexProtocol::PumpFun
+        | DexProtocol::PumpSwap
         | DexProtocol::OrcaWhirlpool
         | DexProtocol::RaydiumClmm
-        | DexProtocol::MeteoraDlmm => {}
-        DexProtocol::MeteoraDammV2
-        | DexProtocol::MeteoraDbc
-        | DexProtocol::RaydiumLaunchLab
-        | DexProtocol::PumpSwap => {
+        | DexProtocol::MeteoraDlmm
+        | DexProtocol::MeteoraDammV2 => {}
+        DexProtocol::MeteoraDbc | DexProtocol::RaydiumLaunchLab => {
             return Err(ArbError::UnsupportedOperation(format!(
                 "state advancement for {:?} is not supported by this route facade",
                 pool.protocol

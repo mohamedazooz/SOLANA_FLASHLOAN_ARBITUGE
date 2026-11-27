@@ -380,14 +380,24 @@ impl Supervisor {
 
         let jito_lander = JitoLander::new(config.jito.regions.clone());
 
-        // The configured Kamino flash-loan reserve is WSOL. Every candidate
-        // cycle must therefore start and finish in WSOL so the borrow, route
-        // accounting, fee units and same-transaction repayment share one mint
-        // and 9-decimal raw-unit domain. Other configured tokens remain valid
-        // intermediate route vertices; they are not independent loan anchors.
-        let wsol_mint =
-            Pubkey::from_str(arb_tx::WSOL_MINT).expect("canonical WSOL mint constant must parse");
-        let graph = MarketGraph::new(vec![MintId(wsol_mint)]);
+        // Resolve configured base anchors against verified Kamino Main Market
+        // flash-loan reserves (WSOL and USDC). Keep WSOL first when enabled so
+        // canonical WSOL discovery remains prioritized while USDC closes cleanly
+        // in its own reserve and 6-decimal base unit domain.
+        let wsol_mint = crate::verified_config::wsol_mint();
+        let mut base_anchors: Vec<MintId> = Vec::new();
+        for token in &config.strategy.base_tokens {
+            if let Some(mint) = crate::verified_config::resolve_anchor_mint(token) {
+                let id = MintId(mint);
+                if !base_anchors.contains(&id) {
+                    base_anchors.push(id);
+                }
+            }
+        }
+        if base_anchors.is_empty() {
+            base_anchors.push(MintId(wsol_mint));
+        }
+        let graph = MarketGraph::new(base_anchors);
         // Ingestion is WebSocket + RPC only. gRPC transport removed.
         let ingest = Arc::new(IngestClient::new());
 
@@ -770,8 +780,10 @@ impl Supervisor {
             .adaptive_cu_price_with_market(&landed, &fresh_market);
         let base_share = self.config.strategy.priority_fee_base_share_bps;
         let max_share = self.config.strategy.priority_fee_max_share_bps;
-        let max_share_bps = ((base_share as f64 * self.jito_service.competition_factor()) as u64)
-            .clamp(base_share, max_share);
+        let max_share_bps =
+            ((u128::from(base_share) * u128::from(self.jito_service.competition_factor_bps()))
+                / 10_000)
+                .clamp(u128::from(base_share), u128::from(max_share)) as u64;
         PriorityFeePolicy {
             desired_cu_price_micro_lamports: desired_cu_price,
             max_share_bps,
