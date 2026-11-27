@@ -409,6 +409,53 @@ pub fn assemble_cross_dex_opportunity(
     Ok(ixs)
 }
 
+/// Assembles a multi-mint (`WSOL` or `USDC`) cross-DEX flash-loan arbitrage instruction
+/// bundle using pre-converted `network_fee_base_raw` and `tip_base_raw` in settlement-mint
+/// raw units.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_cross_dex_opportunity_with_converted_costs(
+    payer: Pubkey,
+    tip_account: Pubkey,
+    tip_amount: Lamports,
+    cu_limit: u32,
+    priority_fee_micro_lamports: u64,
+    opportunity: &ExecutionOpportunity,
+    kamino_params: &KaminoFlashParams,
+    flash_loan_fee_sf: u64,
+    network_fee_base_raw: u64,
+    tip_base_raw: u64,
+    min_profit_raw: TokenAmount,
+    proven_zero_intermediate_mints: &[Pubkey],
+) -> crate::Result<Vec<CompiledInstruction>> {
+    let platforms = validate_cross_dex_opportunity(opportunity)
+        .map_err(|e| anyhow::anyhow!("Cross-DEX validation failed: {e}"))?;
+
+    let ixs = TxBuilder::assemble_flash_arbitrage_with_converted_costs(
+        payer,
+        tip_account,
+        tip_amount,
+        cu_limit,
+        priority_fee_micro_lamports,
+        opportunity,
+        kamino_params,
+        flash_loan_fee_sf,
+        network_fee_base_raw,
+        tip_base_raw,
+        min_profit_raw,
+        proven_zero_intermediate_mints,
+    )?;
+
+    tracing::info!(
+        target: "arb_events",
+        "CROSS_DEX_FLASH_ARB_ASSEMBLED: platforms={:?} hops={} payer={}",
+        platforms,
+        opportunity.hops.len(),
+        payer
+    );
+
+    Ok(ixs)
+}
+
 /// Build a full cross-DEX flash arbitrage transaction from CrossDexFlashArbParams.
 /// Legacy direct-parameter assembler is intentionally disabled.
 ///

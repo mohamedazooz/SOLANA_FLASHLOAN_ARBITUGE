@@ -111,6 +111,77 @@ impl OrcaWhirlpoolAccounts {
     }
 }
 
+/// Anchor discriminator for Orca Whirlpool `swap_v2` (`sha256("global:swap_v2")[..8]`).
+pub const ORCA_WHIRLPOOL_SWAP_V2_DISCRIMINATOR: [u8; 8] = [43, 4, 237, 11, 26, 201, 30, 98];
+
+/// Build genuine Orca Whirlpool `swap_v2` instruction supporting independent
+/// SPL Token / Token-2022 programs on token A & B plus optional remaining accounts
+/// (supplemental tick arrays or TransferHook extra metas).
+#[allow(clippy::too_many_arguments)]
+pub fn build_orca_whirlpool_swap_v2_instruction(
+    accounts: &OrcaWhirlpoolAccounts,
+    token_program_a: Pubkey,
+    token_program_b: Pubkey,
+    token_mint_a: Pubkey,
+    token_mint_b: Pubkey,
+    user_authority: Pubkey,
+    token_owner_account_a: Pubkey,
+    token_owner_account_b: Pubkey,
+    amount_in: u64,
+    other_amount_threshold: u64,
+    a_to_b: bool,
+    is_adaptive_fee: bool,
+    remaining_accounts: &[AccountMeta],
+) -> Result<CompiledInstruction, TxError> {
+    let program_id = Pubkey::from_str(ORCA_WHIRLPOOL_PROGRAM_ID)
+        .map_err(|e| TxError::InstructionError(e.to_string()))?;
+    let memo_program = Pubkey::from_str(MEMO_PROGRAM_ID_STR)
+        .map_err(|e| TxError::InstructionError(e.to_string()))?;
+    let mut data = Vec::with_capacity(42);
+    data.extend_from_slice(&ORCA_WHIRLPOOL_SWAP_V2_DISCRIMINATOR);
+    data.extend_from_slice(&amount_in.to_le_bytes());
+    data.extend_from_slice(&other_amount_threshold.to_le_bytes());
+    let sqrt_price_limit = if a_to_b {
+        arb_constants::CLMM_MIN_SQRT_PRICE_X64
+    } else {
+        arb_constants::ORCA_WHIRLPOOL_MAX_SQRT_PRICE_X64
+    };
+    data.extend_from_slice(&sqrt_price_limit.to_le_bytes());
+    data.push(1); // amount_specified_is_input = true
+    data.push(a_to_b as u8);
+
+    let oracle_meta = if is_adaptive_fee {
+        AccountMeta::new(accounts.oracle, false)
+    } else {
+        AccountMeta::new_readonly(accounts.oracle, false)
+    };
+
+    let mut metas = vec![
+        AccountMeta::new_readonly(token_program_a, false),
+        AccountMeta::new_readonly(token_program_b, false),
+        AccountMeta::new_readonly(memo_program, false),
+        AccountMeta::new_readonly(user_authority, true),
+        AccountMeta::new(accounts.whirlpool, false),
+        AccountMeta::new_readonly(token_mint_a, false),
+        AccountMeta::new_readonly(token_mint_b, false),
+        AccountMeta::new(token_owner_account_a, false),
+        AccountMeta::new(accounts.token_vault_a, false),
+        AccountMeta::new(token_owner_account_b, false),
+        AccountMeta::new(accounts.token_vault_b, false),
+        AccountMeta::new(accounts.tick_array_0, false),
+        AccountMeta::new(accounts.tick_array_1, false),
+        AccountMeta::new(accounts.tick_array_2, false),
+        oracle_meta,
+    ];
+    metas.extend_from_slice(remaining_accounts);
+
+    Ok(CompiledInstruction {
+        program_id,
+        accounts: metas,
+        data,
+    })
+}
+
 /// Build genuine Orca Whirlpool Swap Instruction with the complete 11-account matrix.
 pub fn build_orca_whirlpool_swap_instruction_11(
     accounts: &OrcaWhirlpoolAccounts,

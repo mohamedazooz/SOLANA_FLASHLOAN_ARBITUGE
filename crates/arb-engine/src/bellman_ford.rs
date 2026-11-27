@@ -73,7 +73,11 @@ impl BfEdge {
         // Conservative graph metadata must not understate a valid fee. Invalid
         // ratios receive the maximum fee and are rejected by exact quote validation.
         let fee = p.fee_bps().unwrap_or(10_000);
-        let gamma = (10_000u32 - fee as u32) as f64 / 10_000.0;
+        let gamma = if p.fee_denominator > 0 && p.fee_numerator <= p.fee_denominator {
+            (p.fee_denominator - p.fee_numerator) as f64 / p.fee_denominator as f64
+        } else {
+            0.0
+        };
         let rate = if p.reserve_in > 0 {
             p.reserve_out as f64 / p.reserve_in as f64
         } else {
@@ -189,7 +193,11 @@ impl BellmanFordEngine {
 
             // Reverse edge: quote_mint → base_mint (swap reserves)
             let fee = fwd.fee_bps;
-            let gamma = (10_000u32 - fee as u32) as f64 / 10_000.0;
+            let gamma = if p.fee_denominator > 0 && p.fee_numerator <= p.fee_denominator {
+                (p.fee_denominator - p.fee_numerator) as f64 / p.fee_denominator as f64
+            } else {
+                0.0
+            };
             let rev_rate = if p.reserve_out > 0 {
                 p.reserve_in as f64 / p.reserve_out as f64
             } else {

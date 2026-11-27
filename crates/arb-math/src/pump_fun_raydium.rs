@@ -9,8 +9,10 @@ use crate::cpmm::{U384, isqrt_u384};
 use ruint::aliases::U256;
 use std::cmp;
 
-pub const DEFAULT_FLASH_LOAN_FEE_BPS: u64 = 30;
-pub const DEFAULT_RAYDIUM_FEE_BPS: u64 = 25;
+#[cfg(test)]
+const TEST_FLASH_LOAN_FEE_BPS: u64 = 30;
+#[cfg(test)]
+const TEST_RAYDIUM_FEE_BPS: u64 = 25;
 pub const MIN_NET_PROFIT_LAMPORTS: u64 = arb_constants::DEFAULT_MIN_PROFIT_LAMPORTS;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -229,7 +231,7 @@ mod tests {
             RaydiumParams {
                 token_reserve: 1_000_000_000,
                 sol_reserve: 2_000_000_000,
-                fee_bps: DEFAULT_RAYDIUM_FEE_BPS,
+                fee_bps: TEST_RAYDIUM_FEE_BPS,
             },
         )
     }
@@ -308,13 +310,13 @@ mod tests {
         let ray = RaydiumParams {
             token_reserve: 1_000_000_000,
             sol_reserve: 1_000_000_000,
-            fee_bps: DEFAULT_RAYDIUM_FEE_BPS,
+            fee_bps: TEST_RAYDIUM_FEE_BPS,
         };
-        let err = calculate_optimal_trade(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000)
+        let err = calculate_optimal_trade(pump, ray, TEST_FLASH_LOAN_FEE_BPS, 1_000_000)
             .expect_err("aligned prices must not produce a trade");
         assert_eq!(err, "No positive optimum under the current curve geometry");
         assert!(
-            calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000)
+            calculate_optimal_trade_integer(pump, ray, TEST_FLASH_LOAN_FEE_BPS, 1_000_000)
                 .is_none()
         );
     }
@@ -322,9 +324,8 @@ mod tests {
     #[test]
     fn optimal_trade_is_profitable_and_internally_consistent() {
         let (pump, ray) = profitable_pair();
-        let trade =
-            calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, u128::MAX)
-                .expect("profitable geometry must yield a trade");
+        let trade = calculate_optimal_trade_integer(pump, ray, TEST_FLASH_LOAN_FEE_BPS, u128::MAX)
+            .expect("profitable geometry must yield a trade");
         assert!(trade.is_profitable());
         assert!(trade.delta_t > 0);
         // Recomputed leg economics must match the reported trade.
@@ -350,25 +351,25 @@ mod tests {
         // At the optimum, marginal revenue == marginal cost (condition holds);
         // well below it, marginal revenue still exceeds marginal cost (false).
         let (pump, ray) = profitable_pair();
-        let trade = calculate_optimal_trade(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, u128::MAX)
+        let trade = calculate_optimal_trade(pump, ray, TEST_FLASH_LOAN_FEE_BPS, u128::MAX)
             .expect("optimum exists");
         assert!(verify_marginal_decreasing(
             pump,
             ray,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            TEST_FLASH_LOAN_FEE_BPS,
             trade.delta_t
         ));
         assert!(!verify_marginal_decreasing(
             pump,
             ray,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            TEST_FLASH_LOAN_FEE_BPS,
             (trade.delta_t / 10).max(1)
         ));
         // Degenerate size beyond supply short-circuits to true (fail-safe).
         assert!(verify_marginal_decreasing(
             pump,
             ray,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
+            TEST_FLASH_LOAN_FEE_BPS,
             pump.supply + 1
         ));
     }

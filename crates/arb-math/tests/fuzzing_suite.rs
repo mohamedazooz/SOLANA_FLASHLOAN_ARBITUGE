@@ -16,8 +16,8 @@ use arb_math::{
     },
     dlmm::{MAX_BIN_ID, MIN_BIN_ID, get_price_from_id},
     pump_fun_raydium::{
-        DEFAULT_FLASH_LOAN_FEE_BPS, PumpFunParams, RaydiumParams, calculate_optimal_trade_integer,
-        pump_fun_buy_cost, raydium_sell_output,
+        PumpFunParams, RaydiumParams, calculate_optimal_trade_integer, pump_fun_buy_cost,
+        raydium_sell_output,
     },
 };
 use proptest::prelude::*;
@@ -317,7 +317,7 @@ proptest! {
         let ray = RaydiumParams { token_reserve: ray_tok, sol_reserve: ray_sol, fee_bps: 25 };
 
         // calculate_optimal_trade_integer must fail closed on unprofitable trades
-        let trade = calculate_optimal_trade_integer(pump, ray, DEFAULT_FLASH_LOAN_FEE_BPS, 1_000_000);
+        let trade = calculate_optimal_trade_integer(pump, ray, 30, 1_000_000);
         if let Some(t) = trade {
             prop_assert!(t.is_profitable(), "Optimal trade integer MUST be profitable");
             prop_assert!(t.delta_t > 0, "Optimal trade delta_t must be > 0");

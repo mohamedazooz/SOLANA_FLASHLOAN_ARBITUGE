@@ -646,6 +646,8 @@ fn flash_params(
         bitmap_extension: Some(plan_a.bitmap_extension_pda),
         host_fee_in: None,
     };
+    let network_fee = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+        .saturating_add(arb_tx::priority_fee_lamports(10_000, 400_000));
     let leg_b = FlashArbPoolLeg {
         lb_pair: route.pool_b.pool_id,
         reserve_x: route.pool_b.reserve_x,
@@ -657,7 +659,7 @@ fn flash_params(
         token_y_program: route.pool_b.token_y_program.program_id(),
         swap_for_y: hop_b_swap_for_y,
         amount_in: eval.hop_a_min_out,
-        min_amount_out: eval.borrow_amount + eval.flash_fee,
+        min_amount_out: eval.borrow_amount + eval.flash_fee + network_fee,
         bin_array_pdas: plan_b.pdas.clone(),
         bitmap_extension: Some(plan_b.bitmap_extension_pda),
         host_fee_in: None,

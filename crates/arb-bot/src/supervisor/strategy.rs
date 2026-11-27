@@ -203,25 +203,80 @@ impl Supervisor {
             .lock()
             .retain(|(slot, _), _| *slot + 2 >= current_slot.0);
 
-        // 0. Verified economic inputs (fail closed): Kamino reserve fee and
-        // WSOL mint decimals must exist in the ingest account journal.
-        // Jito cost uses the configured conservative tip ceiling until a
-        // slot-aware tip-floor feed is integrated. Missing/stale chain data
-        // skips the whole tick; no HTTP JSON-RPC or stale-cache fallback.
-        let verified = match self.build_verified_inputs(current_slot).await {
-            Ok(v) => v,
-            Err(e) => {
-                debug!("verified economic inputs unavailable ({e}); skipping tick (fail closed)");
-                return Ok(());
-            }
+        // 0. Verified economic inputs (fail closed): hydrate live Kamino
+        // reserve fee and decimals per configured anchor (WSOL + USDC).
+        // Each anchor receives its own denomination-exact EconomicConfig; if
+        // an anchor cannot be verified at current_slot, only that anchor fails
+        // closed. If NO anchor is verifiable, skip the whole tick.
+        let configured_anchors = {
+            let g = self.graph.lock();
+            g.base_anchors.clone()
         };
-        let economic_config = verified.to_economic_config(
-            TokenAmount(self.config.strategy.min_net_profit_abs),
-            self.config.strategy.hop_slippage_bps,
-        );
+        let mut verified_anchors: Vec<(
+            MintId,
+            VerifiedQuoteInputs,
+            arb_math::economic::EconomicConfig,
+        )> = Vec::new();
+        for anchor in &configured_anchors {
+            match self
+                .build_verified_inputs_for_mint(anchor.0, current_slot)
+                .await
+            {
+                Ok(v) => {
+                    let min_profit_base_raw =
+                        match arb_types::dimensional::lamports_to_base_raw_checked(
+                            self.config.strategy.min_net_profit_abs,
+                            v.lamports_per_base_raw.value,
+                            v.lamports_per_base_denom.value,
+                            v.lamports_per_base_raw.observed_slot.0,
+                            current_slot.0,
+                            self.config.strategy.max_state_age_slots,
+                        ) {
+                            Ok(raw) => u64::try_from(raw).unwrap_or(u64::MAX),
+                            Err(e) => {
+                                debug!(
+                                    anchor = %anchor.0,
+                                    "cannot convert min_net_profit_abs for anchor ({e}); anchor disabled this tick"
+                                );
+                                continue;
+                            }
+                        };
+                    let eco = v.to_economic_config(
+                        TokenAmount(min_profit_base_raw),
+                        self.config.strategy.hop_slippage_bps,
+                    );
+                    verified_anchors.push((*anchor, v, eco));
+                }
+                Err(e) => {
+                    debug!(
+                        anchor = %anchor.0,
+                        "verified economic inputs unavailable for anchor ({e}); anchor disabled this tick"
+                    );
+                }
+            }
+        }
+        if verified_anchors.is_empty() {
+            debug!(
+                "verified economic inputs unavailable for all anchors; skipping tick (fail closed)"
+            );
+            return Ok(());
+        }
+        let wsol_mint = crate::verified_config::wsol_mint();
+        let usdc_mint = crate::verified_config::usdc_mint();
+        let (_, verified, primary_economic_config) = verified_anchors
+            .iter()
+            .find(|(m, _, _)| m.0 == wsol_mint)
+            .unwrap_or(&verified_anchors[0])
+            .clone();
         {
             let mut graph = self.graph.lock();
-            graph.set_economic_config(economic_config);
+            graph.set_economic_config(primary_economic_config);
+            for anchor in &configured_anchors {
+                graph.clear_anchor_economic_config(anchor);
+            }
+            for (anchor, _, eco) in &verified_anchors {
+                graph.set_anchor_economic_config(*anchor, *eco);
+            }
             graph.set_priority_fee_policy(self.current_priority_fee_policy());
         }
 
@@ -274,32 +329,65 @@ impl Supervisor {
                 }
             };
         }
-        // When flash funding is enabled, candidate sizing in the canonical
-        // graph scanner and both specialized DLMM seed generators is strictly
-        // clamped by verified live Kamino supply-vault liquidity.
-        // If flash liquidity cannot be verified, fail closed (max_sizing = 0).
-        if self.config.strategy.use_flash_loan {
-            match self.kamino_available_flash_liquidity_detailed(current_slot) {
-                Ok(liq) => {
-                    max_sizing = max_sizing.min(liq);
+
+        // Compute per-anchor raw borrow ceilings (`WSOL` 9 decimals, `USDC` 6 decimals),
+        // strictly clamped by verified live Kamino supply-vault liquidity per mint.
+        let mut anchor_caps: std::collections::HashMap<MintId, u64> =
+            std::collections::HashMap::new();
+        for (anchor, _, _) in &verified_anchors {
+            let mut cap_raw = if anchor.0 == wsol_mint {
+                max_sizing
+            } else if anchor.0 == usdc_mint {
+                if self.config.risk.max_trade_size_usd.is_finite()
+                    && self.config.risk.max_trade_size_usd > 0.0
+                {
+                    let mut usdc_cap = (self.config.risk.max_trade_size_usd * 1_000_000.0)
+                        .floor()
+                        .clamp(0.0, u64::MAX as f64) as u64;
+                    if let Ok(Some(env_usd)) = parse_positive_env_limit("MAX_FLASH_BORROW_USD") {
+                        let env_raw =
+                            (env_usd * 1_000_000.0).floor().clamp(0.0, u64::MAX as f64) as u64;
+                        usdc_cap = usdc_cap.min(env_raw);
+                    }
+                    usdc_cap
+                } else {
+                    0
                 }
-                Err(reason) => {
-                    debug!(
-                        reason,
-                        slot = current_slot.0,
-                        "Kamino flash liquidity unavailable; fail closed"
-                    );
-                    max_sizing = 0;
+            } else {
+                0
+            };
+
+            if cap_raw > 0 && self.config.strategy.use_flash_loan {
+                match self
+                    .kamino_available_flash_liquidity_for_mint_detailed(&anchor.0, current_slot)
+                {
+                    Ok(liq) => {
+                        cap_raw = cap_raw.min(liq);
+                    }
+                    Err(reason) => {
+                        debug!(
+                            anchor = %anchor.0,
+                            reason,
+                            slot = current_slot.0,
+                            "Kamino flash liquidity unavailable for anchor; fail closed"
+                        );
+                        cap_raw = 0;
+                    }
                 }
             }
+
+            if anchor.0 == wsol_mint {
+                max_sizing = cap_raw;
+            }
+            anchor_caps.insert(*anchor, cap_raw);
         }
 
         // Evaluate and record cross-pool candidate routes across all matching pools in MarketStateCache
         self.evaluate_and_record_cross_pool_routes(current_slot, &pools, max_sizing);
 
-        if max_sizing == 0 {
+        if anchor_caps.values().all(|&cap| cap == 0) {
             debug!(
-                "Missing fresh SOL/USD reference, invalid USD size cap, or zero/unverified flash liquidity; skip graph sizing"
+                "Missing fresh SOL/USD reference, invalid USD size cap, or zero/unverified flash liquidity across all anchors; skip graph sizing"
             );
             return Ok(());
         }
@@ -339,9 +427,9 @@ impl Supervisor {
         let mut merged = {
             let mut graph = self.graph.lock();
             let build = graph.build_from_pools(&fresh_pools);
-            let (mut candidates, scan) = graph.find_cycles_with_stats(
+            let (mut candidates, scan) = graph.find_cycles_with_anchor_caps(
                 current_slot,
-                max_sizing,
+                &anchor_caps,
                 self.config.strategy.max_route_hops,
                 arb_engine::MAX_ROUTE_CANDIDATES_PER_TICK,
             );
@@ -364,33 +452,35 @@ impl Supervisor {
                 min_spread_bps: dcp_cfg.min_spread_bps,
                 min_liquidity_bin_raw: dcp_cfg.min_liquidity_bin_raw,
             };
-            let cross_scan =
-                graph.find_cross_pool_dlmm_cycles(current_slot, max_sizing, &cross_cfg);
             let mut cross_accepted = 0usize;
-            for candidate in cross_scan.opportunities {
-                if let Some(requoted) = graph.evaluate_directed_route(
-                    current_slot,
-                    max_sizing,
-                    candidate.route_id,
-                    &candidate.hops,
-                ) {
-                    candidates.push(requoted);
-                    cross_accepted += 1;
+            if max_sizing > 0 {
+                let cross_scan =
+                    graph.find_cross_pool_dlmm_cycles(current_slot, max_sizing, &cross_cfg);
+                for candidate in cross_scan.opportunities {
+                    if let Some(requoted) = graph.evaluate_directed_route(
+                        current_slot,
+                        max_sizing,
+                        candidate.route_id,
+                        &candidate.hops,
+                    ) {
+                        candidates.push(requoted);
+                        cross_accepted += 1;
+                    }
                 }
-            }
-            if let Some(control) = self.control() {
-                control.record_evaluations(cross_scan.stats.directions_evaluated);
+                if let Some(control) = self.control() {
+                    control.record_evaluations(cross_scan.stats.directions_evaluated);
+                }
+                info!(
+                    "DLMM cross-pool seed scan: pairs={} directions={} seeds={} canonical_accepted={} rejections={}",
+                    cross_scan.stats.pairs_scanned,
+                    cross_scan.stats.directions_evaluated,
+                    cross_scan.stats.opportunities,
+                    cross_accepted,
+                    cross_scan.rejections.len(),
+                );
             }
             info!(
-                "DLMM cross-pool seed scan: pairs={} directions={} seeds={} canonical_accepted={} rejections={}",
-                cross_scan.stats.pairs_scanned,
-                cross_scan.stats.directions_evaluated,
-                cross_scan.stats.opportunities,
-                cross_accepted,
-                cross_scan.rejections.len(),
-            );
-            info!(
-                "Unified route engine slot={}: pools={}/{} edges={} excluded[inactive={},raydium_clmm={},reserves={},risky={},transfer_fee={},fee={},unsupported={}] anchors={} cycles={} quote_rejected={} economic_rejected={} opportunities={} truncated={}",
+                "Unified route engine slot={}: pools={}/{} edges={} excluded[inactive={},raydium_clmm={},reserves={},risky={},transfer_fee={},fee={},unsupported={}] anchors={} cycles={} gross_negative={} quote_rejected={} economic_rejected={} opportunities={} truncated={}",
                 current_slot.0,
                 build.pools_indexed,
                 build.pools_seen,
@@ -404,6 +494,7 @@ impl Supervisor {
                 build.excluded_unsupported_protocol,
                 scan.base_anchors,
                 scan.cycles_evaluated,
+                scan.gross_negative,
                 scan.quote_rejected,
                 scan.gate_rejected,
                 scan.opportunities,
@@ -415,12 +506,16 @@ impl Supervisor {
         // Specialized Meteora 3-leg discovery proves chained DLMM bin quotes
         // and wallet inventory provenance. Its routes are then re-evaluated by
         // the canonical MarketGraph quote/sizing/economics path.
-        let flash_liquidity = self.kamino_available_flash_liquidity(current_slot);
+        let flash_liquidity = if max_sizing > 0 {
+            self.kamino_available_flash_liquidity(current_slot)
+        } else {
+            None
+        };
         let flash_liquidity_unverified =
-            self.config.strategy.use_flash_loan && flash_liquidity.is_none();
+            max_sizing == 0 || (self.config.strategy.use_flash_loan && flash_liquidity.is_none());
         if flash_liquidity_unverified {
             debug!(
-                "3-leg capture skipped: flash funding enabled but Kamino supply-vault liquidity unverifiable at slot {}",
+                "3-leg capture skipped: WSOL sizing zero or flash liquidity unverifiable at slot {}",
                 current_slot.0
             );
         } else {

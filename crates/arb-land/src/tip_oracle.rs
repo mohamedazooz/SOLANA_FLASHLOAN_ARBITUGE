@@ -129,20 +129,26 @@ impl TipOracle {
         }
     }
 
-    /// Compute real-time competition factor from current fresh tip floor.
+    /// Compute real-time competition factor in basis points (`10_000` = 1.0x, `25_000` = 2.5x).
     ///
-    /// Computes the ratio of real-time 75th percentile tip to the exponential
-    /// moving average of the median (`p75 / ema50`), clamped between 1.0 (calm)
-    /// and 2.5 (peak competition). If the oracle snapshot is stale or absent,
-    /// returns 1.0 (neutral / calm).
-    pub fn competition_factor(&self, now_ms: u64) -> f64 {
-        if let Some(floor) = self.current(now_ms) {
-            if floor.ema50.0 > 0 {
-                let ratio = floor.p75.0 as f64 / floor.ema50.0 as f64;
-                return ratio.clamp(1.0, 2.5);
-            }
+    /// Pure integer ratio `p75 * 10_000 / ema50`, clamped to `[10_000, 25_000]`.
+    /// Defaults to `10_000` when the snapshot is absent, stale, or `ema50 == 0`.
+    pub fn competition_factor_bps(&self, now_ms: u64) -> u64 {
+        if let Some(floor) = self.current(now_ms)
+            && floor.ema50.0 > 0
+        {
+            let ratio_bps =
+                (u128::from(floor.p75.0).saturating_mul(10_000)) / u128::from(floor.ema50.0);
+            return u64::try_from(ratio_bps)
+                .unwrap_or(25_000)
+                .clamp(10_000, 25_000);
         }
-        1.0
+        10_000
+    }
+
+    /// Display/telemetry float wrapper over [`Self::competition_factor_bps`].
+    pub fn competition_factor(&self, now_ms: u64) -> f64 {
+        self.competition_factor_bps(now_ms) as f64 / 10_000.0
     }
 
     /// Subscribe to real-time tip updates via WebSocket broadcast channel.

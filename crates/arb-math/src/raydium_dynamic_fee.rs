@@ -60,13 +60,13 @@ pub fn raydium_clmm_total_fee_rate_upper_bound(
     max_volatility_accumulator: u32,
     tick_spacing: u16,
 ) -> u64 {
-    u64::from(base_fee_rate)
+    (u64::from(base_fee_rate)
         + u64::from(raydium_clmm_dynamic_fee_rate_upper_bound(
             dynamic_fee_control,
             max_volatility_accumulator,
             tick_spacing,
-        ))
-        .min(u64::from(RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR))
+        )))
+    .min(u64::from(RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR))
 }
 
 #[cfg(test)]
@@ -129,6 +129,11 @@ mod tests {
         assert_eq!(
             raydium_clmm_total_fee_rate_upper_bound(2_500, 10_000, 10_000, 1),
             2_501
+        );
+        // Combined base + dynamic must be capped at RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR.
+        assert_eq!(
+            raydium_clmm_total_fee_rate_upper_bound(50_000, 99_999, u32::MAX, u16::MAX),
+            u64::from(RAYDIUM_CLMM_MAX_FEE_RATE_NUMERATOR)
         );
     }
 }

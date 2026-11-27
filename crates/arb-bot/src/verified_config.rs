@@ -244,26 +244,93 @@ pub fn build_verified_inputs_from_snapshots(
     })
 }
 
-/// Select a conservative discovery-only Jito tip estimate. A fresh p50 is
-/// useful for route discovery but is capped by the operator's configured
-/// maximum; if the feed is stale or absent, retain the conservative ceiling.
+/// Select a conservative discovery-only Jito tip estimate from the live
+/// market tip-floor distribution at the configured percentile, capped by the
+/// operator's configured maximum; if the feed is stale or absent, retain the
+/// conservative ceiling.
+pub fn tip_floor_for_percentile(floor: &arb_types::TipFloor, percentile: &str) -> Lamports {
+    match percentile {
+        "p25" => floor.p25,
+        "p50" => floor.p50,
+        "p75" => floor.p75,
+        "p90" | "p95" => floor.p95,
+        "p99" => floor.p99,
+        _ => floor.p75,
+    }
+}
+
 pub fn bounded_jito_tip_discovery_estimate(
     configured_max: Lamports,
-    fresh_p50: Option<Lamports>,
+    fresh_percentile_tip: Option<Lamports>,
 ) -> Lamports {
-    match fresh_p50 {
-        Some(p50) => Lamports(p50.as_u64().min(configured_max.as_u64())),
+    match fresh_percentile_tip {
+        Some(tip) => Lamports(tip.as_u64().min(configured_max.as_u64())),
         None => configured_max,
     }
 }
 
-/// Well-known mints used by the WSOL-first execution path.
+/// Well-known mints and Kamino reserves for Multi-Mint (`WSOL + USDC`) execution.
 pub fn wsol_mint() -> Pubkey {
     Pubkey::from_str(arb_tx::WSOL_MINT).expect("valid WSOL mint constant")
 }
 
 pub fn wsol_reserve() -> Pubkey {
     Pubkey::from_str(arb_tx::KAMINO_WSOL_RESERVE).expect("valid WSOL reserve constant")
+}
+
+pub fn usdc_mint() -> Pubkey {
+    Pubkey::from_str(arb_tx::USDC_MINT).expect("valid USDC mint constant")
+}
+
+pub fn usdc_reserve() -> Pubkey {
+    Pubkey::from_str(arb_tx::KAMINO_USDC_RESERVE).expect("valid USDC reserve constant")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KaminoAnchorConfig {
+    pub mint: Pubkey,
+    pub reserve: Pubkey,
+    pub supply_vault: Pubkey,
+    pub fee_vault: Pubkey,
+}
+
+/// Resolve verified Kamino Main Market reserve/vault addresses for `mint` (`WSOL` or `USDC`).
+pub fn kamino_anchor_for_mint(mint: &Pubkey) -> Option<KaminoAnchorConfig> {
+    if *mint == wsol_mint() {
+        Some(KaminoAnchorConfig {
+            mint: *mint,
+            reserve: wsol_reserve(),
+            supply_vault: Pubkey::from_str(arb_constants::KAMINO_WSOL_SUPPLY_VAULT)
+                .expect("valid WSOL supply vault"),
+            fee_vault: Pubkey::from_str(arb_constants::KAMINO_WSOL_FEE_VAULT)
+                .expect("valid WSOL fee vault"),
+        })
+    } else if *mint == usdc_mint() {
+        Some(KaminoAnchorConfig {
+            mint: *mint,
+            reserve: usdc_reserve(),
+            supply_vault: Pubkey::from_str(arb_constants::KAMINO_USDC_SUPPLY_VAULT)
+                .expect("valid USDC supply vault"),
+            fee_vault: Pubkey::from_str(arb_constants::KAMINO_USDC_FEE_VAULT)
+                .expect("valid USDC fee vault"),
+        })
+    } else {
+        None
+    }
+}
+
+/// Resolve a configured base-token string (`"WSOL"`, `"SOL"`, `"USDC"`, or base58 pubkey)
+/// into its canonical supported Kamino flash-anchor mint.
+pub fn resolve_anchor_mint(token: &str) -> Option<Pubkey> {
+    let trimmed = token.trim();
+    if trimmed.eq_ignore_ascii_case("WSOL") || trimmed.eq_ignore_ascii_case("SOL") {
+        return Some(wsol_mint());
+    }
+    if trimmed.eq_ignore_ascii_case("USDC") {
+        return Some(usdc_mint());
+    }
+    let pk = Pubkey::from_str(trimmed).ok()?;
+    kamino_anchor_for_mint(&pk).map(|cfg| cfg.mint)
 }
 
 #[cfg(test)]
@@ -332,6 +399,26 @@ mod tests {
         assert_eq!(inputs.lamports_per_base_raw.value, 1);
         assert_eq!(inputs.lamports_per_base_denom.value, 1);
         assert_eq!(inputs.tip_lamports.value, Lamports(50_000));
+    }
+
+    #[test]
+    fn tip_floor_for_percentile_selects_configured_rung() {
+        let floor = arb_types::TipFloor {
+            observed_at_ms: 1_000,
+            p25: Lamports(2_000),
+            p50: Lamports(5_000),
+            p75: Lamports(13_703),
+            p95: Lamports(50_000),
+            p99: Lamports(200_000),
+            ema50: Lamports(4_500),
+        };
+        assert_eq!(tip_floor_for_percentile(&floor, "p25"), Lamports(2_000));
+        assert_eq!(tip_floor_for_percentile(&floor, "p50"), Lamports(5_000));
+        assert_eq!(tip_floor_for_percentile(&floor, "p75"), Lamports(13_703));
+        assert_eq!(tip_floor_for_percentile(&floor, "p90"), Lamports(50_000));
+        assert_eq!(tip_floor_for_percentile(&floor, "p95"), Lamports(50_000));
+        assert_eq!(tip_floor_for_percentile(&floor, "p99"), Lamports(200_000));
+        assert_eq!(tip_floor_for_percentile(&floor, "other"), Lamports(13_703));
     }
 
     #[test]

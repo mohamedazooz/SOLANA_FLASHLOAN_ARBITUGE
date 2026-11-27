@@ -1363,7 +1363,10 @@ impl MultiDexRegistry {
                 (DexProtocol::RaydiumCpmm, _) => cpmm_fee_config.and_then(|cfg| {
                     u16::try_from(cfg.trade_fee_rate.saturating_add(99) / 100).ok()
                 }),
-                (DexProtocol::RaydiumClmm, _) => None,
+                (DexProtocol::RaydiumClmm, _) => clmm
+                    .as_ref()
+                    .filter(|c| c.fee_rate > 0)
+                    .and_then(|c| u16::try_from(u64::from(c.fee_rate).div_ceil(100)).ok()),
                 (DexProtocol::OrcaWhirlpool, Some(d)) => decode_orca_fee_bps(d),
                 (DexProtocol::MeteoraDlmm, _) => dlmm.as_ref().and_then(decode_dlmm_fee_bps),
                 _ => None,
@@ -1867,6 +1870,11 @@ impl MultiDexRegistry {
                     continue;
                 };
                 (config.trade_fee_rate, 1_000_000)
+            } else if p.protocol == DexProtocol::RaydiumClmm
+                && let Some(ref c) = clmm
+                && c.fee_rate > 0
+            {
+                (u64::from(c.fee_rate), 1_000_000)
             } else {
                 (u64::from(fee_bps), 10_000)
             };

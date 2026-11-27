@@ -21,6 +21,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ChronosConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -143,6 +144,7 @@ fn default_jupiter_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct JupiterConfig {
     #[serde(default = "default_jupiter_base_url")]
     pub base_url: String,
@@ -176,6 +178,7 @@ impl Default for ChronosConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct RpcConfig {
     pub url: String,
     #[serde(default)]
@@ -184,6 +187,7 @@ pub struct RpcConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct JitoConfig {
     pub regions: Vec<String>,
     pub tip_floor_percentile: String,
@@ -228,6 +232,7 @@ pub struct JitoConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct WalletConfig {
     pub keypair_path: String,
     pub cold_wallet_pubkey: Option<String>,
@@ -237,6 +242,7 @@ pub struct WalletConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct StrategyConfig {
     pub base_tokens: Vec<String>,
     pub min_net_profit_abs: u64,
@@ -308,6 +314,7 @@ fn default_max_route_hops() -> usize {
 /// a safe default; a partial or absent `[strategy.dlmm_cross_pool]`
 /// section is valid.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DlmmCrossPoolTuning {
     /// Maximum distinct pool *pairs* evaluated per scan. Default 256.
     #[serde(default = "dcp_default_max_pairs")]
@@ -376,6 +383,7 @@ fn dcp_default_min_liq() -> u64 {
 /// field carries a safe default; a partial or absent
 /// `[strategy.dlmm_three_leg]` section is valid.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct DlmmThreeLegTuning {
     /// Discovery / primary input size in WSOL lamports. Default 0.1 SOL.
     #[serde(default = "three_leg_default_input")]
@@ -460,6 +468,7 @@ fn default_cooldown_slots() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct RiskConfig {
     pub max_trade_size_usd: f64,
     pub max_daily_loss_usd: f64,
@@ -479,32 +488,42 @@ pub struct RiskConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct StoreConfig {
     pub url: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     pub listen: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     pub listen: String,
     pub token_env: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct BotConfig {
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
     pub canary: bool,
+    #[serde(default)]
+    pub live_enabled: Option<bool>,
 }
 
 pub fn from_arb_config(arb: arb_config::AppConfig) -> Config {
     let usd = |micros: arb_types::UsdMicros| micros.0 as f64 / 1_000_000.0;
     Config {
         bot: BotConfig {
+            mode: Some(format!("{:?}", arb.mode.mode).to_ascii_lowercase()),
             canary: matches!(arb.mode.mode, arb_config::Mode::Canary),
+            live_enabled: Some(arb.mode.live_enabled),
         },
         rpc: RpcConfig {
             url: arb.provider.primary_url.clone(),

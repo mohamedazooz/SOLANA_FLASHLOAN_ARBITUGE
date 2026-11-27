@@ -18,13 +18,27 @@ pub struct RouteAtaInstructionCounts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteAtaPlan {
     pub wsol_ata: Pubkey,
+    pub settlement_mint: Pubkey,
+    pub settlement_ata: Pubkey,
+    pub settlement_token_program: Pubkey,
     pub intermediate_atas: Vec<(Pubkey, Pubkey, Pubkey)>,
     pub counts: RouteAtaInstructionCounts,
+}
+
+fn route_settlement_mint(hops: &[SwapHop]) -> (Pubkey, Pubkey) {
+    let spl = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+    let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+    match hops.first() {
+        Some(first) => (first.mint_in.0, first.token_programs[0].program_id()),
+        None => (wsol, spl),
+    }
 }
 
 fn route_intermediate_mints(hops: &[SwapHop]) -> Result<Vec<(Pubkey, Pubkey)>> {
     let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
     let usdc = Pubkey::from_str(USDC_MINT).unwrap();
+    let (settlement_mint, _) = route_settlement_mint(hops);
+    let usdc_settlement = settlement_mint == usdc;
     let mut programs = HashMap::<Pubkey, Pubkey>::new();
     let mut intermediate = Vec::new();
 
@@ -33,7 +47,10 @@ fn route_intermediate_mints(hops: &[SwapHop]) -> Result<Vec<(Pubkey, Pubkey)>> {
             (hop.mint_in.0, hop.token_programs[0]),
             (hop.mint_out.0, hop.token_programs[1]),
         ] {
-            if mint == wsol || mint == usdc {
+            if mint == settlement_mint {
+                continue;
+            }
+            if !usdc_settlement && (mint == wsol || mint == usdc) {
                 continue;
             }
             let program = program_kind.program_id();
@@ -84,6 +101,12 @@ pub fn route_ata_instruction_counts(hops: &[SwapHop]) -> Result<RouteAtaInstruct
 pub fn build_route_ata_plan(payer: Pubkey, hops: &[SwapHop]) -> Result<RouteAtaPlan> {
     let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
     let wsol_ata = get_associated_token_address(&payer, &wsol);
+    let (settlement_mint, settlement_token_program) = route_settlement_mint(hops);
+    let settlement_ata = get_associated_token_address_with_program_id(
+        &payer,
+        &settlement_mint,
+        &settlement_token_program,
+    );
     let intermediate_atas = route_intermediate_mints(hops)?
         .into_iter()
         .map(|(mint, program)| {
@@ -94,6 +117,9 @@ pub fn build_route_ata_plan(payer: Pubkey, hops: &[SwapHop]) -> Result<RouteAtaP
     let counts = route_ata_instruction_counts(hops)?;
     Ok(RouteAtaPlan {
         wsol_ata,
+        settlement_mint,
+        settlement_ata,
+        settlement_token_program,
         intermediate_atas,
         counts,
     })
@@ -223,6 +249,79 @@ pub fn build_sync_native(account: Pubkey) -> CompiledInstruction {
         accounts: vec![AccountMeta::new(account, false)],
         data: vec![17], // SyncNative opcode
     }
+}
+
+/// Derive the SPL Token-2022 `ExtraAccountMetaList` PDA for `(mint, hook_program_id)`.
+///
+/// Must always be fetched fresh per transaction — never cached across
+/// transactions, because hook programs may update resolved extra accounts.
+pub fn derive_transfer_hook_extra_account_meta_list_pda(
+    mint: &Pubkey,
+    hook_program_id: &Pubkey,
+) -> Pubkey {
+    Pubkey::find_program_address(&[b"extra-account-metas", mint.as_ref()], hook_program_id).0
+}
+
+/// Resolve static `ExtraAccountMeta` entries from a freshly fetched
+/// `ExtraAccountMetaList` TLV account (`spl-tlv-account-resolution`).
+/// Fails closed (returns `Err`) on truncated buffers, dynamic seed schemas that
+/// cannot be resolved offline without an RPC simulation pass, or count bounds.
+pub fn parse_transfer_hook_extra_account_metas(
+    data: &[u8],
+    mint: &Pubkey,
+    hook_program_id: &Pubkey,
+) -> Result<Vec<AccountMeta>> {
+    // SPL TransferHook Execute discriminator prefix ("spl-transfer-hook-interface:execute")
+    const EXTRA_ACCOUNT_META_LIST_DISCRIMINATOR: [u8; 8] = [105, 37, 101, 197, 75, 251, 102, 26];
+    const EXTRA_META_SIZE: usize = 35; // discriminator(1) + address_config(32) + is_signer(1) + is_writable(1)
+    if data.len() < 16 {
+        return Err(TxError::InvalidInput(
+            "ExtraAccountMetaList account truncated (<16 bytes)".into(),
+        )
+        .into());
+    }
+    if data[..8] != EXTRA_ACCOUNT_META_LIST_DISCRIMINATOR {
+        return Err(
+            TxError::InvalidInput("ExtraAccountMetaList discriminator mismatch".into()).into(),
+        );
+    }
+    let count = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
+    if count > 32 {
+        return Err(TxError::InvalidInput(format!(
+            "ExtraAccountMetaList count {count} exceeds safety cap"
+        ))
+        .into());
+    }
+    let needed = 16usize
+        .checked_add(count.saturating_mul(EXTRA_META_SIZE))
+        .ok_or_else(|| TxError::InvalidInput("ExtraAccountMetaList size overflow".into()))?;
+    if data.len() < needed {
+        return Err(TxError::InvalidInput(
+            "ExtraAccountMetaList account shorter than declared count".into(),
+        )
+        .into());
+    }
+    let list_pda = derive_transfer_hook_extra_account_meta_list_pda(mint, hook_program_id);
+    let mut metas = Vec::with_capacity(count + 2);
+    for i in 0..count {
+        let entry = &data[16 + i * EXTRA_META_SIZE..16 + (i + 1) * EXTRA_META_SIZE];
+        let disc = entry[0];
+        if disc != 0 {
+            return Err(TxError::InvalidInput(format!(
+                "ExtraAccountMeta entry {i} uses dynamic seed discriminator {disc}; requires live simulation resolution"
+            )).into());
+        }
+        let pk = Pubkey::new_from_array(entry[1..33].try_into().unwrap());
+        let is_writable = entry[34] != 0;
+        metas.push(if is_writable {
+            AccountMeta::new(pk, false)
+        } else {
+            AccountMeta::new_readonly(pk, false)
+        });
+    }
+    metas.push(AccountMeta::new_readonly(*hook_program_id, false));
+    metas.push(AccountMeta::new_readonly(list_pda, false));
+    Ok(metas)
 }
 
 /// Build standard System Program transfer instruction.

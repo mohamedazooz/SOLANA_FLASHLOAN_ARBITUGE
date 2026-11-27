@@ -251,20 +251,23 @@ fn orca_user_atas_use_each_mints_declared_token_program() {
     swap.token_programs = [TokenProgramKind::Token2022; 2];
 
     let ix = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
-        .expect("Token-2022 Orca hop must build");
+        .expect("Token-2022 Orca hop must build via swap_v2");
     let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+    assert_eq!(&ix.data[..8], &arb_tx::ORCA_WHIRLPOOL_SWAP_V2_DISCRIMINATOR);
+    assert_eq!(ix.accounts[0].pubkey, token_2022);
+    assert_eq!(ix.accounts[1].pubkey, token_2022);
     assert_eq!(
-        ix.accounts[3].pubkey,
+        ix.accounts[7].pubkey,
         get_associated_token_address_with_program_id(&user, &mint_a, &token_2022)
     );
     assert_eq!(
-        ix.accounts[5].pubkey,
+        ix.accounts[9].pubkey,
         get_associated_token_address_with_program_id(&user, &mint_b, &token_2022)
     );
 }
 
 #[test]
-fn orca_mixed_token_program_pair_fails_closed() {
+fn orca_mixed_token_program_pair_routes_via_swap_v2() {
     let user = Pubkey::new_unique();
     let mint_a = Pubkey::new_unique();
     let mint_b = Pubkey::new_unique();
@@ -283,9 +286,21 @@ fn orca_mixed_token_program_pair_fails_closed() {
         )),
     );
     swap.token_programs = [TokenProgramKind::Token2022, TokenProgramKind::SplToken];
-    let error = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
-        .expect_err("Orca's single token-program account cannot represent mixed token programs");
-    assert!(matches!(error, TxError::InvalidExecutionAccounts { .. }));
+    let ix = build_swap_hop_instruction(&swap, user, 1_000_000, 900_000)
+        .expect("Orca swap_v2 must support mixed SPL/Token-2022 programs");
+    let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+    let spl_token = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+    assert_eq!(&ix.data[..8], &arb_tx::ORCA_WHIRLPOOL_SWAP_V2_DISCRIMINATOR);
+    assert_eq!(ix.accounts[0].pubkey, token_2022);
+    assert_eq!(ix.accounts[1].pubkey, spl_token);
+    assert_eq!(
+        ix.accounts[7].pubkey,
+        get_associated_token_address_with_program_id(&user, &mint_a, &token_2022)
+    );
+    assert_eq!(
+        ix.accounts[9].pubkey,
+        get_associated_token_address_with_program_id(&user, &mint_b, &spl_token)
+    );
 }
 
 /// Regression: empty Orca tick arrays must fail closed.

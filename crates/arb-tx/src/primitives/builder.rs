@@ -448,7 +448,7 @@ impl TxBuilder {
         Ok(legs)
     }
 
-    /// Assemble atomic Kamino Flash Loan arbitrage transaction.
+    /// Assemble atomic Kamino Flash Loan arbitrage transaction (WSOL anchor).
     /// Order: ComputeBudget -> Ephemeral ATAs -> FlashBorrow -> Swaps -> FlashRepay -> (provably-zero-only) ATA Close -> Jito Tip.
     pub fn assemble_flash_arbitrage(
         payer: Pubkey,
@@ -461,6 +461,76 @@ impl TxBuilder {
         flash_loan_fee_sf: u64,
         min_profit_raw: TokenAmount, // Profit floor in base-mint raw units
         proven_zero_intermediate_mints: &[Pubkey],
+    ) -> Result<Vec<CompiledInstruction>> {
+        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS
+            .checked_add(priority_fee_lamports(priority_fee_micro_lamports, cu_limit))
+            .ok_or_else(|| TxError::InvalidInput("network fee arithmetic overflow".into()))?;
+        Self::assemble_flash_arbitrage_inner(
+            payer,
+            tip_account,
+            tip_amount,
+            cu_limit,
+            priority_fee_micro_lamports,
+            opportunity,
+            kamino_params,
+            flash_loan_fee_sf,
+            network_fee_raw,
+            tip_amount.as_u64(),
+            min_profit_raw,
+            proven_zero_intermediate_mints,
+            false,
+        )
+    }
+
+    /// Assemble atomic Kamino Flash Loan arbitrage transaction supporting both
+    /// `WSOL` and `USDC` settlement mints with pre-converted base-mint raw costs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn assemble_flash_arbitrage_with_converted_costs(
+        payer: Pubkey,
+        tip_account: Pubkey,
+        tip_amount: Lamports,
+        cu_limit: u32,
+        priority_fee_micro_lamports: u64,
+        opportunity: &ExecutionOpportunity,
+        kamino_params: &KaminoFlashParams,
+        flash_loan_fee_sf: u64,
+        network_fee_base_raw: u64,
+        tip_base_raw: u64,
+        min_profit_raw: TokenAmount, // Profit floor in base-mint raw units
+        proven_zero_intermediate_mints: &[Pubkey],
+    ) -> Result<Vec<CompiledInstruction>> {
+        Self::assemble_flash_arbitrage_inner(
+            payer,
+            tip_account,
+            tip_amount,
+            cu_limit,
+            priority_fee_micro_lamports,
+            opportunity,
+            kamino_params,
+            flash_loan_fee_sf,
+            network_fee_base_raw,
+            tip_base_raw,
+            min_profit_raw,
+            proven_zero_intermediate_mints,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble_flash_arbitrage_inner(
+        payer: Pubkey,
+        tip_account: Pubkey,
+        tip_amount: Lamports,
+        cu_limit: u32,
+        priority_fee_micro_lamports: u64,
+        opportunity: &ExecutionOpportunity,
+        kamino_params: &KaminoFlashParams,
+        flash_loan_fee_sf: u64,
+        network_fee_base_raw: u64,
+        tip_base_raw: u64,
+        min_profit_raw: TokenAmount,
+        proven_zero_intermediate_mints: &[Pubkey],
+        allow_multi_mint: bool,
     ) -> Result<Vec<CompiledInstruction>> {
         let mut ixs = Vec::new();
 
@@ -475,22 +545,55 @@ impl TxBuilder {
         ixs.push(build_compute_unit_limit(cu_limit));
         ixs.push(build_compute_unit_price(priority_fee_micro_lamports));
 
-        let ata_plan = build_route_ata_plan(payer, &opportunity.hops)?;
         let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
-        let user_wsol_ata = ata_plan.wsol_ata;
-        let mut resolved_params = kamino_params.clone();
-        if resolved_params.user_destination_liquidity == Pubkey::default()
-            || resolved_params.user_destination_liquidity == wsol
-        {
-            resolved_params.user_destination_liquidity = user_wsol_ata;
+        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
+        if let (Some(first), Some(last)) = (opportunity.hops.first(), opportunity.hops.last()) {
+            if first.mint_in != last.mint_out {
+                return Err(TxError::NonClosingRoute {
+                    in_mint: first.mint_in.0.to_string(),
+                    out_mint: last.mint_out.0.to_string(),
+                }
+                .into());
+            }
+            let mint_supported = if allow_multi_mint {
+                first.mint_in.0 == wsol || first.mint_in.0 == usdc
+            } else {
+                first.mint_in.0 == wsol
+            };
+            if !mint_supported {
+                return Err(TxError::NonWsolFlashLoan(first.mint_in.0.to_string()).into());
+            }
         }
 
-        // 2. Ensure user's WSOL ATA exists idempotently for Flash Loan receipt
-        ixs.push(build_create_ata_idempotent(
+        let ata_plan = build_route_ata_plan(payer, &opportunity.hops)?;
+        let settlement_mint = ata_plan.settlement_mint;
+        let user_settlement_ata = ata_plan.settlement_ata;
+        let expected_reserve = if settlement_mint == usdc {
+            Pubkey::from_str(arb_constants::KAMINO_USDC_RESERVE).unwrap()
+        } else {
+            Pubkey::from_str(arb_constants::KAMINO_WSOL_RESERVE).unwrap()
+        };
+        if kamino_params.reserve != expected_reserve {
+            return Err(TxError::InvalidInput(format!(
+                "Kamino flash params reserve {} does not match route settlement mint {} (expected {})",
+                kamino_params.reserve, settlement_mint, expected_reserve
+            ))
+            .into());
+        }
+        let mut resolved_params = kamino_params.clone();
+        if resolved_params.user_destination_liquidity == Pubkey::default()
+            || resolved_params.user_destination_liquidity == settlement_mint
+        {
+            resolved_params.user_destination_liquidity = user_settlement_ata;
+        }
+
+        // 2. Ensure user's settlement ATA exists idempotently for Flash Loan receipt
+        ixs.push(build_create_ata_idempotent_for_program(
             payer,
             payer,
-            wsol,
-            user_wsol_ata,
+            settlement_mint,
+            user_settlement_ata,
+            ata_plan.settlement_token_program,
         ));
 
         // Use the same deterministic ATA plan used by the candidate CU model.
@@ -507,18 +610,6 @@ impl TxBuilder {
         // 3. Kamino Flash Borrow
         let borrow_idx = ixs.len();
         let borrow_amount = opportunity.size_in.as_u64();
-        if let (Some(first), Some(last)) = (opportunity.hops.first(), opportunity.hops.last()) {
-            if first.mint_in != last.mint_out {
-                return Err(TxError::NonClosingRoute {
-                    in_mint: first.mint_in.0.to_string(),
-                    out_mint: last.mint_out.0.to_string(),
-                }
-                .into());
-            }
-            if first.mint_in.0 != Pubkey::from_str(WSOL_MINT).unwrap() {
-                return Err(TxError::NonWsolFlashLoan(first.mint_in.0.to_string()).into());
-            }
-        }
         ixs.push(build_kamino_flash_borrow(
             &resolved_params,
             payer,
@@ -528,15 +619,11 @@ impl TxBuilder {
         // 4. Sequential Genuine Swap Hops (Injected before Repay)
         let slippage_bps: u64 = opportunity.effective_hop_slippage_bps();
         let fee = calculate_kamino_flash_fee(borrow_amount, flash_loan_fee_sf);
-        let tip_raw = tip_amount.as_u64();
-        let network_fee_raw = arb_constants::SOLANA_BASE_FEE_LAMPORTS
-            .checked_add(priority_fee_lamports(priority_fee_micro_lamports, cu_limit))
-            .ok_or_else(|| TxError::InvalidInput("network fee arithmetic overflow".into()))?;
         let legs = Self::derive_swap_legs_with_costs(
             opportunity,
             fee,
-            network_fee_raw,
-            tip_raw,
+            network_fee_base_raw,
+            tip_base_raw,
             min_profit_raw.as_u64(),
             slippage_bps,
         )?;
@@ -551,10 +638,16 @@ impl TxBuilder {
             .last()
             .map(|h| h.protocol == DexProtocol::PumpFun)
             .unwrap_or(false);
+        if (first_is_pump_buy || last_is_pump_sell) && settlement_mint != wsol {
+            return Err(TxError::InvalidInput(
+                "PumpFun native-SOL hops require WSOL settlement mint".into(),
+            )
+            .into());
+        }
 
         // If Hop 1 is Pump.fun Buy: unwrap borrowed WSOL into native SOL so Pump.fun can spend it
         if first_is_pump_buy {
-            ixs.push(build_close_token_account(user_wsol_ata, payer, payer));
+            ixs.push(build_close_token_account(user_settlement_ata, payer, payer));
         }
 
         for (i, (hop, (amount_in, min_out))) in opportunity.hops.iter().zip(legs.iter()).enumerate()
@@ -566,7 +659,7 @@ impl TxBuilder {
                     payer,
                     payer,
                     wsol,
-                    user_wsol_ata,
+                    user_settlement_ata,
                 ));
             }
             ixs.push(build_swap_hop_instruction(
@@ -589,10 +682,14 @@ impl TxBuilder {
                 payer,
                 payer,
                 wsol,
-                user_wsol_ata,
+                user_settlement_ata,
             ));
-            ixs.push(build_system_transfer(payer, user_wsol_ata, repay_funding));
-            ixs.push(build_sync_native(user_wsol_ata));
+            ixs.push(build_system_transfer(
+                payer,
+                user_settlement_ata,
+                repay_funding,
+            ));
+            ixs.push(build_sync_native(user_settlement_ata));
         }
 
         // The final hop's min_out enforces repayment, every execution cost,
@@ -1046,6 +1143,7 @@ impl TxBuilder {
 
     /// Create a standard Address Lookup Table containing well-known static program, pool,
     /// vault, and sysvar pubkeys for Raydium, Orca, Kamino, and SPL Token programs on Solana Mainnet.
+    #[doc(hidden)]
     pub fn create_default_mainnet_alt() -> AddressLookupTable {
         let alt_key = Pubkey::from_str(arb_constants::DEFAULT_MAINNET_ALT_KEY).unwrap();
         let addresses = vec![

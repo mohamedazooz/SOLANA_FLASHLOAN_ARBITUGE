@@ -150,13 +150,59 @@ impl Supervisor {
 
         let quote_ingest_time =
             std::time::Instant::now() - Duration::from_micros(t_ingest_to_quote_us);
+        let mut anchor_verified_cache: std::collections::HashMap<
+            Pubkey,
+            Option<VerifiedQuoteInputs>,
+        > = std::collections::HashMap::new();
+        anchor_verified_cache.insert(kamino_params.liquidity_mint, Some(verified.clone()));
         for opp in opportunities {
+            let Some(opp_base_mint) = opp.hops.first().map(|h| h.mint_in.0) else {
+                continue;
+            };
+            let opp_verified = if let Some(cached) = anchor_verified_cache.get(&opp_base_mint) {
+                match cached {
+                    Some(v) => v.clone(),
+                    None => continue,
+                }
+            } else {
+                let fetched = self
+                    .build_verified_inputs_for_mint(opp_base_mint, current_slot)
+                    .await
+                    .ok();
+                anchor_verified_cache.insert(opp_base_mint, fetched.clone());
+                match fetched {
+                    Some(v) => v,
+                    None => {
+                        debug!(
+                            anchor = %opp_base_mint,
+                            "Opportunity rejected: verified economic inputs unavailable for anchor mint"
+                        );
+                        continue;
+                    }
+                }
+            };
+            let opp_kamino_params_owned = if opp_base_mint == kamino_params.liquidity_mint {
+                None
+            } else {
+                let Ok(params) = KaminoFlashParams::for_mint(opp_base_mint, payer) else {
+                    debug!(
+                        anchor = %opp_base_mint,
+                        "Opportunity rejected: unsupported Kamino flash anchor mint"
+                    );
+                    continue;
+                };
+                Some(params)
+            };
+            let opp_kamino_params = opp_kamino_params_owned.as_ref().unwrap_or(kamino_params);
+
             // Invariant check: when flash funding is enabled, candidate trade size must not exceed
             // verified available supply-vault liquidity.
             if self.config.strategy.use_flash_loan {
                 let available_vault_liquidity = match self
-                    .kamino_available_flash_liquidity_detailed(current_slot)
-                {
+                    .kamino_available_flash_liquidity_for_mint_detailed(
+                        &opp_base_mint,
+                        current_slot,
+                    ) {
                     Ok(liquidity) => liquidity,
                     Err(reason) => {
                         tracing::info!(
@@ -227,7 +273,7 @@ impl Supervisor {
             let flash_fee_raw = if self.config.strategy.use_flash_loan {
                 arb_math::economic::calculate_flash_fee_raw(
                     opp.size_in.as_u64(),
-                    verified.flash_loan_fee_sf.value,
+                    opp_verified.flash_loan_fee_sf.value,
                 )
                 .unwrap_or(u64::MAX) // fail closed: uncomputable fee rejects
             } else {
@@ -328,8 +374,8 @@ impl Supervisor {
                     Lamports(BASE_FEE_LAMPORTS),
                     Lamports(priority_fee_lamports),
                     Lamports(0), // pre-tip edge: Jito tip has not been selected yet
-                    verified.lamports_per_base_raw.value,
-                    verified.lamports_per_base_denom.value,
+                    opp_verified.lamports_per_base_raw.value,
+                    opp_verified.lamports_per_base_denom.value,
                 ) {
                     Ok(net) => net,
                     Err(error) => {
@@ -341,8 +387,8 @@ impl Supervisor {
             // already-netted PnL once; positive edge rounds down, losses round up.
             let net_before_tip_signed = match arb_math::economic::signed_base_raw_to_lamports(
                 net_before_tip_base_raw_signed,
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
             ) {
                 Ok(net) => net,
                 Err(error) => {
@@ -447,15 +493,17 @@ impl Supervisor {
                     TipDecision::Bid { tip, rung, .. } => {
                         let final_tip = if tip.as_u64() > t_max {
                             let clamped = Lamports(t_max);
-                            // Recalculate inclusion probability and EV for the clamped tip
-                            let effective_p = match jito_plan.tip.market {
+                            // Recalculate expected value using integer Q32 probability for the clamped tip.
+                            let margin = Lamports(edge.0.saturating_sub(clamped.0));
+                            let effective_ev = match jito_plan.tip.market {
                                 Some(floor) => self
                                     .jito_service
-                                    .calibrated_inclusion_probability(clamped, &floor),
-                                None => jito_plan.tip.inclusion_p,
+                                    .calibrated_expected_value(clamped, margin, &floor),
+                                None => arb_land::expected_value_lamports_q32(
+                                    arb_land::probability_to_q32(jito_plan.tip.inclusion_p),
+                                    margin,
+                                ),
                             };
-                            let margin = edge.0.saturating_sub(clamped.0);
-                            let effective_ev = (effective_p * (margin as f64)).round() as i64;
                             if effective_ev <= 0 {
                                 debug!(
                                     "Opportunity skipped: clamped tip produces non-positive EV ({effective_ev}) at t_max={t_max}"
@@ -585,8 +633,8 @@ impl Supervisor {
                 Lamports(BASE_FEE_LAMPORTS),
                 Lamports(priority_fee_lamports),
                 tip,
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
             )
             .ok();
             let real_net_base_raw = real_net_base_raw_signed
@@ -655,8 +703,8 @@ impl Supervisor {
             };
             let real_net_profit_lamports = match arb_math::economic::base_raw_to_lamports(
                 arb_types::TokenAmount(real_net_base_raw),
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
             ) {
                 Ok(value) if value.as_u64() > 0 => value,
                 Ok(_) => {
@@ -748,9 +796,9 @@ impl Supervisor {
             // conversion rate is unavailable or stale.
             let min_net_base_raw = match arb_types::dimensional::lamports_to_base_raw_checked(
                 self.config.strategy.min_net_profit_abs,
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
-                verified.lamports_per_base_raw.observed_slot.0,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
+                opp_verified.lamports_per_base_raw.observed_slot.0,
                 current_slot.0,
                 self.config.strategy.max_state_age_slots,
             ) {
@@ -801,9 +849,9 @@ impl Supervisor {
             let contingency_buffer_base_raw =
                 match arb_types::dimensional::lamports_to_base_raw_checked(
                     self.config.strategy.contingency_buffer_lamports,
-                    verified.lamports_per_base_raw.value,
-                    verified.lamports_per_base_denom.value,
-                    verified.lamports_per_base_raw.observed_slot.0,
+                    opp_verified.lamports_per_base_raw.value,
+                    opp_verified.lamports_per_base_denom.value,
+                    opp_verified.lamports_per_base_raw.observed_slot.0,
                     current_slot.0,
                     self.config.strategy.max_state_age_slots,
                 ) {
@@ -906,8 +954,8 @@ impl Supervisor {
             // notional rounds up so the minimum-profit hurdle is conservative.
             let canonical_net_profit_lamports = match arb_math::economic::base_raw_to_lamports(
                 arb_types::TokenAmount(real_net_base_raw),
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
             ) {
                 Ok(value) => value,
                 Err(error) => {
@@ -919,8 +967,8 @@ impl Supervisor {
             };
             let amount_in_lamports = match arb_math::economic::base_raw_to_lamports_ceil(
                 opp.size_in,
-                verified.lamports_per_base_raw.value,
-                verified.lamports_per_base_denom.value,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
             ) {
                 Ok(value) => value,
                 Err(error) => {
@@ -1111,12 +1159,47 @@ impl Supervisor {
                 continue;
             }
 
+            let network_fee_lamports = BASE_FEE_LAMPORTS.saturating_add(priority_fee_lamports);
+            let network_fee_base_raw = match arb_math::economic::lamports_to_base_raw(
+                Lamports(network_fee_lamports),
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
+            ) {
+                Ok(v) => match u64::try_from(v) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        warn!("Network fee exceeds u64 base-mint raw units");
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    warn!("Cannot convert network fee to base-mint raw units: {e}");
+                    continue;
+                }
+            };
+            let tip_base_raw = match arb_math::economic::lamports_to_base_raw(
+                tip,
+                opp_verified.lamports_per_base_raw.value,
+                opp_verified.lamports_per_base_denom.value,
+            ) {
+                Ok(v) => match u64::try_from(v) {
+                    Ok(raw) => raw,
+                    Err(_) => {
+                        warn!("Tip exceeds u64 base-mint raw units");
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    warn!("Cannot convert Jito tip to base-mint raw units: {e}");
+                    continue;
+                }
+            };
+
             arb_metrics::inc_attempts();
 
             let total_fees_raw = flash_fee_raw
-                .saturating_add(BASE_FEE_LAMPORTS)
-                .saturating_add(priority_fee_lamports)
-                .saturating_add(tip.as_u64());
+                .saturating_add(network_fee_base_raw)
+                .saturating_add(tip_base_raw);
 
             tracing::info!(
                 target: "arb_events",
@@ -1255,8 +1338,8 @@ impl Supervisor {
                         total_out,
                         slip,
                         opp.size_in.as_u64(),
-                        flash_fee_raw,
-                        tip.as_u64(),
+                        flash_fee_raw.saturating_add(network_fee_base_raw),
+                        tip_base_raw,
                         execution_min_profit_raw,
                     );
                     match arb_tx::build_swap_hop_instruction(return_hop, payer, total_out, min_out)
@@ -1276,8 +1359,8 @@ impl Supervisor {
                     cu_price,
                     opp.size_in.as_u64(),
                     &all_legs,
-                    kamino_params,
-                    verified.flash_loan_fee_sf.value,
+                    opp_kamino_params,
+                    opp_verified.flash_loan_fee_sf.value,
                 ) {
                     Ok(jixs) => jixs,
                     Err(e) => {
@@ -1287,15 +1370,17 @@ impl Supervisor {
                 }
             } else {
                 match self
-                    .assemble_native_ixs(
+                    .assemble_native_ixs_for_anchor(
                         payer,
                         tip_account,
                         tip,
                         cu_limit,
                         cu_price,
                         &opp,
-                        kamino_params,
-                        verified.flash_loan_fee_sf.value,
+                        opp_kamino_params,
+                        opp_verified.flash_loan_fee_sf.value,
+                        network_fee_base_raw,
+                        tip_base_raw,
                         TokenAmount(execution_min_profit_raw),
                     )
                     .await
@@ -1310,15 +1395,17 @@ impl Supervisor {
 
             #[cfg(not(feature = "split-routing"))]
             let ixs: Vec<arb_tx::CompiledInstruction> = match self
-                .assemble_native_ixs(
+                .assemble_native_ixs_for_anchor(
                     payer,
                     tip_account,
                     tip,
                     cu_limit,
                     cu_price,
                     &opp,
-                    kamino_params,
-                    verified.flash_loan_fee_sf.value,
+                    opp_kamino_params,
+                    opp_verified.flash_loan_fee_sf.value,
+                    network_fee_base_raw,
+                    tip_base_raw,
                     TokenAmount(execution_min_profit_raw),
                 )
                 .await
@@ -1372,50 +1459,12 @@ impl Supervisor {
                     warn!("fetch_recent_blockhash returned zero; skipping opportunity");
                     continue;
                 }
-                // This build is V1-only. Both direct RPC/SWQoS and Jito bundle paths
-                // are supported when explicitly enabled via their respective env flags.
-                let direct_v1_enabled = is_swqos_route
-                    // Both flags are required: feature enablement alone does
-                    // not prove that this provider/region accepts V1 ingress.
-                    && std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
-                        .map(|v| {
-                            matches!(
-                                v.trim().to_ascii_lowercase().as_str(),
-                                "1" | "true" | "yes" | "on"
-                            )
-                        })
-                        .unwrap_or(false)
-                    && std::env::var("SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED")
-                        .map(|v| {
-                            matches!(
-                                v.trim().to_ascii_lowercase().as_str(),
-                                "1" | "true" | "yes" | "on"
-                            )
-                        })
-                        .unwrap_or(false);
-                // The public Jito sendBundle documentation does not promise
-                // V1 ingress on every Block Engine path. Keep it disabled until
-                // this exact endpoint/region has passed a controlled V1 canary.
-                let jito_v1_enabled = !is_swqos_route
-                    && std::env::var("SOLANA_TX_V1_JITO_ENABLED")
-                        .map(|v| {
-                            matches!(
-                                v.trim().to_ascii_lowercase().as_str(),
-                                "1" | "true" | "yes" | "on"
-                            )
-                        })
-                        .unwrap_or(false)
-                    && std::env::var("SOLANA_TX_V1_JITO_INGRESS_VERIFIED")
-                        .map(|v| {
-                            matches!(
-                                v.trim().to_ascii_lowercase().as_str(),
-                                "1" | "true" | "yes" | "on"
-                            )
-                        })
-                        .unwrap_or(false);
-                let v1_transport_enabled = matches!(self.mode(), BotMode::Simulate)
-                    || (is_swqos_route && direct_v1_enabled)
-                    || (!is_swqos_route && jito_v1_enabled);
+                // This build is V1-only. Share the canonical transport-gate
+                // evaluation with `dispatch.rs` so RPC allowlist & ingress flags
+                // can never drift between compile time and submit time.
+                let (direct_v1_enabled, jito_v1_enabled) = self.v1_transport_flags();
+                let v1_transport_enabled =
+                    (is_swqos_route && direct_v1_enabled) || (!is_swqos_route && jito_v1_enabled);
                 // Do not use signed Legacy/V0 RAM or Redis templates here.
                 // The old cache path patched a net-profit-only value into the
                 // swap min_amount_out, and the Redis loader did not resolve
@@ -1448,7 +1497,13 @@ impl Supervisor {
                 match build_result {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        debug!(
+                        tracing::info!(
+                            target: "arb_events",
+                            "OPPORTUNITY_REJECTED: route={} stage=V1Compilation reason={error}",
+                            route_label
+                        );
+                        warn!(
+                            route = %route_label,
                             "V1 ingress is not verified or fresh compilation failed ({error}); skipping opportunity"
                         );
                         continue;
@@ -1835,7 +1890,7 @@ impl Supervisor {
                 &opp,
                 tip,
                 current_slot.0,
-                verified.flash_loan_fee_sf.value,
+                opp_verified.flash_loan_fee_sf.value,
             );
             if let Err(reason) = invariant_result {
                 debug!("Opportunity rejected by economic invariant gate: {reason}");

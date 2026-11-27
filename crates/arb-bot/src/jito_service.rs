@@ -211,7 +211,12 @@ impl JitoService {
         arb_constants::jito_tip_account_for_slot(slot.0, leader.as_ref())
     }
 
-    /// Compute real-time competition factor from the tip oracle snapshot.
+    /// Compute real-time competition factor in integer basis points (`10_000` = 1.0x).
+    pub fn competition_factor_bps(&self) -> u64 {
+        self.oracle.competition_factor_bps(now_ms())
+    }
+
+    /// Compute real-time competition factor from the tip oracle snapshot (display only).
     pub fn competition_factor(&self) -> f64 {
         self.oracle.competition_factor(now_ms())
     }
@@ -296,6 +301,18 @@ impl JitoService {
     pub fn calibrated_inclusion_probability(&self, tip: Lamports, floor: &TipFloor) -> f64 {
         let ledger = self.ledger.read();
         arb_land::AdaptiveBidder::calibrated_inclusion_probability(tip, floor, &ledger)
+    }
+
+    /// Integer Q32 calibrated expected value for a given tip and margin.
+    pub fn calibrated_expected_value(
+        &self,
+        tip: Lamports,
+        margin: Lamports,
+        floor: &TipFloor,
+    ) -> i64 {
+        let ledger = self.ledger.read();
+        let prob_q32 = arb_land::calibrated_inclusion_probability_q32(tip, floor, &ledger);
+        arb_land::expected_value_lamports_q32(prob_q32, margin)
     }
 
     /// Fold an observed bundle status into the landing ledger.

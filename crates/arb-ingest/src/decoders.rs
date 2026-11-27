@@ -1201,8 +1201,19 @@ pub fn decode_clmm_state(data: &[u8]) -> Option<arb_types::ClmmState> {
     })
 }
 
-/// Decode Raydium CLMM PoolState layout.
+/// Decode Raydium CLMM PoolState layout (without external AmmConfig).
 pub fn decode_raydium_clmm_state(data: &[u8], fee_bps: u16) -> Option<arb_types::ClmmState> {
+    decode_raydium_clmm_state_with_amm_config(PoolId::default(), data, None, fee_bps)
+}
+
+/// Decode Raydium CLMM PoolState with optional live `AmmConfig` bytes and
+/// conservative dynamic-fee upper bound (`DynamicFeeInfo` @1096..1176).
+pub fn decode_raydium_clmm_state_with_amm_config(
+    pool_id: PoolId,
+    data: &[u8],
+    amm_config: Option<&[u8]>,
+    fallback_fee_bps: u16,
+) -> Option<arb_types::ClmmState> {
     if data.len() < 273 {
         return None;
     }
@@ -1216,19 +1227,36 @@ pub fn decode_raydium_clmm_state(data: &[u8], fee_bps: u16) -> Option<arb_types:
     }
 
     // `PoolState.fee_on != 0` charges the fee on the output token in one
-    // direction, and a non-zero `dynamic_fee_info` makes the fee depend on
-    // live volatility. `ClmmState` cannot represent either, so exclude the
-    // pool from sizing/routing instead of feeding wrong economics.
+    // direction; exclude those pools from sizing/routing until direction-split
+    // output-fee math is implemented.
     if data.get(390).copied().unwrap_or(0) != 0 {
         return None;
     }
-    if data.len() >= 1176 && data[1096..1176].iter().any(|&byte| byte != 0) {
-        return None;
-    }
 
-    // Raydium CLMM's SwapMath fee unit is millionths (1e6), not BPS.
-    // 25 bps must become 2,500 ppm; passing 25 undercharged fees by 100x.
-    let fee_rate = fee_bps.checked_mul(100)?;
+    let base_fee_rate: u32 = if let Some(cfg) = amm_config {
+        if cfg.len() < 52 {
+            return None;
+        }
+        let trade_fee_rate = u32::from_le_bytes(cfg[47..51].try_into().ok()?);
+        if trade_fee_rate == 0 || trade_fee_rate > 100_000 {
+            return None;
+        }
+        trade_fee_rate
+    } else {
+        u32::from(fallback_fee_bps.checked_mul(100)?)
+    };
+
+    let has_dynamic_fee = data.len() >= 1176 && data[1096..1176].iter().any(|&byte| byte != 0);
+    let total_fee_rate_u32 = if has_dynamic_fee {
+        let mut pool = arb_dex::RaydiumClmmPool::from_account(pool_id, data).ok()?;
+        pool.fee_rate_ppm = base_fee_rate;
+        let total = pool.total_fee_rate_upper_bound()?;
+        u32::try_from(total).ok()?
+    } else {
+        base_fee_rate
+    };
+
+    let fee_rate = u16::try_from(total_fee_rate_u32).ok()?;
     Some(arb_types::ClmmState {
         sqrt_price,
         liquidity,

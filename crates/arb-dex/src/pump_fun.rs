@@ -438,9 +438,7 @@ mod tests {
 #[cfg(test)]
 mod cross_venue_tests {
     use super::*;
-    use arb_math::pump_fun_raydium::{
-        DEFAULT_FLASH_LOAN_FEE_BPS, RaydiumParams, calculate_optimal_trade,
-    };
+    use arb_math::pump_fun_raydium::{RaydiumParams, calculate_optimal_trade};
     use solana_pubkey::Pubkey;
 
     #[test]
@@ -482,12 +480,7 @@ mod cross_venue_tests {
 
         // Calculate optimal trade
         let max_delta_t = pool.max_arbitrage_amount();
-        let result = calculate_optimal_trade(
-            pump_params,
-            raydium_params,
-            DEFAULT_FLASH_LOAN_FEE_BPS,
-            max_delta_t as u128,
-        );
+        let result = calculate_optimal_trade(pump_params, raydium_params, 30, max_delta_t as u128);
 
         assert!(result.is_ok(), "Should find arbitrage opportunity");
         let trade = result.unwrap();

@@ -21,6 +21,8 @@ use arb_types::{Lamports, Percentile, RefuseReason, TipDecision, TipFloor, TipPl
 
 /// Protocol minimum tip enforced by the Jito block engine, in lamports.
 pub const MIN_JITO_TIP_LAMPORTS: u64 = arb_constants::MIN_JITO_TIP_LAMPORTS;
+/// Fixed-point 1.0 in Q32 format (`2^32`).
+pub const Q32_ONE: u64 = 1u64 << 32;
 
 /// Pricing policy.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,13 +91,21 @@ impl Candidate {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AdaptiveBidder {
     config: BidderConfig,
+    keep_share_bps: u64,
+    max_tip_share_bps: u64,
+    ladder_growth_bps: u64,
 }
 
 impl AdaptiveBidder {
     /// Build a bidder, rejecting an invalid policy.
     pub fn new(config: BidderConfig) -> Result<Self, &'static str> {
         config.validate()?;
-        Ok(Self { config })
+        Ok(Self {
+            keep_share_bps: (config.keep_share * 10_000.0).round() as u64,
+            max_tip_share_bps: (config.max_tip_share * 10_000.0).round() as u64,
+            ladder_growth_bps: (config.ladder_growth * 10_000.0).round() as u64,
+            config,
+        })
     }
 
     /// Active policy.
@@ -108,16 +118,10 @@ impl AdaptiveBidder {
     /// `max(profit_floor, keep_share * edge)`: the absolute floor stops
     /// sub-cent dust from being worth the bundle plumbing, the share scales.
     pub fn hurdle(&self, edge: Lamports) -> Lamports {
-        let share = fraction_of(edge, self.config.keep_share);
+        let share = bps_of(edge, self.keep_share_bps);
         Lamports(self.config.profit_floor.0.max(share.0))
     }
 
-    /// Contention-aware hurdle that adapts to pool heat (write-lock contention) and CUs.
-    ///
-    /// On calm, low-contention pools (e.g. 3x Meteora DLMM), there is no need to enforce
-    /// the aggressive 30,000+ lamport global hurdle floor used for crowded meme-token pools.
-    /// Instead, the floor is relaxed to 10,000 lamports (covering 5k base fee + 1k min tip + min keep),
-    /// while still respecting the keep_share fraction.
     /// Contention-aware hurdle that adapts to pool heat (write-lock contention) and CUs.
     ///
     /// Strictly guarantees that the hurdle is AT LEAST profit_floor + contingency_buffer
@@ -128,7 +132,7 @@ impl AdaptiveBidder {
         estimated_cu: u64,
         is_hot_write_lock: bool,
     ) -> Lamports {
-        let share = fraction_of(edge, self.config.keep_share);
+        let share = bps_of(edge, self.keep_share_bps);
         let floor = if is_hot_write_lock {
             let cu_penalty = (estimated_cu.saturating_mul(1_000)) / 100_000;
             self.config.profit_floor.0.saturating_add(cu_penalty)
@@ -145,14 +149,14 @@ impl AdaptiveBidder {
     /// Highest permissible tip, `t_max`.
     pub fn ceiling(&self, edge: Lamports) -> Lamports {
         let by_keep = edge.saturating_sub(self.hurdle(edge));
-        let by_cap = fraction_of(edge, self.config.max_tip_share);
+        let by_cap = bps_of(edge, self.max_tip_share_bps);
         Lamports(by_keep.0.min(by_cap.0))
     }
 
     /// Highest permissible tip under contention-aware hurdle.
     pub fn ceiling_with_hurdle(&self, edge: Lamports, hurdle: Lamports) -> Lamports {
         let by_keep = edge.saturating_sub(hurdle);
-        let by_cap = fraction_of(edge, self.config.max_tip_share);
+        let by_cap = bps_of(edge, self.max_tip_share_bps);
         Lamports(by_keep.0.min(by_cap.0))
     }
 
@@ -222,14 +226,15 @@ impl AdaptiveBidder {
         // price on itself until the edge is gone.
         let mut escalated = false;
         if let Some(previous) = previous_tip {
-            let cap = fraction_of(previous, self.config.ladder_growth);
+            let cap = bps_of(previous, self.ladder_growth_bps);
             let cap = Lamports(cap.0.max(MIN_JITO_TIP_LAMPORTS));
             if winner.tip.0 > cap.0 {
                 winner.tip = cap;
                 // Recompute the calibrated inclusion probability and expected value for the reduced tip
-                winner.inclusion_p = Self::calibrated_inclusion_probability(cap, &floor, ledger);
+                let prob_q32 = calibrated_inclusion_probability_q32(cap, &floor, ledger);
+                winner.inclusion_p = prob_q32 as f64 / Q32_ONE as f64;
                 winner.expected_value =
-                    expected_value_lamports(winner.inclusion_p, edge.saturating_sub(cap));
+                    expected_value_lamports_q32(prob_q32, edge.saturating_sub(cap));
                 escalated = true;
             }
         }
@@ -287,52 +292,22 @@ impl AdaptiveBidder {
         best
     }
 
-    /// Calculate the calibrated inclusion probability for an exact tip amount.
-    ///
-    /// When a bid is clipped by the retry escalation cap or the risk ceiling,
-    /// the inclusion probability must strictly reflect the actual submitted amount,
-    /// never retaining an upper rung's probability for a reduced bid.
+    /// Calculate the calibrated inclusion probability for an exact tip amount in Q32 fixed point.
+    pub fn calibrated_inclusion_probability_q32(
+        tip: Lamports,
+        floor: &TipFloor,
+        ledger: &LandingLedger,
+    ) -> u64 {
+        calibrated_inclusion_probability_q32(tip, floor, ledger)
+    }
+
+    /// Calculate the calibrated inclusion probability for an exact tip amount (telemetry float).
     pub fn calibrated_inclusion_probability(
         tip: Lamports,
         floor: &TipFloor,
         ledger: &LandingLedger,
     ) -> f64 {
-        let p50_price = floor.at(Percentile::P50).0;
-        if tip.0 < p50_price {
-            // Below P50: scale linearly with tip against P50 coverage
-            let p50_coverage = ledger.coverage(Percentile::P50);
-            return (p50_coverage * (tip.0 as f64 / p50_price.max(1) as f64)).clamp(0.0, 1.0);
-        }
-
-        // Find the bracketing rungs in the published grid
-        let mut best_rung = Percentile::P50;
-        let mut next_rung = None;
-
-        for &rung in &Percentile::GRID {
-            if floor.at(rung).0 <= tip.0 {
-                best_rung = rung;
-            } else {
-                next_rung = Some(rung);
-                break;
-            }
-        }
-
-        let p_low = ledger.coverage(best_rung);
-        let Some(higher) = next_rung else {
-            // Equal to or above highest rung (P99)
-            return ledger.coverage(Percentile::P99);
-        };
-
-        let price_low = floor.at(best_rung).0;
-        let price_high = floor.at(higher).0;
-        if price_high <= price_low {
-            return p_low;
-        }
-
-        let p_high = ledger.coverage(higher);
-        let fraction = (tip.0.saturating_sub(price_low) as f64)
-            / (price_high.saturating_sub(price_low) as f64);
-        (p_low + fraction * (p_high - p_low)).clamp(0.0, 1.0)
+        calibrated_inclusion_probability_q32(tip, floor, ledger) as f64 / Q32_ONE as f64
     }
 
     /// Score `tip` as if it were paid at `rung`.
@@ -344,12 +319,13 @@ impl AdaptiveBidder {
         ledger: &LandingLedger,
     ) -> Candidate {
         let inclusion_p = ledger.coverage(rung);
+        let prob_q32 = probability_to_q32(inclusion_p);
         let margin = edge.saturating_sub(tip);
         Candidate {
             tip,
             rung,
             inclusion_p,
-            expected_value: expected_value_lamports(inclusion_p, margin),
+            expected_value: expected_value_lamports_q32(prob_q32, margin),
         }
     }
 
@@ -376,35 +352,100 @@ impl AdaptiveBidder {
     }
 }
 
-/// `value * fraction`, rounded, saturating at the `u64` bounds.
+/// Convert a `[0, 1]` probability to Q32 fixed point (`2^32 == 1.0`).
+#[inline]
+pub fn probability_to_q32(probability: f64) -> u64 {
+    if !probability.is_finite() || probability <= 0.0 {
+        return 0;
+    }
+    let clamped = probability.min(1.0);
+    let scaled = (clamped * Q32_ONE as f64).round();
+    (scaled.clamp(0.0, Q32_ONE as f64)) as u64
+}
+
+/// Pure integer Q32 expected value `(prob_q32 * margin) / 2^32` rounded half-up.
+#[inline]
+pub fn expected_value_lamports_q32(prob_q32: u64, margin: Lamports) -> i64 {
+    let clamped_p = prob_q32.min(Q32_ONE);
+    if clamped_p == 0 || margin.0 == 0 {
+        return 0;
+    }
+    let product = u128::from(margin.0).saturating_mul(u128::from(clamped_p));
+    let rounded = product.saturating_add(1u128 << 31) >> 32;
+    i64::try_from(rounded).unwrap_or(i64::MAX)
+}
+
+/// Pure integer Q32 calibrated inclusion probability across the tip-floor rungs.
+pub fn calibrated_inclusion_probability_q32(
+    tip: Lamports,
+    floor: &TipFloor,
+    ledger: &LandingLedger,
+) -> u64 {
+    let p50_price = floor.at(Percentile::P50).0;
+    if tip.0 < p50_price {
+        let p50_q32 = probability_to_q32(ledger.coverage(Percentile::P50));
+        let denom = u128::from(p50_price.max(1));
+        let scaled = (u128::from(p50_q32) * u128::from(tip.0)) / denom;
+        return u64::try_from(scaled).unwrap_or(Q32_ONE).min(Q32_ONE);
+    }
+
+    let mut best_rung = Percentile::P50;
+    let mut next_rung = None;
+    for &rung in &Percentile::GRID {
+        if floor.at(rung).0 <= tip.0 {
+            best_rung = rung;
+        } else {
+            next_rung = Some(rung);
+            break;
+        }
+    }
+
+    let p_low_q32 = probability_to_q32(ledger.coverage(best_rung));
+    let Some(higher) = next_rung else {
+        return probability_to_q32(ledger.coverage(Percentile::P99));
+    };
+
+    let price_low = floor.at(best_rung).0;
+    let price_high = floor.at(higher).0;
+    if price_high <= price_low {
+        return p_low_q32;
+    }
+
+    let p_high_q32 = probability_to_q32(ledger.coverage(higher));
+    let span = u128::from(price_high.saturating_sub(price_low));
+    let offset = u128::from(tip.0.saturating_sub(price_low));
+    let interp = if p_high_q32 >= p_low_q32 {
+        let delta = u128::from(p_high_q32 - p_low_q32);
+        u128::from(p_low_q32).saturating_add((delta * offset) / span)
+    } else {
+        let delta = u128::from(p_low_q32 - p_high_q32);
+        u128::from(p_low_q32).saturating_sub((delta * offset) / span)
+    };
+    u64::try_from(interp).unwrap_or(Q32_ONE).min(Q32_ONE)
+}
+
+/// `value * share_bps / 10_000`, rounded half-up, saturating at `u64::MAX`.
+#[inline]
+fn bps_of(value: Lamports, share_bps: u64) -> Lamports {
+    if share_bps == 0 || value.0 == 0 {
+        return Lamports::ZERO;
+    }
+    let rounded = (u128::from(value.0) * u128::from(share_bps) + 5_000) / 10_000;
+    Lamports(u64::try_from(rounded).unwrap_or(u64::MAX))
+}
+
+#[cfg(test)]
 fn fraction_of(value: Lamports, fraction: f64) -> Lamports {
     if !fraction.is_finite() || fraction <= 0.0 || value.0 == 0 {
         return Lamports::ZERO;
     }
-    let scaled = value.0 as f64 * fraction;
-    let limit = u64::MAX as f64;
-    if scaled >= limit {
-        return Lamports(u64::MAX);
-    }
-    // Safe: finite, positive and strictly below `u64::MAX`.
-    Lamports(scaled.round() as u64)
+    let bps = (fraction * 10_000.0).round().clamp(0.0, u64::MAX as f64) as u64;
+    bps_of(value, bps)
 }
 
-/// `probability * margin`, rounded, as a signed EV in lamports.
+#[cfg(test)]
 fn expected_value_lamports(probability: f64, margin: Lamports) -> i64 {
-    if !probability.is_finite() || probability <= 0.0 {
-        return 0;
-    }
-    let value = margin.0 as f64 * probability.min(1.0);
-    let limit = i64::MAX as f64;
-    if value >= limit {
-        return i64::MAX;
-    }
-    if value <= i64::MIN as f64 {
-        return i64::MIN;
-    }
-    // Safe: finite and inside the `i64` range.
-    value.round() as i64
+    expected_value_lamports_q32(probability_to_q32(probability), margin)
 }
 
 #[cfg(test)]

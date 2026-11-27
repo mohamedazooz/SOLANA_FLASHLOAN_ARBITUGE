@@ -77,7 +77,6 @@ use arb_math::{
         EconomicConfig, base_raw_to_lamports, build_economic_quote, calculate_flash_fee_raw,
         slippage_haircut_min_final,
     },
-    quote_clmm_with_ticks_per_array_and_math,
 };
 use arb_types::{
     Bps, DexProtocol, ExecutionOpportunity, Lamports, MintId, PoolExecutionAccounts, PoolId,
@@ -236,8 +235,11 @@ fn quote_pool_with_dlmm_cache(
                 {
                     return None;
                 }
-                let fee_rate =
-                    u16::try_from(10_000u128.checked_sub(gamma)?.checked_mul(100)?).ok()?;
+                let fee_rate = if edge.fee_denominator == 1_000_000 && edge.fee_numerator > 0 {
+                    u16::try_from(edge.fee_numerator).ok()?
+                } else {
+                    u16::try_from(10_000u128.checked_sub(gamma)?.checked_mul(100)?).ok()?
+                };
                 if fee_rate == 0 {
                     return None;
                 }
@@ -259,24 +261,33 @@ fn quote_pool_with_dlmm_cache(
                             .collect(),
                     })
                     .collect();
-                let amount_out = quote_clmm_with_ticks_per_array_and_math(
-                    amount_in,
+                let quote_res = arb_math::clmm::compute_swap_with_ticks_per_array_and_math(
                     state.sqrt_price,
                     state.tick_current,
                     state.liquidity,
                     state.tick_spacing,
                     fee_rate,
+                    amount_in,
                     a_to_b,
                     &arrays,
                     arb_math::clmm::RAYDIUM_CLMM_TICK_ARRAY_SIZE,
                     ClmmTickMath::Raydium,
                 )
                 .ok()?;
+                let fee_free_input = quote_res
+                    .amount_in_consumed
+                    .saturating_sub(quote_res.fee_paid);
+                let impact = arb_math::clmm::clmm_price_impact_bps(
+                    fee_free_input,
+                    quote_res.amount_out_received,
+                    state.sqrt_price,
+                    a_to_b,
+                );
                 return Some(PoolQuote {
-                    amount_out: u128::from(amount_out),
-                    price_impact_bps: Bps(10_000),
+                    amount_out: u128::from(quote_res.amount_out_received),
+                    price_impact_bps: impact,
                     discrete_bins_crossed: None,
-                    clmm_steps_taken: None,
+                    clmm_steps_taken: u32::try_from(quote_res.steps_taken).ok(),
                 });
             }
 
@@ -430,9 +441,12 @@ impl MarketEdge {
 pub struct MarketGraph {
     pub edges_by_from: HashMap<MintId, Vec<MarketEdge>>,
     pub base_anchors: Vec<MintId>,
-    /// Authoritative economic configuration. When `None` the graph cannot price
-    /// opportunities and `find_base_cycles` returns empty (fail closed).
+    /// Authoritative economic configuration. When `None` and no per-anchor config
+    /// is set, the graph cannot price opportunities and `find_base_cycles`
+    /// returns empty (fail closed).
     pub economic_config: Option<EconomicConfig>,
+    /// Per-anchor authoritative economic configs (for example WSOL + USDC).
+    pub anchor_economic_configs: HashMap<MintId, EconomicConfig>,
     /// Dynamic CU-price policy shared with the final supervisor profitability gate.
     pub priority_fee_policy: Option<PriorityFeePolicy>,
 }
@@ -656,7 +670,9 @@ pub struct BaseCycleScanStats {
     pub two_hop_gross_profitable: u64,
     pub three_hop_gross_profitable: u64,
     pub longer_hop_gross_profitable: u64,
+    pub excluded_v1_account_limit: u64,
     pub gate_rejected: u64,
+    pub gross_negative: u64,
     pub quote_rejected: u64,
     pub cycles_evaluated: u64,
     pub opportunities: u64,
@@ -666,9 +682,156 @@ pub struct BaseCycleScanStats {
     pub rejected_cycles: Vec<RejectedCycleDiagnostic>,
 }
 
+/// Conservative V1 (`SIMD-0385` 64-account inline limit) account-count estimator.
+/// Deduplicates exact `execution_accounts` keys when available or uses a strict
+/// protocol lower bound so >64-key routes are pruned before heavy optimization.
+pub fn estimate_route_unique_accounts_v1(hops: &[&MarketEdge]) -> usize {
+    use solana_pubkey::Pubkey;
+    // Payer (1) + ComputeBudget/System/Token/ATA/Sysvar (5) + Kamino Reserve/Market/Auth/Vaults (5)
+    // + Settlement ATA (1) + Jito tip (1) = 13 fixed infrastructure keys.
+    const FIXED_INFRA_KEYS: usize = 13;
+    let mut distinct_pools_and_mints: Vec<Pubkey> = Vec::with_capacity(hops.len() * 8);
+    let mut push_unique = |k: Pubkey| {
+        if !distinct_pools_and_mints.contains(&k) {
+            distinct_pools_and_mints.push(k);
+        }
+    };
+    let mut derived_extra: usize = 0;
+    for edge in hops {
+        push_unique(edge.pool_id.0);
+        push_unique(edge.from_mint.0);
+        push_unique(edge.to_mint.0);
+        if let Some(exec) = &edge.execution_accounts {
+            match exec {
+                arb_types::PoolExecutionAccounts::RaydiumV4 {
+                    amm_authority,
+                    open_orders,
+                    base_vault,
+                    quote_vault,
+                    serum_program,
+                    serum_market,
+                    serum_bids,
+                    serum_asks,
+                    serum_event_queue,
+                    serum_coin_vault,
+                    serum_pc_vault,
+                    serum_vault_signer,
+                    ..
+                } => {
+                    for k in [
+                        *amm_authority,
+                        *open_orders,
+                        *base_vault,
+                        *quote_vault,
+                        *serum_program,
+                        *serum_market,
+                        *serum_bids,
+                        *serum_asks,
+                        *serum_event_queue,
+                        *serum_coin_vault,
+                        *serum_pc_vault,
+                        *serum_vault_signer,
+                    ] {
+                        push_unique(k);
+                    }
+                }
+                arb_types::PoolExecutionAccounts::RaydiumCpmm {
+                    authority,
+                    amm_config,
+                    vault_0,
+                    vault_1,
+                    observation_state,
+                } => {
+                    for k in [
+                        *authority,
+                        *amm_config,
+                        *vault_0,
+                        *vault_1,
+                        *observation_state,
+                    ] {
+                        push_unique(k);
+                    }
+                }
+                arb_types::PoolExecutionAccounts::RaydiumClmm {
+                    amm_config,
+                    vault_0,
+                    vault_1,
+                    observation_state,
+                    bitmap_extension,
+                    tick_array_pdas,
+                    ..
+                } => {
+                    for k in [*amm_config, *vault_0, *vault_1, *observation_state] {
+                        push_unique(k);
+                    }
+                    if let Some(ext) = bitmap_extension {
+                        push_unique(*ext);
+                    }
+                    for ta in tick_array_pdas {
+                        push_unique(*ta);
+                    }
+                }
+                arb_types::PoolExecutionAccounts::OrcaWhirlpool {
+                    vault_a,
+                    vault_b,
+                    tick_array_pdas,
+                    oracle,
+                    ..
+                } => {
+                    for k in [*vault_a, *vault_b, *oracle] {
+                        push_unique(k);
+                    }
+                    for ta in tick_array_pdas {
+                        push_unique(*ta);
+                    }
+                }
+                arb_types::PoolExecutionAccounts::MeteoraDlmm {
+                    reserve_x,
+                    reserve_y,
+                    oracle,
+                    bitmap_extension,
+                    bin_array_pdas,
+                    ..
+                } => {
+                    for k in [*reserve_x, *reserve_y, *oracle] {
+                        push_unique(k);
+                    }
+                    if let Some(ext) = bitmap_extension {
+                        push_unique(*ext);
+                    }
+                    for ba in bin_array_pdas {
+                        push_unique(*ba);
+                    }
+                }
+                _ => {
+                    derived_extra += 5;
+                }
+            }
+        } else {
+            derived_extra += match edge.protocol {
+                DexProtocol::RaydiumV4 => 12,
+                DexProtocol::MeteoraDlmm | DexProtocol::RaydiumClmm => 9,
+                DexProtocol::OrcaWhirlpool => 7,
+                DexProtocol::PumpSwap | DexProtocol::RaydiumLaunchLab => 8,
+                DexProtocol::MeteoraDammV2 | DexProtocol::MeteoraDbc | DexProtocol::RaydiumCpmm => {
+                    6
+                }
+                _ => 6,
+            };
+        }
+    }
+    // Intermediate ATAs (~1 per hop after the first).
+    let intermediate_atas = hops.len().saturating_sub(1);
+    FIXED_INFRA_KEYS
+        .saturating_add(distinct_pools_and_mints.len())
+        .saturating_add(derived_extra)
+        .saturating_add(intermediate_atas)
+}
+
 struct RouteOptimizationOutcome {
     opportunity: Option<ExecutionOpportunity>,
     gross_profitable_sample: Option<(u64, u64, Vec<u64>)>,
+    had_valid_quote: bool,
 }
 
 impl MarketGraph {
@@ -677,6 +840,7 @@ impl MarketGraph {
             edges_by_from: HashMap::new(),
             base_anchors,
             economic_config: None,
+            anchor_economic_configs: HashMap::new(),
             priority_fee_policy: None,
         }
     }
@@ -695,6 +859,28 @@ impl MarketGraph {
         self.economic_config = Some(config);
     }
 
+    /// Set the authoritative economic configuration for a specific base anchor mint.
+    pub fn set_anchor_economic_config(&mut self, base_mint: MintId, config: EconomicConfig) {
+        self.anchor_economic_configs.insert(base_mint, config);
+    }
+
+    /// Remove any stale economic config for an anchor whose live verification failed closed.
+    pub fn clear_anchor_economic_config(&mut self, base_mint: &MintId) {
+        self.anchor_economic_configs.remove(base_mint);
+    }
+
+    /// Look up the authoritative economic config for `base_mint`.
+    /// When per-anchor configs are registered, only an exact match is returned
+    /// (never falling back to another mint's rates/decimals).
+    #[inline]
+    pub fn economic_config_for(&self, base_mint: MintId) -> Option<&EconomicConfig> {
+        if !self.anchor_economic_configs.is_empty() {
+            self.anchor_economic_configs.get(&base_mint)
+        } else {
+            self.economic_config.as_ref()
+        }
+    }
+
     pub fn set_priority_fee_policy(&mut self, policy: PriorityFeePolicy) {
         self.priority_fee_policy = Some(policy);
     }
@@ -703,6 +889,7 @@ impl MarketGraph {
     pub fn min_profit_raw(&self) -> TokenAmount {
         self.economic_config
             .as_ref()
+            .or_else(|| self.anchor_economic_configs.values().next())
             .map(|c| c.min_profit_raw)
             .unwrap_or(TokenAmount::ZERO)
     }
@@ -723,7 +910,7 @@ impl MarketGraph {
         clmm_steps_taken: u32,
         hops: Vec<SwapHop>,
     ) -> Option<ExecutionOpportunity> {
-        let config = self.economic_config.as_ref()?;
+        let config = self.economic_config_for(base_mint)?;
 
         let flash_fee_raw = calculate_flash_fee_raw(size_in, config.flash_loan_fee_sf).ok()?;
         let final_out_u64 = u64::try_from(final_out).ok()?;
@@ -981,6 +1168,7 @@ impl MarketGraph {
         }
         boundary_seeds = arb_math::dlmm::dlmm_breakpoint_seed_sizes(&boundary_seeds, 1, upper, 48);
         let best_gross_sample = std::cell::RefCell::new(None::<(u64, u64, Vec<u64>)>);
+        let had_valid_quote = std::cell::Cell::new(false);
         let result = route_sizing::optimize_bounded_non_monotonic_with_budget(
             upper,
             32,
@@ -991,6 +1179,7 @@ impl MarketGraph {
             |size_in| {
                 let route_quote =
                     Self::quote_route_input_ladder(edges, size_in, &capacities, Some(&dlmm_cache))?;
+                had_valid_quote.set(true);
                 tracing::trace!(
                     size_in,
                     bins_crossed = route_quote.discrete_bins_crossed,
@@ -1064,6 +1253,7 @@ impl MarketGraph {
         Some(RouteOptimizationOutcome {
             opportunity,
             gross_profitable_sample: best_gross_sample.borrow().clone(),
+            had_valid_quote: had_valid_quote.get(),
         })
     }
 
@@ -1191,19 +1381,40 @@ impl MarketGraph {
         };
 
         for p in pools {
-            if p.protocol == DexProtocol::MeteoraDammV2 {
-                // It can be priced by the specialized dispatcher, but exact deployed swap
-                // account/min-out/rounding parity is not yet proven. Never issue an
-                // ExecutionOpportunity for this quote-only venue.
-                stats.excluded_quote_only += 1;
-                continue;
-            }
             if !p.is_active {
                 stats.excluded_inactive += 1;
                 continue;
             }
+            if p.protocol == DexProtocol::MeteoraDammV2 {
+                let damm_ready = p.damm_v2.as_ref().is_some_and(|d| d.clock_slot > 0)
+                    && matches!(
+                        p.execution_accounts,
+                        Some(PoolExecutionAccounts::MeteoraDammV2 { .. })
+                    );
+                if !damm_ready {
+                    stats.excluded_quote_only += 1;
+                    continue;
+                }
+            }
             if p.protocol == DexProtocol::RaydiumClmm {
-                stats.excluded_raydium_clmm += 1;
+                let clmm_ready = p.clmm.as_ref().is_some_and(|c| {
+                    c.fee_rate > 0 && c.liquidity > 0 && !c.tick_arrays.is_empty()
+                }) && matches!(
+                    p.execution_accounts,
+                    Some(PoolExecutionAccounts::RaydiumClmm { .. })
+                );
+                if !clmm_ready {
+                    stats.excluded_raydium_clmm += 1;
+                    continue;
+                }
+            }
+            if p.protocol == DexProtocol::PumpSwap
+                && !matches!(
+                    p.execution_accounts,
+                    Some(PoolExecutionAccounts::PumpSwap { .. })
+                )
+            {
+                stats.excluded_unsupported_protocol += 1;
                 continue;
             }
             let supported_family = matches!(
@@ -1211,8 +1422,11 @@ impl MarketGraph {
                 (DexProtocol::RaydiumV4, PoolKind::Cpmm)
                     | (DexProtocol::RaydiumCpmm, PoolKind::Cpmm)
                     | (DexProtocol::PumpFun, PoolKind::Cpmm)
+                    | (DexProtocol::PumpSwap, PoolKind::Cpmm)
                     | (DexProtocol::OrcaWhirlpool, PoolKind::Clmm)
+                    | (DexProtocol::RaydiumClmm, PoolKind::Clmm)
                     | (DexProtocol::MeteoraDlmm, PoolKind::Dlmm)
+                    | (DexProtocol::MeteoraDammV2, PoolKind::Cpmm | PoolKind::Clmm)
             );
             if !supported_family {
                 stats.excluded_unsupported_protocol += 1;
@@ -1453,12 +1667,18 @@ impl MarketGraph {
         };
         let max_hops = max_hops.clamp(2, 6);
         let max_candidates = max_candidates.min(MAX_ROUTE_CANDIDATES_PER_TICK);
-        if max_trade_size == 0 || max_candidates == 0 || self.economic_config.is_none() {
+        if max_trade_size == 0
+            || max_candidates == 0
+            || (self.economic_config.is_none() && self.anchor_economic_configs.is_empty())
+        {
             return (opportunities, stats);
         }
 
         let mut route_counter = 1u32;
         for &base in &self.base_anchors {
+            if self.economic_config_for(base).is_none() {
+                continue;
+            }
             let mut path = Vec::with_capacity(max_hops);
             let mut visited = std::collections::HashSet::with_capacity(max_hops);
             self.walk_cycles(
@@ -1470,6 +1690,60 @@ impl MarketGraph {
                 &mut visited,
                 current_slot,
                 max_trade_size,
+                &mut route_counter,
+                &mut stats,
+                &mut opportunities,
+            );
+            if stats.truncated {
+                break;
+            }
+        }
+
+        opportunities.sort_by_key(|opportunity| std::cmp::Reverse(opportunity.net_profit.0));
+        stats.opportunities = opportunities.len() as u64;
+        (opportunities, stats)
+    }
+
+    /// Discover and optimize closed-cycle opportunities using per-anchor borrow
+    /// caps (`max_trade_sizes`) so WSOL and USDC reserves can be scanned cleanly
+    /// in base-mint raw units within a single tick.
+    pub fn find_cycles_with_anchor_caps(
+        &self,
+        current_slot: Slot,
+        max_trade_sizes: &HashMap<MintId, u64>,
+        max_hops: usize,
+        max_candidates: usize,
+    ) -> (Vec<ExecutionOpportunity>, BaseCycleScanStats) {
+        let mut opportunities = Vec::new();
+        let mut stats = BaseCycleScanStats {
+            base_anchors: self.base_anchors.len(),
+            ..Default::default()
+        };
+        let max_hops = max_hops.clamp(2, 6);
+        let max_candidates = max_candidates.min(MAX_ROUTE_CANDIDATES_PER_TICK);
+        if max_candidates == 0
+            || (self.economic_config.is_none() && self.anchor_economic_configs.is_empty())
+        {
+            return (opportunities, stats);
+        }
+
+        let mut route_counter = 1u32;
+        for &base in &self.base_anchors {
+            let cap = max_trade_sizes.get(&base).copied().unwrap_or(0);
+            if cap == 0 || self.economic_config_for(base).is_none() {
+                continue;
+            }
+            let mut path = Vec::with_capacity(max_hops);
+            let mut visited = std::collections::HashSet::with_capacity(max_hops);
+            self.walk_cycles(
+                base,
+                base,
+                max_hops,
+                max_candidates,
+                &mut path,
+                &mut visited,
+                current_slot,
+                cap,
                 &mut route_counter,
                 &mut stats,
                 &mut opportunities,
@@ -1504,6 +1778,10 @@ impl MarketGraph {
             return;
         }
         if path.len() >= 2 && current_mint == base_anchor {
+            if estimate_route_unique_accounts_v1(path) > 64 {
+                stats.excluded_v1_account_limit += 1;
+                return;
+            }
             let route_id = RouteId(*route_counter);
             *route_counter = (*route_counter).saturating_add(1);
             stats.cycles_evaluated += 1;
@@ -1548,6 +1826,8 @@ impl MarketGraph {
                                     .collect(),
                             });
                         }
+                    } else if outcome.had_valid_quote {
+                        stats.gross_negative += 1;
                     } else {
                         stats.quote_rejected += 1;
                     }
@@ -1604,8 +1884,10 @@ impl MarketGraph {
         }
         let first = hops.first()?;
         let last = hops.last()?;
+        let anchor_allowed = self.base_anchors.contains(&first.mint_in)
+            || first.mint_in.0 == arb_constants::wsol_mint();
         if first.mint_in != last.mint_out
-            || first.mint_in.0 != arb_constants::wsol_mint()
+            || !anchor_allowed
             || hops
                 .windows(2)
                 .any(|pair| pair[0].mint_out != pair[1].mint_in)
@@ -1657,6 +1939,60 @@ impl MarketGraph {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gross_negative_cycles_are_not_counted_as_quote_rejected() {
+        let wsol = MintId::new([1u8; 32]);
+        let usdc = MintId::new([2u8; 32]);
+        let mut graph = MarketGraph::new(vec![wsol]).with_economic_config(EconomicConfig {
+            flash_loan_fee_sf: 0,
+            jito_tip_lamports: Lamports(1_000),
+            base_decimals: 9,
+            lamports_to_base_mint_rate: 1,
+            lamports_to_base_rate_denom: 1,
+            min_profit_raw: TokenAmount(1_000),
+            hop_slippage_bps: 10,
+        });
+        let make_pool = |id: u8| PoolState {
+            pool_id: PoolId::new([id; 32]),
+            protocol: DexProtocol::RaydiumV4,
+            kind: PoolKind::Cpmm,
+            base_mint: wsol,
+            quote_mint: usdc,
+            decimals_a: 9,
+            decimals_b: 6,
+            reserve_in: 1_000_000_000_000,
+            reserve_out: 100_000_000_000,
+            fee_numerator: 25,
+            fee_denominator: 10_000,
+            raydium_cpmm_fee: None,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: None,
+            transfer_fee_bps: 0,
+            token_programs: [
+                arb_types::TokenProgramKind::SplToken,
+                arb_types::TokenProgramKind::SplToken,
+            ],
+            is_active: true,
+            has_risky_token: false,
+            slot: Slot(100),
+            last_update_slot: 100,
+            last_update_ms: 0,
+            write_version: 1,
+            execution_accounts: None,
+        };
+        let build = graph.build_from_pools(&[make_pool(10), make_pool(11)]);
+        assert_eq!(build.pools_indexed, 2);
+
+        let (opps, stats) = graph.find_base_cycles_with_stats(Slot(100), 1_000_000_000);
+        assert!(opps.is_empty());
+        assert_eq!(stats.cycles_evaluated, 2);
+        assert_eq!(stats.gross_negative, 2);
+        assert_eq!(stats.quote_rejected, 0);
+        assert_eq!(stats.gate_rejected, 0);
+    }
+
     #[test]
     fn route_price_impact_compounds_each_hop_conservatively() {
         let retained = compose_route_price_impact(10_000, Bps(30));
@@ -1986,14 +2322,22 @@ mod tests {
     }
 
     #[test]
-    fn production_cycle_graph_keeps_damm_v2_quote_only_until_execution_parity() {
-        let state = make_damm_pool_state(0);
-        let mut graph = MarketGraph::new(vec![state.base_mint]);
-        let stats = graph.build_from_pools(&[state]);
-        assert_eq!(stats.pools_seen, 1);
-        assert_eq!(stats.excluded_quote_only, 1);
-        assert_eq!(stats.pools_indexed, 0);
-        assert!(graph.edges_by_from.is_empty());
+    fn production_cycle_graph_indexes_hydrated_damm_v2_and_excludes_unhydrated() {
+        let hydrated = make_damm_pool_state(0);
+        let mut graph = MarketGraph::new(vec![hydrated.base_mint]);
+        let stats_hydrated = graph.build_from_pools(std::slice::from_ref(&hydrated));
+        assert_eq!(stats_hydrated.pools_seen, 1);
+        assert_eq!(stats_hydrated.excluded_quote_only, 0);
+        assert_eq!(stats_hydrated.pools_indexed, 1);
+
+        let mut unhydrated = hydrated;
+        unhydrated.execution_accounts = None;
+        let mut graph2 = MarketGraph::new(vec![unhydrated.base_mint]);
+        let stats_unhydrated = graph2.build_from_pools(&[unhydrated]);
+        assert_eq!(stats_unhydrated.pools_seen, 1);
+        assert_eq!(stats_unhydrated.excluded_quote_only, 1);
+        assert_eq!(stats_unhydrated.pools_indexed, 0);
+        assert!(graph2.edges_by_from.is_empty());
     }
     fn test_config() -> EconomicConfig {
         EconomicConfig {
@@ -2329,11 +2673,26 @@ mod tests {
     #[test]
     fn graph_4hop_multi_detection() {
         let base = MintId::new([1; 32]);
+        let make_cpmm = |id: u8, from: u8, to: u8, r_in: u128, r_out: u128| {
+            let mut p = make_pool(id, from, to, r_in, r_out);
+            p.protocol = DexProtocol::RaydiumCpmm;
+            p.fee_numerator = 2_500;
+            p.fee_denominator = 1_000_000;
+            p.raydium_cpmm_fee = Some(arb_types::RaydiumCpmmFeeState {
+                trade_fee_rate_ppm: 2_500,
+                creator_fee_rate_ppm: 0,
+                protocol_fee_rate: 120_000,
+                fund_fee_rate: 40_000,
+                enable_creator_fee: false,
+                creator_fee_on: 0,
+            });
+            p
+        };
 
-        let p1 = make_pool(1, 1, 2, 10_000_000, 10_000_000);
-        let p2 = make_pool(2, 2, 3, 10_000_000, 10_000_000);
-        let p3 = make_pool(3, 3, 4, 10_000_000, 10_000_000);
-        let p4 = make_pool(4, 4, 1, 10_000_000, 11_200_000);
+        let p1 = make_cpmm(1, 1, 2, 10_000_000, 10_000_000);
+        let p2 = make_cpmm(2, 2, 3, 10_000_000, 10_000_000);
+        let p3 = make_cpmm(3, 3, 4, 10_000_000, 10_000_000);
+        let p4 = make_cpmm(4, 4, 1, 10_000_000, 11_200_000);
 
         let mut graph = MarketGraph::new(vec![base]).with_economic_config(test_config());
         graph.build_from_pools(&[p1, p2, p3, p4]);
@@ -2477,30 +2836,6 @@ mod tests {
     }
 }
 
-// Pump.fun-Raydium Arbitrage Engine
-//core modules (arb/sizing/graph) are gated: they were merged unbuildable in
-//PR #75 (56 compile errors, no callers) — repair behind the feature before
-//promoting them; the on-chain profit guard compiles and stays public.
-#[cfg(feature = "pump-raydium-legacy-engine")]
-pub mod pump_raydium_arb;
-#[cfg(feature = "pump-raydium-legacy-engine")]
-pub use pump_raydium_arb::{
-    ArbitrageDirection, PumpRaydiumConfig, PumpRaydiumEngine, PumpRaydiumOpportunity, RaydiumPool,
-    RaydiumPoolType,
-};
-#[cfg(feature = "pump-raydium-legacy-engine")]
-pub mod pump_raydium_sizing;
-#[cfg(feature = "pump-raydium-legacy-engine")]
-pub use pump_raydium_sizing::{
-    SizingConfig, SizingResult, size_brents_method, size_cpmm_cpmm, size_golden_section,
-    size_newton_raphson,
-};
-#[cfg(feature = "pump-raydium-legacy-engine")]
-pub mod pump_raydium_graph;
-#[cfg(feature = "pump-raydium-legacy-engine")]
-pub use pump_raydium_graph::{
-    ArbitrageCycle, BellmanFordResult, CycleType, GraphNode, Hop, PumpRaydiumGraph, SwapEdge,
-};
 pub mod pump_raydium_guard;
 pub use pump_raydium_guard::{
     AssertMinimumProfit, ProfitGuardBuilder, ProfitGuardConfig, ProfitGuardError,

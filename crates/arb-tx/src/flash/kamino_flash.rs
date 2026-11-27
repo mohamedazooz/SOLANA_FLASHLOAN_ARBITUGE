@@ -55,6 +55,41 @@ impl KaminoFlashParams {
         }
     }
 
+    /// Construct Kamino Main Market flash-loan parameters for a supported borrow mint (`WSOL` or `USDC`).
+    pub fn for_mint(mint: Pubkey, user: Pubkey) -> std::result::Result<Self, TxError> {
+        let wsol = Pubkey::from_str(WSOL_MINT).unwrap();
+        let usdc = Pubkey::from_str(USDC_MINT).unwrap();
+        let spl = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
+        let (reserve, supply_vault, fee_vault) = if mint == wsol {
+            (
+                Pubkey::from_str(KAMINO_WSOL_RESERVE).unwrap(),
+                Pubkey::from_str(KAMINO_WSOL_SUPPLY_VAULT).unwrap(),
+                Pubkey::from_str(KAMINO_WSOL_FEE_VAULT).unwrap(),
+            )
+        } else if mint == usdc {
+            (
+                Pubkey::from_str(KAMINO_USDC_RESERVE).unwrap(),
+                Pubkey::from_str(arb_constants::KAMINO_USDC_SUPPLY_VAULT).unwrap(),
+                Pubkey::from_str(arb_constants::KAMINO_USDC_FEE_VAULT).unwrap(),
+            )
+        } else {
+            return Err(TxError::InvalidInput(format!(
+                "unsupported Kamino flash-loan mint {mint}"
+            )));
+        };
+        Ok(Self {
+            lending_market: Pubkey::from_str(KAMINO_MAIN_MARKET).unwrap(),
+            reserve,
+            reserve_source_liquidity: supply_vault,
+            user_destination_liquidity: get_associated_token_address_with_program_id(
+                &user, &mint, &spl,
+            ),
+            reserve_liquidity_fee_receiver: fee_vault,
+            liquidity_mint: mint,
+            liquidity_token_program: spl,
+        })
+    }
+
     /// Parameters for a live-selected reserve candidate: the user's
     /// destination is the ATA of the candidate's mint, and the mint itself is
     /// carried into account assembly.

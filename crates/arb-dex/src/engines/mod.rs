@@ -46,7 +46,7 @@ impl UniversalQuoteDispatcher {
             DexProtocol::MeteoraDlmm => self.dlmm.quote_exact_in(state, request),
             DexProtocol::RaydiumCpmm => self.cpmm.quote_exact_in(state, request),
             DexProtocol::RaydiumV4 => self.raydium_v4.quote_exact_in(state, request),
-            DexProtocol::RaydiumClmm => Err(ArbError::UnsupportedOperation("Raydium CLMM is telemetry-only until a same-slot AmmConfig and dynamic-fee snapshot is verified".into())),
+            DexProtocol::RaydiumClmm => self.raydium_clmm.quote_exact_in(state, request),
             DexProtocol::OrcaWhirlpool => self.orca.quote_exact_in(state, request),
             DexProtocol::PumpFun => self.pump_curve.quote_exact_in(state, request),
             DexProtocol::PumpSwap => self.pump_swap.quote_exact_in(state, request),

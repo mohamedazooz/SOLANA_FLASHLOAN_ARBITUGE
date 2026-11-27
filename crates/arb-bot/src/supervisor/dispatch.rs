@@ -78,7 +78,32 @@ fn required_live_payer_balance(
     .try_fold(0u64, u64::checked_add)
 }
 
+fn env_flag_truthy(key: &str) -> bool {
+    std::env::var(key)
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 impl Supervisor {
+    /// Canonical V1 transport capability gates shared identically by
+    /// `opportunity.rs` (compile gate) and `dispatch.rs` (broadcast gate).
+    pub(super) fn v1_transport_flags(&self) -> (bool, bool) {
+        let simulate_only = matches!(self.mode(), BotMode::Simulate);
+        let direct_v1_enabled = simulate_only
+            || (env_flag_truthy("SOLANA_TX_V1_DIRECT_ENABLED")
+                && env_flag_truthy("SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED")
+                && self.rpc_pool.has_v1_rpc_allowlist());
+        let jito_v1_enabled = simulate_only
+            || (env_flag_truthy("SOLANA_TX_V1_JITO_ENABLED")
+                && env_flag_truthy("SOLANA_TX_V1_JITO_INGRESS_VERIFIED"));
+        (direct_v1_enabled, jito_v1_enabled)
+    }
+
     /// Return the up-front refundable rent capital required for route ATAs
     /// that do not exist yet. Runs only at LIVE pre-submit time, never in the
     /// market-data or route-sizing hot path.
@@ -97,7 +122,7 @@ impl Supervisor {
         let token_2022_program = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID)?;
 
         let mut expected_accounts = Vec::with_capacity(plan.intermediate_atas.len() + 1);
-        expected_accounts.push((plan.wsol_ata, legacy_program));
+        expected_accounts.push((plan.settlement_ata, plan.settlement_token_program));
         expected_accounts.extend(
             plan.intermediate_atas
                 .into_iter()
@@ -475,7 +500,7 @@ impl Supervisor {
                     {
                         Some(balance) => balance,
                         None => {
-                            let reason = "???? ??????? ??? ???? ?? ?? ??? ????? ????? ?? ??? ??????? ?????????".to_string();
+                            let reason = "رصيد المحفظة الاحتياطي مفقود أو قديم؛ تم رفض الإرسال المباشر حفاظاً على هامش الرسوم".to_string();
                             warn!("Wallet reserve snapshot missing/stale; rejecting live dispatch");
                             self.record_rejected_opportunity(
                                 crate::telegram::RejectedTradeSummary {
@@ -642,41 +667,7 @@ impl Supervisor {
                 }
                 // Authoritative transport selection with explicit capability verification.
                 let cap = arb_tx::TransportCapability::mainnet_v1_capable("Mainnet-RPC-Pool");
-                let direct_v1_enabled = matches!(self.mode(), BotMode::Simulate)
-                    || (std::env::var("SOLANA_TX_V1_DIRECT_ENABLED")
-                        .map(|v| {
-                            matches!(
-                                v.trim().to_ascii_lowercase().as_str(),
-                                "1" | "true" | "yes" | "on"
-                            )
-                        })
-                        .unwrap_or(false)
-                        && std::env::var("SOLANA_TX_V1_DIRECT_INGRESS_VERIFIED")
-                            .map(|v| {
-                                matches!(
-                                    v.trim().to_ascii_lowercase().as_str(),
-                                    "1" | "true" | "yes" | "on"
-                                )
-                            })
-                            .unwrap_or(false)
-                        && self.rpc_pool.has_v1_rpc_allowlist());
-                let jito_v1_enabled = matches!(self.mode(), BotMode::Simulate)
-                    || (std::env::var("SOLANA_TX_V1_JITO_ENABLED")
-                        .map(|v| {
-                            matches!(
-                                v.trim().to_ascii_lowercase().as_str(),
-                                "1" | "true" | "yes" | "on"
-                            )
-                        })
-                        .unwrap_or(false)
-                        && std::env::var("SOLANA_TX_V1_JITO_INGRESS_VERIFIED")
-                            .map(|v| {
-                                matches!(
-                                    v.trim().to_ascii_lowercase().as_str(),
-                                    "1" | "true" | "yes" | "on"
-                                )
-                            })
-                            .unwrap_or(false));
+                let (direct_v1_enabled, jito_v1_enabled) = self.v1_transport_flags();
 
                 if let Err(err) = arb_tx::select_authoritative_transport(
                     tx_bytes,

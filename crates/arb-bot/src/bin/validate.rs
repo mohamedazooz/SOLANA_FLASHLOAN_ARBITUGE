@@ -12,12 +12,13 @@
 
 use anyhow::{Context, Result};
 use arb_engine::MarketGraph;
+use arb_engine::adapters::quote_via_dispatcher;
 use arb_ingest::{AccountSnapshot, AccountSnapshotStore, MultiDexRegistry, RpcPool};
 use arb_math::economic::calculate_flash_fee_raw;
-use arb_math::{Leg, cpmm_out, optimal_two_pool};
+use arb_math::{Leg, optimal_two_pool};
 use arb_risk::minimum_net_profit_hurdle_lamports;
 use arb_tx::JupiterClient;
-use arb_types::{Lamports, MintId, Slot, TokenAmount};
+use arb_types::{Lamports, MintId, PoolKind, PoolState, Slot, TokenAmount};
 use base64::Engine as _;
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
@@ -325,10 +326,12 @@ async fn main() -> Result<()> {
 
     let (opportunities, cycle_stats) = graph.find_base_cycles_with_stats(slot, max_probe_lamports);
     info!(
-        "Cycle scan: {} base anchor(s), {} gross-profitable 2-hop, {} gross-profitable 3-hop, {} rejected by verified economic gate, {} execution-eligible",
+        "Cycle scan: {} base anchor(s), {} gross-profitable 2-hop, {} gross-profitable 3-hop, {} gross-negative, {} quote-rejected, {} rejected by verified economic gate, {} execution-eligible",
         cycle_stats.base_anchors,
         cycle_stats.two_hop_gross_profitable,
         cycle_stats.three_hop_gross_profitable,
+        cycle_stats.gross_negative,
+        cycle_stats.quote_rejected,
         cycle_stats.gate_rejected,
         cycle_stats.opportunities,
     );
@@ -404,25 +407,25 @@ async fn main() -> Result<()> {
     if jupiter.api_keys.is_empty() {
         warn!("JUPITER_API_KEY not set — skipping math-vs-Jupiter comparison");
     } else if let Some(pool) = sol_usdc {
-        // Our quote: SOL -> USDC.
-        let (reserve_in, reserve_out) = if pool.base_mint.0 == wsol {
-            (pool.reserve_in, pool.reserve_out)
-        } else {
-            (pool.reserve_out, pool.reserve_in)
+        // Our quote: SOL -> USDC via protocol-native dispatcher (CLMM/DLMM/CPMM).
+        let a_to_b = pool.base_mint.0 == wsol;
+        let quote_res = match quote_via_dispatcher(pool, amount_in, a_to_b) {
+            Ok(q) => q,
+            Err(e) => {
+                warn!(
+                    "Protocol-native quote failed for pool {}: {e}",
+                    pool.pool_id
+                );
+                return Ok(());
+            }
         };
-        let Some(fee_bps) = pool.fee_bps() else {
-            eprintln!("Pool {} has invalid fee, skipping comparison", pool.pool_id);
-            return Ok(());
-        };
-        let gamma = 10_000u128.saturating_sub(fee_bps as u128);
-        let Some(ours) = cpmm_out(amount_in as u128, reserve_in, reserve_out, gamma) else {
-            eprintln!("CPMM quote overflow for pool {}", pool.pool_id);
-            return Ok(());
-        };
+        let ours = u128::from(quote_res.amount_out_raw);
 
         let label = match pool.protocol {
             arb_types::DexProtocol::RaydiumV4 => "Raydium",
             arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
+            arb_types::DexProtocol::MeteoraDlmm => "Meteora DLMM",
+            arb_types::DexProtocol::RaydiumCpmm => "Raydium CPMM",
             _ => "Unknown",
         };
 
@@ -449,10 +452,12 @@ async fn main() -> Result<()> {
                     f64::NAN
                 };
                 info!(
-                    "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} jupiter={} diff={:.4}%",
+                    "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} (fee_raw={} impact={}bps) jupiter={} diff={:.4}%",
                     label,
                     amount_in as f64 / 1e9,
                     ours,
+                    quote_res.fees_breakdown.total_fee,
+                    quote_res.price_impact.0,
                     jup_out,
                     diff
                 );
@@ -503,29 +508,20 @@ async fn main() -> Result<()> {
     let sol_usdc_pools: Vec<&arb_types::PoolState> =
         live_pools.iter().filter(|p| is_sol_usdc(p)).collect();
 
-    // Every ordered pair of venues (a: buy SOL -> USDC, b: sell USDC -> SOL), so
-    // the LOW-FEE routes (e.g. Orca 4 bps + Meteora 4 bps) are evaluated too.
-    let mut dirs: Vec<(
-        String,
-        Leg,
-        Leg,
-        arb_types::DexProtocol,
-        arb_types::DexProtocol,
-    )> = Vec::new();
+    // Every ordered pair of venues (a: buy SOL -> USDC, b: sell USDC -> SOL),
+    // priced with each venue's exact protocol math (CLMM ticks, DLMM bins, CPMM).
+    let mut dirs: Vec<(String, &PoolState, &PoolState)> = Vec::new();
     for a in &sol_usdc_pools {
         for b in &sol_usdc_pools {
             if a.pool_id == b.pool_id {
                 continue;
             }
-            let (a_sol, a_usdc) = legs_of(a);
-            let (b_sol, b_usdc) = legs_of(b);
             let Some(a_fee) = a.fee_bps() else {
                 continue;
             };
             let Some(b_fee) = b.fee_bps() else {
                 continue;
             };
-            // These are valid because we're in a loop and continue diverges
             let a_id = a.pool_id.0.to_string();
             let b_id = b.pool_id.0.to_string();
             dirs.push((
@@ -538,18 +534,8 @@ async fn main() -> Result<()> {
                     b_fee,
                     &b_id[..4.min(b_id.len())]
                 ),
-                Leg {
-                    r_in: a_sol,
-                    r_out: a_usdc,
-                    gamma: 10_000u128.saturating_sub(a_fee as u128),
-                },
-                Leg {
-                    r_in: b_usdc,
-                    r_out: b_sol,
-                    gamma: 10_000u128.saturating_sub(b_fee as u128),
-                },
-                a.protocol,
-                b.protocol,
+                *a,
+                *b,
             ));
         }
     }
@@ -563,15 +549,13 @@ async fn main() -> Result<()> {
         edge_bps: f64,
         hurdle: u64,
         priority_fee: u64,
+        impact_bps: u64,
         optimum: Option<u64>,
     }
 
     if !dirs.is_empty() {
         let mut results_summary: Vec<RouteEdgeResult> = Vec::new();
-        for (name, l1, l2, protocol_a, protocol_b) in dirs {
-            // Probe fractions of the configured maximum and report the BEST net PnL. A negative
-            // best net is the honest answer "no arbitrage"; the numbers are shown
-            // so the equation is visible, not hidden behind a boolean.
+        for (name, pool_a, pool_b) in dirs {
             let mut probes: Vec<u64> = [10_000u64, 7_500, 5_000, 2_500, 1_000, 500]
                 .into_iter()
                 .map(|fraction_bps| {
@@ -581,16 +565,44 @@ async fn main() -> Result<()> {
                 .collect();
             probes.sort_unstable_by(|a, b| b.cmp(a));
             probes.dedup();
-            let mut best: Option<(u64, i128, i128, i128, f64, u64, u64)> = None;
+            let mut best: Option<RouteEdgeResult> = None;
+            let a_to_b_1 = pool_a.base_mint.0 == wsol;
+            let a_to_b_2 = pool_b.base_mint.0 == usdc;
+            let optimum = if pool_a.kind == PoolKind::Cpmm && pool_b.kind == PoolKind::Cpmm {
+                let (a_sol, a_usdc) = legs_of(pool_a);
+                let (b_sol, b_usdc) = legs_of(pool_b);
+                let a_fee = pool_a.fee_bps().unwrap_or(10_000);
+                let b_fee = pool_b.fee_bps().unwrap_or(10_000);
+                let l1 = Leg {
+                    r_in: a_sol,
+                    r_out: a_usdc,
+                    gamma: 10_000u128.saturating_sub(a_fee as u128),
+                };
+                let l2 = Leg {
+                    r_in: b_usdc,
+                    r_out: b_sol,
+                    gamma: 10_000u128.saturating_sub(b_fee as u128),
+                };
+                optimal_two_pool(&l1, &l2).filter(|size| *size <= max_probe_lamports)
+            } else {
+                None
+            };
             for size in probes {
-                let Some(mid) = cpmm_out(size as u128, l1.r_in, l1.r_out, l1.gamma) else {
+                let Ok(q1) = quote_via_dispatcher(pool_a, size, a_to_b_1) else {
                     continue;
                 };
-                let Some(back) = cpmm_out(mid, l2.r_in, l2.r_out, l2.gamma) else {
+                if q1.amount_out_raw == 0 {
+                    continue;
+                }
+                let Ok(q2) = quote_via_dispatcher(pool_b, q1.amount_out_raw, a_to_b_2) else {
                     continue;
                 };
-                let gross = back as i128 - size as i128;
-                let route_protocols = [protocol_a, protocol_b];
+                let back = q2.amount_out_raw;
+                let gross = i128::from(back) - i128::from(size);
+                let retained_1 = 10_000u64.saturating_sub(u64::from(q1.price_impact.0));
+                let retained_2 = 10_000u64.saturating_sub(u64::from(q2.price_impact.0));
+                let route_impact_bps = 10_000u64.saturating_sub((retained_1 * retained_2) / 10_000);
+                let route_protocols = [pool_a.protocol, pool_b.protocol];
                 let estimated_cu = arb_tx::estimate_route_cu(true, &route_protocols, 1);
                 let cu_limit = arb_tx::calculate_dynamic_cu_limit(estimated_cu);
                 let max_priority_share_bps = app_config
@@ -607,16 +619,11 @@ async fn main() -> Result<()> {
                 );
                 let priority_fee = arb_tx::priority_fee_lamports(cu_price, cu_limit);
                 let flash_fee = calculate_flash_fee_raw(size, sf).unwrap_or(u64::MAX);
-                // The diagnostic route is explicitly WSOL-anchored, so its
-                // amounts and all execution liabilities are lamports. Still
-                // delegate PnL to the canonical evaluator: this keeps its
-                // rounding, signed-loss and overflow semantics aligned with
-                // the production Supervisor.
                 let net = arb_math::economic::calculate_net_profit_raw_signed(
-                    u64::try_from(back).unwrap_or(0),
+                    back,
                     size,
                     flash_fee,
-                    0, // DEX fees are reflected in the chained CPMM output
+                    0, // DEX fees are reflected in the protocol-native outputs
                     0, // no separately charged Token-2022 transfer fees in this diagnostic
                     0, // no account creation cost included
                     0, // no additional verified raw costs
@@ -635,23 +642,23 @@ async fn main() -> Result<()> {
                     min_profit_bps,
                 )
                 .as_u64();
-                if best.is_none_or(|b| net > b.3) {
-                    best = Some((size, gross, costs, net, edge_bps, hurdle, priority_fee));
+                if best.as_ref().is_none_or(|b| net > b.net) {
+                    best = Some(RouteEdgeResult {
+                        name: name.clone(),
+                        size,
+                        gross,
+                        costs,
+                        net,
+                        edge_bps,
+                        hurdle,
+                        priority_fee,
+                        impact_bps: route_impact_bps,
+                        optimum,
+                    });
                 }
             }
-            let optimum = optimal_two_pool(&l1, &l2).filter(|size| *size <= max_probe_lamports);
-            if let Some((size, gross, costs, net, edge_bps, hurdle, priority_fee)) = best {
-                results_summary.push(RouteEdgeResult {
-                    name,
-                    size,
-                    gross,
-                    costs,
-                    net,
-                    edge_bps,
-                    hurdle,
-                    priority_fee,
-                    optimum,
-                });
+            if let Some(candidate) = best {
+                results_summary.push(candidate);
             }
         }
 
@@ -659,14 +666,17 @@ async fn main() -> Result<()> {
         results_summary.sort_by_key(|result| std::cmp::Reverse(result.net));
 
         info!("\n================================================================================");
-        info!("📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, CONFIG-CAPPED; route-sized priority fee)");
+        info!(
+            "📊 MULTI-DEX NET-PnL RANKING (SOL/USDC, PROTOCOL-NATIVE MATH; route-sized priority fee)"
+        );
         info!("================================================================================");
         for res in &results_summary {
             info!(
-                "\n💠 EDGE [{}]\n   best probe size = {:.6} SOL (closed-form optimum within cap = {:?})\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
+                "\n💠 EDGE [{}]\n   best probe size = {:.6} SOL (CPMM optimum within cap = {:?})\n   impact  = {} bps\n   gross   = {:+} lamports\n   costs   = {} lamports (flash + tip {} + base {} + route-prio {})\n   NET     = {:+} lamports ({:+.9} SOL)\n   hurdle  = {} lamports (max absolute floor / {} bps)\n   EDGE    = {:+.3} bps\n   verdict = {}",
                 res.name,
                 res.size as f64 / 1e9,
                 res.optimum.map(|o| format!("{:.6} SOL", o as f64 / 1e9)),
+                res.impact_bps,
                 res.gross,
                 res.costs,
                 tip_lamports,
