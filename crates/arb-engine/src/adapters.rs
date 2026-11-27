@@ -744,10 +744,14 @@ mod tests {
                 tick_arrays: vec![
                     ClmmTickArray {
                         start_tick_index: -88 * i32::from(spacing),
+                        account_pubkey: None,
+                        account_slot: None,
                         ticks: vec![],
                     },
                     ClmmTickArray {
                         start_tick_index: 0,
+                        account_pubkey: None,
+                        account_slot: None,
                         ticks: vec![],
                     },
                 ],
@@ -799,10 +803,14 @@ mod tests {
                 tick_arrays: vec![
                     ClmmTickArray {
                         start_tick_index: 60 * i32::from(spacing),
+                        account_pubkey: None,
+                        account_slot: None,
                         ticks: vec![],
                     },
                     ClmmTickArray {
                         start_tick_index: 120 * i32::from(spacing),
+                        account_pubkey: None,
+                        account_slot: None,
                         ticks: vec![],
                     },
                 ],
@@ -1069,10 +1077,14 @@ mod tests {
             c.tick_arrays = vec![
                 ClmmTickArray {
                     start_tick_index: 0,
+                    account_pubkey: None,
+                    account_slot: None,
                     ticks: Vec::new(),
                 },
                 ClmmTickArray {
                     start_tick_index: -88 * 4,
+                    account_pubkey: None,
+                    account_slot: None,
                     ticks: (0..88)
                         .map(|i| ClmmTick {
                             tick_index: -88 * 4 + i * 4,

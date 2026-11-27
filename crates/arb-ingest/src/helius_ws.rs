@@ -106,15 +106,15 @@ pub struct HeliusWsClient {
     endpoint_unsupported: AtomicBool,
     probe_confirmed: AtomicBool,
     slot_notify: Arc<Notify>,
+    /// Wakes the derived-account hydrator as soon as a WS update queues work.
+    /// The pending map coalesces repeated updates by pool before the worker drains it.
+    derived_hydration_notify: Arc<Notify>,
     /// Shared RPC pool for the startup seed and event-driven derived-account
     /// hydration (tick arrays / bin arrays). One pool per client, not per call.
     rpc_pool: crate::rpc_pool::RpcPool,
     /// Pools whose derived-account coverage failed a WS update and need a
     /// targeted hydration fetch. Value = trigger slot.
     pending_derived: parking_lot::Mutex<HashMap<PoolId, u64>>,
-    /// Immediate wakeup notifier so derived-account hydration fires in sub-ms
-    /// instead of waiting on a 500ms polling interval.
-    hydration_notify: Arc<Notify>,
     /// Per-pool hydrated coverage: (covered array indices/starts, last attempt).
     derived_covered: parking_lot::Mutex<HashMap<PoolId, (Vec<i64>, Instant)>>,
 }
@@ -146,9 +146,9 @@ impl HeliusWsClient {
             endpoint_unsupported: AtomicBool::new(false),
             probe_confirmed: AtomicBool::new(false),
             slot_notify: Arc::new(Notify::new()),
+            derived_hydration_notify: Arc::new(Notify::new()),
             rpc_pool: crate::rpc_pool::RpcPool::from_env(),
             pending_derived: parking_lot::Mutex::new(HashMap::new()),
-            hydration_notify: Arc::new(Notify::new()),
             derived_covered: parking_lot::Mutex::new(HashMap::new()),
         }
     }
@@ -665,13 +665,19 @@ impl HeliusWsClient {
             let hydration_client = Arc::clone(&self);
             let hydration_ingest = Arc::clone(&ingest);
             let hydration_cancel = cancel.clone();
+            let hydration_notify = Arc::clone(&self.derived_hydration_notify);
             tokio::spawn(async move {
                 let mut fallback_sweep = tokio::time::interval(Duration::from_secs(5));
                 fallback_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         _ = hydration_cancel.cancelled() => break,
-                        _ = hydration_client.hydration_notify.notified() => {
+                        _ = hydration_notify.notified() => {
+                            // Coalesce bursts from multiple pool updates into one drain.
+                            tokio::select! {
+                                _ = hydration_cancel.cancelled() => break,
+                                _ = sleep(Duration::from_millis(50)) => {}
+                            }
                             hydration_client
                                 .hydrate_pending_derived(&hydration_ingest)
                                 .await;
@@ -759,8 +765,29 @@ impl HeliusWsClient {
                         // taken from one that can. Stable sort keeps discovery
                         // order inside each tier.
                         let mut raw = raw;
+                        let tracked_count = raw.len();
                         raw.sort_by_key(|acc| self.account_wsol_linkage(acc));
-                        raw.into_iter().take(max_ws_account_subs()).collect()
+                        let subscription_limit = max_ws_account_subs();
+                        let selected: VecDeque<Pubkey> =
+                            raw.into_iter().take(subscription_limit).collect();
+                        let deferred_count = tracked_count.saturating_sub(selected.len());
+                        if deferred_count > 0 {
+                            warn!(
+                                tracked_accounts = tracked_count,
+                                selected_accounts = selected.len(),
+                                deferred_accounts = deferred_count,
+                                subscription_limit,
+                                "WebSocket subscription budget leaves tracked accounts without live updates; freshness gates remain authoritative"
+                            );
+                        } else {
+                            info!(
+                                tracked_accounts = tracked_count,
+                                selected_accounts = selected.len(),
+                                subscription_limit,
+                                "WebSocket initial account subscription coverage"
+                            );
+                        }
+                        selected
                     };
                     // Remember every account included in this connection's initial
                     // snapshot. A concurrent registration can also enter the dynamic
@@ -1012,7 +1039,7 @@ impl HeliusWsClient {
         covered.insert(pool_id, (Vec::new(), Instant::now()));
         drop(covered);
         self.pending_derived.lock().insert(pool_id, slot);
-        self.hydration_notify.notify_one();
+        self.derived_hydration_notify.notify_one();
     }
 
     /// Drain the hydration queue: fetch each queued pool's needed derived
@@ -1056,7 +1083,12 @@ impl HeliusWsClient {
                     );
                     let ext = crate::registry::bitmap_extension_pda(&pool_id.0);
                     keys.push(ext);
-                    let refs: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+                    // Fetch the pool and every derived TickArray in ONE RPC batch.
+                    // This gives the quote a common context slot and lets us prove
+                    // the pool bytes used by the local snapshot are unchanged at it.
+                    let mut refs: Vec<String> = Vec::with_capacity(keys.len() + 1);
+                    refs.push(pool_id.0.to_string());
+                    refs.extend(keys.iter().map(|key| key.to_string()));
                     let ref_strs: Vec<&str> = refs.iter().map(|s| s.as_str()).collect();
                     let Ok((accounts, hydration_context_slot)) = self
                         .rpc_pool
@@ -1202,13 +1234,45 @@ impl HeliusWsClient {
                     else {
                         continue;
                     };
+                    let Some(pool_account) = accounts.first().and_then(Option::as_ref) else {
+                        continue;
+                    };
+                    let expected_program = if reg.protocol == DexProtocol::OrcaWhirlpool {
+                        arb_constants::ORCA_WHIRLPOOL_PROGRAM_ID
+                    } else {
+                        arb_constants::RAYDIUM_CLMM_PROGRAM_ID
+                    };
+                    let pool_owner_ok = pool_account
+                        .get("owner")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(expected_program);
+                    let pool_bytes_match = pool_account
+                        .get("data")
+                        .and_then(|data| data.get(0))
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|raw| base64::engine::general_purpose::STANDARD.decode(raw).ok())
+                        .is_some_and(|bytes| bytes.as_slice() == snap.data.as_ref());
+                    if !pool_owner_ok || !pool_bytes_match {
+                        continue;
+                    }
+
                     let mut arrays = Vec::new();
-                    for (acc, start_tick) in accounts.into_iter().zip(starts.iter()) {
+                    for ((acc, account_key), start_tick) in accounts
+                        .into_iter()
+                        .skip(1)
+                        .zip(keys.iter())
+                        .zip(starts.iter())
+                    {
                         let Some(acc) = acc else { continue };
+                        let owner_ok = acc.get("owner").and_then(serde_json::Value::as_str)
+                            == Some(expected_program);
+                        if !owner_ok {
+                            continue;
+                        }
                         let Some(raw) = acc
                             .get("data")
-                            .and_then(|d| d.get(0))
-                            .and_then(|s| s.as_str())
+                            .and_then(|data| data.get(0))
+                            .and_then(serde_json::Value::as_str)
                         else {
                             continue;
                         };
@@ -1230,14 +1294,16 @@ impl HeliusWsClient {
                         {
                             arrays.push(arb_types::ClmmTickArray {
                                 start_tick_index: start,
+                                account_pubkey: Some(account_key.to_bytes()),
+                                account_slot: Some(slot),
                                 ticks: ticks
                                     .into_iter()
-                                    .filter(|t| t.initialized)
-                                    .map(|t| arb_types::ClmmTick {
-                                        tick_index: t.tick_index,
+                                    .filter(|tick| tick.initialized)
+                                    .map(|tick| arb_types::ClmmTick {
+                                        tick_index: tick.tick_index,
                                         initialized: true,
-                                        liquidity_net: t.liquidity_net,
-                                        limit_order_unfilled: t.limit_order_unfilled,
+                                        liquidity_net: tick.liquidity_net,
+                                        limit_order_unfilled: tick.limit_order_unfilled,
                                     })
                                     .collect(),
                             });
@@ -2258,6 +2324,21 @@ mod tests {
         unsafe {
             std::env::remove_var("WS_MAX_ACCOUNT_SUBS");
         }
+    }
+
+    #[tokio::test]
+    async fn queue_derived_hydration_notifies_worker_without_polling() {
+        let client =
+            HeliusWsClient::new_with_options(vec!["wss://ws1.example.com".to_string()], false);
+        let pool_id = PoolId(Pubkey::new_unique());
+        let notified = client.derived_hydration_notify.notified();
+
+        client.queue_derived_hydration(pool_id, 77);
+
+        tokio::time::timeout(Duration::from_millis(100), notified)
+            .await
+            .expect("queueing derived hydration must wake the worker");
+        assert_eq!(client.pending_derived.lock().get(&pool_id), Some(&77));
     }
 
     #[test]

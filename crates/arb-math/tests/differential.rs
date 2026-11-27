@@ -520,6 +520,8 @@ mod raydium_tests {
 // ============================================================================
 
 mod pump_tests {
+    // Synthetic fixture inputs only; never use these as live protocol fees.
+    const TEST_FINANCING_FEE_BPS: u64 = 30;
     use arb_math::pump_fun_raydium::{
         MIN_NET_PROFIT_LAMPORTS, PumpFunParams, RaydiumParams, calculate_optimal_trade,
         pump_fun_buy_cost, pump_fun_marginal_price, raydium_sell_output,
@@ -594,13 +596,6 @@ mod pump_tests {
         assert!(MIN_NET_PROFIT_LAMPORTS > 0);
     }
 
-    /// Default fees.
-    #[test]
-    fn test_default_fees() {
-        assert!(30 < 10_000);
-        assert_eq!(25, 25);
-    }
-
     /// Optimal trade sizing: unprofitable returns Err.
     #[test]
     fn test_optimal_trade_unprofitable() {
@@ -614,7 +609,7 @@ mod pump_tests {
             fee_bps: 25,
         };
 
-        let result = calculate_optimal_trade(pump, raydium, 30, 1_000_000);
+        let result = calculate_optimal_trade(pump, raydium, TEST_FINANCING_FEE_BPS, 1_000_000);
         assert!(
             result.is_err(),
             "identical reserves with fees must be unprofitable"

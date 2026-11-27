@@ -100,6 +100,12 @@ async fn main() -> Result<()> {
             );
         }
     }
+    for skipped in registry.last_hydration_skips() {
+        warn!(
+            "POOL_HYDRATION_REJECTED protocol={:?} pool={} reason={}",
+            skipped.protocol, skipped.pool_id, skipped.reason
+        );
+    }
 
     let wsol = Pubkey::from_str(arb_tx::WSOL_MINT)?;
     let usdc = Pubkey::from_str(arb_tx::USDC_MINT)?;
@@ -347,7 +353,7 @@ async fn main() -> Result<()> {
         );
         for (index, hop) in rejected.hops.iter().enumerate() {
             info!(
-                "  REJECTED_HOP route={} leg={} pool={:?} dex={:?} kind={:?} direction={:?}->{:?} dex_fee_bps={}",
+                "  REJECTED_HOP route={} leg={} pool={:?} dex={:?} kind={:?} direction={:?}->{:?} dex_fee_bps={} amount_in_raw={:?} amount_out_raw={:?} dex_fee_paid_raw={:?} transfer_fee_paid_raw={:?}",
                 rejected.route_id,
                 index + 1,
                 hop.pool_id,
@@ -356,6 +362,10 @@ async fn main() -> Result<()> {
                 hop.from_mint,
                 hop.to_mint,
                 hop.fee_bps,
+                hop.amount_in_raw,
+                hop.amount_out_raw,
+                hop.dex_fee_paid_raw,
+                hop.transfer_fee_paid_raw,
             );
         }
     }
@@ -409,64 +419,77 @@ async fn main() -> Result<()> {
     } else if let Some(pool) = sol_usdc {
         // Our quote: SOL -> USDC via protocol-native dispatcher (CLMM/DLMM/CPMM).
         let a_to_b = pool.base_mint.0 == wsol;
-        let quote_res = match quote_via_dispatcher(pool, amount_in, a_to_b) {
-            Ok(q) => q,
+        match quote_via_dispatcher(pool, amount_in, a_to_b) {
+            Ok(quote_res) => {
+                let ours = u128::from(quote_res.amount_out_raw);
+                let label = match pool.protocol {
+                    arb_types::DexProtocol::RaydiumV4 => "Raydium",
+                    arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
+                    arb_types::DexProtocol::MeteoraDlmm => "Meteora DLMM",
+                    arb_types::DexProtocol::RaydiumCpmm => "Raydium CPMM",
+                    _ => "Unknown",
+                };
+
+                match jupiter
+                    .get_quote_dexes(
+                        &wsol.to_string(),
+                        &usdc.to_string(),
+                        amount_in,
+                        math_check_slippage_bps,
+                        Some(&[label]),
+                    )
+                    .await
+                {
+                    Ok(quote) => {
+                        let expected_pool = pool.pool_id.0.to_string();
+                        let same_single_pool = quote["routePlan"].as_array().is_some_and(|plan| {
+                            plan.len() == 1
+                                && plan[0]["swapInfo"]["ammKey"]
+                                    .as_str()
+                                    .is_some_and(|key| key == expected_pool)
+                        });
+                        if !same_single_pool {
+                            warn!(
+                                "Jupiter venue reference is not the same single pool (target={}); comparison intentionally skipped",
+                                expected_pool
+                            );
+                        } else {
+                            let jup_out = quote["outAmount"]
+                                .as_str()
+                                .and_then(|s| s.parse::<u128>().ok())
+                                .unwrap_or(0);
+                            let diff = if jup_out > 0 && ours > jup_out {
+                                (ours - jup_out) as f64 / jup_out as f64 * 100.0
+                            } else if jup_out > 0 {
+                                (jup_out - ours) as f64 / jup_out as f64 * 100.0
+                            } else {
+                                f64::NAN
+                            };
+                            info!(
+                                "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} (fee_raw={} impact={}bps) jupiter={} diff={:.4}%",
+                                label,
+                                amount_in as f64 / 1e9,
+                                ours,
+                                quote_res.fees_breakdown.total_fee,
+                                quote_res.price_impact.0,
+                                jup_out,
+                                diff
+                            );
+                            info!(
+                                "   (a small diff is expected: Jupiter includes its own fee tier / \
+                             account state; a LARGE diff flags a math or reserve-decoding bug)"
+                            );
+                        }
+                    }
+                    Err(e) => warn!("Jupiter {label} quote failed: {e}"),
+                }
+            }
             Err(e) => {
                 warn!(
-                    "Protocol-native quote failed for pool {}: {e}",
-                    pool.pool_id
-                );
-                return Ok(());
-            }
-        };
-        let ours = u128::from(quote_res.amount_out_raw);
-
-        let label = match pool.protocol {
-            arb_types::DexProtocol::RaydiumV4 => "Raydium",
-            arb_types::DexProtocol::OrcaWhirlpool => "Whirlpool",
-            arb_types::DexProtocol::MeteoraDlmm => "Meteora DLMM",
-            arb_types::DexProtocol::RaydiumCpmm => "Raydium CPMM",
-            _ => "Unknown",
-        };
-
-        match jupiter
-            .get_quote_dexes(
-                &wsol.to_string(),
-                &usdc.to_string(),
-                amount_in,
-                math_check_slippage_bps,
-                Some(&[label]),
-            )
-            .await
-        {
-            Ok(quote) => {
-                let jup_out = quote["outAmount"]
-                    .as_str()
-                    .and_then(|s| s.parse::<u128>().ok())
-                    .unwrap_or(0);
-                let diff = if jup_out > 0 && ours > jup_out {
-                    (ours - jup_out) as f64 / jup_out as f64 * 100.0
-                } else if jup_out > 0 {
-                    (jup_out - ours) as f64 / jup_out as f64 * 100.0
-                } else {
-                    f64::NAN
-                };
-                info!(
-                    "📐 MATH CHECK [{}] {:.6} SOL → USDC: ours={} (fee_raw={} impact={}bps) jupiter={} diff={:.4}%",
-                    label,
-                    amount_in as f64 / 1e9,
-                    ours,
-                    quote_res.fees_breakdown.total_fee,
-                    quote_res.price_impact.0,
-                    jup_out,
-                    diff
-                );
-                info!(
-                    "   (a small diff is expected: Jupiter includes its own fee tier / \
-                     account state; a LARGE diff flags a math or reserve-decoding bug)"
+                    "Skipping math comparison for {:?} pool {}: protocol-native quote failed ({e})",
+                    pool.protocol, pool.pool_id
                 );
             }
-            Err(e) => warn!("Jupiter {label} quote failed: {e}"),
         }
     } else {
         warn!("No live SOL/USDC pool found in the registry — cannot run the math check");

@@ -22,6 +22,8 @@ use arb_math::{
 };
 use proptest::prelude::*;
 
+const TEST_FINANCING_FEE_BPS: u64 = 30; // synthetic property-test fixture only
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(500))]
 
@@ -317,7 +319,7 @@ proptest! {
         let ray = RaydiumParams { token_reserve: ray_tok, sol_reserve: ray_sol, fee_bps: 25 };
 
         // calculate_optimal_trade_integer must fail closed on unprofitable trades
-        let trade = calculate_optimal_trade_integer(pump, ray, 30, 1_000_000);
+        let trade = calculate_optimal_trade_integer(pump, ray, TEST_FINANCING_FEE_BPS, 1_000_000);
         if let Some(t) = trade {
             prop_assert!(t.is_profitable(), "Optimal trade integer MUST be profitable");
             prop_assert!(t.delta_t > 0, "Optimal trade delta_t must be > 0");

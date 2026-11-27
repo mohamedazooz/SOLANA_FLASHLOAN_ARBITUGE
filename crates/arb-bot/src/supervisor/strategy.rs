@@ -212,6 +212,21 @@ impl Supervisor {
             let g = self.graph.lock();
             g.base_anchors.clone()
         };
+        let recent_landed_cu = self.recent_landed_cu.lock().clone();
+        let fresh_market = {
+            let market = self.recent_priority_market_cu.lock();
+            market
+                .as_ref()
+                .filter(|(_, sampled_at)| {
+                    sampled_at.elapsed() <= std::time::Duration::from_secs(12)
+                })
+                .map(|(samples, _)| samples.clone())
+                .unwrap_or_default()
+        };
+        let desired_cu_price = self
+            .tip_strategy
+            .adaptive_cu_price_with_market(&recent_landed_cu, &fresh_market);
+
         let mut verified_anchors: Vec<(
             MintId,
             VerifiedQuoteInputs,
@@ -241,10 +256,11 @@ impl Supervisor {
                                 continue;
                             }
                         };
-                    let eco = v.to_economic_config(
+                    let mut eco = v.to_economic_config(
                         TokenAmount(min_profit_base_raw),
                         self.config.strategy.hop_slippage_bps,
                     );
+                    eco.priority_fee_micro_lamports = desired_cu_price;
                     verified_anchors.push((*anchor, v, eco));
                 }
                 Err(e) => {

@@ -12,8 +12,9 @@
 
 use arb_constants::{
     PUMP_SWAP_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR, PUMP_SWAP_BUY_V2_DISCRIMINATOR,
-    PUMP_SWAP_PROGRAM_ID, PUMP_SWAP_SELL_V2_DISCRIMINATOR, RAYDIUM_CPMM_PROGRAM_ID,
-    RAYDIUM_V4_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, WSOL_MINT,
+    PUMP_SWAP_BUYBACK_FEE_RECIPIENTS, PUMP_SWAP_PROGRAM_ID, PUMP_SWAP_SELL_V2_DISCRIMINATOR,
+    RAYDIUM_CPMM_PROGRAM_ID, RAYDIUM_V4_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID,
+    WSOL_MINT,
 };
 use arb_tx::{
     AccountMeta, OrcaWhirlpoolAccounts, PumpSwapTradeMode, RaydiumCpmmAccounts, RaydiumV4Accounts,
@@ -199,133 +200,140 @@ fn test_pump_swap_v2_exact_17_accounts_and_discriminators() {
     let pool_base_vault = Pubkey::new_unique();
     let pool_quote_vault = Pubkey::new_unique();
     let global_config = Pubkey::new_unique();
-    let protocol_fee_recipient = Pubkey::new_unique();
-    let protocol_fee_recipient_ata = Pubkey::new_unique();
-    let coin_creator_vault_authority = Pubkey::new_unique();
-    let coin_creator_vault_ata = Pubkey::new_unique();
+    let fee_config = Pubkey::new_unique();
     let token_program_base = Pubkey::from_str(TOKEN_2022_PROGRAM_ID).unwrap();
     let token_program_quote = Pubkey::from_str(TOKEN_PROGRAM_ID).unwrap();
     let event_authority = Pubkey::new_unique();
-    let amount_in: u64 = 1_000_000_000;
-    let min_amount_out: u64 = 500_000_000;
+    let amount_specified: u64 = 1_000_000_000;
+    let other_amount_threshold: u64 = 500_000_000;
 
-    // 1. BuyExactQuoteInV2
-    let ix_buy = build_pump_swap_instruction_v2(
-        pool,
-        user,
-        base_mint,
-        quote_mint,
-        pool_base_vault,
-        pool_quote_vault,
-        global_config,
-        protocol_fee_recipient,
-        protocol_fee_recipient_ata,
-        coin_creator_vault_authority,
-        coin_creator_vault_ata,
-        token_program_base,
-        token_program_quote,
-        event_authority,
-        amount_in,
-        min_amount_out,
+    let program_id = Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).unwrap();
+    let user_volume_accumulator =
+        Pubkey::find_program_address(&[b"user_volume_accumulator", user.as_ref()], &program_id).0;
+    let buyback_wallet = Pubkey::from_str(PUMP_SWAP_BUYBACK_FEE_RECIPIENTS[0]).unwrap();
+    let buyback_fee_recipient = get_associated_token_address_with_program_id(
+        &buyback_wallet,
+        &quote_mint,
+        &token_program_quote,
+    );
+    let user_base_token =
+        get_associated_token_address_with_program_id(&user, &base_mint, &token_program_base);
+    let user_quote_token =
+        get_associated_token_address_with_program_id(&user, &quote_mint, &token_program_quote);
+
+    let build = |mode, specified, threshold| {
+        build_pump_swap_instruction_v2(
+            pool,
+            user,
+            base_mint,
+            quote_mint,
+            pool_base_vault,
+            pool_quote_vault,
+            global_config,
+            fee_config,
+            token_program_base,
+            token_program_quote,
+            event_authority,
+            specified,
+            threshold,
+            mode,
+        )
+    };
+
+    // buy_exact_quote_in_v2: exact quote input, minimum base output.
+    let ix_buy = build(
         PumpSwapTradeMode::BuyExactQuoteInV2,
-        None, // remaining_accounts (observed +3 on mainnet, not in IDL)
+        amount_specified,
+        other_amount_threshold,
     )
-    .expect("build pump swap buy v2");
+    .expect("build PumpSwap buy_exact_quote_in_v2");
 
+    assert_eq!(ix_buy.program_id, program_id);
+    assert_eq!(ix_buy.accounts.len(), 17);
     assert_eq!(
-        ix_buy.program_id,
-        Pubkey::from_str(PUMP_SWAP_PROGRAM_ID).unwrap()
-    );
-    assert_eq!(
-        ix_buy.accounts.len(),
-        17,
-        "PumpSwap V2 must have exactly 17 accounts matching pump_amm.json"
-    );
-
-    // Verify discriminator for BuyExactQuoteInV2
-    assert_eq!(
-        &ix_buy.data[0..8],
-        &PUMP_SWAP_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR,
-        "Discriminator must match buy_exact_quote_in_v2"
+        ix_buy.data.get(..8),
+        Some(PUMP_SWAP_BUY_EXACT_QUOTE_IN_V2_DISCRIMINATOR.as_slice())
     );
     assert_eq!(
         u64::from_le_bytes(ix_buy.data[8..16].try_into().unwrap()),
-        amount_in
+        amount_specified
     );
     assert_eq!(
         u64::from_le_bytes(ix_buy.data[16..24].try_into().unwrap()),
-        min_amount_out
+        other_amount_threshold
     );
 
-    // Verify ATA derivations match respective token programs
-    let expected_user_base =
-        get_associated_token_address_with_program_id(&user, &base_mint, &token_program_base);
-    let expected_user_quote =
-        get_associated_token_address_with_program_id(&user, &quote_mint, &token_program_quote);
-    assert_eq!(ix_buy.accounts[5].pubkey, expected_user_base);
-    assert_eq!(ix_buy.accounts[6].pubkey, expected_user_quote);
-    assert_eq!(ix_buy.accounts[11].pubkey, token_program_base);
-    assert_eq!(ix_buy.accounts[12].pubkey, token_program_quote);
-    assert_eq!(ix_buy.accounts[15].pubkey, event_authority);
-    assert_eq!(ix_buy.accounts[16].pubkey, coin_creator_vault_ata);
-
-    // 2. SellExactBaseInV2
-    let ix_sell = build_pump_swap_instruction_v2(
+    // The 17 accounts match the current PumpSwap V2 instruction specification.
+    let expected_accounts = [
         pool,
         user,
+        global_config,
         base_mint,
         quote_mint,
+        user_base_token,
+        user_quote_token,
         pool_base_vault,
         pool_quote_vault,
-        global_config,
-        protocol_fee_recipient,
-        protocol_fee_recipient_ata,
-        coin_creator_vault_authority,
-        coin_creator_vault_ata,
         token_program_base,
         token_program_quote,
+        Pubkey::default(), // System Program
+        user_volume_accumulator,
+        fee_config,
+        buyback_fee_recipient,
         event_authority,
-        amount_in,
-        min_amount_out,
+        program_id,
+    ];
+    for (index, expected) in expected_accounts.iter().enumerate() {
+        assert_eq!(ix_buy.accounts[index].pubkey, *expected, "account {index}");
+    }
+    assert!(ix_buy.accounts[1].is_signer);
+    for index in [0usize, 1, 5, 6, 7, 8, 12, 14] {
+        assert!(
+            ix_buy.accounts[index].is_writable,
+            "account {index} writable"
+        );
+    }
+    for index in [2usize, 3, 4, 9, 10, 11, 13, 15, 16] {
+        assert!(
+            !ix_buy.accounts[index].is_writable,
+            "account {index} readonly"
+        );
+    }
+
+    // sell_v2: exact base input, minimum quote output.
+    let ix_sell = build(
         PumpSwapTradeMode::SellExactBaseInV2,
-        None, // remaining_accounts (observed +2 on mainnet, not in IDL)
+        amount_specified,
+        other_amount_threshold,
     )
-    .expect("build pump swap sell v2");
-
-    assert_eq!(
-        &ix_sell.data[0..8],
-        &PUMP_SWAP_SELL_V2_DISCRIMINATOR,
-        "Discriminator must match sell_v2"
-    );
+    .expect("build PumpSwap sell_v2");
     assert_eq!(ix_sell.accounts.len(), 17);
-
-    // 3. BuyExactBaseOutV2
-    let ix_buy_base = build_pump_swap_instruction_v2(
-        pool,
-        user,
-        base_mint,
-        quote_mint,
-        pool_base_vault,
-        pool_quote_vault,
-        global_config,
-        protocol_fee_recipient,
-        protocol_fee_recipient_ata,
-        coin_creator_vault_authority,
-        coin_creator_vault_ata,
-        token_program_base,
-        token_program_quote,
-        event_authority,
-        amount_in,
-        min_amount_out,
-        PumpSwapTradeMode::BuyExactBaseOutV2,
-        None, // remaining_accounts
-    )
-    .expect("build pump swap buy exact base out v2");
-
     assert_eq!(
-        &ix_buy_base.data[0..8],
-        &PUMP_SWAP_BUY_V2_DISCRIMINATOR,
-        "Discriminator must match buy_v2"
+        ix_sell.data.get(..8),
+        Some(PUMP_SWAP_SELL_V2_DISCRIMINATOR.as_slice())
+    );
+
+    // buy_v2: exact base output, maximum quote input (protocol argument order).
+    let base_amount_out = 123_456_789;
+    let max_quote_amount_in = 987_654_321;
+    let ix_buy_base = build(
+        PumpSwapTradeMode::BuyExactBaseOutV2,
+        base_amount_out,
+        max_quote_amount_in,
+    )
+    .expect("build PumpSwap buy_v2");
+    assert_eq!(ix_buy_base.accounts.len(), 17);
+    assert_eq!(
+        ix_buy_base.data.get(..8),
+        Some(PUMP_SWAP_BUY_V2_DISCRIMINATOR.as_slice())
+    );
+    assert_eq!(
+        u64::from_le_bytes(ix_buy_base.data[8..16].try_into().unwrap()),
+        base_amount_out
+    );
+    assert_eq!(
+        u64::from_le_bytes(ix_buy_base.data[16..24].try_into().unwrap()),
+        max_quote_amount_in
     );
 }
 

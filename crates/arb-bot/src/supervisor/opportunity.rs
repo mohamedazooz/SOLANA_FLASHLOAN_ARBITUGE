@@ -1461,10 +1461,12 @@ impl Supervisor {
                 }
                 // This build is V1-only. Share the canonical transport-gate
                 // evaluation with `dispatch.rs` so RPC allowlist & ingress flags
-                // can never drift between compile time and submit time.
+                // can never drift between compile time and submit time, while
+                // allowing non-broadcast Simulate mode to exercise V1 assembly.
                 let (direct_v1_enabled, jito_v1_enabled) = self.v1_transport_flags();
-                let v1_transport_enabled =
-                    (is_swqos_route && direct_v1_enabled) || (!is_swqos_route && jito_v1_enabled);
+                let v1_transport_enabled = matches!(self.mode(), BotMode::Simulate)
+                    || (is_swqos_route && direct_v1_enabled)
+                    || (!is_swqos_route && jito_v1_enabled);
                 // Do not use signed Legacy/V0 RAM or Redis templates here.
                 // The old cache path patched a net-profit-only value into the
                 // swap min_amount_out, and the Redis loader did not resolve

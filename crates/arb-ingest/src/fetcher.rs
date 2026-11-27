@@ -1,6 +1,7 @@
 //! Paced single-account RPC fetcher: sequential requests, strict semaphore
 //! rate limits, inter-request pacing and automatic endpoint failover.
 
+use crate::RpcPool;
 use anyhow::{Context, Result, bail};
 use base64::prelude::*;
 use solana_pubkey::Pubkey;
@@ -136,7 +137,7 @@ impl PacedAccountFetcher {
     /// insert) collapses that to at most one line per cooldown cycle per
     /// endpoint (60s for HTTP 429/5xx, 15s for transport errors) while
     /// preserving the failover behavior exactly.
-    fn cooldown_and_warn(&self, idx: usize, url: &str, cooldown: Duration, detail: String) {
+    fn cooldown_and_warn(&self, idx: usize, url: &str, cooldown: Duration, _detail: String) {
         let mut guard = self.endpoint_cooldowns.lock();
         let was_active = guard
             .get(&idx)
@@ -144,10 +145,12 @@ impl PacedAccountFetcher {
         guard.insert(idx, Instant::now() + cooldown);
         drop(guard);
         if !was_active {
+            // Endpoint URLs and reqwest transport errors can both contain API
+            // keys in query strings or path segments. Log only the redacted
+            // endpoint and a generic failure category; never print raw error text.
             warn!(
-                "RPC endpoint {} failed ({}); placing on {}s cooldown and rotating",
-                url,
-                detail,
+                "RPC endpoint {} failed (request/transport error); placing on {}s cooldown and rotating",
+                RpcPool::redact_url(url),
                 cooldown.as_secs()
             );
         }

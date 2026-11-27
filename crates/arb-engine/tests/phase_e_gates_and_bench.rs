@@ -24,6 +24,7 @@ fn econ_wsol() -> EconomicConfig {
         lamports_to_base_rate_denom: 1,
         min_profit_raw: TokenAmount(10_000),
         hop_slippage_bps: 10,
+        priority_fee_micro_lamports: 0,
     }
 }
 
@@ -36,6 +37,7 @@ fn econ_usdc() -> EconomicConfig {
         lamports_to_base_rate_denom: 1_000_000_000,
         min_profit_raw: TokenAmount(1_500),
         hop_slippage_bps: 10,
+        priority_fee_micro_lamports: 0,
     }
 }
 
@@ -108,6 +110,8 @@ fn phase_c_and_a1_multimint_and_newly_enabled_dexes_enter_market_graph() {
             fee_rate: 2_500,
             tick_arrays: vec![ClmmTickArray {
                 start_tick_index: 0,
+                account_pubkey: Some(Pubkey::new_unique().to_bytes()),
+                account_slot: Some(500),
                 ticks: vec![ClmmTick {
                     tick_index: 0,
                     initialized: true,

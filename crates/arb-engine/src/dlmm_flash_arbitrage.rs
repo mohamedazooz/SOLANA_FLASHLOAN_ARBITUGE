@@ -477,6 +477,7 @@ pub enum FlashArbRejection {
     ComputeUnitsExceeded { estimated: u32, limit: u32 },
     TooManyAccounts { accounts: usize, limit: usize },
     ProfitBelowFloor { net: i64, floor: u64 },
+    EconomicsOverflow,
     PoolNotAllowlisted { pool: Pubkey },
     MismatchedMints,
     FlashMintReserveMismatch,
@@ -498,6 +499,7 @@ impl FlashArbRejection {
             Self::ComputeUnitsExceeded { .. } => "COMPUTE_UNITS_EXCEEDED",
             Self::TooManyAccounts { .. } => "TOO_MANY_ACCOUNTS",
             Self::ProfitBelowFloor { .. } => "PROFIT_BELOW_FLOOR",
+            Self::EconomicsOverflow => "ECONOMICS_OVERFLOW",
             Self::PoolNotAllowlisted { .. } => "POOL_NOT_ALLOWLISTED",
             Self::MismatchedMints => "MISMATCHED_MINTS",
             Self::FlashMintReserveMismatch => "FLASH_MINT_RESERVE_MISMATCH",
@@ -510,6 +512,9 @@ impl FlashArbRejection {
 pub struct DlmmFlashArbEvaluation {
     pub borrow_amount: u64,
     pub flash_fee: u64,
+    /// Required final output above principal + flash fee, covering execution costs
+    /// and minimum retained profit in flash-mint raw units.
+    pub minimum_retained_profit_raw: u64,
     /// Pool A output at the quoted (unslipped) amount.
     pub hop_a_out: u64,
     /// Pool A conservative minimum output (after slippage).
@@ -537,6 +542,7 @@ impl DlmmFlashArbEvaluation {
         Self {
             borrow_amount: borrow,
             flash_fee: 0,
+            minimum_retained_profit_raw: 0,
             hop_a_out: 0,
             hop_a_min_out: 0,
             hop_b_out: 0,
@@ -627,6 +633,20 @@ impl DlmmFlashArbEvaluator<'_> {
         }
 
         let flash_fee = arb_tx::kamino::calculate_kamino_flash_fee(borrow, cfg.kamino_flash_fee_sf);
+        let execution_cost = cfg.execution_cost();
+        let Some(repay) = borrow.checked_add(flash_fee) else {
+            return DlmmFlashArbEvaluation::reject(borrow, FlashArbRejection::EconomicsOverflow);
+        };
+        let Some(total_cost) = flash_fee.checked_add(execution_cost) else {
+            return DlmmFlashArbEvaluation::reject(borrow, FlashArbRejection::EconomicsOverflow);
+        };
+        let Some(minimum_retained_profit_raw) = execution_cost.checked_add(cfg.min_profit_raw)
+        else {
+            return DlmmFlashArbEvaluation::reject(borrow, FlashArbRejection::EconomicsOverflow);
+        };
+        let Some(minimum_final_out_raw) = repay.checked_add(minimum_retained_profit_raw) else {
+            return DlmmFlashArbEvaluation::reject(borrow, FlashArbRejection::EconomicsOverflow);
+        };
 
         // ── Hop A ──
         let Some(capacity_a) = route
@@ -822,6 +842,7 @@ impl DlmmFlashArbEvaluator<'_> {
             route,
             borrow,
             flash_fee,
+            minimum_retained_profit_raw,
             hop_a_min_out,
             &plan_a,
             &plan_b,
@@ -851,12 +872,9 @@ impl DlmmFlashArbEvaluator<'_> {
         }
 
         // ── Economics ──
-        // i128 intermediates: no overflow, no silent saturation; narrowing
-        // back to i64 clamps in the true sign direction (never flips a loss
-        // into a profit). The exact u64 repayment guard below remains the
-        // hard fail-closed gate.
-        let repay = borrow.saturating_add(flash_fee);
-        let total_cost = flash_fee.saturating_add(cfg.execution_cost());
+        // All liabilities and the on-chain retained-output floor were checked
+        // above with u64 arithmetic before any narrowing or quote acceptance.
+        // i128 intermediates below preserve the signed PnL direction.
         let clamp_i64 = |v: i128| -> i64 {
             if v > i128::from(i64::MAX) {
                 i64::MAX
@@ -873,10 +891,10 @@ impl DlmmFlashArbEvaluator<'_> {
             quote_b.amount_out,
             borrow,
             flash_fee,
-            0,                    // DEX fees are reflected in the hop quote outputs
-            0,                    // no separately charged transfer-fee amount in this route model
-            0,                    // account creation is not charged by this estimate
-            cfg.execution_cost(), // verified/derived aggregate in flash-mint raw units
+            0,              // DEX fees are reflected in the hop quote outputs
+            0,              // no separately charged transfer-fee amount in this route model
+            0,              // account creation is not charged by this estimate
+            execution_cost, // verified/derived aggregate in flash-mint raw units
             arb_types::Lamports(0),
             arb_types::Lamports(0),
             arb_types::Lamports(0),
@@ -894,6 +912,7 @@ impl DlmmFlashArbEvaluator<'_> {
         let eval = DlmmFlashArbEvaluation {
             borrow_amount: borrow,
             flash_fee,
+            minimum_retained_profit_raw,
             hop_a_out: quote_a.amount_out,
             hop_a_min_out,
             hop_b_out: quote_b_optimistic,
@@ -917,7 +936,7 @@ impl DlmmFlashArbEvaluator<'_> {
         // builders. `feasible` stays false; execution paths filter on it.
         let below_floor = net_profit < 0
             || (net_profit as u64) < cfg.min_profit_raw
-            || quote_b.amount_out < repay;
+            || quote_b.amount_out < minimum_final_out_raw;
         if below_floor {
             return DlmmFlashArbEvaluation {
                 feasible: false,
@@ -938,6 +957,7 @@ impl DlmmFlashArbEvaluator<'_> {
         route: &DlmmFlashArbRoute,
         borrow: u64,
         flash_fee: u64,
+        minimum_retained_profit_raw: u64,
         hop_a_min_out: u64,
         plan_a: &DlmmBinArrayPlan,
         plan_b: &DlmmBinArrayPlan,
@@ -945,7 +965,12 @@ impl DlmmFlashArbEvaluator<'_> {
         swap_b_for_y: bool,
     ) -> Result<(usize, usize), FlashArbRejection> {
         let cfg = self.config;
-        let repay = borrow.saturating_add(flash_fee);
+        let repay = borrow
+            .checked_add(flash_fee)
+            .ok_or(FlashArbRejection::EconomicsOverflow)?;
+        let minimum_final_out = repay
+            .checked_add(minimum_retained_profit_raw)
+            .ok_or(FlashArbRejection::EconomicsOverflow)?;
 
         let leg_a = FlashArbPoolLeg {
             lb_pair: route.pool_a.pool_id,
@@ -979,7 +1004,7 @@ impl DlmmFlashArbEvaluator<'_> {
             token_y_program: route.pool_b.token_y_program.program_id(),
             swap_for_y: swap_b_for_y,
             amount_in: hop_a_min_out,
-            min_amount_out: repay.saturating_add(network_fee_raw),
+            min_amount_out: minimum_final_out.max(repay.saturating_add(network_fee_raw)),
             bin_array_pdas: plan_b.pdas.clone(),
             bitmap_extension: plan_b
                 .requires_bitmap_extension
@@ -992,6 +1017,7 @@ impl DlmmFlashArbEvaluator<'_> {
             kamino: cfg.kamino.clone(),
             borrow_amount: borrow,
             flash_fee,
+            minimum_retained_profit_raw,
             leg_a,
             leg_b,
             cu_limit: cfg.cu_limit,

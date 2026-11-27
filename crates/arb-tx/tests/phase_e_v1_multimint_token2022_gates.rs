@@ -206,9 +206,8 @@ fn gate_phase_d_token2022_clmm_swap_v2_and_transfer_hook_extra_metas() {
         vault_1,
         amm_config,
         obs,
-        ta0,
-        ta1,
-        ta2,
+        vec![ta0, ta1, ta2],
+        Some(ext),
     );
     let hook_program = Pubkey::new_unique();
     let list_pda = derive_transfer_hook_extra_account_meta_list_pda(&mint_0, &hook_program);

@@ -245,6 +245,8 @@ impl AmmPool for OrcaWhirlpool {
                 .iter()
                 .map(|array| arb_types::ClmmTickArray {
                     start_tick_index: array.start_tick_index,
+                    account_pubkey: None,
+                    account_slot: None,
                     ticks: array
                         .ticks
                         .iter()

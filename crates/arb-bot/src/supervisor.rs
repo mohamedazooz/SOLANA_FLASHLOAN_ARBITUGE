@@ -363,8 +363,12 @@ impl Supervisor {
             chronos_risk,
         ));
 
-        let tip_strategy = TipStrategy::new(
+        // Honor both configured shares. The legacy constructor only applies its
+        // compiled default ceiling and silently ignored max_tip_share_bps, which
+        // made a 20% operator ceiling behave like 10% in the live bidder.
+        let tip_strategy = TipStrategy::with_max_share(
             config.jito.tip_share_bps,
+            config.jito.max_tip_share_bps,
             arb_constants::DEFAULT_JITO_TIP_FLOOR_LAMPORTS,
             config.jito.max_tip_lamports,
             config.jito.min_keep_lamports,

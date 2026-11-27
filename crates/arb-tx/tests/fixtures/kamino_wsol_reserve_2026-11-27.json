@@ -1,0 +1,16 @@
+﻿{
+    "source":  "Solana mainnet-beta public JSON-RPC getMultipleAccounts",
+    "context_slot":  474341009,
+    "commitment":  "confirmed",
+    "reserve_address":  "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q",
+    "reserve_owner":  "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "reserve_data_len":  8624,
+    "reserve_discriminator":  "2B-F2-CC-CA-1A-F7-3B-7F",
+    "supply_vault_address":  "GafNuUXj9rxGLn4y79dPu6MHSuPWeJR6UtTWuexpGh3U",
+    "supply_vault_owner":  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "supply_vault_data_len":  165,
+    "reserve_status":  0,
+    "mint_decimals":  9,
+    "flash_loan_fee_sf":  11529215046068,
+    "supply_vault_amount":  321999152973336
+}

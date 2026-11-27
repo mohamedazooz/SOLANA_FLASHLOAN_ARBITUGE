@@ -76,6 +76,7 @@ fn config(min_profit_raw: u64, jito_tip: u64) -> EconomicConfig {
     EconomicConfig {
         flash_loan_fee_sf: 0,
         jito_tip_lamports: Lamports(jito_tip),
+        priority_fee_micro_lamports: 0,
         base_decimals: 9,
         lamports_to_base_mint_rate: 1,
         lamports_to_base_rate_denom: 1,

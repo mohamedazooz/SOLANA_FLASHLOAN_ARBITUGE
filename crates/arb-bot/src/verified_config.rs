@@ -72,6 +72,10 @@ impl VerifiedQuoteInputs {
         EconomicConfig {
             flash_loan_fee_sf: self.flash_loan_fee_sf.value,
             jito_tip_lamports: self.tip_lamports.value,
+            // Use the adaptive bidder's documented no-sample baseline. The graph
+            // derives lamports from each route's protocol CU estimate; live market
+            // samples and the final CU limit are applied again before dispatch.
+            priority_fee_micro_lamports: arb_land::DEFAULT_ADAPTIVE_CU_PRICE_MICRO_LAMPORTS,
             base_decimals: self.base_decimals.value,
             lamports_to_base_mint_rate: self.lamports_per_base_raw.value,
             lamports_to_base_rate_denom: self.lamports_per_base_denom.value,

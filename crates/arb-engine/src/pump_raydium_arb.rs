@@ -270,24 +270,13 @@ pub struct PumpRaydiumConfig {
     pub min_net_profit_lamports: u64,
     /// Maximum slippage in basis points.
     pub max_slippage_bps: u64,
-    /// Flash loan fee rate in basis points.
+    /// Explicit generic financing fee in basis points. This legacy feature does
+    /// not model Kamino's U68F60 reserve fee and must not be used for Kamino.
     pub flash_loan_fee_bps: u16,
     /// Priority fee in micro-lamports per CU.
     pub priority_fee_micro_lamports_per_cu: u64,
     /// Estimated compute units for the transaction.
     pub estimated_cu: u32,
-}
-
-impl Default for PumpRaydiumConfig {
-    fn default() -> Self {
-        Self {
-            min_net_profit_lamports: MIN_NET_PROFIT_LAMPORTS,
-            max_slippage_bps: MAX_SLIPPAGE_BPS,
-            flash_loan_fee_bps: 50,                   // 0.5%
-            priority_fee_micro_lamports_per_cu: 1000, // 1000 μL per CU
-            estimated_cu: 50_000,
-        }
-    }
 }
 
 /// Pump.fun-Raydium Arbitrage Engine.
@@ -300,15 +289,6 @@ pub struct PumpRaydiumEngine {
 }
 
 impl PumpRaydiumEngine {
-    /// Create a new arbitrage engine with default configuration.
-    pub fn new() -> Self {
-        Self {
-            config: PumpRaydiumConfig::default(),
-            pump_pools: HashMap::new(),
-            raydium_pools: HashMap::new(),
-        }
-    }
-
     /// Create with custom configuration.
     pub fn with_config(config: PumpRaydiumConfig) -> Self {
         Self {
@@ -550,13 +530,16 @@ impl PumpRaydiumEngine {
         (optimal_input, expected_output, gross_spread_bps)
     }
 
-    /// Calculate flash loan fee for a given amount.
+    /// Calculate the legacy generic BPS financing fee using a wide intermediate.
+    /// Invalid rates and unrepresentable results fail closed instead of turning
+    /// arithmetic overflow into a zero-fee quote.
     fn calculate_flash_loan_fee(&self, amount: u64) -> u64 {
-        amount
-            .checked_mul(self.config.flash_loan_fee_bps as u64)
-            .unwrap_or(0)
-            .checked_div(10_000)
-            .unwrap_or(0)
+        let fee_bps = self.config.flash_loan_fee_bps;
+        if fee_bps > 10_000 {
+            return u64::MAX;
+        }
+        let fee = u128::from(amount) * u128::from(fee_bps) / 10_000;
+        u64::try_from(fee).unwrap_or(u64::MAX)
     }
 
     /// Get the best opportunity for a specific token.
@@ -594,6 +577,27 @@ fn integer_sqrt(n: u128) -> u128 {
 mod tests {
     use super::*;
 
+    fn test_engine(financing_fee_bps: u16) -> PumpRaydiumEngine {
+        PumpRaydiumEngine::with_config(PumpRaydiumConfig {
+            min_net_profit_lamports: MIN_NET_PROFIT_LAMPORTS,
+            max_slippage_bps: MAX_SLIPPAGE_BPS,
+            flash_loan_fee_bps: financing_fee_bps,
+            priority_fee_micro_lamports_per_cu: 1_000,
+            estimated_cu: 50_000,
+        })
+    }
+
+    #[test]
+    fn legacy_financing_fee_uses_wide_math_and_fails_closed() {
+        let engine = test_engine(50);
+        assert_eq!(engine.calculate_flash_loan_fee(1_000_000), 5_000);
+        let wide_rate = test_engine(10_000);
+        assert_eq!(wide_rate.calculate_flash_loan_fee(u64::MAX), u64::MAX);
+
+        let invalid_rate = test_engine(10_001);
+        assert_eq!(invalid_rate.calculate_flash_loan_fee(1_000_000), u64::MAX);
+    }
+
     #[test]
     fn test_arbitrage_direction_reverse() {
         assert_eq!(
@@ -627,7 +631,13 @@ mod tests {
 
     #[test]
     fn test_optimal_input_calculation() {
-        let engine = PumpRaydiumEngine::new();
+        let engine = PumpRaydiumEngine::with_config(PumpRaydiumConfig {
+            min_net_profit_lamports: MIN_NET_PROFIT_LAMPORTS,
+            max_slippage_bps: MAX_SLIPPAGE_BPS,
+            flash_loan_fee_bps: 0, // test fixture; no financing fee in these math tests
+            priority_fee_micro_lamports_per_cu: 1_000,
+            estimated_cu: 50_000,
+        });
 
         // Test with equal reserves and no fees
         let (input, output, spread) = engine.calculate_optimal_input_cpmm_cpmm(
@@ -647,7 +657,13 @@ mod tests {
 
     #[test]
     fn test_optimal_input_with_fees() {
-        let engine = PumpRaydiumEngine::new();
+        let engine = PumpRaydiumEngine::with_config(PumpRaydiumConfig {
+            min_net_profit_lamports: MIN_NET_PROFIT_LAMPORTS,
+            max_slippage_bps: MAX_SLIPPAGE_BPS,
+            flash_loan_fee_bps: 0, // test fixture; no financing fee in these math tests
+            priority_fee_micro_lamports_per_cu: 1_000,
+            estimated_cu: 50_000,
+        });
 
         // Test with different reserves and fees
         // Pump: x=1M, y=1M, fee=25 bps

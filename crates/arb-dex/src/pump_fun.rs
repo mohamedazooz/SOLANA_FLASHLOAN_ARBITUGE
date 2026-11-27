@@ -480,7 +480,12 @@ mod cross_venue_tests {
 
         // Calculate optimal trade
         let max_delta_t = pool.max_arbitrage_amount();
-        let result = calculate_optimal_trade(pump_params, raydium_params, 30, max_delta_t as u128);
+        let result = calculate_optimal_trade(
+            pump_params,
+            raydium_params,
+            30, // synthetic BPS financing fixture; not the live Kamino fee
+            max_delta_t as u128,
+        );
 
         assert!(result.is_ok(), "Should find arbitrage opportunity");
         let trade = result.unwrap();

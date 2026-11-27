@@ -13,7 +13,7 @@
 //! pool to form a 2-hop cross-DEX arbitrage.
 
 use crate::{DependencyManifestRegistry, RpcPool};
-use arb_types::{DexProtocol, MintId, PoolId};
+use arb_types::{DexProtocol, MintId, PoolId, TokenProgramKind};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -32,8 +32,19 @@ pub struct RegisteredPool {
     pub base_vault: Pubkey,
     /// SPL token account holding the quote-mint reserve (live balance read each tick).
     pub quote_vault: Pubkey,
-    /// Protocol swap fee in basis points (used for graph edge weights).
+    /// Non-authoritative fee hint retained only for legacy Raydium CLMM state
+    /// decoding. Live graph fees are always decoded from the pool/config state;
+    /// this field must never be used as an executable quote fee.
     pub fee_bps: u16,
+}
+
+/// One registered pool rejected by the most recent hydration pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolHydrationSkip {
+    pub pool_id: PoolId,
+    pub protocol: DexProtocol,
+    /// Stable machine-readable reason; unknown branches use `unclassified_validation_gate`.
+    pub reason: &'static str,
 }
 
 /// Registry of verified multi-DEX pools that streams live reserve states into the
@@ -46,11 +57,13 @@ pub struct MultiDexRegistry {
     pub(crate) pools: Vec<RegisteredPool>,
     pub(crate) rpc: RpcPool,
     pub dependency_manifest: DependencyManifestRegistry,
-    /// Immutable mint-decimal cache for canonical DLMM token_x/token_y mints.
-    /// Mint decimals never change on-chain, so entries live forever. `Arc`
-    /// keeps clones of the registry (per-worker) sharing one cache.
-    pub(crate) dlmm_decimals_cache:
-        std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<MintId, u8>>>,
+    /// Immutable owner/program + decimals metadata for initialized mints.
+    /// Clones share this cache so steady-state hydration does not refetch mints.
+    pub(crate) mint_metadata_cache: std::sync::Arc<
+        parking_lot::Mutex<std::collections::HashMap<Pubkey, (TokenProgramKind, u8)>>,
+    >,
+    /// Per-registry snapshot of pool rejections from the latest hydration pass.
+    pub(crate) last_hydration_skips: std::sync::Arc<parking_lot::Mutex<Vec<PoolHydrationSkip>>>,
 }
 
 impl MultiDexRegistry {
@@ -73,7 +86,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::RAYDIUM_SOL_VAULT),
                 quote_vault: pk(arb_constants::RAYDIUM_USDC_VAULT),
-                fee_bps: 25,
+                fee_bps: 0,
             },
             // Orca Whirlpools — SOL/USDC (tick-spacing 4 pool)
             RegisteredPool {
@@ -85,7 +98,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::ORCA_SOL_VAULT),
                 quote_vault: pk(arb_constants::ORCA_USDC_VAULT),
-                fee_bps: 5,
+                fee_bps: 0,
             },
             // Orca Whirlpools — SOL/USDC, additional fee tiers. These unlock the
             // LOW-FEE routes (tick 1 => 1 bps, tick 2 => 2 bps, tick 8 => 8 bps;
@@ -101,7 +114,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::ORCA_SOL_USDC_1BPS_POOL),
                 quote_vault: pk(arb_constants::ORCA_SOL_USDC_1BPS_POOL),
-                fee_bps: 1,
+                fee_bps: 0,
             },
             RegisteredPool {
                 pool_id: PoolId(pk(arb_constants::ORCA_SOL_USDC_2BPS_POOL)),
@@ -112,7 +125,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::ORCA_SOL_USDC_2BPS_POOL),
                 quote_vault: pk(arb_constants::ORCA_SOL_USDC_2BPS_POOL),
-                fee_bps: 2,
+                fee_bps: 0,
             },
             RegisteredPool {
                 pool_id: PoolId(pk(arb_constants::ORCA_SOL_USDC_8BPS_POOL)),
@@ -123,7 +136,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::ORCA_SOL_USDC_8BPS_POOL),
                 quote_vault: pk(arb_constants::ORCA_SOL_USDC_8BPS_POOL),
-                fee_bps: 8,
+                fee_bps: 0,
             },
             // Meteora DLMM — SOL/USDC (bin_step 4, verified live mainnet pool)
             RegisteredPool {
@@ -135,7 +148,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::METEORA_SOL_RESERVE),
                 quote_vault: pk(arb_constants::METEORA_USDC_RESERVE),
-                fee_bps: arb_constants::METEORA_SOL_USDC_BIN_STEP,
+                fee_bps: 0,
             },
             // Meteora DLMM — SOL/USDC Pool 2 (verified live mainnet pool with deep liquidity)
             RegisteredPool {
@@ -147,7 +160,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::METEORA_SOL_USDC_POOL_2),
                 quote_vault: pk(arb_constants::METEORA_SOL_USDC_POOL_2),
-                fee_bps: 10,
+                fee_bps: 0,
             },
             // Meteora DLMM — SOL/USDC Pool 3 (verified live mainnet pool)
             RegisteredPool {
@@ -159,9 +172,9 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::METEORA_SOL_USDC_POOL_3),
                 quote_vault: pk(arb_constants::METEORA_SOL_USDC_POOL_3),
-                fee_bps: 20,
+                fee_bps: 0,
             },
-            // Raydium CPMM — SOL/USDC (1 bps fee tier, lowest on Solana)
+            // Raydium CPMM — SOL/USDC (AmmConfig is authoritative for fees)
             RegisteredPool {
                 pool_id: PoolId(pk(arb_constants::RAYDIUM_CPMM_SOL_USDC_POOL)),
                 protocol: DexProtocol::RaydiumCpmm,
@@ -171,7 +184,7 @@ impl MultiDexRegistry {
                 decimals_b: 6,
                 base_vault: pk(arb_constants::RAYDIUM_CPMM_SOL_VAULT),
                 quote_vault: pk(arb_constants::RAYDIUM_CPMM_USDC_VAULT),
-                fee_bps: 1,
+                fee_bps: 0,
             },
         ];
 
@@ -179,7 +192,8 @@ impl MultiDexRegistry {
             pools,
             rpc,
             dependency_manifest: Default::default(),
-            dlmm_decimals_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
+            mint_metadata_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
+            last_hydration_skips: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -197,6 +211,12 @@ impl MultiDexRegistry {
 
     pub fn pools(&self) -> &[RegisteredPool] {
         &self.pools
+    }
+
+    /// Rejections recorded by the most recent `fetch_live_pool_states` call.
+    /// A record is emitted for every registered pool omitted from the returned state set.
+    pub fn last_hydration_skips(&self) -> Vec<PoolHydrationSkip> {
+        self.last_hydration_skips.lock().clone()
     }
 }
 

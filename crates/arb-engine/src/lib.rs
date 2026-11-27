@@ -135,6 +135,12 @@ fn compose_route_price_impact(retained_spot_bps: u128, hop_impact: Bps) -> u128 
     (numerator / 10_000).min(10_000)
 }
 
+/// Route edges do not carry verified Token-2022 epoch schedules or
+/// TransferHook account metas. Never price one as a legacy SPL token.
+fn route_token_context_supported(edge: &MarketEdge) -> bool {
+    edge.transfer_fee_bps == 0 && !edge.token_programs.contains(&TokenProgramKind::Token2022)
+}
+
 pub(crate) fn dlmm_quote_components(edge: &MarketEdge) -> Option<DlmmQuoteComponents> {
     if edge.protocol != DexProtocol::MeteoraDlmm
         || edge.transfer_fee_bps != 0
@@ -194,6 +200,9 @@ fn quote_pool_with_dlmm_cache(
     edge: Option<&MarketEdge>,
     dlmm_cache: Option<&DlmmQuoteCache>,
 ) -> Option<PoolQuote> {
+    if edge.is_some_and(|candidate| !route_token_context_supported(candidate)) {
+        return None;
+    }
     match kind {
         PoolKind::Cpmm => {
             if let Some(edge) = edge {
@@ -421,7 +430,7 @@ impl MarketEdge {
             fee_denominator: self.fee_denominator,
             raydium_cpmm_fee: self.raydium_cpmm_fee,
             is_active: true,
-            has_risky_token: false,
+            has_risky_token: self.token_programs.contains(&TokenProgramKind::Token2022),
             kind: self.kind,
             clmm: self.clmm.clone(),
             dlmm: self.dlmm.clone(),
@@ -650,6 +659,14 @@ pub struct RejectedHopDiagnostic {
     pub to_mint: MintId,
     /// Informational pool fee tier; already reflected in the quoted output.
     pub fee_bps: u16,
+    /// Authoritative per-hop amounts from the dispatcher, populated only when
+    /// its complete route output exactly matches the optimizer's quote ladder.
+    pub amount_in_raw: Option<u64>,
+    pub amount_out_raw: Option<u64>,
+    /// DEX trade fee in the input token's raw units; never deducted again.
+    pub dex_fee_paid_raw: Option<u64>,
+    /// Token-2022 transfer fees in raw units; zero for verified legacy SPL.
+    pub transfer_fee_paid_raw: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,7 +847,7 @@ pub fn estimate_route_unique_accounts_v1(hops: &[&MarketEdge]) -> usize {
 
 struct RouteOptimizationOutcome {
     opportunity: Option<ExecutionOpportunity>,
-    gross_profitable_sample: Option<(u64, u64, Vec<u64>)>,
+    gross_profitable_sample: Option<(u64, u64, Vec<u64>, Vec<RejectedHopDiagnostic>)>,
     had_valid_quote: bool,
 }
 
@@ -925,49 +942,63 @@ impl MarketGraph {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let gross_profit_raw = final_out_u64.checked_sub(size_in)?;
-        let gross_profit_lamports = base_raw_to_lamports(
-            TokenAmount(gross_profit_raw),
-            config.lamports_to_base_mint_rate,
-            config.lamports_to_base_rate_denom,
-        )
-        .ok()?
-        .0;
-        let protocols: Vec<DexProtocol> = hops.iter().map(|hop| hop.protocol).collect();
-        let ata_counts = arb_tx::route_ata_instruction_counts(&hops).ok()?;
-        let has_flash_loan = self
-            .priority_fee_policy
-            .as_ref()
-            .map(|policy| policy.has_flash_loan)
-            .unwrap_or(true);
-        let estimated_cu = arb_tx::estimate_route_cu_with_shape(
-            has_flash_loan,
-            &protocols,
-            ata_counts,
-            discrete_bins_crossed,
-            clmm_steps_taken,
-            0,
-        );
-        let route_signature = route_compute_shape_signature_with_traversal(
-            &hops,
-            size_in,
-            &hop_inputs,
-            impact,
-            discrete_bins_crossed,
-            clmm_steps_taken,
-        );
-        let priority_fee_lamports = self
-            .priority_fee_policy
-            .as_ref()
-            .map(|policy| {
-                policy.estimate_lamports(
-                    gross_profit_lamports,
-                    estimated_cu,
-                    &route_signature,
-                    current_slot,
-                )
-            })
-            .unwrap_or(0);
+        let (priority_fee_lamports, estimated_cu, route_signature) = if let Some(policy) =
+            &self.priority_fee_policy
+        {
+            let gross_profit_raw = final_out_u64.checked_sub(size_in)?;
+            let gross_profit_lamports = base_raw_to_lamports(
+                TokenAmount(gross_profit_raw),
+                config.lamports_to_base_mint_rate,
+                config.lamports_to_base_rate_denom,
+            )
+            .ok()?
+            .0;
+            let protocols: Vec<DexProtocol> = hops.iter().map(|hop| hop.protocol).collect();
+            let ata_counts = arb_tx::route_ata_instruction_counts(&hops).ok()?;
+            let estimated_cu = arb_tx::estimate_route_cu_with_shape(
+                policy.has_flash_loan,
+                &protocols,
+                ata_counts,
+                discrete_bins_crossed,
+                clmm_steps_taken,
+                0,
+            );
+            let route_signature = route_compute_shape_signature_with_traversal(
+                &hops,
+                size_in,
+                &hop_inputs,
+                impact,
+                discrete_bins_crossed,
+                clmm_steps_taken,
+            );
+            let fee = policy.estimate_lamports(
+                gross_profit_lamports,
+                estimated_cu,
+                &route_signature,
+                current_slot,
+            );
+            (fee, estimated_cu, route_signature)
+        } else {
+            // Keep the standalone graph path economically complete when no
+            // adaptive policy is installed; production supplies the policy.
+            let route_protocols: Vec<DexProtocol> = hops.iter().map(|hop| hop.protocol).collect();
+            let estimated_cu =
+                arb_tx::estimate_route_cu(true, &route_protocols, hops.len().saturating_sub(1));
+            let cu_limit = arb_tx::calculate_dynamic_cu_limit(estimated_cu);
+            let fee = arb_tx::priority_fee_lamports(config.priority_fee_micro_lamports, cu_limit);
+            let route_signature = route_compute_shape_signature_with_traversal(
+                &hops,
+                size_in,
+                &hop_inputs,
+                impact,
+                discrete_bins_crossed,
+                clmm_steps_taken,
+            );
+            (fee, estimated_cu, route_signature)
+        };
+        if priority_fee_lamports == u64::MAX {
+            return None;
+        }
 
         let quote = build_economic_quote(
             base_mint,
@@ -1167,7 +1198,8 @@ impl MarketGraph {
             }
         }
         boundary_seeds = arb_math::dlmm::dlmm_breakpoint_seed_sizes(&boundary_seeds, 1, upper, 48);
-        let best_gross_sample = std::cell::RefCell::new(None::<(u64, u64, Vec<u64>)>);
+        let best_gross_sample =
+            std::cell::RefCell::new(None::<(u64, u64, Vec<u64>, Vec<RejectedHopDiagnostic>)>);
         let had_valid_quote = std::cell::Cell::new(false);
         let result = route_sizing::optimize_bounded_non_monotonic_with_budget(
             upper,
@@ -1197,12 +1229,59 @@ impl MarketGraph {
                 let replace = best_gross_sample
                     .borrow()
                     .as_ref()
-                    .is_none_or(|(_, best, _)| gross > *best);
+                    .is_none_or(|(_, best, _, _)| gross > *best);
                 if replace {
                     let mut amounts = Vec::with_capacity(hop_inputs.len() + 1);
                     amounts.push(size_in);
                     amounts.extend(hop_inputs.iter().copied());
-                    *best_gross_sample.borrow_mut() = Some((size_in, gross, amounts));
+
+                    // Ask the canonical dispatcher for fee components on the same
+                    // immutable route snapshot. Only attach fee values if every hop
+                    // output and the final route output exactly match the optimizer.
+                    let mut diagnostic_pools: Vec<PoolState> =
+                        edges.iter().map(|edge| edge.to_pool_state()).collect();
+                    let requests: Vec<HopRequest> = edges
+                        .iter()
+                        .map(|edge| HopRequest {
+                            pool_id: edge.pool_id,
+                            mint_in: edge.from_mint,
+                        })
+                        .collect();
+                    let dispatched = quote_route(&mut diagnostic_pools, &requests, size_in).ok();
+                    let fee_quotes_match = dispatched.as_ref().is_some_and(|quote| {
+                        quote.amount_out == *hop_inputs.last().unwrap_or(&0)
+                            && quote.hops.len() == edges.len()
+                            && quote
+                                .hops
+                                .iter()
+                                .zip(hop_inputs.iter())
+                                .all(|(hop, output)| hop.amount_out == *output)
+                    });
+                    let fee_diagnostics: Vec<RejectedHopDiagnostic> = edges
+                        .iter()
+                        .enumerate()
+                        .map(|(index, edge)| {
+                            let quote = fee_quotes_match
+                                .then(|| {
+                                    dispatched.as_ref().and_then(|route| route.hops.get(index))
+                                })
+                                .flatten();
+                            RejectedHopDiagnostic {
+                                pool_id: edge.pool_id,
+                                protocol: edge.protocol,
+                                kind: edge.kind,
+                                from_mint: edge.from_mint,
+                                to_mint: edge.to_mint,
+                                fee_bps: edge.fee_bps,
+                                amount_in_raw: quote.map(|hop| hop.amount_in),
+                                amount_out_raw: quote.map(|hop| hop.amount_out),
+                                dex_fee_paid_raw: quote.map(|hop| hop.fee_paid),
+                                transfer_fee_paid_raw: quote.map(|hop| hop.transfer_fee_paid),
+                            }
+                        })
+                        .collect();
+                    *best_gross_sample.borrow_mut() =
+                        Some((size_in, gross, amounts, fee_diagnostics));
                 }
 
                 let impact = route_quote.route_price_impact_bps;
@@ -1803,7 +1882,8 @@ impl MarketGraph {
                     }
                     if let Some(opportunity) = outcome.opportunity {
                         results.push(opportunity);
-                    } else if let Some((borrow, gross, hop_amounts)) = gross_sample {
+                    } else if let Some((borrow, gross, hop_amounts, fee_diagnostics)) = gross_sample
+                    {
                         stats.gate_rejected += 1;
                         if stats.rejected_cycles.len() < 32 {
                             stats.rejected_cycles.push(RejectedCycleDiagnostic {
@@ -1813,17 +1893,7 @@ impl MarketGraph {
                                 expected_final_amount_raw: borrow.saturating_add(gross),
                                 gross_profit_raw: gross,
                                 hop_amounts_raw: hop_amounts,
-                                hops: path
-                                    .iter()
-                                    .map(|edge| RejectedHopDiagnostic {
-                                        pool_id: edge.pool_id,
-                                        protocol: edge.protocol,
-                                        kind: edge.kind,
-                                        from_mint: edge.from_mint,
-                                        to_mint: edge.to_mint,
-                                        fee_bps: edge.fee_bps,
-                                    })
-                                    .collect(),
+                                hops: fee_diagnostics,
                             });
                         }
                     } else if outcome.had_valid_quote {
@@ -1939,6 +2009,44 @@ impl MarketGraph {
 
 #[cfg(test)]
 mod tests {
+    fn token_edge(token_programs: [TokenProgramKind; 2], transfer_fee_bps: u16) -> MarketEdge {
+        let base = MintId::new([2; 32]);
+        let quote = MintId::new([3; 32]);
+        MarketEdge {
+            pool_id: PoolId::new([1; 32]),
+            protocol: DexProtocol::RaydiumClmm,
+            kind: PoolKind::Clmm,
+            from_mint: base,
+            to_mint: quote,
+            pool_base: base,
+            pool_quote: quote,
+            reserve_in: 1_000_000,
+            reserve_out: 1_000_000,
+            fee_bps: 25,
+            fee_numerator: 2_500,
+            fee_denominator: 1_000_000,
+            raydium_cpmm_fee: None,
+            clmm: None,
+            dlmm: None,
+            pump_fun: None,
+            damm_v2: None,
+            transfer_fee_bps,
+            token_programs,
+            execution_accounts: None,
+            active_bin_id: None,
+        }
+    }
+
+    #[test]
+    fn route_token_context_gate_rejects_token_2022_and_transfer_fees() {
+        let spl = token_edge([TokenProgramKind::SplToken; 2], 0);
+        assert!(route_token_context_supported(&spl));
+        let token_2022 = token_edge([TokenProgramKind::Token2022, TokenProgramKind::SplToken], 0);
+        assert!(!route_token_context_supported(&token_2022));
+        let transfer_fee = token_edge([TokenProgramKind::SplToken; 2], 1);
+        assert!(!route_token_context_supported(&transfer_fee));
+    }
+
     #[test]
     fn gross_negative_cycles_are_not_counted_as_quote_rejected() {
         let wsol = MintId::new([1u8; 32]);
@@ -1951,6 +2059,7 @@ mod tests {
             lamports_to_base_rate_denom: 1,
             min_profit_raw: TokenAmount(1_000),
             hop_slippage_bps: 10,
+            priority_fee_micro_lamports: 0,
         });
         let make_pool = |id: u8| PoolState {
             pool_id: PoolId::new([id; 32]),
@@ -2343,6 +2452,7 @@ mod tests {
         EconomicConfig {
             flash_loan_fee_sf: 0,
             jito_tip_lamports: Lamports::ZERO,
+            priority_fee_micro_lamports: 0,
             base_decimals: 9,
             lamports_to_base_mint_rate: 1,
             lamports_to_base_rate_denom: 1,
@@ -2465,10 +2575,14 @@ mod tests {
                 tick_arrays: vec![
                     arb_types::ClmmTickArray {
                         start_tick_index: 60,
+                        account_pubkey: None,
+                        account_slot: None,
                         ticks: vec![],
                     },
                     arb_types::ClmmTickArray {
                         start_tick_index: 120,
+                        account_pubkey: None,
+                        account_slot: None,
                         ticks: vec![],
                     },
                 ],
@@ -2634,6 +2748,77 @@ mod tests {
     }
 
     #[test]
+    fn graph_economic_gate_includes_priority_fee_budget() {
+        let base = MintId::new([80; 32]);
+        let mid = MintId::new([81; 32]);
+        let hops = vec![
+            SwapHop {
+                pool_id: PoolId::new([82; 32]),
+                protocol: DexProtocol::RaydiumV4,
+                mint_in: base,
+                mint_out: mid,
+                fee_bps: 0,
+                active_bin_id: None,
+                token_programs: Default::default(),
+                trade_intent: Default::default(),
+                execution_accounts: None,
+            },
+            SwapHop {
+                pool_id: PoolId::new([83; 32]),
+                protocol: DexProtocol::RaydiumV4,
+                mint_in: mid,
+                mint_out: base,
+                fee_bps: 0,
+                active_bin_id: None,
+                token_programs: Default::default(),
+                trade_intent: Default::default(),
+                execution_accounts: None,
+            },
+        ];
+        let mut no_priority = test_config();
+        no_priority.hop_slippage_bps = 0;
+        let accepted_without_priority = MarketGraph::new(vec![base])
+            .with_economic_config(no_priority)
+            .make_economic_opportunity(
+                base,
+                Slot(1),
+                RouteId(95),
+                10_000,
+                16_000,
+                vec![10_000, 13_000, 16_000],
+                Bps(0),
+                0,
+                0,
+                hops.clone(),
+            );
+        assert!(
+            accepted_without_priority.is_some(),
+            "6,000 gross less 5,000 base fee should remain positive"
+        );
+
+        let mut with_priority = no_priority;
+        with_priority.priority_fee_micro_lamports = 1_000_000;
+        let rejected_with_priority = MarketGraph::new(vec![base])
+            .with_economic_config(with_priority)
+            .make_economic_opportunity(
+                base,
+                Slot(1),
+                RouteId(96),
+                10_000,
+                16_000,
+                vec![10_000, 13_000, 16_000],
+                Bps(0),
+                0,
+                0,
+                hops,
+            );
+        assert!(
+            rejected_with_priority.is_none(),
+            "priority fee must be deducted by the authoritative gate"
+        );
+    }
+
+    #[test]
     fn graph_2hop_detection() {
         let base = MintId::new([1; 32]);
         let _token_b = MintId::new([2; 32]);
@@ -2772,6 +2957,7 @@ mod tests {
         let config = EconomicConfig {
             flash_loan_fee_sf: 0,
             jito_tip_lamports: Lamports::ZERO,
+            priority_fee_micro_lamports: 0,
             base_decimals: 9,
             lamports_to_base_mint_rate: 1,
             lamports_to_base_rate_denom: 1,

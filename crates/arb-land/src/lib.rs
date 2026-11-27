@@ -93,6 +93,9 @@ pub struct BundleStatusDetails {
 }
 
 /// Dynamic Jito Tip Strategy based on profit percentage and market competition.
+/// Fallback CU price used when no fresh landed or RPC market samples exist.
+pub const DEFAULT_ADAPTIVE_CU_PRICE_MICRO_LAMPORTS: u64 = 100_000;
+
 pub struct TipStrategy {
     share_bps: u64,
     max_share_bps: u64,
@@ -108,13 +111,13 @@ impl TipStrategy {
         cap_lamports: u64,
         min_keep_lamports: u64,
     ) -> Self {
-        Self {
+        Self::with_max_share(
             share_bps,
-            max_share_bps: share_bps.max(arb_constants::DEFAULT_JITO_MAX_TIP_SHARE_BPS),
+            arb_constants::DEFAULT_JITO_MAX_TIP_SHARE_BPS,
             floor_lamports,
             cap_lamports,
             min_keep_lamports,
-        }
+        )
     }
 
     pub fn with_max_share(
@@ -124,6 +127,10 @@ impl TipStrategy {
         cap_lamports: u64,
         min_keep_lamports: u64,
     ) -> Self {
+        // Keep the public constructor safe even when called outside validated
+        // config loading: the base share cannot exceed the cap or 100%.
+        let max_share_bps = max_share_bps.min(10_000);
+        let share_bps = share_bps.min(max_share_bps);
         Self {
             share_bps,
             max_share_bps,
@@ -188,7 +195,7 @@ impl TipStrategy {
     pub fn adaptive_cu_price(&self, recent_landed: &[u64]) -> u64 {
         percentile_75_nonzero(recent_landed)
             .map(|p| p.saturating_add(p / 4))
-            .unwrap_or(100_000)
+            .unwrap_or(DEFAULT_ADAPTIVE_CU_PRICE_MICRO_LAMPORTS)
     }
 
     /// Combines confirmed landing evidence with the RPC's recent per-slot fee
@@ -202,7 +209,11 @@ impl TipStrategy {
     ) -> u64 {
         let landed = percentile_75_nonzero(recent_landed).map(|p| p.saturating_add(p / 4));
         let market = percentile_75_nonzero(recent_market_floors).map(|p| p.saturating_add(p / 4));
-        landed.into_iter().chain(market).max().unwrap_or(100_000)
+        landed
+            .into_iter()
+            .chain(market)
+            .max()
+            .unwrap_or(DEFAULT_ADAPTIVE_CU_PRICE_MICRO_LAMPORTS)
     }
 }
 
@@ -996,14 +1007,14 @@ mod tests {
 
     #[test]
     fn tip_strategy_applies_floor_cap_min_keep() {
-        let ts = TipStrategy::new(5000, 100, 1000, 400);
+        let ts = TipStrategy::with_max_share(5_000, 5_000, 100, 1_000, 400);
         assert_eq!(ts.pick_tip(1000), Some(Lamports(500)));
         // floor applies
         let ts2 = TipStrategy::new(1000, 300, 1000, 0);
         assert_eq!(ts2.pick_tip(1000), Some(Lamports(300)));
-        // min_keep None
-        let ts3 = TipStrategy::new(9000, 0, 10000, 500);
-        assert!(ts3.pick_tip(1000).is_none() || ts3.pick_tip(1000).is_some());
+        // The convenience constructor clamps a base share above its default 10% cap.
+        let ts3 = TipStrategy::new(9_000, 0, 10_000, 500);
+        assert_eq!(ts3.pick_tip(1_000), Some(Lamports(100)));
     }
 
     #[test]
@@ -1122,6 +1133,23 @@ mod tests {
         // Oldest samples dropped: first entry is the 11th insert.
         assert_eq!(window[0], 11_000);
         assert_eq!(window[RECENT_LANDED_CU_WINDOW - 1], 74_000);
+    }
+
+    #[test]
+    fn configured_max_tip_share_is_applied_to_dynamic_tip() {
+        // At 0.5 SOL the profit scale reaches 1.0. A 10% base share may
+        // therefore rise to the configured 20% ceiling (not the compiled 10%).
+        let ts = TipStrategy::with_max_share(1_000, 2_000, 0, 200_000_000, 0);
+        assert_eq!(
+            ts.pick_dynamic_tip(100_000_000, 1.0),
+            Some(Lamports(12_000_000))
+        );
+
+        // Competition may increase the bid to 20%, but never beyond that share.
+        assert_eq!(
+            ts.pick_dynamic_tip(500_000_000, 4.0),
+            Some(Lamports(100_000_000))
+        );
     }
 
     #[test]

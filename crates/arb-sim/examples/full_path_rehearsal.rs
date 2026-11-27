@@ -870,6 +870,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kamino: exec_cfg.kamino.clone(),
         borrow_amount: best.borrow_amount,
         flash_fee: best.flash_fee,
+        minimum_retained_profit_raw: best.minimum_retained_profit_raw,
         leg_a,
         leg_b,
         cu_limit: exec_cfg.cu_limit,

@@ -148,6 +148,10 @@ pub struct EconomicConfig {
     /// Jito tip in lamports, derived from current tip-floor market data and an
     /// explicit strategy policy — never a fabricated fraction of profit.
     pub jito_tip_lamports: Lamports,
+    /// Baseline CU price in micro-lamports per CU. The route scanner derives
+    /// the lamport fee from its protocol-specific CU estimate; dispatch re-prices
+    /// with fresh market samples and the actual CU limit.
+    pub priority_fee_micro_lamports: u64,
     /// Base mint decimals, read from a verified mint account. Never hardcoded to 9.
     pub base_decimals: u8,
     /// Raw base-mint units per lamport (1 when the base mint is WSOL).

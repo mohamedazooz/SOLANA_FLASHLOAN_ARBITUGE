@@ -115,11 +115,6 @@ pub fn build_swap_hop_instruction(
                             PumpSwapTradeMode::SellExactBaseInV2
                         };
 
-                        // Remaining accounts: live observation shows +3 for buy, +2 for sell on mainnet
-                        // These are not in the IDL but observed on-chain; pass None for now
-                        // until registry provides them
-                        let remaining_accounts: Option<Vec<AccountMeta>> = None;
-
                         build_pump_swap_instruction_v2(
                             hop.pool_id.0,
                             user_authority,
@@ -128,17 +123,13 @@ pub fn build_swap_hop_instruction(
                             *pool_base_vault,
                             *pool_quote_vault,
                             *global_config,
-                            *protocol_fee_recipient,
-                            *protocol_fee_recipient_ata,
-                            *coin_creator_vault_authority,
-                            *coin_creator_vault_ata,
+                            *fee_config,
                             token_prog_base,
                             token_prog_quote,
                             event_authority,
                             amount_in,
                             min_amount_out,
                             trade_mode,
-                            remaining_accounts,
                         )
                     }
                 }
@@ -558,9 +549,6 @@ pub fn build_swap_hop_instruction(
                 } else {
                     (*vault_1, *vault_0)
                 };
-                let ta0 = tick_array_pdas[0];
-                let ta1 = tick_array_pdas.get(1).copied().unwrap_or(ta0);
-                let ta2 = tick_array_pdas.get(2).copied().unwrap_or(ta1);
                 RaydiumClmmAccounts::with_tick_arrays(
                     pool,
                     user_authority,
@@ -570,9 +558,8 @@ pub fn build_swap_hop_instruction(
                     output_vault,
                     *amm_config,
                     *observation_state,
-                    ta0,
-                    ta1,
-                    ta2,
+                    tick_array_pdas.clone(),
+                    *bitmap_extension,
                 )
             };
 

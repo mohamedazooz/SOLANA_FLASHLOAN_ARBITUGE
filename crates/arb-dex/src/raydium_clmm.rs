@@ -271,6 +271,8 @@ impl AmmPool for RaydiumClmmPool {
                 .iter()
                 .map(|ta| ClmmTickArray {
                     start_tick_index: ta.start_tick_index,
+                    account_pubkey: None,
+                    account_slot: None,
                     ticks: ta
                         .ticks
                         .iter()

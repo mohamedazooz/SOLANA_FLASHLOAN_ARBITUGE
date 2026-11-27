@@ -22,6 +22,19 @@ pub const PUMP_FEES_PROGRAM_ID: &str = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6Vo
 pub const PUMP_FEES_FEE_CONFIG_DISCRIMINATOR: [u8; 8] = [143, 52, 146, 187, 219, 123, 76, 155];
 /// Anchor discriminator for PumpSwap GlobalConfig accounts.
 pub const PUMP_SWAP_GLOBAL_CONFIG_DISCRIMINATOR: [u8; 8] = [149, 8, 156, 202, 160, 252, 176, 217];
+/// Official PumpSwap V2 buyback fee recipient wallets (Pump public docs).
+/// Refresh this protocol-owned list when Pump publishes a recipient rotation.
+/// Source: https://github.com/pump-fun/pump-public-docs/blob/main/docs/FEE_RECIPIENTS.md
+pub const PUMP_SWAP_BUYBACK_FEE_RECIPIENTS: [&str; 8] = [
+    "5YxQFdt3Tr9zJLvkFccqXVUwhdTWJQc1fFg2YPbxvxeD",
+    "9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7",
+    "GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL",
+    "3BpXnfJaUTiwXnJNe7Ej1rcbzqTTQUvLShZaWazebsVR",
+    "5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+    "EHAAiTxcdDwQ3U4bU6YcMsQGaekdzLS3B5SmYo46kJtL",
+    "5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD",
+    "A7hAgCzFw14fejgCp387JUJRMNyz4j89JKnhtKU8piqW",
+];
 /// Associated Token (ATA) Program ID.
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
 /// Address Lookup Table Program ID.
@@ -435,6 +448,8 @@ pub const RAYDIUM_CPMM_OBSERVATION_SEED: &[u8] = b"observation";
 pub const RAYDIUM_CLMM_SWAP_DISCRIMINATOR: [u8; 8] = [248, 198, 158, 145, 225, 117, 135, 200];
 /// Raydium CLMM tick array seed.
 pub const RAYDIUM_CLMM_TICK_ARRAY_SEED: &[u8] = b"tick_array";
+/// Raydium CLMM TickArrayBitmapExtension PDA seed from the official program.
+pub const RAYDIUM_CLMM_TICK_ARRAY_BITMAP_SEED: &[u8] = b"pool_tick_array_bitmap_extension";
 /// Raydium CLMM observation state seed.
 pub const RAYDIUM_CLMM_OBSERVATION_SEED: &[u8] = b"observation";
 /// Anchor discriminator for Raydium CLMM `swap_v2`: sha256("global:swap_v2")[..8].

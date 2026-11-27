@@ -417,8 +417,11 @@ pub fn decode_pool_info(protocol: DexProtocol, data: &[u8]) -> Option<DecodedPoo
     }
 }
 
-/// Read mint decimals (offset 44) for each mint using single-account paced RPC requests.
-/// Mints owned by Token-2022 are deliberately omitted to reject tokens with transfer fees.
+/// Read mint decimals (offset 44) using paced single-account RPC requests.
+/// This compatibility helper does not return account owner metadata and must not
+/// be used for token-program classification or route eligibility. Live route
+/// hydration verifies owners in its batched snapshot and blocks Token-2022 until
+/// epoch-aware fees and TransferHook support are integrated.
 pub async fn resolve_mints_decimals(
     _rpc: &crate::RpcPool,
     mints: &[MintId],
@@ -1182,6 +1185,14 @@ pub fn decode_clmm_state(data: &[u8]) -> Option<arb_types::ClmmState> {
         return None;
     }
     let tick_spacing = u16::from_le_bytes(data[41..43].try_into().ok()?);
+    // The canonical engine implements classic Whirlpool fees only. Orca's
+    // fee_tier_index_seed is a little-endian u16 at @43..45; classic pools
+    // have it equal tick_spacing. Adaptive-fee pools need oracle-aware math
+    // and must not enter this quote path until that implementation exists.
+    let fee_tier_index = u16::from_le_bytes(data[43..45].try_into().ok()?);
+    if fee_tier_index != tick_spacing {
+        return None;
+    }
     let fee_rate = u16::from_le_bytes(data[45..47].try_into().ok()?);
     let liquidity = u128::from_le_bytes(data[49..65].try_into().ok()?);
     let sqrt_price = u128::from_le_bytes(data[65..81].try_into().ok()?);
@@ -1722,22 +1733,9 @@ mod tests {
         assert!(protocols.contains(&DexProtocol::RaydiumCpmm));
         assert!(protocols.contains(&DexProtocol::OrcaWhirlpool));
         assert!(protocols.contains(&DexProtocol::MeteoraDlmm));
-        // At least one sub-5 bps Orca tier must be present (the low-fee route).
-        let orca_fees: Vec<u16> = reg
-            .pools()
-            .iter()
-            .filter(|p| p.protocol == DexProtocol::OrcaWhirlpool)
-            .map(|p| p.fee_bps)
-            .collect();
-        assert!(orca_fees.iter().any(|f| *f <= 2));
-        // Raydium CPMM 1 bps tier must be present.
-        let cpmm_fees: Vec<u16> = reg
-            .pools()
-            .iter()
-            .filter(|p| p.protocol == DexProtocol::RaydiumCpmm)
-            .map(|p| p.fee_bps)
-            .collect();
-        assert!(cpmm_fees.contains(&1));
+        // The static catalog carries no fee assumptions. Every live fee is
+        // decoded from the corresponding on-chain pool/config during hydration.
+        assert!(reg.pools().iter().all(|pool| pool.fee_bps == 0));
     }
 
     #[test]
@@ -1978,6 +1976,33 @@ mod tests {
         data
     }
 
+    #[test]
+    fn decode_clmm_state_accepts_classic_fee_tier_seed() {
+        let mut data = vec![0u8; 653];
+        data[41..43].copy_from_slice(&64u16.to_le_bytes());
+        data[43..45].copy_from_slice(&64u16.to_le_bytes());
+        data[45..47].copy_from_slice(&300u16.to_le_bytes());
+        data[49..65].copy_from_slice(&1_000_000u128.to_le_bytes());
+        data[65..81].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        data[81..85].copy_from_slice(&0i32.to_le_bytes());
+
+        let decoded = decode_clmm_state(&data).expect("classic pool must decode");
+        assert_eq!(decoded.tick_spacing, 64);
+        assert_eq!(decoded.fee_rate, 300);
+    }
+
+    #[test]
+    fn decode_clmm_state_rejects_adaptive_fee_tier_seed() {
+        let mut data = vec![0u8; 653];
+        data[41..43].copy_from_slice(&64u16.to_le_bytes());
+        data[43..45].copy_from_slice(&256u16.to_le_bytes());
+        data[45..47].copy_from_slice(&300u16.to_le_bytes());
+        data[49..65].copy_from_slice(&1_000_000u128.to_le_bytes());
+        data[65..81].copy_from_slice(&(1u128 << 64).to_le_bytes());
+        data[81..85].copy_from_slice(&0i32.to_le_bytes());
+
+        assert!(decode_clmm_state(&data).is_none());
+    }
     #[test]
     fn clmm_onchain_mints_orca_interleaved_layout() {
         let ma = Pubkey::new_unique();
