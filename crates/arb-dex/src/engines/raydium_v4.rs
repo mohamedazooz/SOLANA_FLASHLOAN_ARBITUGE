@@ -159,6 +159,12 @@ impl QuoteEngine for RaydiumAmmV4QuoteEngine {
                 "Raydium V4 fee snapshot is missing or invalid".into(),
             ));
         }
+        if !state.is_active {
+            return Err(ArbError::PoolDisabled(format!(
+                "Raydium V4 pool {} is disabled",
+                state.pool_id.0
+            )));
+        }
         if request.input_transfer_fee_config.is_some()
             || request.output_transfer_fee_config.is_some()
         {

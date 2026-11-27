@@ -366,6 +366,13 @@ This register tracks all identified engineering defects, correctness gaps, and a
 - **Official SDK differential completed (2026-11-25)**: 18 exact-input quote vectors from the confirmed Mainnet snapshot cover both directions and nine input sizes. Another 36 synthetic vectors cover all three `CreatorFeeOn` modes, both directions and six input sizes. All 54 Rust outputs match `@raydium-io/raydium-sdk-v2@0.2.87-alpha` (source calculator commit `44d856ae7cfd2a25fa3b62724a564502978d7589`). The synthetic creator-fee vectors deliberately zero captured accrued counters so the tested reserves are exactly the SDK golden reserves.
 - **Remaining required action**: extend differential coverage to exact-output quotes, real Mainnet pools with creator fees enabled, Token-2022 fee-cap/epoch boundary cases on verified mainnet snapshots, and multiple AmmConfig schedules. Add verified fee-component attribution and retain the execution gate for Token-2022/creator-fee-enabled pools until instruction parity and account resolution are complete.
 
+### DEX-STATE-2026-11-27-N1: Exact-out Quotes Must Reject Inactive Pools (P2)
+
+- **Finding**: Raydium CPMM and Raydium AMM V4 exact-in adapters rejected `PoolState.is_active == false`, but their exact-out adapters did not apply the same status gate. A disabled pool could therefore produce an exact-out quote even though the matching exact-in path rejected it.
+- **Fix (2026-11-27)**: Both exact-out adapters now return `ArbError::PoolDisabled` for inactive snapshots, matching the existing exact-in behavior. The gate is checked before reserve/quote math; no protocol status interpretation or execution capability is broadened.
+- **Regression coverage**: `raydium_cpmm_boundary_tests::test_cpmm_quote_engine_disabled_pool_fails_closed` and `raydium_v4_boundary_tests::test_raydium_v4_disabled_pool_and_mismatched_mint` now assert rejection in both exact-in and exact-out modes.
+- **Safety boundary**: This relies on the upstream `PoolState.is_active` decoder/hydrator result. It does not claim additional on-chain status decoding or live execution readiness.
+
 ### FEE-F-2026-11-25-N1: Conservative Fee Metadata and Missing-Fee Fallbacks (P2)
 
 - **Files**: `crates/arb-types/src/pool.rs`, `crates/arb-engine/src/lib.rs`, `crates/arb-engine/src/bellman_ford.rs`, `crates/arb-engine/src/route_worker.rs`, `crates/arb-engine/src/meteora_pair_discovery.rs`, `crates/arb-dex/src/raydium_cpmm.rs`, `crates/arb-dex/src/raydium_v4.rs`, `crates/arb-dex/src/engines/pump_swap.rs`, `crates/arb-ingest/src/decoders.rs`, `crates/arb-ingest/src/discovery.rs`, `crates/arb-bot/src/supervisor/run.rs`
