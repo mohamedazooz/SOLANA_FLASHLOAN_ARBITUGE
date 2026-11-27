@@ -452,3 +452,11 @@ This register tracks all identified engineering defects, correctness gaps, and a
 The current Raydium CPMM input-side creator-fee calculation was checked against the current official CP-Swap `CurveCalculator` and CPMM fee documentation. The official behavior is one ceiling on `(trade_fee_rate + creator_fee_rate)`, followed by a proportional creator split; protocol/fund allocations are based on the trade-fee bucket only. The local exact-in/exact-out implementation matches this behavior. Two raw-unit boundary/round-trip tests were added. The suspected independent-ceiling change was not applied.
 
 The canonical Kamino flash-fee calculation, fee-exclusive per-protocol price-impact math, and separation of base fee / priority fee / Jito tip were revalidated. No additional production formula defect was confirmed in this pass. See `reports/ECONOMIC_COST_AUDIT_2026-11-27.md` for source links, formulas, test evidence, and limits.
+
+## DLMM exact-out price-impact parity — 2026-11-27
+
+- **Status:** Fixed on `fix/unified-pricing-dlmm-20261127`; awaiting PR/CI review.
+- **Finding:** Exact-in removed the DLMM swap fee before computing curve price impact; exact-out included the fee in the impact input/output, overstating impact for constant-price fills.
+- **Fix:** Both quote directions now call the same checked fee-exclusion helper, respecting InputOnly and OnlyY fee placement. Added exact-out regression coverage for both collection modes.
+- **Verification:** `cargo test -p arb-math -p arb-dex --all-targets` passed (559 tests); Clippy with `-D warnings` passed for `arb-math` and `arb-dex`; format check passed.
+- **Unchanged gates:** Exact-out is still not exposed through `QuoteEngine` because the shared request/result contract does not yet model target output and max input. DLMM timestamp decay remains conservative until a trusted bank Clock snapshot is available. Limit-order/unsupported extension modes remain fail-closed.

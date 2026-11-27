@@ -1,9 +1,9 @@
-use super::advance_active_id;
+﻿use super::advance_active_id;
 use super::error::{DlmmError, dlmm_fee_on_input};
 use super::fee::{
     compute_total_fee_rate, update_references_with_decay, update_volatility_accumulator,
 };
-use super::price::{calculate_price_impact_bps, get_price_from_id};
+use super::price::{calculate_fee_excluded_price_impact_bps, get_price_from_id};
 use super::swap::{bin_max_amount_out, consume_bin_liquidity};
 use super::types::{DlmmBin, DlmmPoolState, DlmmSwapQuote};
 
@@ -101,25 +101,14 @@ pub fn quote_dlmm_multi_bin(
     }
 
     // Price impact is curve movement only, not the protocol's trading fee.
-    // CollectFeeMode may charge the fee on input or output; normalize both
-    // paths to fee-free pool-side amounts before comparing with starting spot.
-    let (impact_input, impact_output) = if fee_on_input {
-        (
-            amount_in
-                .checked_sub(total_fee)
-                .ok_or(DlmmError::MathOverflow)?,
-            total_out,
-        )
-    } else {
-        (
-            amount_in,
-            total_out
-                .checked_add(total_fee)
-                .ok_or(DlmmError::MathOverflow)?,
-        )
-    };
-    let price_impact_bps =
-        calculate_price_impact_bps(impact_input, impact_output, start_price, swap_for_y);
+    let price_impact_bps = calculate_fee_excluded_price_impact_bps(
+        amount_in,
+        total_out,
+        total_fee,
+        fee_on_input,
+        start_price,
+        swap_for_y,
+    )?;
 
     Ok(DlmmSwapQuote {
         amount_in,

@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use ruint::aliases::U256;
 
 fn create_test_parameters() -> DlmmParameters {
@@ -76,6 +76,28 @@ fn price_impact_excludes_dlmm_fee_for_input_and_output_collection_modes() {
     }
 }
 
+#[test]
+fn exact_out_price_impact_excludes_dlmm_fee_for_input_and_output_collection_modes() {
+    for collect_fee_mode in [0u8, 1u8] {
+        let mut pool = create_test_pool(0);
+        pool.parameters.collect_fee_mode = collect_fee_mode;
+        let bins = vec![DlmmBin {
+            id: 0,
+            amount_x: 1_000_000_000,
+            amount_y: 1_000_000_000,
+            price_q64: 0,
+            ..Default::default()
+        }];
+        let quote = quote_dlmm_exact_out(&pool, &bins, 100_000, true, None)
+            .expect("single-bin exact-out quote");
+        assert!(quote.fee_amount > 0, "fixture must charge a swap fee");
+        assert_eq!(
+            quote.price_impact_bps,
+            arb_types::Bps(0),
+            "single constant-price bin has no curve impact; mode {collect_fee_mode}"
+        );
+    }
+}
 #[test]
 fn test_bin_price_at_zero() {
     let price = get_price_from_id(0, 25).expect("price at bin 0");
