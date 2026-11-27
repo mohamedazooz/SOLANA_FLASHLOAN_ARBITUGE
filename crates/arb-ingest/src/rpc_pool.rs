@@ -1139,6 +1139,34 @@ impl RpcPool {
         Ok((accounts, latest_slot))
     }
 
+    /// Decode a getMultipleAccounts result without allowing a short or
+    /// oversized value array to shift account bytes onto the wrong pubkey.
+    /// Solana JSON-RPC returns exactly one value per requested address.
+    fn decode_multiple_accounts_response(
+        response: &serde_json::Value,
+        expected_count: usize,
+    ) -> Result<(Vec<Option<serde_json::Value>>, u64)> {
+        let slot = response
+            .pointer("/context/slot")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let values = response["value"]
+            .as_array()
+            .context("Invalid accounts array format")?;
+        anyhow::ensure!(
+            values.len() == expected_count,
+            "Invalid getMultipleAccounts result length: expected {expected_count}, got {}",
+            values.len()
+        );
+        Ok((
+            values
+                .iter()
+                .map(|account| (!account.is_null()).then(|| account.clone()))
+                .collect(),
+            slot,
+        ))
+    }
+
     /// Like [`Self::get_multiple_accounts_with_slot`] but returns the
     /// `context.slot` of the response that carried EACH account, so a slow
     /// replica can never borrow a faster replica's slot and mask staleness
@@ -1198,24 +1226,31 @@ impl RpcPool {
             for (chunk, res) in pubkeys.chunks(100).zip(chunk_results) {
                 match res {
                     Ok(res) => {
-                        let chunk_slot = res
-                            .pointer("/context/slot")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let accounts = res["value"]
-                            .as_array()
-                            .context("Invalid accounts array format")?;
-                        for acc in accounts {
-                            all_accounts.push(if acc.is_null() {
-                                None
-                            } else {
-                                Some(acc.clone())
-                            });
-                            all_slots.push(chunk_slot);
+                        match Self::decode_multiple_accounts_response(&res, chunk.len()) {
+                            Ok((accounts, chunk_slot)) => {
+                                all_slots.extend(std::iter::repeat_n(chunk_slot, accounts.len()));
+                                all_accounts.extend(accounts);
+                            }
+                            Err(_) => {
+                                // Do not associate malformed batch values with requested keys.
+                                // Retry in bounded five-key chunks and validate each response.
+                                for sub in chunk.chunks(5) {
+                                    let res = self
+                                        .call(
+                                            "getMultipleAccounts",
+                                            json!([sub, {"encoding": "base64", "commitment": "processed"}]),
+                                        )
+                                        .await?;
+                                    let (accounts, sub_slot) =
+                                        Self::decode_multiple_accounts_response(&res, sub.len())?;
+                                    all_slots.extend(std::iter::repeat_n(sub_slot, accounts.len()));
+                                    all_accounts.extend(accounts);
+                                }
+                            }
                         }
                     }
                     Err(_) => {
-                        // Fallback this chunk into 5-key sub-chunks across ALL remaining endpoints (including RPCFast)
+                        // Fallback this chunk into 5-key sub-chunks across all providers.
                         for sub in chunk.chunks(5) {
                             let res = self
                                 .call(
@@ -1223,21 +1258,10 @@ impl RpcPool {
                                     json!([sub, {"encoding": "base64", "commitment": "processed"}]),
                                 )
                                 .await?;
-                            let sub_slot = res
-                                .pointer("/context/slot")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
-                            let accounts = res["value"]
-                                .as_array()
-                                .context("Invalid accounts array format")?;
-                            for acc in accounts {
-                                all_accounts.push(if acc.is_null() {
-                                    None
-                                } else {
-                                    Some(acc.clone())
-                                });
-                                all_slots.push(sub_slot);
-                            }
+                            let (accounts, sub_slot) =
+                                Self::decode_multiple_accounts_response(&res, sub.len())?;
+                            all_slots.extend(std::iter::repeat_n(sub_slot, accounts.len()));
+                            all_accounts.extend(accounts);
                         }
                     }
                 }
@@ -1252,21 +1276,10 @@ impl RpcPool {
                     json!([chunk, {"encoding": "base64", "commitment": "processed"}]),
                 )
                 .await?;
-            let chunk_slot = res
-                .pointer("/context/slot")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let accounts = res["value"]
-                .as_array()
-                .context("Invalid accounts array format")?;
-            for acc in accounts {
-                all_accounts.push(if acc.is_null() {
-                    None
-                } else {
-                    Some(acc.clone())
-                });
-                all_slots.push(chunk_slot);
-            }
+            let (accounts, chunk_slot) =
+                Self::decode_multiple_accounts_response(&res, chunk.len())?;
+            all_slots.extend(std::iter::repeat_n(chunk_slot, accounts.len()));
+            all_accounts.extend(accounts);
         }
         Ok((all_accounts, all_slots))
     }
@@ -2042,6 +2055,51 @@ mod tests {
         assert!(slots[..100].iter().all(|&s| s == 1000));
         assert!(slots[100..].iter().all(|&s| s == 2000));
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_batch_account_count_retries_checked_subchunks() {
+        let response = |slot: u64, count: usize| {
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "context": { "slot": slot },
+                    "value": vec![serde_json::Value::Null; count]
+                }
+            })
+            .to_string()
+        };
+        // The first (six-key) batch is malformed: it returns only five values.
+        // The bounded fallback then returns a valid five-key and one-key result.
+        let (addr, server) = priority_estimate_server(vec![
+            response(1000, 5),
+            response(2000, 5),
+            response(3000, 1),
+        ]);
+        let pool = RpcPool::new(vec![format!("http://{addr}")]);
+        let keys = ["key-1", "key-2", "key-3", "key-4", "key-5", "key-6"];
+        let (accounts, slots) = pool
+            .get_multiple_accounts_with_slots(&keys)
+            .await
+            .expect("malformed large response should retry in checked subchunks");
+
+        assert_eq!(accounts.len(), keys.len());
+        assert!(accounts.iter().all(Option::is_none));
+        assert_eq!(&slots[..5], &[2000; 5]);
+        assert_eq!(slots[5], 3000);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn get_multiple_accounts_rejects_oversized_value_arrays() {
+        let response = serde_json::json!({
+            "context": { "slot": 42 },
+            "value": [null, null]
+        });
+        let error = RpcPool::decode_multiple_accounts_response(&response, 1)
+            .expect_err("an extra value must not be silently discarded");
+        assert!(error.to_string().contains("expected 1, got 2"));
     }
 
     // DATA-11 regression: get_priority_fee_estimate must surface the RPC's
