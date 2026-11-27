@@ -13,7 +13,7 @@
 //! pool to form a 2-hop cross-DEX arbitrage.
 
 use crate::{DependencyManifestRegistry, RpcPool};
-use arb_types::{DexProtocol, MintId, PoolId};
+use arb_types::{DexProtocol, MintId, PoolId, TokenProgramKind};
 use solana_pubkey::Pubkey;
 use std::str::FromStr;
 
@@ -46,11 +46,11 @@ pub struct MultiDexRegistry {
     pub(crate) pools: Vec<RegisteredPool>,
     pub(crate) rpc: RpcPool,
     pub dependency_manifest: DependencyManifestRegistry,
-    /// Immutable mint-decimal cache for canonical DLMM token_x/token_y mints.
-    /// Mint decimals never change on-chain, so entries live forever. `Arc`
-    /// keeps clones of the registry (per-worker) sharing one cache.
-    pub(crate) dlmm_decimals_cache:
-        std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<MintId, u8>>>,
+    /// Immutable owner/program + decimals metadata for initialized mints.
+    /// Clones share this cache so steady-state hydration does not refetch mints.
+    pub(crate) mint_metadata_cache: std::sync::Arc<
+        parking_lot::Mutex<std::collections::HashMap<Pubkey, (TokenProgramKind, u8)>>,
+    >,
 }
 
 impl MultiDexRegistry {
@@ -179,7 +179,7 @@ impl MultiDexRegistry {
             pools,
             rpc,
             dependency_manifest: Default::default(),
-            dlmm_decimals_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
+            mint_metadata_cache: std::sync::Arc::new(parking_lot::Mutex::new(Default::default())),
         }
     }
 

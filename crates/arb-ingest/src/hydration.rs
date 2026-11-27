@@ -1,8 +1,8 @@
 //! Live reserve hydration for [`MultiDexRegistry`]: batched vault fetches,
-//! mint-decimal caching and per-pool `PoolState` construction.
+//! mint-owner verification and per-pool `PoolState` construction.
 
 use crate::fetcher::CONSECUTIVE_RPC_FAILURES;
-use arb_types::{DexProtocol, PoolState, Slot};
+use arb_types::{DexProtocol, PoolState, Slot, TokenProgramKind};
 use base64::prelude::*;
 use solana_pubkey::Pubkey;
 use std::sync::atomic::Ordering;
@@ -10,6 +10,31 @@ use tracing::{debug, info, warn};
 
 const SOLANA_CLOCK_SYSVAR_ADDRESS: &str = "SysvarC1ock11111111111111111111111111111111";
 const SOLANA_SYSVAR_OWNER_ADDRESS: &str = "Sysvar1111111111111111111111111111111111111";
+
+/// Resolve token program from the mint account owner and validate its base layout.
+/// Token-2022 is identified but remains ineligible until epoch-aware fees and
+/// TransferHook account resolution are supported through quote and execution.
+fn decode_mint_program_and_decimals(owner: &Pubkey, data: &[u8]) -> Option<(TokenProgramKind, u8)> {
+    if data.len() < 82 || data[45] != 1 || data[44] > 18 {
+        return None;
+    }
+    let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).ok()?;
+    let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).ok()?;
+    let program = if *owner == spl {
+        if data.len() != 82 {
+            return None;
+        }
+        TokenProgramKind::SplToken
+    } else if *owner == token_2022 {
+        if data.len() > 82 && (data.len() < 166 || data[165] != 1) {
+            return None;
+        }
+        TokenProgramKind::Token2022
+    } else {
+        return None;
+    };
+    Some((program, data[44]))
+}
 
 /// DAMM v2 Pool, both vaults, both mints and Clock must share one RPC context.
 fn coherent_damm_v2_snapshot_slot(context_slot: u64, slots: [Option<u64>; 6]) -> Option<u64> {
@@ -83,7 +108,7 @@ pub(crate) fn decode_damm_v2_coherent_pool_state(
     }
 
     let mint_decimals = |bytes: &[u8]| -> Option<u8> {
-        if bytes.len() < 82 {
+        if bytes.len() < 82 || bytes[45] != 1 || bytes[44] > 18 {
             return None;
         }
         if bytes.len() > 82 && (bytes.len() < 166 || bytes[165] != 1) {
@@ -212,35 +237,6 @@ use arb_types::{MintId, PoolId};
 use std::str::FromStr;
 
 impl MultiDexRegistry {
-    /// Resolve canonical pair-mint decimals through an immutable cache; misses
-    /// cost one batched `resolve_mints_decimals` call per new mint, ever.
-    /// Unresolvable mints yield 0, which the economic engine rejects fail-closed.
-    /// Used by both the DLMM and CLMM canonical-orientation blocks in
-    /// [`MultiDexRegistry::fetch_live_pool_states`].
-    async fn dlmm_mint_decimals(&self, x: Pubkey, y: Pubkey) -> (u8, u8) {
-        let mx = MintId(x);
-        let my = MintId(y);
-        let missing: Vec<MintId> = {
-            let cache = self.dlmm_decimals_cache.lock();
-            [mx, my]
-                .into_iter()
-                .filter(|m| !cache.contains_key(m))
-                .collect()
-        };
-        if !missing.is_empty() {
-            let resolved = resolve_mints_decimals(&self.rpc, &missing).await;
-            let mut cache = self.dlmm_decimals_cache.lock();
-            for (m, d) in resolved {
-                cache.insert(m, d);
-            }
-        }
-        let cache = self.dlmm_decimals_cache.lock();
-        (
-            cache.get(&mx).copied().unwrap_or(0),
-            cache.get(&my).copied().unwrap_or(0),
-        )
-    }
-
     /// Batch-fetch LIVE reserve balances for every registered pool in a single
     /// `getMultipleAccounts` call and produce fresh `PoolState`s. Returns only
     /// pools whose both reserves decoded to a non-zero live balance.
@@ -326,8 +322,27 @@ impl MultiDexRegistry {
             std::collections::HashMap::new();
         let mut pool_owner_map: std::collections::HashMap<Pubkey, Pubkey> =
             std::collections::HashMap::new();
-        // 1. Pool accounts — batched (2 batch-100 calls for 163 pools).
-        let pool_pubkeys: Vec<Pubkey> = self.pools.iter().map(|p| p.pool_id.0).collect();
+        // 1. Pool and previously unseen pair-mint accounts. Mint owners and
+        // decimals are immutable after initialization, so cache verified metadata
+        // and fetch only on first sight or when a new pool introduces a new mint.
+        let mut pool_pubkeys: Vec<Pubkey> = self.pools.iter().map(|p| p.pool_id.0).collect();
+        let mut mint_pubkeys = Vec::new();
+        let mut seen_accounts: std::collections::HashSet<Pubkey> =
+            pool_pubkeys.iter().copied().collect();
+        {
+            let cache = self.mint_metadata_cache.lock();
+            for pool in &self.pools {
+                if pool.protocol == DexProtocol::MeteoraDammV2 {
+                    continue; // DAMM v2 has its own coherent Pool/Vault/Mint/Clock fetch.
+                }
+                for mint in [pool.base_mint.0, pool.quote_mint.0] {
+                    if !cache.contains_key(&mint) && seen_accounts.insert(mint) {
+                        mint_pubkeys.push(mint);
+                    }
+                }
+            }
+        }
+        pool_pubkeys.extend(mint_pubkeys.iter().copied());
         let mut max_observed_slot = Self::batch_fetch_accounts(
             &self.rpc,
             &pool_pubkeys,
@@ -335,6 +350,25 @@ impl MultiDexRegistry {
             Some(&mut pool_owner_map),
         )
         .await;
+
+        // Cache only successfully decoded, owner-verified Mint accounts. A
+        // missing/malformed response is not cached, so the next tick can retry.
+        if !mint_pubkeys.is_empty() {
+            let mut cache = self.mint_metadata_cache.lock();
+            for mint in &mint_pubkeys {
+                let Some((slot, data)) = pool_data_map.get(mint) else {
+                    continue;
+                };
+                let Some(owner) = pool_owner_map.get(mint) else {
+                    continue;
+                };
+                if *slot > 0
+                    && let Some(metadata) = decode_mint_program_and_decimals(owner, data)
+                {
+                    cache.insert(*mint, metadata);
+                }
+            }
+        }
 
         // 2. CPMM vault accounts — batched (1 batch-100 call for ~68 vaults).
         let mut vault_data_map: std::collections::HashMap<Pubkey, (u64, Vec<u8>)> =
@@ -1146,7 +1180,7 @@ impl MultiDexRegistry {
         }
 
         debug!(
-            "fetch_live_pool_states: pools_fetched={} vaults_fetched={} cpmm_cfg_fetched={} derived_fetched={} for {} registered pools",
+            "fetch_live_pool_and_new_mint_accounts={} vaults_fetched={} cpmm_cfg_fetched={} derived_fetched={} for {} registered pools",
             pool_data_map.len(),
             vault_data_map.len(),
             cpmm_config_map.len(),
@@ -1402,7 +1436,8 @@ impl MultiDexRegistry {
             // 1_249_511 "USDC-raw" out instead of 7_998), a 156x phantom edge
             // that flooded the pipeline with implausible-ROI rejections
             // (soak13/14: 4,276 + 1,058, p50 ROI 1,535,076 bps = 153.5x).
-            let (state_base, state_quote, dec_a, dec_b) = if p.protocol == DexProtocol::RaydiumCpmm
+            let (state_base, state_quote, _catalog_dec_a, _catalog_dec_b) = if p.protocol
+                == DexProtocol::RaydiumCpmm
             {
                 let Some(accounting) = cpmm_accounting else {
                     continue;
@@ -1424,8 +1459,7 @@ impl MultiDexRegistry {
                     Some(d) if d.len() >= 152 => {
                         let token_x = Pubkey::new_from_array(d[88..120].try_into().unwrap());
                         let token_y = Pubkey::new_from_array(d[120..152].try_into().unwrap());
-                        let (dx, dy) = self.dlmm_mint_decimals(token_x, token_y).await;
-                        (MintId(token_x), MintId(token_y), dx, dy)
+                        (MintId(token_x), MintId(token_y), 0, 0)
                     }
                     _ => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
                 }
@@ -1487,8 +1521,7 @@ impl MultiDexRegistry {
                         } else {
                             // Inverted catalog: catalog decimals are swapped
                             // too; resolve by mint identity (cached).
-                            let (da, db) = self.dlmm_mint_decimals(mint_a, mint_b).await;
-                            (MintId(mint_a), MintId(mint_b), da, db)
+                            (MintId(mint_a), MintId(mint_b), 0, 0)
                         }
                     }
                     None => (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b),
@@ -1496,6 +1529,30 @@ impl MultiDexRegistry {
             } else {
                 (p.base_mint, p.quote_mint, p.decimals_a, p.decimals_b)
             };
+
+            // Resolve token program and decimals from actual mint accounts and
+            // their RPC owner metadata. Missing or unsupported owners fail closed.
+            let mint_program_and_decimals =
+                |mint: Pubkey| self.mint_metadata_cache.lock().get(&mint).copied();
+            let Some((base_token_program, verified_decimals_a)) =
+                mint_program_and_decimals(state_base.0)
+            else {
+                debug!(
+                    "MultiDexRegistry: {:?} pool {} — base mint owner/layout unavailable; skipping",
+                    p.protocol, p.pool_id
+                );
+                continue;
+            };
+            let Some((quote_token_program, verified_decimals_b)) =
+                mint_program_and_decimals(state_quote.0)
+            else {
+                debug!(
+                    "MultiDexRegistry: {:?} pool {} — quote mint owner/layout unavailable; skipping",
+                    p.protocol, p.pool_id
+                );
+                continue;
+            };
+            let token_programs = [base_token_program, quote_token_program];
 
             let (reserve_in, reserve_out) = match p.protocol {
                 DexProtocol::RaydiumCpmm => {
@@ -1878,8 +1935,8 @@ impl MultiDexRegistry {
                 write_version: wv,
                 base_mint: state_base,
                 quote_mint: state_quote,
-                decimals_a: dec_a,
-                decimals_b: dec_b,
+                decimals_a: verified_decimals_a,
+                decimals_b: verified_decimals_b,
                 reserve_in,
                 reserve_out,
                 fee_numerator,
@@ -1899,7 +1956,9 @@ impl MultiDexRegistry {
                     None
                 },
                 is_active: true,
-                has_risky_token: false,
+                // Token-2022 stays disabled until epoch-aware fees and transfer
+                // hook account resolution are verified across quote + execution.
+                has_risky_token: token_programs.contains(&TokenProgramKind::Token2022),
                 last_update_slot: state_slot.0,
                 last_update_ms: now_ms,
                 kind,
@@ -1907,13 +1966,78 @@ impl MultiDexRegistry {
                 dlmm,
                 pump_fun: pump_state,
                 damm_v2: None,
-                token_programs: Default::default(),
+                token_programs,
                 execution_accounts,
                 transfer_fee_bps: 0,
             });
         }
 
         states
+    }
+}
+
+#[cfg(test)]
+mod mint_token_program_tests {
+    use super::decode_mint_program_and_decimals;
+    use arb_types::TokenProgramKind;
+    use solana_pubkey::Pubkey;
+    use std::str::FromStr;
+
+    #[test]
+    fn classifies_spl_and_token_2022_from_verified_account_owner() {
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+
+        let mut legacy = vec![0u8; 82];
+        legacy[44] = 6;
+        legacy[45] = 1;
+        assert_eq!(
+            decode_mint_program_and_decimals(&spl, &legacy),
+            Some((TokenProgramKind::SplToken, 6))
+        );
+
+        let mut extensionless_2022 = vec![0u8; 82];
+        extensionless_2022[44] = 9;
+        extensionless_2022[45] = 1;
+        assert_eq!(
+            decode_mint_program_and_decimals(&token_2022, &extensionless_2022),
+            Some((TokenProgramKind::Token2022, 9))
+        );
+
+        let mut extended_2022 = vec![0u8; 170];
+        extended_2022[44] = 6;
+        extended_2022[45] = 1;
+        extended_2022[165] = 1;
+        assert_eq!(
+            decode_mint_program_and_decimals(&token_2022, &extended_2022),
+            Some((TokenProgramKind::Token2022, 6))
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_owners_uninitialized_and_malformed_mints() {
+        let spl = Pubkey::from_str(arb_constants::TOKEN_PROGRAM_ID).unwrap();
+        let token_2022 = Pubkey::from_str(arb_constants::TOKEN_2022_PROGRAM_ID).unwrap();
+        let mut mint = vec![0u8; 82];
+        mint[44] = 6;
+        mint[45] = 1;
+
+        assert!(decode_mint_program_and_decimals(&Pubkey::new_unique(), &mint).is_none());
+
+        let mut uninitialized = mint.clone();
+        uninitialized[45] = 0;
+        assert!(decode_mint_program_and_decimals(&spl, &uninitialized).is_none());
+
+        let mut bad_decimals = mint.clone();
+        bad_decimals[44] = 19;
+        assert!(decode_mint_program_and_decimals(&spl, &bad_decimals).is_none());
+
+        assert!(decode_mint_program_and_decimals(&spl, &[0u8; 170]).is_none());
+        assert!(decode_mint_program_and_decimals(&token_2022, &[0u8; 120]).is_none());
+
+        let mut wrong_account_type = vec![0u8; 170];
+        wrong_account_type[45] = 1;
+        assert!(decode_mint_program_and_decimals(&token_2022, &wrong_account_type).is_none());
     }
 }
 
@@ -2012,8 +2136,10 @@ mod damm_v2_coherent_account_graph_tests {
 
         let mut mint_a = vec![0u8; 82];
         mint_a[44] = 9;
+        mint_a[45] = 1; // initialized Mint
         let mut mint_b = vec![0u8; 82];
         mint_b[44] = 6;
+        mint_b[45] = 1; // initialized Mint
 
         let mut clock = vec![0u8; 40];
         clock[0..8].copy_from_slice(&777u64.to_le_bytes());

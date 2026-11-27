@@ -608,9 +608,10 @@ pub struct PoolState {
     #[serde(default)]
     pub raydium_cpmm_fee: Option<RaydiumCpmmFeeState>,
     pub is_active: bool,
-    /// Token-2022 safety: true if either mint has a risky extension
-    /// (transfer fee, transfer hook, permanent delegate, non-transferable,
-    /// default account state, mint close authority). P1 #14.
+    /// Generic hydration sets this for Token-2022 until epoch-aware transfer
+    /// fees and TransferHook resolution are supported end-to-end. Specialized
+    /// venue decoders may also flag unsupported transfer/authority extensions;
+    /// route gates separately inspect token_programs for venue-specific support.
     #[serde(default)]
     pub has_risky_token: bool,
     /// Pricing model kind. P1 #12.
