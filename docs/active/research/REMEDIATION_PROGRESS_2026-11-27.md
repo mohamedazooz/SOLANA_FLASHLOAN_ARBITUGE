@@ -85,11 +85,11 @@ The following local Windows/toolchain runs completed successfully:
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed
 - `git diff --check`: passed before final documentation reconciliation
 
-A full `cargo test --workspace --all-targets` run is still required for this branch. No mainnet transaction was submitted; no new RPC simulation, Jito ingress canary, shadow soak, landing, or realized-PnL evidence is claimed.
+GitHub Actions run `45919281241` completed successfully on synthetic merge commit `f3ae80d`, which combined current `main` (`0a3dd43`) with PR head `ca575ad`. It passed formatting, workspace checks with default and supported features, `cargo test --workspace --all-targets`, workspace Clippy with `-D warnings`, workspace/webhook `cargo-deny`, Gitleaks, webhook build/tests/Clippy, and the React/Vite build. This is CI evidence for the tested merge snapshot; it does not replace live protocol simulation or execution evidence. No mainnet transaction was submitted; no new RPC simulation, Jito ingress canary, shadow soak, landing, or realized-PnL evidence is claimed.
 
 ## 6. Safety and PR workflow
 
 - Preserve `ARB_LIVE=0`, `DRY_RUN=true`, and the existing quote/execution safety gates.
 - Do not merge the resulting PR automatically.
-- PR #184 already contains the economic-accounting work on `fix/economic-fee-accounting-20261127`. The protocol-parity changes should be submitted as a separate stacked PR based on that branch, so the PR diff contains only this remediation commit and does not duplicate #184.
-- The operator explicitly requested completion and PR creation on 2026-11-27. That request supersedes the earlier temporary handoff note that prohibited PR creation. It does not authorize merging or enabling live execution.
+- Submitted as Draft PR #186 against `main`, from `fix/protocol-parity-hardening-20261127-pr`. The PR was initially opened against main `7500271`; merged fee/economic-accounting PRs #184/#185 advanced main to `0a3dd43`. Latest successful CI run `45919281241` tested synthetic merge commit `f3ae80d` (main `0a3dd43` + PR head `ca575ad`). The PR diff remains scoped to protocol-parity changes.
+- The operator explicitly requested completion and PR creation on 2026-11-27. This authorizes opening the PR, not merging or enabling live execution.
